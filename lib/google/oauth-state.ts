@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import { decrypt, encrypt } from '@/lib/crypto'
+import { safeNextPath } from '@/lib/safe-redirect'
 
 export const GOOGLE_OAUTH_STATE_COOKIE = 'google_oauth_state'
 export const GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
@@ -50,7 +51,7 @@ export function createGoogleOAuthTransaction(input: {
     verifier,
     userId: input.userId,
     fundId: input.fundId,
-    returnTo: input.returnTo,
+    returnTo: safeNextPath(input.returnTo) ?? '/settings',
     expiresAt: (input.now ?? Date.now()) + GOOGLE_OAUTH_STATE_TTL_SECONDS * 1000,
   }
   return {
@@ -82,12 +83,13 @@ export function consumeGoogleOAuthTransaction(input: {
     ) return null
     if (parsed.expiresAt < (input.now ?? Date.now())) return null
     if (!equal(parsed.nonce, input.state) || !equal(parsed.userId, input.userId)) return null
-    if (!parsed.returnTo.startsWith('/') || parsed.returnTo.startsWith('//')) return null
+    const returnTo = safeNextPath(parsed.returnTo)
+    if (!returnTo) return null
 
     return {
       codeVerifier: parsed.verifier,
       fundId: parsed.fundId,
-      returnTo: parsed.returnTo,
+      returnTo,
     }
   } catch {
     return null

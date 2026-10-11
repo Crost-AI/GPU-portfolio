@@ -14,6 +14,8 @@ import { join } from 'path'
 
 // Call sites that legitimately do NOT filter, each with the reason it does not.
 const ALLOWLIST = new Map<string, string>([
+  ['app/api/onboarding/fund/route.ts', 'a head-only count: does the fund hold any data yet (any holding kind)'],
+  ['lib/onboarding/progress.ts', 'a head-only count for the setup checklist — any holding kind means investments are loaded'],
   ['lib/accounting/ownership.ts', 'names for the companies of transactions already identified by id — any holding kind'],
   ['lib/portfolio/sheet-load.ts', 'metadata for every holding kind on the portfolio sheet, by ids the schedule already produced'],
   ['lib/accounting/investment-backfill.ts', 'names for every holding type — funds and crypto backfill alongside companies'],

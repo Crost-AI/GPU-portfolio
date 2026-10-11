@@ -125,7 +125,11 @@ export async function PUT(req: NextRequest) {
   const { data: before } = await admin.from('lp_investments' as any).select('*').eq('id', id).eq('fund_id', writeCheck.fundId).maybeSingle()
   if (!before) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const figuresChanging = [commitment, paidInCapital, distributions, nav, calledCapital, totalValue, outstandingBalance, dpi, rvpi, tvpi, irr].some(v => v !== undefined)
-  const shares = figuresChanging ? await reportShareCount(admin, writeCheck.fundId, (before as any).snapshot_id) : 0
+  // Re-pointing a shared position at another entity or vehicle changes what an investor was shown
+  // just as much as its figures (lp_investments_locked_when_shared refuses both).
+  const identityChanging = (entityId !== undefined && entityId !== (before as any).entity_id)
+    || (typeof portfolioGroup === 'string' && portfolioGroup.trim() !== (before as any).portfolio_group)
+  const shares = figuresChanging || identityChanging ? await reportShareCount(admin, writeCheck.fundId, (before as any).snapshot_id) : 0
   if (shares > 0) return NextResponse.json({ error: lockedMessage(shares, 'this position') }, { status: 409 })
 
   const updates: Record<string, any> = { updated_at: new Date().toISOString() }

@@ -70,6 +70,11 @@ export const MAX_SEARCH_LIMIT = 100
 export const DEFAULT_SEARCH_LIMIT = 20
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})?$/
+/** A Postgres/ISO timestamp as received_at round-trips through the cursor, and nothing else. */
+export function isCursorTimestamp(value: string): boolean {
+  return CURSOR_TIMESTAMP.test(value) && !Number.isNaN(new Date(value.replace(' ', 'T')).getTime())
+}
 
 export class SearchParamsError extends Error {}
 
@@ -258,9 +263,12 @@ export async function listCompanyUpdates(
     .order('id', { ascending: false })
     .limit(limit + 1)
   if (cursor) {
-    const received = String(cursor.received_at ?? '')
-    const id = String(cursor.id ?? '')
-    if (!received || !UUID.test(id)) throw new SearchParamsError('cursor is malformed')
+    // Both values are interpolated into a PostgREST `or=` filter, so they must be exactly a
+    // timestamp and a uuid — a comma or paren in either would add filter clauses. The timestamp is
+    // checked, not re-serialized: toISOString would drop Postgres' microseconds and skip rows.
+    const received = typeof cursor.received_at === 'string' ? cursor.received_at : ''
+    const id = typeof cursor.id === 'string' ? cursor.id : ''
+    if (!isCursorTimestamp(received) || !UUID.test(id)) throw new SearchParamsError('cursor is malformed')
     query = query.or(`received_at.lt.${received},and(received_at.eq.${received},id.lt.${id})`)
   }
   const { data, error } = await query

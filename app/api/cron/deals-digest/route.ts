@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getOutboundConfig, sendOutboundEmail } from '@/lib/email'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 /**
  * Weekly digest of deals auto-archived as out_of_thesis. Sent to fund admins.
@@ -12,14 +13,8 @@ import { getOutboundConfig, sendOutboundEmail } from '@/lib/email'
 export async function GET(req: NextRequest) {
   // Fail-closed: missing CRON_SECRET refuses traffic rather than opening the
   // digest loop to anonymous callers.
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  }
-  const auth = req.headers.get('authorization')
-  if (auth !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const admin = createAdminClient()
 

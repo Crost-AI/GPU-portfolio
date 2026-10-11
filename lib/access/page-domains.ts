@@ -41,6 +41,8 @@ export interface PageDomain {
 export const PAGE_DOMAINS: Record<string, PageDomain> = {
   // ── Portfolio ──────────────────────────────────────────────────────────────
   'dashboard': { domain: 'portfolio' },
+  // The setup checklist; each step is re-filtered by lib/onboarding/progress.ts per domain.
+  'getting-started': { domain: 'portfolio' },
   // The company page: the panels inside it (notes, interactions, investments) each ask for their
   // own domain, but the company and its metrics are portfolio.
   'companies/[id]': { domain: 'portfolio' },

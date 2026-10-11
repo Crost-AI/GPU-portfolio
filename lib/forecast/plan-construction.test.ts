@@ -29,12 +29,20 @@ describe("a plan's portfolio construction", () => {
       { id: 'p2', name: 'Budget', kind: 'budget' },
       { id: 'p3', name: 'Downside', construction: { case: 'down' } },
     ])
-    await writePlanConstruction(admin as any, 'f', 'p1', { case: 'base' })
+    await writePlanConstruction(admin as any, 'f', 'v', 'p1', { case: 'base' })
     expect(await copyConstructionToPlansWithout(admin as any, 'f', 'v', { case: 'base' }, 'p1')).toBe(1)
     const byId = Object.fromEntries(tables.forecast_plans.map((p: any) => [p.id, p]))
     expect(byId.p1).toMatchObject({ construction: { case: 'base' }, revision: 2 })
     expect(byId.p2.construction).toEqual({ case: 'base' })
     expect(byId.p3.construction).toEqual({ case: 'down' }) // its own scenario is left alone
+  })
+
+  it("refuses another vehicle's plan before writing anything", async () => {
+    const { admin, tables } = memoryAdmin({
+      forecast_plans: [{ id: 'foreign', fund_id: 'f', vehicle_id: 'other', revision: 3, construction: { case: 'theirs' }, is_primary: true }],
+    })
+    await expect(writePlanConstruction(admin as any, 'f', 'v', 'foreign', { case: 'mine' })).rejects.toThrow("not one of this entity's")
+    expect(tables.forecast_plans[0]).toMatchObject({ construction: { case: 'theirs' }, revision: 3 })
   })
 
   it('keeps exactly one primary plan, choosing the first active rolling forecast when none is marked', async () => {

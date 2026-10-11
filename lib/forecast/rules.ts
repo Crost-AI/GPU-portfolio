@@ -144,6 +144,29 @@ const num = (v: unknown, field: string): number => {
   return v
 }
 
+/**
+ * The largest amount a rule may state or produce for one month. Entries are stored as numeric(20,2)
+ * (under 1e18); this leaves room for sums across months and accounts, and is far past any real fund.
+ */
+export const MAX_AMOUNT = 1e13
+/** Most entries a rule's lists (manual months, exceptions, one-offs) may hold. */
+export const MAX_RULE_ITEMS = 1200
+
+const amount = (v: unknown, field: string): number => {
+  const n = num(v, field)
+  if (Math.abs(n) > MAX_AMOUNT) throw new RuleError(`${field} is too large (at most ${MAX_AMOUNT.toLocaleString('en-US')})`)
+  return n
+}
+
+const list = (v: unknown[], field: string): unknown[] => {
+  if (v.length > MAX_RULE_ITEMS) throw new RuleError(`${field} has too many entries (at most ${MAX_RULE_ITEMS})`)
+  return v
+}
+
+/** A computed amount, or null when growth has carried it past what can be stored. */
+const bounded = (n: number): number | null => (Number.isFinite(n) && Math.abs(n) <= MAX_AMOUNT ? roundCents(n) : null)
+const TOO_LARGE = `Amounts past ${MAX_AMOUNT.toLocaleString('en-US')} a month are left out — check the rate and the start month`
+
 const month = (v: unknown, field: string): MonthKey => {
   if (!isMonthKey(v)) throw new RuleError(`${field} must be a month (YYYY-MM)`)
   return v
@@ -171,12 +194,12 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
     case 'manual': {
       const amounts = obj(p.amounts ?? {})
       const out: Record<MonthKey, number> = {}
-      for (const [k, v] of Object.entries(amounts)) out[month(k, 'amounts key')] = roundCents(num(v, `amounts.${k}`))
+      for (const [k, v] of list(Object.entries(amounts), 'amounts') as [string, unknown][]) out[month(k, 'amounts key')] = roundCents(amount(v, `amounts.${k}`))
       return { method: m, params: { amounts: out } satisfies ManualParams }
     }
     case 'fixed': {
       const params: FixedParams = {
-        amount: roundCents(num(p.amount, 'amount')),
+        amount: roundCents(amount(p.amount, 'amount')),
         start: optMonth(p.start, 'start'),
         end: optMonth(p.end, 'end'),
       }
@@ -188,15 +211,15 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
       if (!Number.isInteger(every) || every < 1 || every > 120) throw new RuleError('everyMonths must be a whole number from 1 to 120')
       const esc = p.annualEscalation == null ? undefined : num(p.annualEscalation, 'annualEscalation')
       if (esc != null && (esc <= -1 || esc > 10)) throw new RuleError('annualEscalation is out of range')
-      const exceptions = Array.isArray(p.exceptions) ? p.exceptions.map((e, i) => month(e, `exceptions[${i}]`)) : undefined
+      const exceptions = Array.isArray(p.exceptions) ? list(p.exceptions, 'exceptions').map((e, i) => month(e, `exceptions[${i}]`)) : undefined
       const oneOffs = Array.isArray(p.oneOffs)
-        ? p.oneOffs.map((o, i) => {
+        ? list(p.oneOffs, 'oneOffs').map((o, i) => {
             const oo = obj(o)
-            return { month: month(oo.month, `oneOffs[${i}].month`), amount: roundCents(num(oo.amount, `oneOffs[${i}].amount`)) }
+            return { month: month(oo.month, `oneOffs[${i}].month`), amount: roundCents(amount(oo.amount, `oneOffs[${i}].amount`)) }
           })
         : undefined
       const params: RecurringParams = {
-        amount: roundCents(num(p.amount, 'amount')),
+        amount: roundCents(amount(p.amount, 'amount')),
         everyMonths: every,
         anchor: month(p.anchor, 'anchor'),
         start: optMonth(p.start, 'start'),
@@ -252,7 +275,7 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
       for (const [k, v] of Object.entries(prof)) {
         const n = Number(k)
         if (!Number.isInteger(n) || n < 1 || n > 12) throw new RuleError('profile keys are calendar months 1–12')
-        profile[String(n)] = roundCents(num(v, `profile.${k}`))
+        profile[String(n)] = roundCents(amount(v, `profile.${k}`))
       }
       const g = p.annualGrowth == null ? undefined : num(p.annualGrowth, 'annualGrowth')
       if (g != null && (g <= -1 || g > 10)) throw new RuleError('annualGrowth is out of range')
@@ -262,8 +285,10 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
       if (p.per !== 'month' && p.per !== 'year') throw new RuleError("per must be 'month' or 'year'")
       const rate = num(p.rate, 'rate')
       if (rate <= -1 || rate > 10) throw new RuleError('rate is out of range')
+      // Compounding monthly, 100% a month already doubles it every month.
+      if (p.per === 'month' && rate > 1) throw new RuleError('rate per month is at most 1 (100%)')
       const params: GrowthParams = {
-        base: roundCents(num(p.base, 'base')),
+        base: roundCents(amount(p.base, 'base')),
         baseMonth: month(p.baseMonth, 'baseMonth'),
         rate,
         per: p.per,
@@ -309,7 +334,9 @@ export function evaluateRule(rule: RuleInput, months: MonthKey[], history: Histo
           amount = p.amount * Math.pow(1 + (p.annualEscalation ?? 0), Math.max(0, years))
         }
         for (const o of p.oneOffs ?? []) if (o.month === m) amount += o.amount
-        if (amount !== 0) amounts.set(m, roundCents(amount))
+        const v = bounded(amount)
+        if (v == null) { if (!warnings.includes(TOO_LARGE)) warnings.push(TOO_LARGE); continue }
+        if (v !== 0) amounts.set(m, v)
       }
       const { month: anchorMonth } = parseMonth(p.anchor)
       const cadence = p.everyMonths === 1 ? 'every month' : p.everyMonths === 12 ? 'every year' : `every ${p.everyMonths} months`
@@ -364,7 +391,9 @@ export function evaluateRule(rule: RuleInput, months: MonthKey[], history: Histo
         const base = p.profile[String(parseMonth(m).month)]
         if (!base) continue
         const years = Math.max(0, Math.floor(monthDiff(p.anchor, m) / 12))
-        amounts.set(m, roundCents(base * Math.pow(1 + (p.annualGrowth ?? 0), years)))
+        const v = bounded(base * Math.pow(1 + (p.annualGrowth ?? 0), years))
+        if (v == null) { if (!warnings.includes(TOO_LARGE)) warnings.push(TOO_LARGE); continue }
+        amounts.set(m, v)
       }
       const g = p.annualGrowth ? `, +${fmt(p.annualGrowth * 100)}%/yr` : ''
       return { amounts, basis: `Repeats a 12-month profile (${fmt(Object.values(p.profile).reduce((a, b) => a + b, 0))}/yr) from ${p.anchor}${g}`, warnings }
@@ -376,7 +405,9 @@ export function evaluateRule(rule: RuleInput, months: MonthKey[], history: Histo
         const d = monthDiff(p.baseMonth, m)
         if (d < 0) continue
         const steps = p.per === 'month' ? d : Math.floor(d / 12)
-        amounts.set(m, roundCents(p.base * Math.pow(1 + p.rate, steps)))
+        const v = bounded(p.base * Math.pow(1 + p.rate, steps))
+        if (v == null) { if (!warnings.includes(TOO_LARGE)) warnings.push(TOO_LARGE); continue }
+        amounts.set(m, v)
       }
       return {
         amounts,

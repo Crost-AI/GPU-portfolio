@@ -16,6 +16,7 @@ import { roundCents } from '@/lib/accounting/ledger'
 import type { Account } from '@/lib/accounting/types'
 import type { CompiledEntry } from './compile'
 import { isMonthKey, type MonthKey } from './months'
+import { MAX_AMOUNT } from './rules'
 
 export interface ManualEntry {
   id: string
@@ -37,6 +38,20 @@ export const NO_ADJUSTMENTS: Adjustments = { entries: [], removed: [] }
 
 export class AdjustmentError extends Error {}
 
+/** Size limits: hand edits are a person's, so these are far past real use. */
+export const MAX_ADJUSTMENT_ENTRIES = 1000
+export const MAX_REMOVED = 2000
+const MAX_POSTINGS = 50
+const MAX_KEY = 500
+
+/** A real calendar date, YYYY-MM-DD — 2026-02-31 passes the pattern but is not one. */
+export function isCalendarDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !isMonthKey(s.slice(0, 7))) return false
+  const [y, m, d] = s.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d))
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d
+}
+
 /**
  * A generated entry's identity across recompiles: where it came from, what it is, when, and its
  * description (which names the deal for a construction flow). Rule and override entries have none —
@@ -54,24 +69,35 @@ export function validateAdjustments(raw: unknown, accounts: Pick<Account, 'id'>[
   const r = raw as Record<string, unknown>
   const ids = new Set(accounts.map(a => a.id))
   const entries: ManualEntry[] = []
-  for (const e of (Array.isArray(r.entries) ? r.entries : []) as any[]) {
+  const rawEntries = (Array.isArray(r.entries) ? r.entries : []) as any[]
+  if (rawEntries.length > MAX_ADJUSTMENT_ENTRIES) throw new AdjustmentError(`A plan holds at most ${MAX_ADJUSTMENT_ENTRIES} hand entries`)
+  for (const e of rawEntries) {
     const date = String(e?.date ?? '')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isMonthKey(date.slice(0, 7))) throw new AdjustmentError('Each entry needs a date (YYYY-MM-DD)')
+    if (!isCalendarDate(date)) throw new AdjustmentError('Each entry needs a real date (YYYY-MM-DD)')
     const memo = String(e?.memo ?? '').trim().slice(0, 300)
     if (!memo) throw new AdjustmentError('Each entry needs a description')
-    const postings = ((Array.isArray(e?.postings) ? e.postings : []) as any[])
+    const rawPostings = (Array.isArray(e?.postings) ? e.postings : []) as any[]
+    if (rawPostings.length > MAX_POSTINGS) throw new AdjustmentError(`"${memo}" has more than ${MAX_POSTINGS} lines`)
+    const postings = rawPostings
       .map(p => ({ accountId: String(p?.accountId ?? ''), amount: roundCents(Number(p?.amount)) }))
       .filter(p => p.amount !== 0)
     if (postings.length < 2) throw new AdjustmentError(`"${memo}" needs at least two lines`)
     for (const p of postings) {
       if (!ids.has(p.accountId)) throw new AdjustmentError(`"${memo}" names an account that is not in this chart`)
       if (!Number.isFinite(p.amount)) throw new AdjustmentError(`"${memo}" has an amount that is not a number`)
+      if (Math.abs(p.amount) > MAX_AMOUNT) throw new AdjustmentError(`"${memo}" has an amount that is too large`)
     }
     const off = roundCents(postings.reduce((s, p) => s + p.amount, 0))
     if (off !== 0) throw new AdjustmentError(`"${memo}" does not balance — debits and credits differ by ${off.toFixed(2)}`)
-    entries.push({ id: String(e?.id || cryptoId()), date, memo, postings, replaces: e?.replaces ? String(e.replaces) : null })
+    const id = String(e?.id || cryptoId())
+    const replaces = e?.replaces ? String(e.replaces) : null
+    if (id.length > 100 || (replaces && replaces.length > MAX_KEY)) throw new AdjustmentError(`"${memo}" has an id or reference that is too long`)
+    entries.push({ id, date, memo, postings, replaces })
   }
-  const removed = [...new Set(((Array.isArray(r.removed) ? r.removed : []) as unknown[]).map(String).filter(Boolean))]
+  const rawRemoved = (Array.isArray(r.removed) ? r.removed : []) as unknown[]
+  if (rawRemoved.length > MAX_REMOVED) throw new AdjustmentError(`A plan removes at most ${MAX_REMOVED} entries`)
+  const removed = [...new Set(rawRemoved.map(String).filter(Boolean))]
+  if (removed.some(k => k.length > MAX_KEY)) throw new AdjustmentError('A removed entry reference is too long')
   return { entries, removed }
 }
 

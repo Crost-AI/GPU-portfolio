@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getGoogleCredentials } from '@/lib/google/credentials'
 import { assertAdminAccess } from '@/lib/api-helpers'
+import { safeNextPath } from '@/lib/safe-redirect'
 import {
   createGoogleOAuthTransaction,
   GOOGLE_OAUTH_STATE_COOKIE,
@@ -41,10 +42,9 @@ export async function GET(req: NextRequest) {
 
   // Keep navigation state out of the authorization URL. The callback recovers it from the
   // encrypted, HttpOnly transaction cookie after validating the one-time nonce and current user.
-  const rawReturnTo = req.nextUrl.searchParams.get('return_to') ?? ''
-  const returnTo = rawReturnTo.startsWith('/') && !rawReturnTo.startsWith('//')
-    ? rawReturnTo.slice(0, 200)
-    : '/settings'
+  // safeNextPath, not startsWith('/') && !startsWith('//'): `/\evil.example` passes that pair
+  // and still leaves the origin once the callback resolves it with new URL().
+  const returnTo = safeNextPath((req.nextUrl.searchParams.get('return_to') ?? '').slice(0, 200)) ?? '/settings'
   const encryptionKey = process.env.ENCRYPTION_KEY
   if (!encryptionKey) {
     return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runFundReminders, type FundRunResult } from '@/lib/reminders/run'
 import { sweepOrphanedUploads } from '@/lib/lp-onboarding-sweep'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 /**
  * Daily operational reminders (compliance filings, the quarterly data request, data-request
@@ -12,13 +13,8 @@ import { sweepOrphanedUploads } from '@/lib/lp-onboarding-sweep'
  */
 export async function GET(req: NextRequest) {
   // Fail-closed: missing CRON_SECRET refuses traffic rather than opening the loop to anyone.
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  }
-  if (req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const admin = createAdminClient()
   const { data: funds } = await (admin as any)

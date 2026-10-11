@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runDealResearch } from '@/lib/deals/research'
 import { dbError } from '@/lib/api-error'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 /**
  * Drains the deal-research queue: inbound deals that cleared the fund's interest
@@ -25,13 +26,8 @@ const BATCH_SIZE = 5
 const TIME_BUDGET_MS = 240_000
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  }
-  if (req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const started = Date.now()
   const admin = createAdminClient()

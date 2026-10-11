@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { MetricForm } from '@/components/metric-form'
 import type { Metric } from '@/lib/types/database'
+import { csvField } from '@/lib/csv/escape'
 import { MetricChart } from './metric-chart'
 import { AddDataPointDialog } from './add-data-point-dialog'
 import { CompanyDefaultMetricsDialog, type DefaultMetricStatus } from './default-metrics-dialog'
@@ -114,7 +115,7 @@ export function CompanyCharts({ companyId, companyName, metrics }: Props) {
       }
     }
 
-    const csv = rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
+    const csv = rows.map((r) => r.map((c) => csvField(c, { alwaysQuote: true })).join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

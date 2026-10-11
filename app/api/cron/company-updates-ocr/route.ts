@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runOcrBatch } from '@/lib/company-updates/ocr'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 export const maxDuration = 300
 
@@ -10,11 +11,8 @@ export const maxDuration = 300
  * Same fail-closed CRON_SECRET pattern as the other workers.
  */
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  if (req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const admin = createAdminClient()
   try {

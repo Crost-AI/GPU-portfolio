@@ -5,6 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { createFundAIProvider } from '@/lib/ai'
 import { logAIUsage } from '@/lib/ai/usage'
 import { rateLimit } from '@/lib/rate-limit'
+import { lockedMessage, reportShareCount } from '@/lib/lps/shared-lock'
 
 // Max 500KB of pasted data
 const MAX_INPUT_SIZE = 500_000
@@ -80,6 +81,13 @@ export async function POST(req: NextRequest) {
 
   if (!snapshotCheck) {
     return NextResponse.json({ error: 'Snapshot not found' }, { status: 404 })
+  }
+
+  // A report shared with investors is locked: no position may be added to or changed in it
+  // (lp_investments_locked_when_shared). Refuse up front, before spending an AI parse on it.
+  const shares = await reportShareCount(admin, fundId, snapshotId)
+  if (shares > 0) {
+    return NextResponse.json({ error: lockedMessage(shares, 'every position in it') }, { status: 409 })
   }
 
   // Get AI provider
@@ -394,7 +402,10 @@ ${rawData}`,
         })
 
       if (insErr) {
-        errors.push(`${rowLabel}: failed to create investment`)
+        // Shared between the check above and this row (lp_investments_locked_when_shared).
+        errors.push(/shared with investors/.test(insErr.message ?? '')
+          ? `${rowLabel}: this report is shared with investors and locked — unshare it, or import into a new report`
+          : `${rowLabel}: failed to create investment`)
       } else {
         created++
       }

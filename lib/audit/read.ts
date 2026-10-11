@@ -4,6 +4,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import { hasAccess } from '@/lib/access/effective'
 import { fetchAllRows } from '@/lib/accounting/load'
+import { getWriteAction } from '@/lib/pending-actions/registry'
+import { csvField } from '@/lib/csv/escape'
 
 export interface AuditRow {
   id: string
@@ -22,13 +24,27 @@ export interface AuditRow {
  * Which events a caller may read. The route is gated on `accounting`; events about partners'
  * positions, commitments, registers and reports carry partner figures (`lp_capital`), and K-1
  * events the carry too (`gp_economics`) — the same straddle the statements route gates in-handler.
+ *
+ * Two more straddles:
+ *   - `tax.*` events are the tax module's (`accounting` + feature `tax_reporting`, off by default).
+ *   - `pending_action.*` events carry the approved action's full `args`, and an action may belong
+ *     to ANY domain (a portfolio metric, an investment, a forecast). They follow that action's own
+ *     gate — `getWriteAction(actionType).domain` + `accessFeature` — and an action type the
+ *     registry no longer knows is hidden, since nothing says who may see its args.
  */
 export function visibleTo(access: AccessContext) {
   const partners = hasAccess(access, 'lp_capital', 'read')
   const carry = hasAccess(access, 'gp_economics', 'read')
-  return (action: string) => {
+  const tax = hasAccess(access, 'accounting', 'read', 'tax_reporting')
+  return (action: string, details?: Record<string, unknown> | null) => {
     if (action.startsWith('k1.')) return partners && carry
     if (/^(commitment|lp_position|snapshot|lp_statement|capital_call|distribution)\./.test(action)) return partners
+    if (action.startsWith('tax.')) return tax
+    if (action.startsWith('pending_action.')) {
+      const type = details?.actionType
+      const wa = typeof type === 'string' ? getWriteAction(type) : undefined
+      return !!wa && hasAccess(access, wa.domain, 'read', wa.accessFeature)
+    }
     return true
   }
 }
@@ -37,7 +53,7 @@ export async function loadAuditTrail(
   admin: SupabaseClient,
   fundId: string,
   opts: { vehicleId?: string | null; from?: string | null; to?: string | null; limit?: number },
-  allowed: (action: string) => boolean,
+  allowed: (action: string, details?: Record<string, unknown> | null, vehicleId?: string | null) => boolean,
 ): Promise<AuditRow[]> {
   const rows = await fetchAllRows<any>((f, t) => {
     let q = (admin as any).from('accounting_audit_events').select('*').eq('fund_id', fundId)
@@ -46,7 +62,7 @@ export async function loadAuditTrail(
     if (opts.to) q = q.lte('created_at', `${opts.to}T23:59:59.999Z`)
     return q.order('created_at', { ascending: false }).range(f, t)
   })
-  const kept = rows.filter(r => allowed(r.action)).slice(0, opts.limit ?? Infinity)
+  const kept = rows.filter(r => allowed(r.action, r.details ?? null, r.vehicle_id ?? null)).slice(0, opts.limit ?? Infinity)
   // Names, not ids, for the people — the trail is read by an auditor, not a database.
   const ids = Array.from(new Set(kept.map(r => r.actor_id).filter(Boolean)))
   const names = new Map<string, string>()
@@ -65,10 +81,8 @@ export async function loadAuditTrail(
   }))
 }
 
-const csvCell = (v: unknown) => {
-  const s = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v)
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
+// Through the shared writer: an action, reason or name starting with = + - @ is text in Excel, not a formula.
+const csvCell = (v: unknown) => csvField(v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v))
 
 export function auditCsv(rows: AuditRow[], vehicleNames: Map<string, string>): string {
   const header = ['When (UTC)', 'Entity', 'Who', 'Action', 'Subject', 'Subject id', 'Reason', 'Details']

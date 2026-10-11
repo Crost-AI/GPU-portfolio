@@ -19,4 +19,12 @@ describe('toCsv', () => {
   it('writes null and undefined as empty cells and ends with a newline', () => {
     expect(toCsv([['a', null, undefined, 'b'], [1, 2]])).toBe('a,,,b\n1.00,2.00\n')
   })
+  it('neutralises formula-leading strings but not typed or literal negative numbers', () => {
+    expect(csvCell('=HYPERLINK("http://x")')).toBe(`"'=HYPERLINK(""http://x"")"`)
+    expect(csvCell('@SUM(A1)')).toBe(`'@SUM(A1)`)
+    expect(csvCell('-cmd|x')).toBe(`'-cmd|x`)
+    expect(csvCell(-12.5)).toBe('-12.50')
+    expect(csvCell('-12.50')).toBe('-12.50')
+    expect(csvCell('-41.67%')).toBe('-41.67%')
+  })
 })

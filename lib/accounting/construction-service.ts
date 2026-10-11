@@ -629,7 +629,7 @@ export async function updateConstructionAssumptions(
   const target = input.planId ?? (await primaryPlanRow(ctx.admin, ctx.fundId, vehicleId))?.id ?? null
   if (target) {
     const stored = assumptions as unknown as Record<string, unknown>
-    await writePlanConstruction(ctx.admin, ctx.fundId, target, stored)
+    await writePlanConstruction(ctx.admin, ctx.fundId, vehicleId, target, stored)
     if (!input.planId) await copyConstructionToPlansWithout(ctx.admin, ctx.fundId, vehicleId, stored, target)
     const { plan } = await loadStoredAssumptions(ctx, vehicleId, vintageYear, target)
     return { ...constructionResponse({ vehicle, vehicleId, vintageYear, actuals, assumptions }), plan: planSummary(plan) }
