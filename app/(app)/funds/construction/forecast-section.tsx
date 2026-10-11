@@ -11,7 +11,7 @@ import type { ConstructionActuals, ConstructionAssumptions, ConstructionResult, 
 import { constructionBaseline, applyLpWaterfall, forecastSchedule, type ForecastBaseline } from '@/lib/accounting/construction-forecast'
 import { simulateFund } from '@/lib/accounting/construction-simulation'
 import type { FundTimeseriesPoint } from '@/lib/accounting/fund-timeseries'
-import { JCurveChart, CashFlowChart, OutcomeHistogram, type ActualCashFlow, type ActualPoint } from './forecast-charts'
+import { JCurveChart, CashFlowChart, OutcomeHistogram, ExitOutcomesChart, type ActualCashFlow, type ActualPoint } from './forecast-charts'
 
 type Fmt = (v: number | null) => string
 
@@ -155,7 +155,6 @@ export function ForecastSection({ model, actuals, a, setA, vehicle, fmt, fmtFull
   const setPacing = (patch: Partial<PacingAssumptions>) => setA(prev => ({ ...prev, pacing: { ...prev.pacing, ...patch } }))
   const setSim = (patch: Partial<SimulationAssumptions>) => setA(prev => ({ ...prev, simulation: { ...prev.simulation, ...patch } }))
 
-  const pctOf = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`)
   // The page's headline charts: cash flows by year (with the simulated range of distributions) and
   // the multiples by year (with the simulated TVPI range). They sit above the tabs, so a change on
   // any tab shows in them at once.
@@ -186,35 +185,7 @@ export function ForecastSection({ model, actuals, a, setA, vehicle, fmt, fmtFull
       </DialogContent>
     </Dialog>
   )
-  const outcomesTable = simulation ? (
-                <div className="rounded-card border p-4">
-                  <p className="mb-3 text-sm font-medium">{carryConfigured ? 'LP net outcomes' : 'Gross fund outcomes'} at fund exit</p>
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b bg-muted/50">
-                      {['', 'P10', 'P25', 'P50', 'P75', 'P90'].map((h, i) => <th key={h || 'k'} className={cn('px-3 py-2 font-medium', i === 0 ? 'text-left' : 'text-right')}>{h}</th>)}
-                    </tr></thead>
-                    <tbody>
-                      {([
-                        [carryConfigured ? 'Net multiple' : 'Gross multiple', simulation.final.dpi, multiple],
-                      ] as const).map(([label, p, f]) => (
-                        <tr key={label} className="border-b last:border-b-0">
-                          <td className="px-3 py-1.5">{label}</td>
-                          {(['p10', 'p25', 'p50', 'p75', 'p90'] as const).map(k => (
-                            <td key={k} className="px-3 py-1.5 text-right tabular-nums">{p ? (f as (v: number | null) => string)(p[k]) : '—'}</td>
-                          ))}
-                        </tr>
-                      ))}
-                      {simulation.final.netIrr && (
-                        <tr className="border-b last:border-b-0">
-                          <td className="px-3 py-1.5">Net IRR</td>
-                          {(['p10', 'p25', 'p50', 'p75', 'p90'] as const).map(k => <td key={k} className="px-3 py-1.5 text-right tabular-nums">{pctOf(simulation.final.netIrr?.[k])}</td>)}
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-  ) : null
-  const histogram = outcomesSlot && simulation ? createPortal(<div className="space-y-4"><OutcomeHistogram simulation={simulation} target={a.simulation.targetMultiple} multiple={multiple} />{outcomesTable}</div>, outcomesSlot) : null
+  const histogram = outcomesSlot && simulation ? createPortal(<div className="space-y-4"><OutcomeHistogram simulation={simulation} target={a.simulation.targetMultiple} multiple={multiple} /><ExitOutcomesChart simulation={simulation} netOfCarry={carryConfigured} target={a.simulation.targetMultiple} multiple={multiple} /></div>, outcomesSlot) : null
   const portal = <>{chartsSlot && charts ? createPortal(charts, chartsSlot) : null}{histogram}</>
   // The Forecast page draws these elsewhere: the charts above, the outcomes on its Charts tab, the
   // assumptions from its settings menu. The deals themselves are edited on Investments.

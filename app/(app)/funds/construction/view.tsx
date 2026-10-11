@@ -321,7 +321,7 @@ export function ConstructionView({ vehicle, planId: planParam, readOnly, onSaved
         </section>}
 
         {/* Committed capital usage lives on the Forecast page's Charts tab. */}
-        {usageSlot && createPortal(<CapitalUsageChart model={model} fmt={fmt} fmtFull={fmtFull} />, usageSlot)}
+        {usageSlot && createPortal(<CapitalUsageChart model={model} calledKnown={actuals.capitalAvailable === true || (actuals.calledCapital ?? 0) > 0} fmt={fmt} fmtFull={fmtFull} />, usageSlot)}
         {<ForecastSection outcomesSlot={outcomesSlot} assumptionsOpen={assumptionsOpen} onAssumptionsClose={onAssumptionsClose} headline={headline} chartsSlot={chartsSlot} model={model} actuals={actuals} a={modeledA} setA={setA} vehicle={vehicle} fmt={fmt} fmtFull={fmtFull} multiple={multiple} planFlows={planFlows} />}
         <div className="flex min-h-5 justify-end"><SaveIndicator state={saveState} error={saveError} /></div>
         {(editingPosition || editingStage) && <ForecastEditorDialog

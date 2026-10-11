@@ -10,13 +10,11 @@ const nextConfig = {
   // Both were `experimental.*` on Next 14 and are top-level on 16. `serverComponentsExternalPackages`
   // was also renamed to `serverExternalPackages`.
   //
-  // isomorphic-dompurify (lib/sanitize.ts) is here so that its jsdom is resolved by Node from
-  // node_modules. Left to Turbopack, the wrapper was bundled and jsdom — a transitive dependency
-  // Next externalises on its own — was required through a hashed alias (`jsdom-<hash>`) that does
-  // not resolve on Vercel: every route importing lib/sanitize (the letter routes, and every PDF
-  // route through lib/lp-report-pdf.ts) failed at module load with an empty 500, while working
-  // under `next start`.
-  serverExternalPackages: ['@sparticuz/chromium', 'puppeteer-core', 'unpdf', 'tesseract.js', '@napi-rs/canvas', 'isomorphic-dompurify'],
+  // isomorphic-dompurify is NOT here any more because it is gone: its jsdom would not load in the
+  // deployed functions, externalised or not, and took every route importing lib/sanitize.ts (all
+  // the PDF routes, through lib/lp-report-pdf.ts) down with an empty 500. lib/sanitize.ts uses
+  // sanitize-html, which needs no DOM. Do not bring a jsdom-backed package back into a server path.
+  serverExternalPackages: ['@sparticuz/chromium', 'puppeteer-core', 'unpdf', 'tesseract.js', '@napi-rs/canvas'],
   // Include the memo-agent default schema files in the serverless function
   // bundle. Without this, `fs.readFile` calls inside `ensureDefaults` silently
   // return null in production (the YAML/MD files aren't traced), so a fresh

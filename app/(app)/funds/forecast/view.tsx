@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { addMonths, presetRange, type Interval, type MonthKey, type RangePreset } from '@/lib/forecast/months'
 import type { PlanDetail, PlanReturnsResponse, SeriesResult, VarianceResponse } from '@/lib/forecast/service'
 import { CashChart, PnlChart } from './charts'
+import { cashFlowForecastState } from './chart-visibility'
 import { FeeLinksDialog } from './fee-links'
 import { RuleDialog, type RuleSubmit } from './rule-dialog'
 import { MonthRangePicker, MoreMenu, NewPlanMenu, type RangeChoice } from './toolbar'
@@ -436,6 +437,10 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
     return () => { cancelled = true }
   }, [vehicle, returnsKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Whether there is a cash-flow forecast for the Charts tab's time-series charts to draw.
+  const forecastState = cashFlowForecastState(plans, planId, detail)
+  const showForecastCharts = !hasPortfolio || forecastState === 'present'
+
   const setTab = useCallback((next: ForecastTab) => {
     setTabState(next)
     try {
@@ -655,8 +660,14 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
           slots (cash flows and multiples by year; committed capital usage; the outcome histogram);
           they stay mounted on the other tabs, just hidden. */}
       <div className={cn('mb-6 space-y-6', tab !== 'charts' && 'hidden')}>
-        {hasPortfolio && <div ref={setChartsSlot} className="empty:hidden" />}
-        {series && (
+        {/* Without a cash-flow forecast, only the charts that stand on the portfolio and the calls to
+            date: the cash-flow, multiples, income and cash charts would plot actuals against an
+            empty future (./chart-visibility.ts). A management company has only those, so keeps them. */}
+        {hasPortfolio && forecastState === 'none' && (
+          <p className="text-sm text-muted-foreground">More charts appear here once a cash flow forecast is created.</p>
+        )}
+        {showForecastCharts && hasPortfolio && <div ref={setChartsSlot} className="empty:hidden" />}
+        {showForecastCharts && series && (
           <div className="grid gap-4 lg:grid-cols-2">
             <PnlChart series={series} fmt={short} />
             <CashChart series={series} fmt={short} />

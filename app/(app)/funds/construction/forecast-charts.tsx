@@ -3,7 +3,7 @@
 import { useMemo } from 'react'
 import {
   ResponsiveContainer, ComposedChart, BarChart, Bar, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ReferenceLine, Cell,
+  ReferenceLine, Cell, LabelList,
 } from 'recharts'
 import { ChartCard, EmptyPlot, AXIS, tooltipStyle, HUE, INVEST_NEW, PROCEEDS_HUE } from '@/components/fund-chart-kit'
 import type { ForecastSchedule } from '@/lib/accounting/construction-forecast'
@@ -370,6 +370,80 @@ export function OutcomeHistogram({ simulation, target, multiple }: { simulation:
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+        </>
+      )}
+    </ChartCard>
+  )
+}
+
+// ── Outcomes at fund exit ────────────────────────────────────────────────────
+//
+// The simulation's final multiple at five percentiles, as columns — emphasis form, the median in
+// the multiples hue and the four others in de-emphasis grey, so the eye lands on the middle case and
+// reads the rest as its spread (the Range of return outcomes chart's vocabulary). ONE axis: the net
+// IRR is a different measure, so it rides in the tooltip and the line under the plot, not on a
+// second scale. Direct labels on every column — five is few enough, and they are the figures the
+// table used to give.
+
+const OUTCOME_PERCENTILES = [
+  { key: 'p10', label: '10th' },
+  { key: 'p25', label: '25th' },
+  { key: 'p50', label: 'Median' },
+  { key: 'p75', label: '75th' },
+  { key: 'p90', label: '90th' },
+] as const
+const SPREAD_FILL = 'hsl(var(--muted-foreground) / 0.35)'
+
+export function ExitOutcomesChart({ simulation, netOfCarry, target, multiple }: { simulation: SimulationResult | null; netOfCarry: boolean; target: number; multiple: (v: number | null) => string }) {
+  const data = useMemo(() => simulation ? OUTCOME_PERCENTILES.map(p => ({
+    label: p.label,
+    value: simulation.final.dpi[p.key],
+    irr: simulation.final.netIrr?.[p.key] ?? null,
+    isMedian: p.key === 'p50',
+  })) : [], [simulation])
+  const pct = (v: number | null) => (v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(1)}%`)
+  const measure = netOfCarry ? 'Net multiple' : 'Gross multiple'
+  const yMax = Math.max(1, Math.ceil(Math.max(target, ...data.map(d => d.value)) * 1.15 * 2) / 2)
+
+  return (
+    <ChartCard title={`${netOfCarry ? 'LP net' : 'Gross fund'} outcomes at fund exit`}>
+      {!simulation || !simulation.stated ? (
+        <EmptyPlot label="State a loss rate or a dispersion to run the simulation." />
+      ) : (
+        <>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={data} margin={{ top: 20, right: 8, bottom: 0, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
+              <XAxis dataKey="label" tick={AXIS} tickLine={false} axisLine={false} className="text-muted-foreground" />
+              <YAxis domain={[0, yMax]} tick={AXIS} tickLine={false} axisLine={false} width={40} tickFormatter={(v: number) => `${v.toFixed(1)}x`} className="text-muted-foreground" />
+              <Tooltip
+                cursor={{ fill: 'hsl(var(--muted) / 0.4)' }}
+                contentStyle={tooltipStyle}
+                labelFormatter={l => (l === 'Median' ? 'Median run' : `${l} percentile`)}
+                formatter={(v: any, _n: any, item: any) => [
+                  `${multiple(v as number)}${item?.payload?.irr != null ? ` · ${pct(item.payload.irr)} net IRR` : ''}`,
+                  measure,
+                ]}
+              />
+              <ReferenceLine y={1} stroke="hsl(var(--border))" />
+              {target > 0 && <ReferenceLine y={target} stroke={HUE.muted} strokeDasharray="4 4" label={{ value: `Target ${multiple(target)}`, position: 'insideTopLeft', fontSize: 11, fill: HUE.muted }} />}
+              <Bar dataKey="value" name={measure} maxBarSize={32} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                {data.map(d => <Cell key={d.label} fill={d.isMedian ? TVPI_HUE : SPREAD_FILL} />)}
+                <LabelList
+                  dataKey="value"
+                  content={(props: any) => (
+                    <text x={props.x + props.width / 2} y={props.y - 6} textAnchor="middle" fontSize={11} fill={data[props.index]?.isMedian ? HUE.ink : HUE.muted} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {multiple(props.value as number)}
+                    </text>
+                  )}
+                />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {measure} across {simulation.runs.toLocaleString()} simulated runs, by percentile.
+            {simulation.final.netIrr && <> Net IRR: <span className="tabular-nums">{pct(simulation.final.netIrr.p10)}</span> (10th) · <span className="tabular-nums">{pct(simulation.final.netIrr.p50)}</span> (median) · <span className="tabular-nums">{pct(simulation.final.netIrr.p90)}</span> (90th).</>}
+          </p>
         </>
       )}
     </ChartCard>
