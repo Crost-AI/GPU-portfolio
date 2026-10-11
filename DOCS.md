@@ -123,11 +123,15 @@ By default the first signup is the admin, with access to the fund-level and tech
 
 ### Step 7: Complete the onboarding wizard
 
-After confirming your email and signing in, the app walks you through:
+After confirming your email and signing in, the app walks you through a short wizard. Only the fund name is required; everything else can be skipped and finished later in Settings.
 
-1. **Fund name** — this appears in the app header
-2. **AI API key** — enter at least one: an Anthropic key from [console.anthropic.com](https://console.anthropic.com), an OpenAI key from [platform.openai.com](https://platform.openai.com), or an OpenRouter key from [openrouter.ai](https://openrouter.ai). You can configure multiple providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
-3. **Inbound email address** — see Step 8
+1. **Your fund** — the fund name (it appears in the app header) and, optionally, an AI provider key: **Claude** (Anthropic, from [console.anthropic.com](https://console.anthropic.com)), **OpenAI** (from [platform.openai.com](https://platform.openai.com)) or **OpenRouter** (from [openrouter.ai](https://openrouter.ai)). Choose *Skip — add a key later* to go on without one; the Analyst, imports and email parsing need a key, so add one in Settings before using them. You can configure several providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
+2. **Products** — what you will run here (portfolio tracking, fund operations, LP reporting, and so on), and the first fund entity. Each product can be switched on or off later from its own section in Settings.
+3. **Inbound email** — only when portfolio tracking is on; skippable. See Step 8.
+4. **Senders** — only when portfolio tracking is on; skippable. See Step 9.
+5. **Google Drive** — optional archiving; skippable. See *Optional: Google Drive* below.
+
+Then continue with [Setting up a new fund](#setting-up-a-new-fund) for the entities, partners, investments and books.
 
 ### Step 8: Set up inbound email
 
@@ -143,11 +147,11 @@ This is how portfolio company reports get into the system. Choose one:
 **Mailgun:**
 1. Create a [Mailgun](https://www.mailgun.com) account and add a domain for receiving
 2. Set up an inbound route to forward to: `https://your-app.com/api/inbound-email/mailgun`
-3. In the app's Settings page, select Mailgun as your inbound provider and enter your Mailgun API key and signing key
+3. In the onboarding wizard or Settings → Inbound email, select Mailgun as your inbound provider and enter your **Mailgun inbound domain** (e.g. `mg.yourdomain.com`) and, optionally, the **webhook signing key** (Mailgun dashboard → Sending → Webhooks), which is used to verify that inbound requests really came from Mailgun
 
 You can also edit the app to use other inbound email parsing services.
 
-### Step 8: Add authorized senders
+### Step 9: Add authorized senders
 
 In **Settings > Authorized Senders**, add the email addresses that your portfolio companies send reports from. Only emails from these addresses will be processed — everything else is silently dropped.
 
@@ -172,6 +176,23 @@ You can send your colleagues at your fund an email directing them to the signup 
 
 > By default the app assumes all colleagues use the same email domain. If this is not the case, contact Taylor and we can change this restriction.
 
+### Setting up a new fund
+
+Once the wizard is done, this is the minimum path from an empty deployment to a fund whose capital accounts, statements and forecast all work. The **Getting started** page (`/getting-started`, also linked from Start) tracks the same steps against your own data and links each one; on a new fund, Start suggests setup questions for the Analyst instead of portfolio ones.
+
+1. **Turn on the products you need** — each product has its own section in Settings with a switch to turn it on (*Fund Operations* for the entities, books and LP capital; *LP reporting* for the portal). The wizard's Products step sets the same switches.
+2. **Add the entity** — the fund, SPV or vehicle, from **Entities** (*Add vehicle*) or Start. Its chart of accounts is created with it. Skip this if the wizard already created it.
+3. **Add the LPs and their commitments** — one at a time under the entity's **Admin** page (*Add LP*), or paste a statement into **LPs → Capital accounts** (download [`lp-import.csv`](public/templates/lp-import.csv) from the import box: Investor, Entity, Vehicle, Commitment, Called, Distributions, NAV). Partners imported this way are added to the entity's accounting with their commitment, so the capital accounts, opening balances and allocation see them.
+4. **Load the investments** — add them on **Investments**, or paste a schedule into **Import → Paste Investment Data** (template: [`investments-import.csv`](public/templates/investments-import.csv) — Company, Date, Transaction type, Round, Cost, Shares, Share price, Post-money, Proceeds, Vehicle, Security type). Then put them on the ledger from the entity's status page.
+5. **Open the books** — whichever matches where the fund is coming from:
+   - **Starting fresh:** record capital calls and distributions as they happen on the entity's **Capital accounts** page. To record a call that has already gone out, paste its register (template: [`capital-call-register.csv`](public/templates/capital-call-register.csv) — Partner, Called, Paid, Paid on).
+   - **Moving from a spreadsheet or administrator:** enter each partner's capital as of a cutover date on **Opening balances**.
+   - **Moving from QuickBooks or a bank feed:** **Migrate from QuickBooks** (the entity's **Migrate** page) imports the journal; **Bank** imports the transaction history.
+6. **Close the first period** — **Periods**: review, reconcile the bank, accrue carry and lock the month.
+7. **Make the first forecast** — **Forecast** (turn it on under Settings → Feature visibility) builds a budget and rolling forecast on top of the posted books.
+
+The templates are also served by the app at `/templates/<name>.csv` for signed-in users.
+
 ### Verify your setup
 
 A built-in setup checklist page helps you confirm your deployment is correctly configured. To enable it, add this environment variable:
@@ -180,7 +201,7 @@ A built-in setup checklist page helps you confirm your deployment is correctly c
 ENABLE_SETUP_PAGE=true
 ```
 
-Then visit `/setup` (no login required). The page checks infrastructure (env vars, database connectivity, core tables), authentication (at least one user), fund configuration, AI provider keys, email setup, file storage, and authorized senders. Each check shows a green, red, or gray icon indicating whether it passed, failed (required), or is missing (optional). Help links point you to the relevant settings or docs.
+Then visit `/setup`. The page itself loads without a session, but its results come from `/api/setup`, which requires you to be **signed in** once the Supabase variables are set — sign in first, or the checks will not load. (Before Supabase is configured it answers anonymously, with only which environment variables are present.) The page checks infrastructure (env vars, database connectivity, core tables), authentication (at least one user), fund configuration, AI provider keys, email setup, file storage, and authorized senders. Each check shows a green, red, or gray icon indicating whether it passed, failed (required), or is missing (optional). Help links point you to the relevant settings or docs.
 
 Once everything looks good, set `ENABLE_SETUP_PAGE=false` or remove the variable entirely to disable the page. When disabled, `/setup` behaves like any other protected route and redirects to `/auth`.
 

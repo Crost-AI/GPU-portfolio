@@ -618,6 +618,7 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
             { label: 'Return assumptions', onSelect: () => setReturnAssumptionsOpen(true), hidden: !hasPortfolio || !!versionId },
             { label: 'Calls and distributions', onSelect: () => setCapitalOpen(true), hidden: !detail || !!versionId || detail.vehicleKind === 'manco', disabled: busy },
             { label: 'Entity links', onSelect: () => setLinking(true) },
+            { label: 'Download Excel', href: `${exportHref}&format=xlsx` },
             { label: 'Download CSV', href: exportHref },
           ]} />
           <NewPlanMenu onManual={() => setCreating(true)} onDraftWithAi={hasAIKey ? draftWithAi : undefined} onCopy={detail && !versionId ? copyAsScenario : undefined} onSave={detail && !versionId ? () => setPublishing(true) : undefined} />
@@ -1131,7 +1132,7 @@ function CreatePlanDialog({ open, onClose, onCreated, plans }: {
             <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">Horizon</span>
               <select className={cn(selectCls, 'w-full')} value={horizon} onChange={e => setHorizon(e.target.value)}>
-                {[12, 18, 24, 36].map(h => <option key={h} value={h}>{h} months</option>)}
+                {[12, 18, 24, 36, 60, 120, 180, 240].map(h => <option key={h} value={h}>{h < 60 ? `${h} months` : `${h / 12} years`}</option>)}
               </select>
             </label>
           )}

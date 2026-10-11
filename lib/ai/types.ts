@@ -159,7 +159,7 @@ export interface AIProvider {
   /**
    * Run an agentic tool-use loop. Optional: only providers that support tool
    * calling implement it. Callers MUST check `supportsToolLoop` and fall back to
-   * a plain createMessage — the fund's provider may be OpenAI/Gemini/Ollama.
+   * a plain createMessage — the fund's provider may be OpenAI or OpenRouter.
    */
   readonly supportsToolLoop?: boolean
   createToolLoop?(params: CreateToolLoopParams): Promise<ToolLoopResult>

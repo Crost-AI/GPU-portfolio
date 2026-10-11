@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { kickWorker } from '@/lib/memo-agent/kick'
 import { dbError } from '@/lib/api-error'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 /**
  * Affinity sync scheduler. Runs hourly and enqueues an `affinity_sync` job for
@@ -22,13 +23,8 @@ export const maxDuration = 60
 const MIN_SYNC_INTERVAL_MS = 60 * 60 * 1000  // 1 hour
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  }
-  if (req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const admin = createAdminClient()
   const dueBefore = new Date(Date.now() - MIN_SYNC_INTERVAL_MS).toISOString()

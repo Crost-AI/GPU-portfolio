@@ -91,3 +91,20 @@ describe('investments and exits are entered on the Investments tab', () => {
     expect(dealEditRefusal(before, none, accounts)).toBeNull()
   })
 })
+
+describe('hand entries are checked for real dates and sizes', () => {
+  const accounts = [{ id: 'cash' }, { id: 'exp' }]
+  const entry = (over: Record<string, unknown> = {}) => ({ date: '2027-01-15', memo: 'x', postings: [{ accountId: 'exp', amount: 5 }, { accountId: 'cash', amount: -5 }], ...over })
+
+  it('refuses a date that is not on the calendar', () => {
+    expect(() => validateAdjustments({ entries: [entry({ date: '2026-02-31' })] }, accounts)).toThrow(AdjustmentError)
+    expect(() => validateAdjustments({ entries: [entry({ date: '2028-02-29' })] }, accounts)).not.toThrow()
+  })
+
+  it('refuses unbounded lists and oversized amounts', () => {
+    expect(() => validateAdjustments({ entries: Array.from({ length: 1001 }, () => entry()) }, accounts)).toThrow(/at most/)
+    expect(() => validateAdjustments({ removed: Array.from({ length: 2001 }, (_, i) => `k${i}`) }, accounts)).toThrow(/at most/)
+    expect(() => validateAdjustments({ removed: ['x'.repeat(501)] }, accounts)).toThrow(/too long/)
+    expect(() => validateAdjustments({ entries: [entry({ postings: [{ accountId: 'exp', amount: 1e15 }, { accountId: 'cash', amount: -1e15 }] })] }, accounts)).toThrow(/too large/)
+  })
+})

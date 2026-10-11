@@ -11,6 +11,7 @@ import { runTranscribeJob, isAwaitingCallback } from '@/lib/memo-agent/jobs/tran
 import { runChecklistAssessmentJob } from '@/lib/memo-agent/jobs/checklist-assessment-job'
 import { runAffinitySyncJob } from '@/lib/memo-agent/jobs/affinity-sync-job'
 import { kickWorker } from '@/lib/memo-agent/kick'
+import { cronAuthDenial } from '@/lib/security/cron-auth'
 
 /**
  * Memo Agent worker. Triggered by Vercel cron every minute (per
@@ -27,14 +28,8 @@ export async function GET(req: NextRequest) {
   // The prior "if cronSecret then check" pattern silently opened the worker
   // to anonymous callers in any environment where the env var wasn't set
   // (PR previews, staging, misconfigured prod).
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 })
-  }
-  const auth = req.headers.get('authorization')
-  if (auth !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const denied = cronAuthDenial(req)
+  if (denied) return denied
 
   const admin = createAdminClient()
 

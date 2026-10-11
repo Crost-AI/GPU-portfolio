@@ -29,6 +29,8 @@
  * read from the `x-nonce` request header.
  */
 
+import { imgSources } from './csp-enforcing.mjs'
+
 export const CSP_REPORT_PATH = '/api/csp-report'
 export const NONCE_HEADER = 'x-nonce'
 export const REPORT_ONLY_HEADER = 'Content-Security-Policy-Report-Only'
@@ -65,9 +67,10 @@ export function buildReportOnlyCsp(nonce: string, options: { development?: boole
     "default-src 'self'",
     `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
+    // The same host list the enforcing policy uses (lib/security/csp-enforcing.mjs), not `https:`.
+    `img-src ${imgSources(process.env.NEXT_PUBLIC_SUPABASE_URL).join(' ')}`,
     "font-src 'self'",
-    "connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://cdn.usefathom.com https://www.google-analytics.com https://api.github.com",
+    "connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://cdn.usefathom.com https://*.google-analytics.com https://*.analytics.google.com https://api.github.com",
     "frame-src https://*.supabase.co https://*.supabase.in",
     "object-src 'none'",
     "base-uri 'self'",

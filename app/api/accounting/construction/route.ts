@@ -10,9 +10,31 @@ import {
 } from '@/lib/accounting/construction-service'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { loadAccessContext } from '@/lib/access/effective'
+import { PLAN_NOT_ON_ENTITY } from '@/lib/forecast/plan-construction'
 
 // Legacy web transport. Authentication, authorization, and its existing response contract stay
 // here; all construction loading, mapping, calculation, validation, and persistence are shared.
+
+/** Messages the service writes for the caller (bad input); anything else is internal. */
+function isCallerError(error: unknown, message: string): boolean {
+  return error instanceof VehicleResolutionError
+    || message.startsWith('Invalid portfolio-construction assumption:')
+    || message.includes('has no registry row')
+    || message === PLAN_NOT_ON_ENTITY
+}
+
+/**
+ * Caller errors keep their message (400); anything else is a 500 with a generic message — a raw
+ * database error ("JSON object requested, multiple (or no) rows returned") names internals. In
+ * development the detail is kept, as lib/forecast/http.ts does.
+ */
+function errorResponse(error: unknown): NextResponse {
+  const message = error instanceof Error ? error.message : 'Failed'
+  if (isCallerError(error, message)) return NextResponse.json({ error: message }, { status: 400 })
+  console.error('[construction]', error)
+  const detail = process.env.NODE_ENV === 'development' ? `Failed: ${message}` : 'Failed'
+  return NextResponse.json({ error: detail }, { status: 500 })
+}
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -38,10 +60,7 @@ export async function GET(req: NextRequest) {
       assumptions: model.assumptions,
     })
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed' },
-      { status: error instanceof VehicleResolutionError ? 400 : 500 },
-    )
+    return errorResponse(error)
   }
 }
 
@@ -67,10 +86,6 @@ export async function PUT(req: NextRequest) {
     )
     return NextResponse.json({ assumptions: model.assumptions })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed'
-    const invalid = error instanceof VehicleResolutionError
-      || message.startsWith('Invalid portfolio-construction assumption:')
-      || message.includes('has no registry row')
-    return NextResponse.json({ error: message }, { status: invalid ? 400 : 500 })
+    return errorResponse(error)
   }
 }

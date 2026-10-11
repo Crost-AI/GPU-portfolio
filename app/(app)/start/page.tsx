@@ -6,8 +6,10 @@ import { useAnalystContext } from '@/components/analyst-context'
 import { useIsAdmin } from '@/components/feature-visibility-context'
 import { AnalystConversation } from '@/components/analyst-conversation'
 import { useVehicle } from '@/components/accounting-vehicle'
-import { createActions, suggestedPrompts } from '@/lib/start/quick-actions'
+import { createActions, suggestedPrompts, isSetupStage } from '@/lib/start/quick-actions'
+import { useCompanyCount } from './setup-stage'
 import { QuickActionButtons } from '@/components/quick-action-buttons'
+import { GettingStartedBanner } from '@/components/getting-started-banner'
 
 /**
  * Where a signed-in member lands.
@@ -17,7 +19,8 @@ import { QuickActionButtons } from '@/components/quick-action-buttons'
  * is either the user's own grants (already in the client access context) or a link to a page that
  * gates itself, and the chat goes through /api/analyst, which the middleware gates like every
  * other route. See the note at the top of lib/access/page-domains.ts — client pages are absent
- * from that registry deliberately.
+ * from that registry deliberately. (./layout.tsx reads one count — does the fund hold anything yet —
+ * with the caller's own RLS-scoped client, to choose setup prompts on a new fund.)
  *
  * It also must stay reachable by a member with no `portfolio` grant, because it is the landing
  * page. Gating it on any one domain would lock those users out of the app's front door.
@@ -26,9 +29,12 @@ export default function StartPage() {
   const access = useAccess()
   const { hasAIKey } = useAnalystContext()
 
-  const prompts = suggestedPrompts(access)
+  // A fund with no companies yet gets setup prompts instead of questions it cannot answer.
+  // The count comes from ./layout.tsx; isSetupStage decides what it means.
+  const setup = isSetupStage(access, useCompanyCount())
+  const prompts = suggestedPrompts(access, 4, { setup })
   const isAdmin = useIsAdmin()
-  const actions = createActions(access, { isAdmin })
+  const actions = createActions(access, { isAdmin, setup })
   // The capital actions link to the firm-wide capital accounts landing, which asks which entity.
   // When the browser already has one in context (the fund last worked in), skip the question.
   const { vehicleId } = useVehicle()
@@ -47,6 +53,8 @@ export default function StartPage() {
   // and this is the one that says what the page is for.
   const hero = (
     <div className="space-y-1">
+      {/* Admins of a fund still setting up: how far along, and a way back to the checklist. */}
+      <GettingStartedBanner isAdmin={isAdmin} className="mb-4" />
       <h1 className="text-left text-2xl font-semibold tracking-tight">
         What would you like to do?
       </h1>

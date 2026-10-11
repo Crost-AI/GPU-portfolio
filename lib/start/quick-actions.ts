@@ -76,6 +76,23 @@ const SUGGESTED_PROMPTS: SuggestedPrompt[] = [
   { id: 'diligence-stalled', text: 'Which deals are in due diligence?', domain: 'diligence' },
 ]
 
+/**
+ * A brand-new fund has nothing to ask about yet, so the portfolio questions above would only get
+ * "there is no data". While the fund holds no companies, these replace them: questions the
+ * Analyst can answer from the product itself. Gated on `portfolio` because that is the domain the
+ * emptiness was read from (see isSetupStage) — the same bar as the prompts they stand in for.
+ */
+const SETUP_PROMPTS: SuggestedPrompt[] = [
+  { id: 'setup-help', text: 'Help me set up my fund', domain: 'portfolio' },
+  { id: 'setup-import-first', text: 'What do I need to import first?', domain: 'portfolio' },
+  { id: 'setup-lps', text: 'How do I bring in my LPs and their commitments?', domain: 'portfolio' },
+]
+
+/** Shown ahead of the create shortcuts while the fund is in setup. A guide, so read is enough. */
+const SETUP_ACTIONS: CreateAction[] = [
+  { id: 'getting-started', label: 'Getting started', kind: 'link', href: '/getting-started', domain: 'portfolio', group: 'create' },
+]
+
 const CREATE_ACTIONS: CreateAction[] = [
   // First because it is the thing a fund does most often between reports. Same feature switch
   // as the company page's Investment Details and the investments API — the modal posts there.
@@ -102,17 +119,28 @@ const canRead = (can: Can, g: Gated) => {
  * Questions to seed the composer with. Read is the right bar: a chip only promises the Analyst
  * will have the context to answer, not that the user may change anything.
  */
-export function suggestedPrompts(can: Can, limit = 4): SuggestedPrompt[] {
-  return SUGGESTED_PROMPTS.filter(p => canRead(can, p)).slice(0, limit)
+export function suggestedPrompts(can: Can, limit = 4, opts: { setup?: boolean } = {}): SuggestedPrompt[] {
+  return (opts.setup ? SETUP_PROMPTS : SUGGESTED_PROMPTS).filter(p => canRead(can, p)).slice(0, limit)
+}
+
+/**
+ * Is this fund still being set up, as far as Start is concerned? True only when the caller can
+ * read the portfolio AND counted no companies there. `companyCount` is read under the caller's own
+ * RLS, which answers 0 to someone without the portfolio domain — so 0 alone proves nothing, and
+ * null (the count failed) is never "empty".
+ */
+export function isSetupStage(can: Can, companyCount: number | null): boolean {
+  return companyCount === 0 && canRead(can, { domain: 'portfolio' })
 }
 
 /**
  * Create shortcuts. Write, not read — offering "Add a company" to a viewer produces a form whose
  * save button 403s, which is worse than not offering it.
  */
-export function createActions(can: Can, opts: { isAdmin?: boolean } = {}): CreateAction[] {
-  return CREATE_ACTIONS
+export function createActions(can: Can, opts: { isAdmin?: boolean; setup?: boolean } = {}): CreateAction[] {
+  const create = CREATE_ACTIONS
     .filter(a => !a.adminOnly || !!opts.isAdmin)
     .filter(a => !a.within || canRead(can, a.within))
     .filter(a => can(a.domain, a.feature) === 'write')
+  return opts.setup ? [...SETUP_ACTIONS.filter(a => canRead(can, a)), ...create] : create
 }

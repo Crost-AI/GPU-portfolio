@@ -186,6 +186,10 @@ export default function ImportPage() {
         <h2 className="text-lg font-semibold tracking-tight mb-2">Paste Investment Data</h2>
         <p className="text-sm text-muted-foreground mb-6">
           Paste investment transaction data (rounds, proceeds, valuations). AI will parse and match to existing portfolio companies.
+          Starting from scratch?{' '}
+          <a href="/templates/investments-import.csv" download className="underline underline-offset-4 hover:text-foreground">
+            Download a template
+          </a>, fill it in, and paste the rows here.
         </p>
 
         {investmentError && (

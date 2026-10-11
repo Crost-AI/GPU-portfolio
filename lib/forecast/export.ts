@@ -28,7 +28,8 @@ export function seriesCsv(s: SeriesResult): string {
     const lines = (s.cashDetail ?? []).filter(l => l.section === section)
     if (!lines.length) continue
     for (const l of lines) rows.push([l.code ?? '', `${l.label} (${section})`, ...l.values])
-    rows.push(['', `Net cash from ${section}`, ...s.periods.map((_, i) => lines.reduce((t, l) => t + l.values[i], 0))])
+    // A breakdown line (parent set) sits under its parent and is not added again.
+    rows.push(['', `Net cash from ${section}`, ...s.periods.map((_, i) => lines.reduce((t, l) => (l.parent ? t : t + l.values[i]), 0))])
   }
   rows.push(['', 'Net cash movement', ...s.cash.map(c => c?.movement ?? null)])
   rows.push(['', 'Ending cash', ...s.cash.map(c => c?.ending ?? null)])

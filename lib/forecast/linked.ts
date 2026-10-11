@@ -58,6 +58,21 @@ export async function loadFeeLinks(admin: SupabaseClient, fundId: string, vehicl
   return ((data as any[]) ?? []).map(mapFeeLink)
 }
 
+/** Whether the caller may see carry: terms, recipients and their split (the `gp_economics` carve-out). */
+export function seesCarry(access: AccessContext): boolean {
+  return hasAccess(access, 'gp_economics', 'read')
+}
+
+/** Whether the caller may see a management company's detail (its name, a link's billing cycle). */
+export function seesManco(access: AccessContext): boolean {
+  return hasAccess(access, 'management_company', 'read')
+}
+
+/** "paid to Hemrock Management quarterly in advance" — or, without management_company, no detail. */
+export function paidToLabel(access: AccessContext, mancoName: string | undefined, link: FeeLinkRow): string {
+  return seesManco(access) ? `paid to ${mancoName ?? 'the management company'} ${cycleLabel(link)}` : 'paid to the management company on its billing cycle'
+}
+
 /** Whether the caller may see a fund's own detail (name, terms). */
 export function seesFund(access: AccessContext, fundVehicleId: string): boolean {
   return canSeeVehicle(access, fundVehicleId) && hasAccess(access, 'accounting', 'read')
@@ -126,7 +141,11 @@ export async function gpShareOf(
   const access = { ...ctx.access, vehicles: { all: true, ids: [] } }
   const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access }, { vehicle: link.servesVehicle })
   const gross = model.timelineNetOfCarry ? model.grossTimeline : model.timeline
-  const label = canSeeVehicle(ctx.access, link.servesVehicleId) ? link.servesVehicle : 'the fund (details restricted)'
+  // A caller without the fund sees amounts only — not its name, not this entity's share of it.
+  // Carry percentages and carry already paid are gp_economics as well.
+  const visible = canSeeVehicle(ctx.access, link.servesVehicleId)
+  const showCarry = visible && seesCarry(ctx.access)
+  const label = visible ? link.servesVehicle : 'the fund (details restricted)'
   if (!gross) return { fund: label, months: new Map(), basis: `Share of ${label}`, warnings: [`${label} has no portfolio construction pacing, so there is nothing to forecast from`] }
 
   const [summary, terms] = await Promise.all([
@@ -140,7 +159,7 @@ export async function gpShareOf(
   const warnings: string[] = []
   if (share === 0) warnings.push(`This entity has no commitment recorded in ${label}, so it takes no share of its calls or distributions`)
   const inferred = model.actuals.waterfall?.carryPaidInferred ?? 0
-  if (inferred > 0) warnings.push(`${label}'s books record no carry paid, so ${Math.round(inferred).toLocaleString('en-US')} is taken as already paid on its past distributions; only carry still to come is forecast`)
+  if (inferred > 0 && showCarry) warnings.push(`${label}'s books record no carry paid, so ${Math.round(inferred).toLocaleString('en-US')} is taken as already paid on its past distributions; only carry still to come is forecast`)
 
   // THE FUND'S PLAN, when it has one: its calls, distributions and carry as its fund forecast made
   // them (the waterfall on what it actually distributes, month edits included). The GP's stake is its
@@ -155,8 +174,7 @@ export async function gpShareOf(
       r.distributed = roundCents((f.distributed + f.carry) * share)
       r.carry = roundCents(f.carry * carryPct)
     }
-    const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
-    return { fund: label, months, basis: `${pct(share)} of ${label}'s calls and distributions${carryPct > 0 ? `, ${pct(carryPct)} of its carry` : ''}, from its forecast`, warnings }
+    return { fund: label, months, basis: shareBasis(share, carryPct, label, visible, showCarry, 'calls and distributions', 'from its forecast'), warnings }
   }
 
   const mc = monthlyConstruction(gross, model.asOf.slice(0, 10))
@@ -192,12 +210,19 @@ export async function gpShareOf(
       r.carry = roundCents(r.carry + carryHere * carryPct)
     }
   }
-  const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
   return {
     fund: label, months,
-    basis: `${pct(share)} of ${label}'s calls and LP distributions${carryPct > 0 ? `, ${pct(carryPct)} of its carry` : ''}, from its portfolio construction`,
+    basis: shareBasis(share, carryPct, label, visible, showCarry, 'calls and LP distributions', 'from its portfolio construction'),
     warnings,
   }
+}
+
+/** The GP share's basis line: the share only for a caller who sees the fund, its carry % only with gp_economics. */
+function shareBasis(share: number, carryPct: number, label: string, visible: boolean, showCarry: boolean, what: string, from: string): string {
+  const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
+  const head = visible ? `${pct(share)} of ${label}'s ${what}` : `A share of ${label}'s ${what}`
+  const carry = carryPct > 0 ? (showCarry ? `, ${pct(carryPct)} of its carry` : ', a share of its carry') : ''
+  return `${head}${carry}, ${from}`
 }
 
 export async function loadLinkedDrivers(
@@ -243,7 +268,7 @@ export async function loadLinkedDrivers(
       linked.set(r.id, [{
         amounts: managementFeeByMonth(r.rule.params as ManagementFeeParams, inputs),
         ...(link ? { timing: linkTiming(link) } : {}),
-        basis: `Management fee on ${(r.rule.params as ManagementFeeParams).basis} capital${inputs.feePayingShare < 1 ? ` (${(inputs.feePayingShare * 100).toFixed(1)}% fee-paying — the GP's stake exempt)` : ''}${link ? `, paid to ${names.get(link.mancoVehicleId) ?? 'the management company'} ${cycleLabel(link)}` : ''}`,
+        basis: `Management fee on ${(r.rule.params as ManagementFeeParams).basis} capital${inputs.feePayingShare < 1 ? ` (${(inputs.feePayingShare * 100).toFixed(1)}% fee-paying — the GP's stake exempt)` : ''}${link ? `, ${paidToLabel(ctx.access, names.get(link.mancoVehicleId), link)}` : ''}`,
         warnings: [],
       }])
       continue
@@ -271,14 +296,18 @@ export async function loadLinkedDrivers(
       linked.set(r.id, own ? [{
         amounts: flowAmounts(own, 'fees'),
         timing: linkTiming(link),
-        basis: `Construction fee schedule, paid to ${names.get(link.mancoVehicleId) ?? 'the management company'} ${cycleLabel(link)}`,
+        basis: `Construction fee schedule, ${paidToLabel(ctx.access, names.get(link.mancoVehicleId), link)}`,
         warnings: [],
       }] : [])
       continue
     }
     // Manco revenue: one driver per linked fund.
-    const mine = links.filter(l => l.mancoVehicleId === vehicle.id)
+    const matched = links.filter(l => l.mancoVehicleId === vehicle.id)
       .filter(l => !p.fundVehicle || names.get(l.fundVehicleId)?.toLowerCase() === p.fundVehicle.toLowerCase())
+    // Naming a fund the caller cannot see answers exactly as naming one that is not linked — or the
+    // filter would tell them whether a restricted fund pays this manco. (Without a filter, every
+    // linked fund's fees still come back as restricted amounts.)
+    const mine = p.fundVehicle ? matched.filter(l => seesFund(ctx.access, l.fundVehicleId)) : matched
     if (!mine.length) {
       linked.set(r.id, [])
       warnings.push(p.fundVehicle

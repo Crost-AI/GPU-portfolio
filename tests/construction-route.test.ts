@@ -84,4 +84,22 @@ describe('legacy construction route', () => {
     )
     expect(await response.json()).toEqual({ assumptions: DEFAULT_ASSUMPTIONS })
   })
+
+  it("refuses another vehicle's plan with a 400 and its own message", async () => {
+    mocks.updateConstructionAssumptions.mockRejectedValue(new Error("That plan is not one of this entity's."))
+    const response = await PUT(new NextRequest(
+      'https://reporting.test/api/accounting/construction?group=Fund%20II&plan=foreign',
+      { method: 'PUT', body: JSON.stringify(DEFAULT_ASSUMPTIONS), headers: { 'content-type': 'application/json' } },
+    ))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: "That plan is not one of this entity's." })
+  })
+
+  it('does not echo raw database errors', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.getConstructionModel.mockRejectedValue(new Error('JSON object requested, multiple (or no) rows returned'))
+    const response = await GET(new NextRequest('https://reporting.test/api/accounting/construction?group=Fund%20II'))
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'Failed' })
+  })
 })

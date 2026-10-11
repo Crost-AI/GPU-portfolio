@@ -19,6 +19,7 @@ import { runWaterfall, type WaterfallState } from '@/lib/accounting/waterfall'
 import { preferredTarget, type DatedContribution } from '@/lib/accounting/carry'
 import type { ConstructionWaterfallProjection } from '@/lib/accounting/construction'
 import { isMonthKey, lastDay, type MonthKey } from './months'
+import { MAX_AMOUNT, MAX_RULE_ITEMS } from './rules'
 
 export interface CapitalPolicy {
   calls: { reserve: number }
@@ -42,14 +43,18 @@ export class CapitalError extends Error {}
 
 export function validateCapital(raw: unknown): CapitalSettings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>
-  const num = (v: unknown, field: string, min = 0, max = Number.MAX_SAFE_INTEGER) => {
+  // Amounts are bounded (MAX_AMOUNT) so nothing compiled from them can overflow the ledger's
+  // numeric(20,2) or reach Infinity.
+  const num = (v: unknown, field: string, min = 0, max = MAX_AMOUNT) => {
     const n = v == null || v === '' ? 0 : Number(v)
-    if (!Number.isFinite(n) || n < min || n > max) throw new CapitalError(`${field} must be a number from ${min}${max < Number.MAX_SAFE_INTEGER ? ` to ${max}` : ''}`)
+    if (!Number.isFinite(n) || n < min || n > max) throw new CapitalError(`${field} must be a number from ${min} to ${max.toLocaleString('en-US')}`)
     return n
   }
   const months = (o: unknown, field: string) => {
     const out: Record<string, number> = {}
-    for (const [m, v] of Object.entries((o && typeof o === 'object' ? o : {}) as Record<string, unknown>)) {
+    const entries = Object.entries((o && typeof o === 'object' ? o : {}) as Record<string, unknown>)
+    if (entries.length > MAX_RULE_ITEMS) throw new CapitalError(`${field} has too many months (at most ${MAX_RULE_ITEMS})`)
+    for (const [m, v] of entries) {
       if (!isMonthKey(m)) throw new CapitalError(`${field} months must be YYYY-MM`)
       out[m] = roundCents(num(v, `${field} ${m}`))
     }

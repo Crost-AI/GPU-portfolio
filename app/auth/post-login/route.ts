@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logActivity } from '@/lib/activity'
+import { safeNextPath } from '@/lib/safe-redirect'
 
 /**
  * Post-login side effects for the OTP flows.
@@ -14,11 +15,9 @@ import { logActivity } from '@/lib/activity'
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
-  let next = searchParams.get('next') ?? '/'
+  // safeNextPath, not startsWith('/') && !startsWith('//') — `/\evil.example` passes that pair.
+  const next = safeNextPath(searchParams.get('next')) ?? '/'
   const method = searchParams.get('method') ?? 'otp'
-
-  // Prevent open redirect — only allow relative paths.
-  if (!next.startsWith('/') || next.startsWith('//')) next = '/'
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

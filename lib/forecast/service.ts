@@ -1,10 +1,11 @@
 // Forecast service — the one implementation behind the routes, the MCP tools and the
 // Analyst's staged actions.
 //
-// Every entry point authorizes before it reads: `accounting` + feature `budgeting` at the level
-// the operation needs, then the vehicle among the caller's own entities (a management company also
-// needs `management_company`, checked in resolveVehicleWithAccess). Transports only authenticate
-// and translate errors.
+// Every entry point authorizes before it reads: `accounting` at the level the operation needs
+// (Forecast has no feature switch of its own — authorize below), then the vehicle among the caller's
+// own entities (a management company also needs `management_company`, checked in
+// resolveVehicleWithAccess). Carry detail is further gated on `gp_economics` on the way out
+// (redactCarryEntry, getPlanReturns). Transports only authenticate and translate errors.
 //
 // Forecasts never touch journal_*: reads come from loadPostedLedger (posted, actual book), writes go
 // to forecast_* through forecast_save / forecast_publish, which make each save one transaction
@@ -32,13 +33,13 @@ import { closedPeriodRanges } from '@/lib/accounting/periods'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { fundCurrency } from '@/lib/accounting/currency'
 import type { Account, Posting } from '@/lib/accounting/types'
-import { addMonths, firstDay, isMonthKey, lastDay, monthOf, monthRange, type Interval, type MonthKey } from './months'
+import { addMonths, firstDay, isMonthKey, lastDay, monthDiff, monthOf, monthRange, type Interval, type MonthKey } from './months'
 import { RuleError, validateRule, type RuleMethod } from './rules'
 import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntry } from './compile'
 import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesFund } from './linked'
+import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco } from './linked'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 
@@ -56,7 +57,37 @@ export class ForecastError extends Error {
   }
 }
 
-export const HORIZONS = [12, 18, 24, 36] as const
+export const HORIZONS = [12, 18, 24, 36, 60, 120, 180, 240] as const
+
+/**
+ * The longest window a plan may span, in months — the same cap as horizonMonths. Twenty years: a
+ * fund's life runs 12–15 with extensions, and the series view reads up to 240 months too. A fixed
+ * end month (or an actuals cutoff moved far back) could otherwise ask the compiler for centuries.
+ */
+export const MAX_PLAN_MONTHS = 240
+/** Free-text limits: a plan's scenario name and a version's label and notes. */
+const MAX_SCENARIO = 200
+const MAX_LABEL = 200
+const MAX_NOTES = 5000
+/** A rule's or a month override's note. */
+const MAX_NOTE = 500
+/** Rules, rule removals or month overrides one save may carry. */
+const MAX_SAVE_ITEMS = 5000
+
+function assertPlanWindow(first: MonthKey, last: MonthKey) {
+  if (monthDiff(first, last) + 1 > MAX_PLAN_MONTHS) {
+    throw new ForecastError(`A plan covers at most ${MAX_PLAN_MONTHS} months — ${first} to ${last} is longer. Pick an earlier end month.`)
+  }
+}
+
+/** Optional free text: absent/null/blank → null; a string up to `max` characters; anything else refused. */
+function optionalText(raw: unknown, field: string, max: number): string | null {
+  if (raw == null) return null
+  if (typeof raw !== 'string') throw new ForecastError(`${field} must be text`)
+  const t = raw.trim()
+  if (t.length > max) throw new ForecastError(`${field} is at most ${max} characters`)
+  return t || null
+}
 
 // ---------------------------------------------------------------------------------------------
 // Authorization and loading
@@ -306,6 +337,13 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
 
 async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, rules: RuleView[], overrides: OverrideView[]) {
   const { cutoff, warnings } = resolveCutoff(plan.actuals_cutoff, v)
+  // Before any work: a window past the cap (a plan stored before it was enforced) is refused, not
+  // compiled month by month.
+  const win = planWindow({
+    kind: plan.kind, fiscalYear: plan.fiscal_year, startMonth: monthOf(plan.start_month), endMonth: monthOf(plan.end_month),
+    horizonMonths: plan.horizon_months, cutoff,
+  })
+  assertPlanWindow(win.first, win.last)
   const ruleRows = toRuleRows(rules)
   const [ledger, drivers] = await Promise.all([
     loadPostedLedger(ctx.admin, ctx.fundId, v.name, lastDay(cutoff)),
@@ -420,6 +458,19 @@ async function capitalEntries(
  * `carry_distribution` in memory, where the statements and charts read it.
  */
 export const CARRY_MEMO = /^Carried interest/
+
+/**
+ * ON THE WAY OUT, a carry entry's memo for a caller without gp_economics: "Carried interest", not
+ * who receives it and in what split. What is stored and compiled is unchanged — the books are the
+ * same whoever reads them; only the description returned to this caller is.
+ */
+export function redactCarryEntry<E extends { memo: string; key: string | null }>(e: E, showCarry: boolean): E {
+  if (showCarry || !CARRY_MEMO.test(e.memo) || e.memo === 'Carried interest') return e
+  const memo = 'Carried interest'
+  // A generated entry's key carries its memo (entryKey); a hand entry's ('manual|…') does not.
+  const key = e.key && !e.key.startsWith('manual|') ? e.key.split('|').slice(0, 3).concat(memo).join('|') : e.key
+  return { ...e, memo, key }
+}
 const storedKind = (e: CompiledEntry) => (e.kind === 'carry_distribution' ? 'distribution' : e.kind)
 const entriesJson = (entries: CompiledEntry[]) =>
   entries.map(e => ({
@@ -529,10 +580,10 @@ export async function getPlan(ctx: ForecastServiceContext, input: { vehicle: str
       .sort((a, b) => a.code.localeCompare(b.code))
       .map(a => ({ id: a.id, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null })),
     cashAccountIds: v.accounts.filter(a => a.subtype === 'cash' && !a.lpEntityId && !a.companyId).map(a => a.id),
-    entries: built.entries.map(e => ({
+    entries: built.entries.map(e => redactCarryEntry({
       date: e.entryDate, kind: e.kind, memo: e.memo, source: e.source, key: e.key ?? entryKey(e), accountId: e.accountId, ruleId: e.ruleId,
       postings: e.postings.map(p => ({ accountId: p.accountId, amount: p.amount })),
-    })),
+    }, seesCarry(ctx.access))),
     rules: rules.map(r => ({ ...r, basis: outcome.get(r.id)?.basis ?? '', warnings: outcome.get(r.id)?.warnings ?? [] })),
     overrides,
     versions: ((versionRows.data as any[]) ?? []).map(mapVersion),
@@ -599,6 +650,7 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
   if (input.kind !== 'budget' && input.kind !== 'rolling_forecast') throw new ForecastError("kind must be 'budget' or 'rolling_forecast'")
   const name = typeof input.name === 'string' ? input.name.trim() : ''
   if (!name || name.length > 200) throw new ForecastError('name is required (up to 200 characters)')
+  const scenario = optionalText(input.scenario, 'scenario', MAX_SCENARIO)
   const cutoffDate = normaliseCutoff(input.actualsCutoff)
   const { cutoff } = resolveCutoff(cutoffDate, v)
 
@@ -616,14 +668,15 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     startMonth = addMonths(cutoff, 1)
     endMonth = input.endMonth
     if (endMonth < startMonth) throw new ForecastError('endMonth is before the first forecast month')
+    assertPlanWindow(startMonth, endMonth)
   } else {
     horizon = Number(input.horizonMonths ?? 12)
-    if (!Number.isInteger(horizon) || horizon < 1 || horizon > 120) throw new ForecastError('horizonMonths must be 1–120 (12, 18, 24 or 36 are the presets)')
+    if (!Number.isInteger(horizon) || horizon < 1 || horizon > MAX_PLAN_MONTHS) throw new ForecastError(`horizonMonths must be 1–${MAX_PLAN_MONTHS} (${HORIZONS.join(', ')} are the presets)`)
     startMonth = addMonths(cutoff, 1)
     endMonth = addMonths(cutoff, horizon)
   }
 
-  const seed = input.seed ?? { from: 'blank' }
+  const seed = normaliseSeed(input.seed)
   const seeded = await seedRules(ctx, v, input.kind, seed, cutoff, fiscalYear)
   // A copied plan keeps its source's rules; any other gets the fund's fee and expense rules.
   const rules = seed.from === 'plan' ? seeded : await withCostRules(ctx, v, seeded)
@@ -642,29 +695,59 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     if (src) copied = { ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}) }
   }
   const { data: inserted, error } = await (ctx.admin as any).from('forecast_plans').insert({
-    construction, is_primary: !hasPrimary, ...copied,
-    fund_id: ctx.fundId, vehicle_id: v.id, kind: input.kind, name, scenario: input.scenario?.trim() || null,
+    construction, is_primary: !hasPrimary, ...copied, revision: 0,
+    fund_id: ctx.fundId, vehicle_id: v.id, kind: input.kind, name, scenario,
     fiscal_year: fiscalYear, start_month: firstDay(startMonth), end_month: firstDay(endMonth), horizon_months: horizon,
     actuals_cutoff: cutoffDate, seed, created_by: ctx.userId || null, include_construction: true,
   }).select(PLAN_COLS).single()
   if (error) throw error
 
-  const { built, cutoff: c } = await compile(ctx, v, inserted, rules, [])
-  const { error: saveError } = await (ctx.admin as any).rpc('forecast_save', {
-    p_plan_id: inserted.id, p_fund_id: ctx.fundId, p_expected_revision: 0, p_plan_patch: {},
-    p_rule_upserts: rules.map(r => ({ id: r.id, account_id: r.accountId, method: r.method, params: r.params, cash_timing: r.cashTiming, source: r.source, note: r.note })),
-    p_rule_deletes: [], p_override_upserts: [], p_override_deletes: [],
-    p_entries: entriesJson(built.entries), p_compiled: { cutoff: lastDay(c), closed_through: v.closedThrough ? lastDay(v.closedThrough) : null },
-  })
-  if (saveError) rpcError(saveError)
+  try {
+    const { built, cutoff: c } = await compile(ctx, v, inserted, rules, [])
+    const { error: saveError } = await (ctx.admin as any).rpc('forecast_save', {
+      p_plan_id: inserted.id, p_fund_id: ctx.fundId, p_expected_revision: 0, p_plan_patch: {},
+      p_rule_upserts: rules.map(r => ({ id: r.id, account_id: r.accountId, method: r.method, params: r.params, cash_timing: r.cashTiming, source: r.source, note: r.note })),
+      p_rule_deletes: [], p_override_upserts: [], p_override_deletes: [],
+      p_entries: entriesJson(built.entries), p_compiled: { cutoff: lastDay(c), closed_through: v.closedThrough ? lastDay(v.closedThrough) : null },
+    })
+    if (saveError) rpcError(saveError)
+  } catch (e) {
+    // A plan that never compiled is not left behind — least of all as the entity's primary.
+    await (ctx.admin as any).from('forecast_plans').delete().eq('fund_id', ctx.fundId).eq('id', inserted.id).eq('revision', 0)
+    throw e
+  }
   return getPlan(ctx, { vehicle: v.name, planId: inserted.id })
 }
 
 function normaliseCutoff(raw: unknown): string | null {
   if (raw == null || raw === '') return null
-  if (typeof raw === 'string' && isMonthKey(raw)) return lastDay(raw)
-  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return lastDay(monthOf(raw))
-  throw new ForecastError('actualsCutoff must be YYYY-MM')
+  const m = typeof raw === 'string' && isMonthKey(raw) ? raw
+    : typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw) && isMonthKey(monthOf(raw)) ? monthOf(raw) : null
+  if (!m) throw new ForecastError('actualsCutoff must be YYYY-MM')
+  const year = Number(m.slice(0, 4))
+  if (year < 1900 || year > 2200) throw new ForecastError('actualsCutoff must be between 1900 and 2200')
+  return lastDay(m)
+}
+
+const SEED_FROM = ['blank', 'suggested', 'last_year', 'actuals', 'plan'] as const
+
+/** The seed as stored on the plan: only its known fields, checked — never the caller's object verbatim. */
+function normaliseSeed(raw: unknown): NonNullable<CreatePlanInput['seed']> {
+  if (raw == null) return { from: 'blank' }
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new ForecastError('seed must be an object')
+  const r = raw as Record<string, unknown>
+  if (!SEED_FROM.includes(r.from as any)) throw new ForecastError("seed.from must be 'blank', 'suggested', 'last_year' or 'plan'")
+  const out: NonNullable<CreatePlanInput['seed']> = { from: r.from as (typeof SEED_FROM)[number] }
+  if (r.from === 'plan') {
+    if (typeof r.planId !== 'string' || !r.planId || r.planId.length > 64) throw new ForecastError('seed.planId is required to copy a plan')
+    out.planId = r.planId
+  }
+  if (r.lookbackMonths != null) {
+    const n = Number(r.lookbackMonths)
+    if (!Number.isInteger(n) || n < MIN_HISTORY_MONTHS || n > MAX_HISTORY_MONTHS) throw new ForecastError(`seed.lookbackMonths must be ${MIN_HISTORY_MONTHS}–${MAX_HISTORY_MONTHS}`)
+    out.lookbackMonths = n
+  }
+  return out
 }
 
 async function seedRules(
@@ -908,18 +991,17 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
   const p = input.patch ?? {}
   const working = { ...row }
   if (p.name !== undefined) {
+    if (p.name !== null && typeof p.name !== 'string') throw new ForecastError('name must be text')
     const n = String(p.name ?? '').trim()
     if (!n || n.length > 200) throw new ForecastError('name is required (up to 200 characters)')
     patch.name = n
   }
-  if (p.scenario !== undefined) patch.scenario = p.scenario?.trim() || null
+  if (p.scenario !== undefined) patch.scenario = optionalText(p.scenario, 'scenario', MAX_SCENARIO)
   if (p.status !== undefined) {
     if (p.status !== 'active' && p.status !== 'archived') throw new ForecastError("status must be 'active' or 'archived'")
     patch.status = p.status
   }
   // includeConstruction is accepted and ignored: construction is always part of the plan.
-  // Primary: set here, outside the save transaction (it touches the entity's other plans too).
-  if (p.isPrimary === true && !row.is_primary) await setPrimaryPlan(ctx.admin, ctx.fundId, v.id, row.id)
   if (p.openingSettlementMonths !== undefined) {
     const n = Number(p.openingSettlementMonths)
     if (!Number.isInteger(n) || n < 0 || n > 24) throw new ForecastError('openingSettlementMonths must be 0–24')
@@ -941,7 +1023,7 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
       working.end_month = firstDay(p.endMonth)
     } else {
       const h = Number(p.horizonMonths)
-      if (!Number.isInteger(h) || h < 1 || h > 120) throw new ForecastError('horizonMonths must be 1–120')
+      if (!Number.isInteger(h) || h < 1 || h > MAX_PLAN_MONTHS) throw new ForecastError(`horizonMonths must be 1–${MAX_PLAN_MONTHS}`)
       patch.horizon_months = h
       working.horizon_months = h
     }
@@ -970,6 +1052,13 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
     }
   }
 
+  // Lists in the request: arrays, of a size a person could have meant.
+  for (const [field, list] of [['rules', input.rules], ['removeRules', input.removeRules], ['overrides', input.overrides]] as const) {
+    if (list === undefined) continue
+    if (!Array.isArray(list)) throw new ForecastError(`${field} must be a list`)
+    if (list.length > MAX_SAVE_ITEMS) throw new ForecastError(`${field} holds at most ${MAX_SAVE_ITEMS} items per save`)
+  }
+
   // Rules.
   const byAccount = new Map(rules.map(r => [r.accountId, r]))
   const upserts: RuleView[] = []
@@ -986,7 +1075,7 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
     }
     const next: RuleView = {
       id: byAccount.get(accountId)?.id ?? randomUUID(), accountId, method: checked.method, params: checked.params,
-      cashTiming: timing, source: 'user', note: r.note?.trim() || null,
+      cashTiming: timing, source: 'user', note: optionalText(r.note, 'note', MAX_NOTE),
     }
     byAccount.set(accountId, next)
     upserts.push(next)
@@ -1018,11 +1107,20 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
       continue
     }
     if (typeof o.amount !== 'number' || !Number.isFinite(o.amount)) throw new ForecastError('override amount must be a number, or null to clear it')
-    const next: OverrideView = { id: ovs.get(k)?.id ?? randomUUID(), accountId, month: o.month, amount: Math.round(o.amount * 100) / 100, note: o.note?.trim() || null }
+    const next: OverrideView = { id: ovs.get(k)?.id ?? randomUUID(), accountId, month: o.month, amount: Math.round(o.amount * 100) / 100, note: optionalText(o.note, 'note', MAX_NOTE) }
     ovs.set(k, next)
     ovUpserts.push(next)
   }
 
+  // The window as patched, checked before compiling (compile refuses it too; this says why first).
+  {
+    const win = planWindow({
+      kind: working.kind, fiscalYear: working.fiscal_year, startMonth: monthOf(working.start_month), endMonth: monthOf(working.end_month),
+      horizonMonths: working.horizon_months, cutoff: resolveCutoff(working.actuals_cutoff, v).cutoff,
+    })
+    if (p.endMonth != null && win.last < win.first) throw new ForecastError('endMonth is before the first forecast month')
+    assertPlanWindow(win.first, win.last)
+  }
   const { built, cutoff } = await compile(ctx, v, working, [...byAccount.values()], [...ovs.values()])
   if (row.kind === 'rolling_forecast') {
     // Persist where the rolling window now sits so lists and exports show it.
@@ -1039,6 +1137,9 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
     p_compiled: { cutoff: lastDay(cutoff), closed_through: v.closedThrough ? lastDay(v.closedThrough) : null },
   })
   if (error) rpcError(error)
+  // Primary: set only once the save has gone through (it touches the entity's other plans too, so
+  // it sits outside the save's transaction) — a refused or conflicting save changes nothing.
+  if (p.isPrimary === true && !row.is_primary) await setPrimaryPlan(ctx.admin, ctx.fundId, v.id, row.id)
   return getPlan(ctx, { vehicle: v.name, planId: row.id })
 }
 
@@ -1060,21 +1161,24 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
   const row = await loadPlanRow(ctx, v, input.planId)
   if (input.status !== 'published' && input.status !== 'approved') throw new ForecastError("status must be 'published' or 'approved'")
   if (!Number.isInteger(input.expectedRevision)) throw new ForecastError('expectedRevision is required')
+  const label = optionalText(input.label, 'label', MAX_LABEL)
+  const notes = optionalText(input.notes, 'notes', MAX_NOTES)
   const { rules, overrides } = await loadInputs(ctx, row.id)
   const { built, cutoff } = await compile(ctx, v, row, rules, overrides)
+  // A version freezes BOTH halves: the exits and deals it assumed, with its capital policy — written
+  // by forecast_publish in the version's own INSERT (versions are immutable; an UPDATE afterwards is
+  // refused). A plan with no construction of its own yet freezes the one it compiled from.
+  const construction = row.construction ?? await constructionToCopy(ctx, v, row.id)
   const { data, error } = await (ctx.admin as any).rpc('forecast_publish', {
     p_plan_id: row.id, p_fund_id: ctx.fundId, p_expected_revision: input.expectedRevision, p_status: input.status,
-    p_label: input.label?.trim() || null, p_notes: input.notes?.trim() || null, p_user_id: ctx.userId || null,
+    p_label: label, p_notes: notes, p_user_id: ctx.userId || null,
     p_meta: { cutoff: lastDay(cutoff), closed_through: v.closedThrough ? lastDay(v.closedThrough) : null },
     p_inputs: { rules, overrides, window: { first: built.first, last: built.last } },
     p_entries: entriesJson(built.entries),
+    p_construction: construction ?? null,
+    p_capital: row.capital ?? {},
   })
   if (error) rpcError(error)
-  // A version freezes BOTH halves: the exits and deals it assumed, with its capital policy.
-  const { data: halves } = await (ctx.admin as any).from('forecast_plans').select('construction, capital').eq('fund_id', ctx.fundId).eq('id', row.id).single()
-  await (ctx.admin as any).from('forecast_versions')
-    .update({ construction: (halves as any)?.construction ?? await constructionToCopy(ctx, v, row.id), capital: (halves as any)?.capital ?? {} })
-    .eq('fund_id', ctx.fundId).eq('id', (data as any).id)
   return { versionId: (data as any).id as string, versionNo: (data as any).versionNo as number }
 }
 
@@ -1121,7 +1225,25 @@ async function approvedVersionId(ctx: ForecastServiceContext, planId: string): P
   return data?.id ?? null
 }
 
+/**
+ * A series with the rules it was built from — what the Excel export needs to write each forecast
+ * cell as a formula over its assumption, not a pasted number.
+ */
+export async function getSeriesWithRules(ctx: ForecastServiceContext, input: SeriesInput): Promise<{
+  series: SeriesResult
+  rules: RuleView[]
+  accounts: { id: string; code: string; name: string }[]
+}> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  const detail = await seriesDetail(ctx, v, input)
+  return { ...detail, accounts: v.accounts.map(a => ({ id: a.id, code: a.code, name: a.name })) }
+}
+
 async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: SeriesInput): Promise<SeriesResult> {
+  return (await seriesDetail(ctx, v, input)).series
+}
+
+async function seriesDetail(ctx: ForecastServiceContext, v: VehicleCtx, input: SeriesInput): Promise<{ series: SeriesResult; rules: RuleView[] }> {
   if (!isMonthKey(input.start) || !isMonthKey(input.end)) throw new ForecastError('start and end must be YYYY-MM')
   if (input.start > input.end) throw new ForecastError('start is after end')
   if (monthRange(input.start, input.end).length > MAX_MONTHS) throw new ForecastError(`A range is at most ${MAX_MONTHS} months`)
@@ -1138,6 +1260,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
   let view: ReportView = input.view ?? (input.planId ? 'combined' : 'actual')
   const sources: SeriesResult['sources'] = {}
   const overridden: Record<string, MonthKey[]> = {}
+  let rules: RuleView[] = []
 
   if (input.planId) {
     const row = await loadPlanRow(ctx, v, input.planId)
@@ -1176,6 +1299,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
       inputs = await loadInputs(ctx, row.id)
     }
     planEntries = await loadEntries(ctx, row.id, version?.id ?? null)
+    rules = inputs.rules
     for (const r of inputs.rules) sources[r.accountId] = { method: r.method, basis: describeRule(r), warnings: [] }
     for (const o of inputs.overrides) {
       if (o.month < input.start || o.month > input.end) continue
@@ -1202,7 +1326,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
     gpEntityIds: await gpPartnerIds(ctx),
   })
 
-  return {
+  const series: SeriesResult = {
     ...report,
     vehicle: v.name,
     currency: v.currency,
@@ -1215,6 +1339,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
     planWindow: planFirst && planLast ? { first: planFirst, last: planLast } : null,
     warnings,
   }
+  return { series, rules }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1314,10 +1439,11 @@ export interface FeeLinkView {
   manco: string
   /** Null when the caller cannot see the fund: the link exists, its detail is not theirs. */
   fund: string | null
-  everyMonths: number
-  anchorMonth: number
-  direction: 'advance' | 'arrears'
-  cashLagMonths: number
+  /** The billing cycle — null (with the manco's name) for a caller without management_company. */
+  everyMonths: number | null
+  anchorMonth: number | null
+  direction: 'advance' | 'arrears' | null
+  cashLagMonths: number | null
   active: boolean
   description: string
 }
@@ -1331,18 +1457,21 @@ export async function listFeeLinks(ctx: ForecastServiceContext, input: { vehicle
     ? await (ctx.admin as any).from('fund_vehicles').select('id, name').eq('fund_id', ctx.fundId).in('id', ids)
     : { data: [] }
   const names = new Map(((data as any[]) ?? []).map(x => [x.id, x.name as string]))
+  // A fund-side caller without management_company learns that the fund pays a manco, not which one
+  // or on what cycle (the manco side needs that grant to be read at all — loadVehicle).
+  const manco = seesManco(ctx.access)
   return {
     vehicle: v.name,
     links: links.map(l => ({
       id: l.id,
-      manco: names.get(l.mancoVehicleId) ?? '',
+      manco: manco ? names.get(l.mancoVehicleId) ?? '' : 'A management company (details restricted)',
       fund: seesFund(ctx.access, l.fundVehicleId) ? names.get(l.fundVehicleId) ?? null : null,
-      everyMonths: l.everyMonths,
-      anchorMonth: l.anchorMonth,
-      direction: l.direction,
-      cashLagMonths: l.cashLagMonths,
+      everyMonths: manco ? l.everyMonths : null,
+      anchorMonth: manco ? l.anchorMonth : null,
+      direction: manco ? l.direction : null,
+      cashLagMonths: manco ? l.cashLagMonths : null,
       active: l.active,
-      description: cycleLabel(l),
+      description: manco ? cycleLabel(l) : 'Billing cycle restricted',
     })),
   }
 }
@@ -1404,6 +1533,8 @@ export async function deleteFeeLink(ctx: ForecastServiceContext, input: { manco:
 export interface PlanReturnsResponse {
   plan: { id: string; name: string; isPrimary: boolean }
   base: PlanReturns
+  /** True when the caller has no gp_economics grant: carry figures are left out (shown as zero). */
+  carryRestricted: boolean
   /** The portfolio's gross figures (construction: cost in, realized and forecast proceeds out). */
   gross: { moic: number | null; reserveLeft: number | null }
   /** The cash the capital policy keeps (for the chart's reference line). */
@@ -1510,8 +1641,16 @@ export async function getPlanReturns(
       distributedByMonth: months.map((m, i) => ({ month: m, ...percentiles(byMonthRuns[i]) })),
     }
   }
+  // Carry by year and its simulated range are gp_economics: without it they are left out (zero,
+  // flagged by carryRestricted). Distributions keep carry inside them, as they always have.
+  if (!seesCarry(ctx.access)) {
+    base.years = base.years.map(y => ({ ...y, carry: 0 }))
+    base.totals = { ...base.totals, carry: 0 }
+    if (simulation) simulation = { ...simulation, carry: { p10: 0, p25: 0, p50: 0, p75: 0, p90: 0, mean: 0 } }
+  }
   return {
     plan: { id: row.id, name: row.name, isPrimary: row.is_primary === true }, base, simulation,
+    carryRestricted: !seesCarry(ctx.access),
     gross: { moic: model.forecast.returns.estimatedGrossMoic ?? null, reserveLeft: model.forecast.capital.remaining ?? null },
     callReserve: common.settings.policy.calls.reserve,
   }

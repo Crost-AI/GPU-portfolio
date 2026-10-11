@@ -1,4 +1,5 @@
 import { withBotId } from 'botid/next/config'
+import { buildEnforcingCsp } from './lib/security/csp-enforcing.mjs'
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -53,9 +54,14 @@ const nextConfig = {
       { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
       { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
       { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+      // The enforcing policy; see lib/security/csp-enforcing.mjs. The strict nonce policy rides
+      // beside it as report-only, set per request by proxy.ts.
       {
         key: 'Content-Security-Policy',
-        value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.usefathom.com https://www.googletagmanager.com https://www.google-analytics.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://cdn.usefathom.com https://www.google-analytics.com https://api.github.com; frame-src https://*.supabase.co https://*.supabase.in; object-src 'none'; base-uri 'self'",
+        value: buildEnforcingCsp({
+          development: process.env.NODE_ENV === 'development',
+          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+        }),
       },
     ]
 

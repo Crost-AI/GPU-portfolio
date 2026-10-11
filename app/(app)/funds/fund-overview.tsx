@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Loader2, Landmark, ClipboardList, ArrowRight, Search, X } from 'lucide-react'
+import { Loader2, Landmark, Users, Briefcase, Building2, ArrowRight, Search, X } from 'lucide-react'
+import { AddVehicleButton } from '@/components/add-vehicle-button'
 import { useCurrency, formatCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { useVehicle, useFundSeg } from '@/components/accounting-vehicle'
 import { SortTh, nextSort, compareVals, type SortState } from '@/components/sortable-th'
@@ -99,7 +100,7 @@ export function FundOverview() {
   const live = vehicles.filter(v =>
     v.fund.committed !== 0 || v.fund.paidIn !== 0 || v.fund.distributions !== 0 || v.fund.nav !== 0
   )
-  if (live.length === 0) return <OnboardingEmptyState />
+  if (live.length === 0) return <OnboardingEmptyState onCreated={load} />
 
   // The Net-to-LP / Whole-fund toggle only means something when there IS a GP class to carve
   // out. Tracking vehicles cut over from an LP snapshot have only LP-class partners, so net-to-LP
@@ -269,73 +270,77 @@ export function FundOverview() {
 /** Same card treatment as the LP snapshot metric boxes, so the two pages read as one. */
 
 /**
- * Shown when no vehicle carries any capital yet — so instead of an empty table, explain the
- * two ways to onboard one. They are the same two producers the whole section is built on:
- * capital tracking (events, no books) and the full ledger. Both land in the same capital
- * accounts and feed this overview identically.
+ * Shown when no vehicle carries any capital yet — so instead of an empty table, say what to do
+ * first. One model now (the capital-tracking vs full-ledger modes are retired): an entity gets its
+ * partners and their commitments, then its investments, then its books are opened, by any of
+ * three routes that all land in the same capital accounts this overview reads.
+ *
+ * Links are to the selected entity's pages when there is one, otherwise to the firm-wide landing
+ * for that section (/funds/<section>), which asks which entity you mean.
  */
-function OnboardingEmptyState() {
+function OnboardingEmptyState({ onCreated }: { onCreated: () => void }) {
   const fundSeg = useFundSeg()
+  const base = fundSeg ? `/funds/${fundSeg}` : '/funds'
+  const linkCls = 'text-foreground underline underline-offset-4 hover:text-muted-foreground'
   return (
     <div className="rounded-card border p-6 max-w-2xl space-y-5">
       <div className="space-y-1">
         <h2 className="text-base font-medium">No fund capital recorded yet</h2>
         <p className="text-sm text-muted-foreground">
-          This overview is derived from the capital accounts, so it fills in once a vehicle has capital against it.
-          There are two ways to get there — pick per vehicle, and both feed this page the same way.
+          This overview is derived from each entity&rsquo;s capital accounts, so it fills in once an entity has partners
+          and capital against it. For each fund or SPV, in order:
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-card border p-3 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <ClipboardList className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-medium">Capital tracking</p>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            No double-entry books. Record what moved each LP&rsquo;s capital — contributions, distributions, marks — and
-            the roll-forward, statements and LP report all follow. The quickest way to start, and enough for an SPV or a
-            fund whose admin sends a quarterly statement.
+      <ol className="space-y-4 text-sm">
+        <li className="space-y-1">
+          <p className="font-medium flex items-center gap-2"><Building2 className="h-4 w-4 text-muted-foreground" />1 · Add the entity</p>
+          <p className="text-muted-foreground">The fund, SPV or vehicle the capital belongs to. Skip this if it is already listed under Entities.</p>
+          <AddVehicleButton onCreated={onCreated} />
+        </li>
+        <li className="space-y-1">
+          <p className="font-medium flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" />2 · Add partners and commitments</p>
+          <p className="text-muted-foreground">
+            One at a time under the entity&rsquo;s <Link href={`${base}/status`} className={linkCls}>Admin</Link> page (Add LP), or
+            paste a statement into <Link href="/lps/capital" className={linkCls}>LP capital accounts</Link> —{' '}
+            <a href="/templates/lp-import.csv" download className={linkCls}>download a template</a>.
           </p>
-        </div>
-        <div className="rounded-card border p-3 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <Landmark className="h-4 w-4 text-muted-foreground" />
-            <p className="text-sm font-medium">Full ledger</p>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Double-entry books: a chart of accounts, journal entries, capital calls against a receivable, period closes
-            that accrue carry, and financial statements. More to set up, and the complete record.
+        </li>
+        <li className="space-y-1">
+          <p className="font-medium flex items-center gap-2"><Briefcase className="h-4 w-4 text-muted-foreground" />3 · Load the investments</p>
+          <p className="text-muted-foreground">
+            Add them on <Link href="/investments" className={linkCls}>Investments</Link>, or paste a schedule into{' '}
+            <Link href="/import" className={linkCls}>Import</Link> —{' '}
+            <a href="/templates/investments-import.csv" download className={linkCls}>download a template</a>.
           </p>
-        </div>
-      </div>
+        </li>
+        <li className="space-y-1">
+          <p className="font-medium flex items-center gap-2"><Landmark className="h-4 w-4 text-muted-foreground" />4 · Open the books — whichever fits</p>
+          <ul className="text-muted-foreground list-disc pl-5 space-y-1">
+            <li>
+              <strong className="font-medium text-foreground">Starting fresh:</strong> record capital calls and distributions as they
+              happen on <Link href={`${base}/capital-accounts`} className={linkCls}>Capital accounts</Link>.
+            </li>
+            <li>
+              <strong className="font-medium text-foreground">Moving from a spreadsheet or administrator:</strong> enter each
+              partner&rsquo;s balance as of a date on <Link href={`${base}/opening-balances`} className={linkCls}>Opening balances</Link>.
+            </li>
+            <li>
+              <strong className="font-medium text-foreground">Moving from QuickBooks or a bank feed:</strong>{' '}
+              <Link href={`${base}/migrate`} className={linkCls}>import the QuickBooks journal</Link> or{' '}
+              <Link href={`${base}/bank`} className={linkCls}>paste bank transactions</Link>.
+            </li>
+          </ul>
+        </li>
+      </ol>
 
-      <div className="space-y-2">
-        <p className="text-xs text-muted-foreground">Two ways in:</p>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/settings"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors"
-          >
-            Add a vehicle
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-          <Link
-            href={fundSeg ? `/funds/${fundSeg}/capital-accounts` : '/funds'}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors"
-          >
-            Add LPs &amp; capital
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-          <Link
-            href={fundSeg ? `/funds/${fundSeg}/opening-balances` : '/funds'}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors"
-          >
-            Import an existing snapshot
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </div>
-      </div>
+      <Link
+        href="/getting-started"
+        className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors"
+      >
+        The full setup guide
+        <ArrowRight className="h-3.5 w-3.5" />
+      </Link>
     </div>
   )
 }

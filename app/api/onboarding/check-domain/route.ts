@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { claimableEmailDomain } from '@/lib/onboarding/wizard'
 
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const domain = user.email?.split('@')[1]?.toLowerCase()
+  // A consumer mailbox domain (gmail.com, outlook.com …) identifies no organisation: never offer to
+  // join a fund on it, even one created before funds stopped claiming such domains.
+  const domain = claimableEmailDomain(user.email)
   if (!domain) return NextResponse.json({ fund: null })
 
   const admin = createAdminClient()

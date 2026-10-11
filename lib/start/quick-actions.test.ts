@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Domain } from '@/lib/access/domains'
 import type { AccessLevel } from '@/lib/access/effective'
-import { suggestedPrompts, createActions, type Can } from '@/lib/start/quick-actions'
+import { suggestedPrompts, createActions, isSetupStage, type Can } from '@/lib/start/quick-actions'
 
 /** A resolver that answers `level` for the listed domains and `none` for everything else. */
 const only = (level: AccessLevel, ...domains: Domain[]): Can =>
@@ -108,5 +108,34 @@ describe('/start quick actions', () => {
       if (a.kind === 'link') expect(a.href, a.id).toBeTruthy()
       else expect(a.href, a.id).toBeUndefined()
     }
+  })
+})
+
+describe('/start on a fund with nothing in it yet', () => {
+  const portfolio = only('read', 'portfolio')
+
+  it('is in setup only when the caller can read the portfolio and counted no companies', () => {
+    expect(isSetupStage(portfolio, 0)).toBe(true)
+    expect(isSetupStage(portfolio, 3)).toBe(false)
+    // The count failed: never call that empty.
+    expect(isSetupStage(portfolio, null)).toBe(false)
+    // RLS answers 0 to a member without the portfolio domain — that is not an empty fund.
+    expect(isSetupStage(only('read', 'accounting'), 0)).toBe(false)
+  })
+
+  it('swaps the portfolio questions for setup questions the Analyst can answer', () => {
+    const ids = suggestedPrompts(portfolio, 4, { setup: true }).map(p => p.id)
+    expect(ids).toEqual(['setup-help', 'setup-import-first', 'setup-lps'])
+    expect(ids).not.toContain('portfolio-quarter')
+    // Outside setup, unchanged.
+    expect(suggestedPrompts(portfolio).map(p => p.id)).toEqual(['portfolio-quarter', 'portfolio-silent'])
+  })
+
+  it('leads the shortcuts with Getting started, a link to the guide, only in setup', () => {
+    const setup = createActions(only('write', 'portfolio'), { setup: true })
+    expect(setup[0]).toMatchObject({ id: 'getting-started', kind: 'link', href: '/getting-started', group: 'create' })
+    // A guide needs read, not write.
+    expect(createActions(portfolio, { setup: true }).map(a => a.id)).toEqual(['getting-started'])
+    expect(createActions(only('write', 'portfolio')).map(a => a.id)).not.toContain('getting-started')
   })
 })

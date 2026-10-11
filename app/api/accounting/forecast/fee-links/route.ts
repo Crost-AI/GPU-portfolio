@@ -4,7 +4,7 @@ import { forecastRequest, readJson } from '@/lib/forecast/http'
 
 // Fee links: which funds pay which management company, and on what billing cycle. GET lists the
 // links touching ?group=; PUT and DELETE take { manco, fund, … } and need write on both vehicles,
-// which the service checks (the route gate covers accounting + budgeting only).
+// which the service checks (the route gate covers accounting only).
 
 export async function GET(req: NextRequest) {
   return forecastRequest(req, 'read', (ctx, vehicle) => listFeeLinks(ctx, { vehicle }))

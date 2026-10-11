@@ -21,6 +21,9 @@ vi.mock('./fund-economics', () => ({
   },
 }))
 vi.mock('./load', () => ({ loadPostedLedger: mocks.loadPostedLedger }))
+// Reporting capital is its own module's concern (and is read with a fallback); stubbed so its
+// parallel reads don't leave unhandled rejections behind.
+vi.mock('./reporting-capital', () => ({ loadReportingCapital: async () => null }))
 vi.mock('./carry', async importOriginal => {
   const actual = await importOriginal<typeof import('./carry')>()
   return { ...actual, loadCarryTerms: mocks.loadCarryTerms }
@@ -235,6 +238,32 @@ describe('construction service', () => {
       { admin, fundId: 'fund-1', access: { vehicles: { all: true, ids: [] } } },
       { vehicle: 'Fund II', assumptions: { ...DEFAULT_ASSUMPTIONS, feeBasis: 'moon' as any } },
     )).rejects.toThrow(/feeBasis/)
+    expect(upsert).not.toHaveBeenCalled()
+  })
+
+  it("refuses a plan id belonging to another vehicle before writing anything", async () => {
+    mocks.loadPostedLedger.mockRejectedValue(new Error('no ledger'))
+    const { admin: base, upsert } = adminFixture({})
+    const filters: [string, unknown][] = []
+    const update = vi.fn()
+    const admin = {
+      from(table: string) {
+        if (table !== 'forecast_plans') return base.from(table)
+        // The foreign plan exists, but not on this vehicle: a vehicle-pinned lookup finds nothing.
+        const chain: Record<string, any> = {
+          select: () => chain,
+          eq: (col: string, val: unknown) => { filters.push([col, val]); return chain },
+          maybeSingle: async () => ({ data: filters.some(([c, v]) => c === 'vehicle_id' && v === 'vehicle-2') ? null : { revision: 1 }, error: null }),
+          update: (...args: unknown[]) => { update(...args); return chain },
+        }
+        return chain
+      },
+    }
+    await expect(updateConstructionAssumptions(
+      { admin: admin as any, fundId: 'fund-1', access: { vehicles: { all: true, ids: [] } } },
+      { vehicle: 'Fund II', assumptions: DEFAULT_ASSUMPTIONS, planId: 'plan-of-fund-iii' },
+    )).rejects.toThrow("not one of this entity's")
+    expect(update).not.toHaveBeenCalled()
     expect(upsert).not.toHaveBeenCalled()
   })
 })

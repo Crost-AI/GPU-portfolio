@@ -16,6 +16,15 @@ import { assertWriteAccess } from '@/lib/api-helpers'
  *     HTML/SVG and MIME-confusion payloads out of an inline browser context.
  *   - Signed URLs are short-lived (60s) so they can't be leaked or shared.
  */
+/**
+ * Strictly digits. `parseInt` would read "0.png" as 0 — and a path ending in an image extension
+ * is exactly what a too-broad proxy matcher once let skip the API gate — so anything but 1-2
+ * plain digits is a 400, not a best-effort parse.
+ */
+function parseAttachmentIndex(raw: string): number | null {
+  return /^\d{1,2}$/.test(raw) ? Number(raw) : null
+}
+
 export async function GET(
   req: NextRequest,
   props: { params: Promise<{ id: string; index: string }> }
@@ -34,8 +43,8 @@ export async function GET(
   if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 403 })
   const fundId = (membership as any).fund_id as string
 
-  const idx = Number.parseInt(params.index, 10)
-  if (!Number.isInteger(idx) || idx < 0 || idx > 99) {
+  const idx = parseAttachmentIndex(params.index)
+  if (idx === null) {
     return NextResponse.json({ error: 'Invalid attachment index' }, { status: 400 })
   }
 
@@ -91,8 +100,8 @@ export async function DELETE(
   const writeCheck = await assertWriteAccess(admin, user.id)
   if (writeCheck instanceof NextResponse) return writeCheck
 
-  const idx = Number.parseInt(params.index, 10)
-  if (!Number.isInteger(idx) || idx < 0 || idx > 99) {
+  const idx = parseAttachmentIndex(params.index)
+  if (idx === null) {
     return NextResponse.json({ error: 'Invalid attachment index' }, { status: 400 })
   }
 

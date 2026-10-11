@@ -11,6 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { STATUS_OPTIONS, DEFAULT_STATUSES, STATUS_ORDER } from '@/lib/deals/statuses'
 import { EntityPicker } from '@/components/entity-picker'
+import { csvField } from '@/lib/csv/escape'
 
 interface Deal {
   id: string
@@ -533,7 +534,7 @@ function exportCsv(deals: Deal[]) {
     d.raise_amount ?? '',
     d.status,
   ])
-  const csv = [headers, ...rows].map(r => r.map(escape).join(',')).join('\n')
+  const csv = [headers, ...rows].map(r => r.map(c => csvField(String(c))).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -541,13 +542,6 @@ function exportCsv(deals: Deal[]) {
   a.download = `deals-${new Date().toISOString().slice(0, 10)}.csv`
   a.click()
   URL.revokeObjectURL(url)
-}
-
-function escape(v: string): string {
-  if (v.includes('"') || v.includes(',') || v.includes('\n')) {
-    return `"${v.replace(/"/g, '""')}"`
-  }
-  return v
 }
 
 // ---------------------------------------------------------------------------

@@ -4,13 +4,17 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { encrypt } from '@/lib/crypto'
 import { getGoogleCredentials } from '@/lib/google/credentials'
 import { assertAdminAccess } from '@/lib/api-helpers'
+import { safeNextPath } from '@/lib/safe-redirect'
 import {
   consumeGoogleOAuthTransaction,
   GOOGLE_OAUTH_STATE_COOKIE,
 } from '@/lib/google/oauth-state'
 
 function redirectAndClearState(req: NextRequest, target: string) {
-  const response = NextResponse.redirect(new URL(target, req.url))
+  // Every target is either a literal here or a returnTo that consumeGoogleOAuthTransaction already
+  // ran through safeNextPath; re-check anyway, since new URL(target, req.url) is what would honour
+  // an escape.
+  const response = NextResponse.redirect(new URL(safeNextPath(target) ?? '/settings', req.url))
   response.cookies.set(GOOGLE_OAUTH_STATE_COOKIE, '', {
     httpOnly: true,
     maxAge: 0,

@@ -9,6 +9,7 @@ import { scopeCompanyRows, scopeGroups, scopeTransactions } from '@/lib/access/s
 import { generateLiveReport } from '@/lib/accounting/live-report'
 import { DEAL_VEHICLE_PREFIX } from '@/lib/portfolio/holding-href'
 import { vehiclesCarriedAtLpPositions } from '@/lib/portfolio/deal-vehicles'
+import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 
 // ---------------------------------------------------------------------------
 // GET — portfolio-wide investment summary
@@ -343,13 +344,20 @@ export async function GET(req: NextRequest) {
   // live LP report: paid-in as invested, distributions as proceeds, NAV as fair value.
   //
   // Which ones: lib/portfolio/deal-vehicles.ts (holdings carrying no figures; flips once one does).
+  //
+  // Those figures ARE partner capital — the same live report /api/lps/live-report serves under
+  // `lp_capital` — while this route is gated on portfolio + investments. So the rows (and their
+  // contribution to the totals) appear only for a caller who could read that report directly, as
+  // the Analyst's dashboard tools gate the same figures.
+  const access = await loadAccessContext(admin, fundId, user.id, membership.role)
+  const canSeePartnerCapital = hasAccess(access, 'lp_capital', 'read')
   const { data: vehicleRows } = await admin
     .from('fund_vehicles' as any)
     .select('id, name, kind, active')
     .eq('fund_id', fundId) as { data: { id: string; name: string; kind: string; active: boolean | null }[] | null }
   const dealVehicles = vehiclesCarriedAtLpPositions(vehicleRows ?? [], companySummaries)
     .filter(v => scopeGroups([v.name], names).length > 0)
-  if (dealVehicles.length > 0) {
+  if (canSeePartnerCapital && dealVehicles.length > 0) {
     const live = await generateLiveReport(admin, fundId, asOf ?? undefined)
     for (const v of dealVehicles) {
       const rows = live.rows.filter(r => r.portfolio_group === v.name)

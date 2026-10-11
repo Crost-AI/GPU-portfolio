@@ -67,8 +67,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // GET reads the plan, PUT writes it — `requiredLevel` derives read/write from the method.
   'api/accounting/construction': { domain: 'accounting' },
   // Forecast (plans/plan-budget-forecast.md). Each route file is its own key. The service
-  // re-checks accounting + budgeting at the operation's level and the management_company grant for
-  // a manco vehicle, so MCP and the Analyst get the same answer without this boundary.
+  // re-checks accounting at the operation's level (forecast has no feature switch of its own since
+  // 20261010400000 — it is part of accounting) and the management_company grant for a manco
+  // vehicle, so MCP and the Analyst get the same answer without this boundary.
   'api/accounting/forecast': { domain: 'accounting' },
   'api/accounting/forecast/[id]': { domain: 'accounting' },
   'api/accounting/forecast/[id]/publish': { domain: 'accounting' },
@@ -448,6 +449,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/onboarding/inbound-email': { domain: 'admin' },
   'api/onboarding/postmark': { domain: 'admin' },
   'api/onboarding/senders': { domain: 'admin' },
+  // The setup-progress count for the getting-started banner; admin-only, re-checked in-handler.
+  'api/onboarding/progress': { domain: 'admin' },
   'api/usage': { domain: 'admin' },
   'api/test-claude-key': { domain: 'admin' },
   'api/test-openai-key': { domain: 'admin' },
@@ -529,7 +532,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/auth/signup': 'Pre-auth by definition.',
   'api/setup': 'First-run bootstrap, before any fund exists.',
   'api/onboarding/check-domain': 'Pre-fund: is this email domain claimed.',
-  'api/onboarding/fund': 'Creates the fund and its first admin.',
+  'api/onboarding/fund': 'Creates the fund and its first admin; PATCH (later wizard steps) checks the admin role in the handler.',
   'api/onboarding/join': 'Requests membership; the caller has none yet.',
 
   // Their own credential, not a session. These resolve an API key or OAuth token and enforce

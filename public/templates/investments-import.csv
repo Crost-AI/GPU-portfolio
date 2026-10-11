@@ -1,0 +1,4 @@
+Company,Date,Transaction type,Round,Cost,Shares,Share price,Post-money,Proceeds,Vehicle,Security type
+Example Co A,2025-03-15,Investment,Seed,500000,250000,2.00,8000000,,Example Fund I,Preferred stock
+Example Co B,2025-09-01,Investment,Pre-seed,250000,,,,,Example Fund I,SAFE
+Example Co A,2026-06-30,Proceeds,Exit,,,,,1200000,Example Fund I,Preferred stock

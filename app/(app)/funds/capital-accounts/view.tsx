@@ -536,7 +536,12 @@ export function CapitalAccountsView() {
                       }
                     }} />
                   </label>
-                  {sheetNote && <span className={`text-sm ${sheetNote.ok ? 'text-muted-foreground' : 'text-warning'}`}>{sheetNote.text}</span>}
+                  {!isDist && (
+                    <a href="/templates/capital-call-register.csv" download className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">
+                      Download a template
+                    </a>
+                  )}
+                  {sheetNote &&<span className={`text-sm ${sheetNote.ok ? 'text-muted-foreground' : 'text-warning'}`}>{sheetNote.text}</span>}
                 </div>
               </div>
             )}

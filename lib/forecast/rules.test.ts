@@ -97,3 +97,24 @@ describe('validation', () => {
     expect(() => validateRule('run_rate', { window: 4 })).toThrow(/window/)
   })
 })
+
+describe('amounts a rule can state or produce are bounded', () => {
+  it('refuses an amount past what the ledger can hold', () => {
+    expect(() => validateRule('fixed', { amount: 1e300 })).toThrow(RuleError)
+    expect(() => validateRule('manual', { amounts: { '2026-01': 1e14 } })).toThrow(/too large/)
+    expect(() => validateRule('growth', { base: 1, baseMonth: '2026-01', rate: 5, per: 'month' })).toThrow(/at most 1/)
+  })
+
+  it('refuses unbounded lists', () => {
+    const amounts = Object.fromEntries(Array.from({ length: 1201 }, (_, i) => [`${2000 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`, 1]))
+    expect(() => validateRule('manual', { amounts })).toThrow(/too many/)
+  })
+
+  it('leaves out months growth carries past the bound — never Infinity or an overflow', () => {
+    const r = run('growth', { base: 1_000_000, baseMonth: '1900-01', rate: 10, per: 'year' })
+    for (const v of r.amounts.values()) expect(Number.isFinite(v) && Math.abs(v) <= 1e13).toBe(true)
+    expect(r.warnings.join(' ')).toMatch(/left out/)
+    const s = run('seasonal', { profile: { 1: 1_000 }, anchor: '1000-01', annualGrowth: 10 })
+    expect([...s.amounts.values()]).toEqual([])
+  })
+})

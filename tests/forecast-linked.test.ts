@@ -9,8 +9,18 @@ import type { AccessContext } from '@/lib/access/effective'
 
 const mocks = vi.hoisted(() => ({ getConstructionModel: vi.fn() }))
 vi.mock('@/lib/accounting/construction-service', () => ({ getConstructionModel: mocks.getConstructionModel }))
+// A GP entity (GP I LLC, lp-gp) of Fund II: 12.5% of its commitments, 60% of its carry.
+vi.mock('@/lib/accounting/gp-economics', () => ({
+  gpLinkFor: async () => ({ servesVehicle: 'Fund II', servesVehicleId: 'v2', lpEntityId: 'lp-gp' }),
+}))
+vi.mock('@/lib/accounting/capital-calls', () => ({
+  lpCapitalSummary: async () => [{ lpEntityId: 'lp-gp', commitment: 125 }, { lpEntityId: 'lp-a', commitment: 875 }],
+}))
+vi.mock('@/lib/accounting/carry', () => ({
+  loadCarryTerms: async () => ({ recipients: [{ lpEntityId: 'lp-gp', pct: 60 }, { lpEntityId: 'lp-b', pct: 40 }] }),
+}))
 
-import { loadLinkedDrivers } from '@/lib/forecast/linked'
+import { gpShareOf, loadLinkedDrivers } from '@/lib/forecast/linked'
 import { validateRule } from '@/lib/forecast/rules'
 
 /** A thenable query builder that answers per table. */
@@ -114,5 +124,50 @@ describe('linked management fees', () => {
     )
     expect(mocks.getConstructionModel.mock.calls[0][0].access.vehicles).toEqual({ all: false, ids: ['v2'] })
     expect(r.linked.get('r2')![0].basis).toContain('paid to Hemrock Management quarterly in advance')
+  })
+})
+
+describe('what a caller without the grant learns', () => {
+  const noManco = (vehicleIds: string[] | 'all'): AccessContext => ({ ...access(vehicleIds), grants: { accounting: 'read' } })
+
+  it("does not name the manco or its billing cycle on the fund side without management_company", async () => {
+    const r = await loadLinkedDrivers(
+      { admin: ADMIN, fundId: 'f1', access: noManco(['v2']) },
+      { id: 'v2', name: 'Fund II', kind: 'fund' },
+      [{ id: 'r2', accountId: 'f5000', rule: validateRule('linked_fee', {}), cashTiming: { mode: 'same' } }],
+      false,
+    )
+    const basis = r.linked.get('r2')![0].basis
+    expect(basis).not.toMatch(/Hemrock|quarterly/)
+    expect(basis).toContain('paid to the management company')
+  })
+
+  it("answers a manco's fund filter the same for a restricted linked fund as for an unlinked one", async () => {
+    const run = (fundVehicle: string) => loadLinkedDrivers(
+      { admin: ADMIN, fundId: 'f1', access: access(['m1']) }, MANCO,
+      [{ id: 'r1', accountId: 'a4000', rule: validateRule('linked_fee', { fundVehicle }), cashTiming: { mode: 'same' as const } }], false,
+    )
+    const linked = await run('Fund II')
+    const unlinked = await run('Fund IX')
+    expect(linked.linked.get('r1')).toEqual(unlinked.linked.get('r1'))
+    expect(linked.warnings.map(w => w.replace('Fund II', 'X'))).toEqual(unlinked.warnings.map(w => w.replace('Fund IX', 'X')))
+    expect(mocks.getConstructionModel).not.toHaveBeenCalled()
+  })
+
+  it("gives a GP entity's planner without the fund amounts only — no share, no carry split", async () => {
+    mocks.getConstructionModel.mockResolvedValue({
+      timeline: schedule, timelineNetOfCarry: true, grossTimeline: schedule, asOf: '2026-12-15T00:00:00Z',
+      actuals: { waterfall: { carryPaidInferred: 50_000 } },
+    })
+    const restricted = await gpShareOf({ admin: fakeAdmin({}), fundId: 'f1', access: noManco(['g1']) }, 'GP I LLC')
+    const text = JSON.stringify({ basis: restricted!.basis, warnings: restricted!.warnings, fund: restricted!.fund })
+    expect(text).not.toMatch(/12\.5%|60%|Fund II|50,000/)
+    const full = await gpShareOf({ admin: fakeAdmin({}), fundId: 'f1', access: { ...access('all'), features: { ...access('all').features, gp_economics: 'everyone' }, grants: { accounting: 'read', gp_economics: 'read' } } }, 'GP I LLC')
+    expect(full!.basis).toMatch(/12\.5% of Fund II/)
+    expect(full!.basis).toMatch(/60% of its carry/)
+    // Carry % needs gp_economics even when the fund is visible.
+    const noCarry = await gpShareOf({ admin: fakeAdmin({}), fundId: 'f1', access: noManco('all') }, 'GP I LLC')
+    expect(noCarry!.basis).toMatch(/12\.5% of Fund II/)
+    expect(noCarry!.basis).not.toMatch(/60%/)
   })
 })

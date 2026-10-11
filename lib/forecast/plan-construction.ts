@@ -59,7 +59,7 @@ export async function loadPlanConstruction(
   if (planId) {
     const { data } = await (admin as any).from('forecast_plans').select('id, name, construction, is_primary')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('id', planId).maybeSingle()
-    if (!data) throw new Error('That plan is not one of this entity\'s.')
+    if (!data) throw new Error(PLAN_NOT_ON_ENTITY)
     row = data
   } else {
     row = await primaryPlanRow(admin, fundId, vehicleId)
@@ -76,14 +76,20 @@ export async function loadPlanConstruction(
  * forecast reloads rather than saving over it. The plan's compiled draft is now out of date; the
  * forecast's staleness check (sources fingerprint) offers Refresh.
  */
+export const PLAN_NOT_ON_ENTITY = 'That plan is not one of this entity\'s.'
+
 export async function writePlanConstruction(
-  admin: SupabaseClient, fundId: string, planId: string, assumptions: Record<string, unknown>,
+  admin: SupabaseClient, fundId: string, vehicleId: string, planId: string, assumptions: Record<string, unknown>,
 ): Promise<void> {
-  const { data: cur, error: readErr } = await (admin as any).from('forecast_plans').select('revision').eq('fund_id', fundId).eq('id', planId).single()
+  // The plan must be THIS entity's — checked before anything is written, and pinned on the write
+  // too, so a plan id from another vehicle (one the caller may not even see) is refused untouched.
+  const { data: cur, error: readErr } = await (admin as any).from('forecast_plans').select('revision')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('id', planId).maybeSingle()
   if (readErr) throw new Error(readErr.message)
+  if (!cur) throw new Error(PLAN_NOT_ON_ENTITY)
   const { data, error } = await (admin as any).from('forecast_plans')
     .update({ construction: assumptions, revision: Number(cur.revision) + 1, updated_at: new Date().toISOString() })
-    .eq('fund_id', fundId).eq('id', planId).eq('revision', cur.revision).select('id')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('id', planId).eq('revision', cur.revision).select('id')
   if (error) throw new Error(error.message)
   if (!data?.length) throw new Error('The plan changed while saving — reload and try again.')
 }

@@ -38,6 +38,25 @@ export function safeNextPath(raw: string | null | undefined): string | null {
   // needs them.
   if (/[\x00-\x1f\x7f]/.test(raw)) return null
 
+  // Percent-encoded slashes and backslashes in the PATH. `new URL` leaves `%2f`/`%5c` encoded, so
+  // the origin check below passes, but anything downstream that decodes the path once (a proxy,
+  // a framework rewrite, a second redirect hop) turns `/%2f%2fevil.com` or `/%5cevil.com` back
+  // into the escape. Decode the path (not the query — `?redirect_uri=https%3A%2F%2F…` is
+  // legitimate, see the OAuth resume case) a few rounds and re-apply the slash checks.
+  const path = raw.split(/[?#]/, 1)[0]
+  let decoded = path
+  for (let i = 0; i < 3; i++) {
+    let next: string
+    try {
+      next = decodeURIComponent(decoded)
+    } catch {
+      return null
+    }
+    if (next.startsWith('//') || next.includes('\\') || /[\x00-\x1f\x7f]/.test(next)) return null
+    if (next === decoded) break
+    decoded = next
+  }
+
   // Belt and braces: resolve it and confirm it really is same-origin. Any scheme
   // or authority that survived the checks above dies here.
   try {

@@ -45,8 +45,9 @@ async function createProviderForType(
     case 'openrouter': {
       const apiKey = await getOpenRouterApiKey(supabase, fundId)
       const config = await getOpenRouterConfig(supabase, fundId)
-      const { validateOllamaUrl } = await import('@/lib/validate-url')
-      const validation = validateOllamaUrl(config.baseUrl)
+      // Resolved, not just literal: DNS may have changed since the URL was saved.
+      const { validateBaseUrlResolved } = await import('@/lib/validate-url')
+      const validation = await validateBaseUrlResolved(config.baseUrl)
       if (!validation.ok) throw new Error(validation.error)
       return {
         provider: new OpenAIProvider(apiKey, validation.url),

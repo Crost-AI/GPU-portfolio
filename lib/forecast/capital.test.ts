@@ -69,3 +69,12 @@ describe('the waterfall on what is actually distributed', () => {
     expect(splitDistributions(m({ '2027-02': 100 }), new Map(), [...months], undefined).get('2027-02')).toEqual({ toLp: 100, carry: 0, toGpStake: 0 })
   })
 })
+
+describe('capital settings are bounded', () => {
+  it('refuses amounts past what the ledger can hold, and an unbounded list of month edits', () => {
+    expect(() => validateCapital({ policy: { calls: { reserve: 1e17 } } })).toThrow(CapitalError)
+    expect(() => validateCapital({ calls: { '2027-01': 1e15 } })).toThrow(CapitalError)
+    const many = Object.fromEntries(Array.from({ length: 1201 }, (_, i) => [`${2000 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`, 1]))
+    expect(() => validateCapital({ distributions: many })).toThrow(/too many/)
+  })
+})

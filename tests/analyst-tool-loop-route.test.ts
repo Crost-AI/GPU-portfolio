@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 /**
  * The analyst route runs as a live TOOL LOOP when the fund's provider supports it, and falls back
- * to the old single-shot createChat when it doesn't (OpenAI/Gemini/Ollama). This pins the guarded
+ * to the old single-shot createChat when it doesn't (OpenAI/OpenRouter). This pins the guarded
  * swap and that tool-call names (not payloads) are surfaced in the response.
  */
 

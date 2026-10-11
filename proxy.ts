@@ -311,6 +311,13 @@ export const config = {
     // `checkBotId()` fails every caller closed — which looks exactly like the demo
     // being switched off. Hardcoded because `matcher` must be statically analysable;
     // BOTID_PATH_PREFIX in lib/botid-routes.ts pins the same string for the test.
-    '/((?!_next/static|_next/image|favicon.ico|api/inbound-email|149e9513-01fa-4fb0-aad4-566afd725d1b|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    //
+    // NOTHING under /api may fall out of this matcher except the webhook itself: a path the
+    // matcher skips never reaches gateApiRequest or the AAL2 check. Hence `api/inbound-email`
+    // is anchored to a segment boundary (else `/api/inbound-emailfoo` slips past), and the
+    // image-extension exclusion carries `(?!api/)` (else `/api/emails/<id>/attachment/0.png`
+    // — a dynamic segment the caller chooses — skips the gate). tests/security-proxy-matcher
+    // compiles this with Next's own getMiddlewareMatchers and pins both.
+    '/((?!_next/static|_next/image|favicon.ico|api/inbound-email(?:/|$)|149e9513-01fa-4fb0-aad4-566afd725d1b|(?!api/).*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
