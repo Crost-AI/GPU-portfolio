@@ -8,7 +8,7 @@ import { resolveVehicle, VehicleResolutionError } from '@/lib/accounting/vehicle
 import { customPeriod } from '@/lib/accounting/statement-period'
 import { generateLpStatementPdf } from '@/lib/accounting/lp-statement-pdf'
 import { generateLiveInvestorReportPdf } from '@/lib/lp-report-pdf'
-import { verifyReportLink } from '@/lib/agent/report-links'
+import { isExpiredReportLink, verifyReportLink } from '@/lib/agent/report-links'
 import { carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { listVehicles } from '@/lib/accounting/load'
 import { rateLimit } from '@/lib/rate-limit'
@@ -23,12 +23,13 @@ export const maxDuration = 120
  * The token only says WHO asked for WHAT, and that it was this deployment that issued it. Every
  * check is made again here, live, as if the member were asking now: still a member, agent access
  * still on, the LP capital grant, the vehicle and the LP within their entities. A link outlives
- * none of those. Every refusal is the same 404, so a link reveals nothing about why.
+ * none of those. Every refusal is the same 404, so a link reveals nothing about why. The one exception
+ * is expiry (410), which the token already states to anyone who reads it.
  */
 export async function GET(req: NextRequest, props: { params: Promise<{ token: string }> }) {
   const { token } = await props.params
   const claims = verifyReportLink(token)
-  if (!claims) return notFound()
+  if (!claims) return isExpiredReportLink(token) ? expired() : notFound()
 
   const limited = await rateLimit({ key: `agent-report:${claims.userId}`, limit: 30, windowSeconds: 60 })
   if (limited) return limited
@@ -96,6 +97,16 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
   })
 }
 
+// Two messages, not one. They used to be the same — "expired or not available" — and a link reused
+// after its hour (an assistant re-sharing one from earlier in the conversation) read exactly like a
+// broken route.
+function expired() {
+  return NextResponse.json(
+    { error: 'This link has expired — links last an hour. Ask the assistant for the document again to get a new one.' },
+    { status: 410 },
+  )
+}
+
 function notFound() {
-  return NextResponse.json({ error: 'This link has expired or is not available to you.' }, { status: 404 })
+  return NextResponse.json({ error: 'This link is not available to you.' }, { status: 404 })
 }

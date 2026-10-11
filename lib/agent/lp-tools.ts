@@ -462,7 +462,7 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
       vehicle, investor: lp.investorName, entity: lp.entityName, period: period.label,
       url: reportLinkUrl(origin ?? siteOrigin(), token),
       expires_at: expiresAt,
-      note: 'Give the user this link. It opens the PDF for an hour, and only for this member.',
+      note: 'Give the user this link. It opens the PDF for an hour, and only for this member. If they ask again later, call this tool again rather than re-sharing this link.',
     }
   },
 
@@ -486,7 +486,7 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
       vehicles: lpScope.names ?? 'all',
       url: reportLinkUrl(origin ?? siteOrigin(), token),
       expires_at: expiresAt,
-      note: 'Give the user this link. It opens the PDF for an hour, and only for this member.',
+      note: 'Give the user this link. It opens the PDF for an hour, and only for this member. If they ask again later, call this tool again rather than re-sharing this link.',
     }
   },
 }

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { REPORT_LINK_TTL_SECONDS, reportLinkUrl, signReportLink, verifyReportLink } from './report-links'
+import { REPORT_LINK_TTL_SECONDS, isExpiredReportLink, reportLinkUrl, signReportLink, verifyReportLink } from './report-links'
 
 beforeAll(() => { process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-key-for-report-links' })
 
@@ -32,5 +32,27 @@ describe('report links', () => {
 
   it('builds the URL on the origin the caller reached', () => {
     expect(reportLinkUrl('https://fund.test/', 'abc.def')).toBe('https://fund.test/api/agent/reports/abc.def')
+  })
+})
+
+describe('isExpiredReportLink', () => {
+  const claims = { fundId: 'f1', userId: 'u1', kind: 'lp_report_card' as const, args: { investor: 'i1' } }
+
+  it('is true only for a genuine link past its hour', () => {
+    const now = Date.UTC(2026, 9, 11, 12)
+    const { token } = signReportLink(claims, now)
+    expect(isExpiredReportLink(token, now)).toBe(false)
+    expect(isExpiredReportLink(token, now + REPORT_LINK_TTL_SECONDS * 1000)).toBe(true)
+  })
+
+  it('never calls a forged or malformed link expired — those stay "not available"', () => {
+    const now = Date.UTC(2026, 9, 11, 12)
+    const { token } = signReportLink(claims, now)
+    const later = now + REPORT_LINK_TTL_SECONDS * 1000 * 2
+    expect(isExpiredReportLink(`${token}x`, later)).toBe(false)
+    const [, sig] = token.split('.')
+    const forged = Buffer.from(JSON.stringify({ ...claims, userId: 'u2', exp: 1 })).toString('base64url')
+    expect(isExpiredReportLink(`${forged}.${sig}`, later)).toBe(false)
+    expect(isExpiredReportLink('garbage', later)).toBe(false)
   })
 })

@@ -44,23 +44,38 @@ export function signReportLink(claims: Omit<ReportLinkClaims, 'exp'>, now = Date
   return { token: `${body}.${b64(mac(body))}`, expiresAt: new Date(exp * 1000).toISOString() }
 }
 
-/** The claims, or null for anything forged, malformed or expired. */
-export function verifyReportLink(token: string, now = Date.now()): ReportLinkClaims | null {
+/** The claims of a genuine token, expired or not; null for anything forged or malformed. */
+function authenticClaims(token: string): ReportLinkClaims | null {
   const [body, sig, extra] = String(token ?? '').split('.')
   if (!body || !sig || extra !== undefined) return null
   const given = Buffer.from(sig, 'base64url')
   const expected = mac(body)
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null
-  let claims: ReportLinkClaims
   try {
-    claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+    return claims && typeof claims.exp === 'number' ? claims : null
   } catch {
     return null
   }
-  if (!claims || typeof claims.exp !== 'number' || claims.exp * 1000 <= now) return null
+}
+
+/** The claims, or null for anything forged, malformed or expired. */
+export function verifyReportLink(token: string, now = Date.now()): ReportLinkClaims | null {
+  const claims = authenticClaims(token)
+  if (!claims || claims.exp * 1000 <= now) return null
   if (typeof claims.fundId !== 'string' || typeof claims.userId !== 'string') return null
   if (claims.kind !== 'lp_statement' && claims.kind !== 'lp_report_card') return null
   return claims
+}
+
+/**
+ * True only for a link THIS deployment issued whose hour is up — so the route can say "expired" and
+ * mean it, where every other refusal shares one message. That reveals nothing: the expiry is in the
+ * token body for anyone to read, and a forged token is still just "not available".
+ */
+export function isExpiredReportLink(token: string, now = Date.now()): boolean {
+  const claims = authenticClaims(token)
+  return !!claims && claims.exp * 1000 <= now
 }
 
 export function reportLinkUrl(origin: string, token: string): string {
