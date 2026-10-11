@@ -1,5 +1,6 @@
 import { withBotId } from 'botid/next/config'
 import { buildEnforcingCsp } from './lib/security/csp-enforcing.mjs'
+import { pdfTracingIncludes } from './lib/pdf-routes.mjs'
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -21,8 +22,11 @@ const nextConfig = {
   // fund sees every schema marked "not yet seeded" and the schema editor loads
   // empty content. The trace is keyed `/**` so every route that imports
   // firm-schemas.ts gets the files — schemas page, agent stages, render job.
+  //
+  // The PDF routes also get Chromium's binary, which the tracer cannot see (lib/pdf-routes.mjs).
   outputFileTracingIncludes: {
     '/**': ['./lib/memo-agent/defaults/**/*'],
+    ...pdfTracingIncludes(),
   },
   // OAuth discovery lives at /.well-known/*, but Next's app router will not route
   // a literal dot-prefixed directory — so the well-known paths are rewritten onto

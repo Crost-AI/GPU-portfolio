@@ -4,7 +4,7 @@ import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { visibleLpEntityIds } from '@/lib/access/lp-scope'
-import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
+import { resolveVehicle, VehicleResolutionError } from '@/lib/accounting/vehicle-resolver'
 import { customPeriod } from '@/lib/accounting/statement-period'
 import { generateLpStatementPdf } from '@/lib/accounting/lp-statement-pdf'
 import { generateLiveInvestorReportPdf } from '@/lib/lp-report-pdf'
@@ -75,8 +75,13 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
       result = await generateLiveInvestorReportPdf(admin, { fundId: claims.fundId, investorIds: [investor], groups: scope.vehicleNames, ...(omit ? { omit } : {}) })
     }
   } catch (e) {
+    // NOT notFound(). Every check above has passed by now, so saying so reveals nothing — and
+    // answering a render failure with "this link has expired" sent the last one hunting for an
+    // expiry problem while Chromium was missing from the function (lib/pdf-routes.mjs).
+    // The one throw that IS a refusal: resolveVehicle, for a vehicle outside the member's entities.
+    if (e instanceof VehicleResolutionError) return notFound()
     console.error('[agent/reports]', claims.kind, e)
-    return notFound()
+    return NextResponse.json({ error: 'This document could not be generated. Try again, or ask for a new link.' }, { status: 500 })
   }
   if (!result) return notFound()
 
