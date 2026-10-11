@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles } from 'lucide-react'
+import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles, ListChecks } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTheme } from 'next-themes'
@@ -85,6 +85,10 @@ const NAV_ITEMS: NavItem[] = [
   // no grants still has to be able to reach it. What it OFFERS is filtered per-grant inside the
   // page (lib/start/quick-actions.ts).
   { href: '/start', label: 'Start', icon: Sparkles },
+  // The setup checklist (lib/onboarding/progress.ts). Admin-only in the nav because setting a fund
+  // up is an admin's job; the page itself gates on `portfolio` and filters its steps per grant.
+  // Shown whether or not setup is finished — knowing that would cost the sidebar a fetch.
+  { href: '/getting-started', label: 'Getting started', icon: ListChecks, adminOnly: true },
   { href: '/emails', label: 'Inbound', icon: Mail, domain: 'portfolio' },
   { href: '/deals', label: 'Deals', icon: Lightbulb, featureKey: 'deals' },
   {

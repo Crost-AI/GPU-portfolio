@@ -8,7 +8,19 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { CheckCircle2, Circle, Loader2, X, Plus, Building2, HardDrive } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Check, CheckCircle2, Circle, Loader2, X, Plus, Building2, HardDrive } from 'lucide-react'
+import {
+  WIZARD_PRODUCTS,
+  WIZARD_STEP_LABELS,
+  needsFirstEntity,
+  stepsFor,
+  type SkippableStep,
+  type WizardAIProvider,
+  type WizardProduct,
+  type WizardStep,
+} from '@/lib/onboarding/wizard'
+import { VEHICLE_KIND_OPTIONS, type VehicleKind } from '@/lib/vehicle-kinds'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,7 +33,9 @@ interface Sender {
 
 interface OnboardingState {
   fundId: string | null
+  fundName: string
   webhookToken: string | null
+  products: WizardProduct[]
 }
 
 interface MatchingFund {
@@ -29,43 +43,54 @@ interface MatchingFund {
   name: string
 }
 
+const DEFAULT_PRODUCTS: WizardProduct[] = WIZARD_PRODUCTS.filter(p => p.defaultOn).map(p => p.key)
+
+/** Where the wizard lands when the person presses Finish (or skips the last step). */
+const FINISH_PATH = '/getting-started'
+
+async function skipStep(step: SkippableStep): Promise<void> {
+  // Best effort: remembering the skip only matters for resuming after a refresh.
+  await fetch('/api/onboarding/fund', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'skip', step }),
+  }).catch(() => undefined)
+}
+
 // ---------------------------------------------------------------------------
 // Step indicator
 // ---------------------------------------------------------------------------
 
-const STEPS = [
-  { n: 1, label: 'Fund setup' },
-  { n: 2, label: 'Email integration' },
-  { n: 3, label: 'Senders' },
-  { n: 4, label: 'Google Drive' },
-]
-
-function StepIndicator({ current }: { current: number }) {
+function StepIndicator({ steps, current }: { steps: WizardStep[]; current: WizardStep }) {
+  const currentIndex = steps.indexOf(current)
   return (
-    <div className="flex items-center gap-2 mb-8">
-      {STEPS.map((step, i) => (
-        <div key={step.n} className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            {current > step.n ? (
-              <CheckCircle2 className="h-5 w-5 text-primary" />
-            ) : current === step.n ? (
-              <div className="h-5 w-5 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-[10px] font-bold text-primary-foreground">{step.n}</span>
-              </div>
-            ) : (
-              <Circle className="h-5 w-5 text-muted-foreground" />
+    <div className="mb-8">
+      <div className="flex items-center gap-2">
+        {steps.map((step, i) => (
+          <div key={step} className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5" aria-label={WIZARD_STEP_LABELS[step]} title={WIZARD_STEP_LABELS[step]}>
+              {i < currentIndex ? (
+                <CheckCircle2 className="h-5 w-5 text-primary" />
+              ) : i === currentIndex ? (
+                <div className="h-5 w-5 rounded-full bg-primary flex items-center justify-center">
+                  <span className="text-[10px] font-bold text-primary-foreground tabular-nums">{i + 1}</span>
+                </div>
+              ) : (
+                <Circle className="h-5 w-5 text-muted-foreground" />
+              )}
+              {i === currentIndex && (
+                <span className="text-sm font-medium">{WIZARD_STEP_LABELS[step]}</span>
+              )}
+            </div>
+            {i < steps.length - 1 && (
+              <div className="w-6 h-px bg-border mx-1" />
             )}
-            <span
-              className={`text-sm ${ current === step.n ? 'font-medium' : 'text-muted-foreground' }`}
-            >
-              {step.label}
-            </span>
           </div>
-          {i < STEPS.length - 1 && (
-            <div className="w-8 h-px bg-border mx-1" />
-          )}
-        </div>
-      ))}
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground mt-2 tabular-nums">
+        Step {currentIndex + 1} of {steps.length}
+      </p>
     </div>
   )
 }
@@ -93,14 +118,14 @@ function OnboardingContent() {
   const [loading, setLoading] = useState(true)
   const [matchingFund, setMatchingFund] = useState<MatchingFund | null>(null)
   const [mode, setMode] = useState<'detect' | 'join' | 'create'>('detect')
-  const [step, setStep] = useState(1)
-  const [state, setState] = useState<OnboardingState>({ fundId: null, webhookToken: null })
+  const [step, setStep] = useState<WizardStep>('fund')
+  const [state, setState] = useState<OnboardingState>({
+    fundId: null, fundName: '', webhookToken: null, products: DEFAULT_PRODUCTS,
+  })
   const emailConfirmed = searchParams.get('confirmed') === 'true'
+  const googleConnected = searchParams.get('google_connected') === 'true'
 
   const detectFund = useCallback(async () => {
-    // Check if returning from Google Drive OAuth
-    const googleConnected = searchParams.get('google_connected') === 'true'
-
     // Check if the user has an in-progress onboarding to resume
     const statusRes = await fetch('/api/onboarding/fund')
     if (statusRes.ok) {
@@ -110,16 +135,18 @@ function OnboardingContent() {
         return
       }
       if (status.fundId) {
-        setState({ fundId: status.fundId, webhookToken: status.webhookToken })
+        setState({
+          fundId: status.fundId,
+          fundName: status.fundName ?? '',
+          webhookToken: status.webhookToken ?? null,
+          products: Array.isArray(status.products) ? status.products : DEFAULT_PRODUCTS,
+        })
 
-        if (googleConnected) {
-          // Returning from Google OAuth — go to step 4 with success
-          setStep(4)
-        } else if (status.step === 'complete') {
-          // All required steps done, show optional Google Drive step
-          setStep(4)
-        } else if (typeof status.step === 'number' && status.step > 1) {
-          setStep(status.step)
+        if (googleConnected || status.step === 'complete') {
+          // Returning from Google OAuth, or everything else done: the Google Drive step
+          setStep('drive')
+        } else if (typeof status.step === 'string' && status.step in WIZARD_STEP_LABELS) {
+          setStep(status.step as WizardStep)
         }
 
         setMode('create')
@@ -142,7 +169,7 @@ function OnboardingContent() {
 
     setMode('create')
     setLoading(false)
-  }, [router, searchParams])
+  }, [router, googleConnected])
 
   useEffect(() => { detectFund() }, [detectFund])
 
@@ -167,6 +194,15 @@ function OnboardingContent() {
     return <JoinFundScreen fund={matchingFund} onCreateInstead={() => setMode('create')} confirmedBanner={confirmedBanner} />
   }
 
+  const steps = stepsFor(state.products)
+  // A resumed step that this product mix no longer shows (portfolio tracking turned off) falls
+  // through to the last one.
+  const current: WizardStep = steps.includes(step) ? step : 'drive'
+  const advance = (from: WizardStep, products: WizardProduct[] = state.products) => {
+    const order = stepsFor(products)
+    setStep(order[order.indexOf(from) + 1] ?? 'drive')
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
       <div className="w-full max-w-lg">
@@ -174,37 +210,52 @@ function OnboardingContent() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Set up your fund</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            This takes about 3 minutes. You can update everything later in Settings.
+            About 5 minutes. Only the first two steps are needed now; everything after them can be
+            set up later, and all of it can be changed in Settings.
           </p>
         </div>
 
-        <StepIndicator current={step} />
+        <StepIndicator steps={steps} current={current} />
 
-        {step === 1 && (
-          <Step1
-            onComplete={(fundId, webhookToken) => {
-              setState({ fundId, webhookToken })
-              setStep(2)
+        {current === 'fund' && (
+          <FundStep
+            initialName={state.fundName}
+            onComplete={(fundId, webhookToken, fundName) => {
+              setState(s => ({ ...s, fundId, fundName, webhookToken: webhookToken ?? s.webhookToken }))
+              advance('fund')
             }}
           />
         )}
-        {step === 2 && state.fundId && state.webhookToken && (
-          <Step2
+        {current === 'products' && state.fundId && (
+          <ProductsStep
+            fundName={state.fundName}
+            initialProducts={state.products}
+            onBack={() => setStep('fund')}
+            onComplete={products => {
+              setState(s => ({ ...s, products }))
+              advance('products', products)
+            }}
+          />
+        )}
+        {current === 'inbound' && state.fundId && (
+          <InboundStep
             fundId={state.fundId}
             webhookToken={state.webhookToken}
-            onComplete={() => setStep(3)}
+            onComplete={() => advance('inbound')}
+            onSkip={async () => { await skipStep('inbound'); advance('inbound') }}
           />
         )}
-        {step === 3 && state.fundId && (
-          <Step3
+        {current === 'senders' && state.fundId && (
+          <SendersStep
             fundId={state.fundId}
-            onComplete={() => setStep(4)}
+            onComplete={() => advance('senders')}
+            onSkip={async () => { await skipStep('senders'); advance('senders') }}
           />
         )}
-        {step === 4 && (
-          <Step4
-            googleConnected={searchParams.get('google_connected') === 'true'}
-            onComplete={() => router.push('/dashboard')}
+        {current === 'drive' && (
+          <DriveStep
+            googleConnected={googleConnected}
+            onFinish={() => router.push(FINISH_PATH)}
           />
         )}
       </div>
@@ -317,11 +368,93 @@ function JoinFundScreen({
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Fund name + Claude API key
+// Shared bits
 // ---------------------------------------------------------------------------
 
-function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: string) => void }) {
-  const [fundName, setFundName] = useState('')
+/** A selectable tile — the provider picker and the product checklist share it. */
+function ChoiceTile({
+  selected,
+  onClick,
+  title,
+  description,
+  role = 'radio',
+}: {
+  selected: boolean
+  onClick: () => void
+  title: string
+  description?: string
+  role?: 'radio' | 'checkbox'
+}) {
+  return (
+    <button
+      type="button"
+      role={role}
+      aria-checked={selected}
+      onClick={onClick}
+      className={`w-full rounded-lg border px-4 py-3 text-left text-sm transition-colors ${ selected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-accent' }`}
+    >
+      <span className="flex items-start gap-3">
+        {role === 'checkbox' && (
+          <span
+            className={`mt-0.5 h-4 w-4 shrink-0 rounded-sm border flex items-center justify-center ${ selected ? 'border-primary bg-primary text-primary-foreground' : 'border-input' }`}
+            aria-hidden
+          >
+            {selected && <Check className="h-3 w-3" />}
+          </span>
+        )}
+        <span className="min-w-0">
+          <span className="font-medium">{title}</span>
+          {description && <span className="block text-xs text-muted-foreground mt-0.5">{description}</span>}
+        </span>
+      </span>
+    </button>
+  )
+}
+
+function StepError({ error }: { error: string | null }) {
+  if (!error) return null
+  return (
+    <Alert variant="destructive">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
+  )
+}
+
+/** The "Set up later" link under a step's primary button. */
+function LaterButton({ onClick, busy, children = 'Set up later' }: { onClick: () => void; busy?: boolean; children?: React.ReactNode }) {
+  return (
+    <Button variant="ghost" className="w-full text-muted-foreground" onClick={onClick} disabled={busy}>
+      {children}
+    </Button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Step: Your fund — name + AI provider key (optional)
+// ---------------------------------------------------------------------------
+
+const AI_PROVIDERS: {
+  key: WizardAIProvider
+  label: string
+  placeholder: string
+  consoleUrl: string
+  consoleLabel: string
+  testUrl: string | null
+}[] = [
+  { key: 'anthropic', label: 'Claude', placeholder: 'sk-ant-…', consoleUrl: 'https://console.anthropic.com', consoleLabel: 'console.anthropic.com', testUrl: '/api/test-claude-key' },
+  { key: 'openai', label: 'OpenAI', placeholder: 'sk-…', consoleUrl: 'https://platform.openai.com/api-keys', consoleLabel: 'platform.openai.com', testUrl: '/api/test-openai-key' },
+  { key: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-…', consoleUrl: 'https://openrouter.ai/keys', consoleLabel: 'openrouter.ai', testUrl: null },
+]
+
+function FundStep({
+  initialName,
+  onComplete,
+}: {
+  initialName: string
+  onComplete: (fundId: string, webhookToken: string | null, fundName: string) => void
+}) {
+  const [fundName, setFundName] = useState(initialName)
+  const [provider, setProvider] = useState<WizardAIProvider>('anthropic')
   const [apiKey, setApiKey] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<'success' | 'error' | null>(null)
@@ -329,13 +462,15 @@ function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: stri
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const meta = AI_PROVIDERS.find(p => p.key === provider)!
+
   async function testKey() {
-    if (!apiKey.trim()) return
+    if (!apiKey.trim() || !meta.testUrl) return
     setTesting(true)
     setTestResult(null)
     setTestError(null)
     try {
-      const res = await fetch('/api/test-claude-key', {
+      const res = await fetch(meta.testUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey }),
@@ -354,22 +489,31 @@ function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: stri
     setTesting(false)
   }
 
-  async function submit() {
-    if (!fundName.trim() || !apiKey.trim()) {
-      setError('Both fields are required.')
+  async function submit(withKey: boolean) {
+    if (!fundName.trim()) {
+      setError('Give your fund a name.')
+      return
+    }
+    if (withKey && !apiKey.trim()) {
+      setError('Paste an API key, or choose “Skip — add a key later”.')
       return
     }
     setError(null)
     setSaving(true)
     try {
+      const body: Record<string, string> = { fundName: fundName.trim() }
+      if (withKey) {
+        body.aiProvider = provider
+        body.apiKey = apiKey.trim()
+      }
       const res = await fetch('/api/onboarding/fund', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fundName, claudeApiKey: apiKey }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
-      onComplete(data.fundId, data.webhookToken)
+      onComplete(data.fundId, data.webhookToken ?? null, fundName.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     }
@@ -379,17 +523,14 @@ function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: stri
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Fund name &amp; Claude API key</CardTitle>
+        <CardTitle>Your fund</CardTitle>
         <CardDescription>
-          Your API key is encrypted before storage and never exposed.
+          Name it, and connect the AI provider you want to use. Keys are encrypted before storage
+          and never shown again.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+        <StepError error={error} />
 
         <div className="space-y-2">
           <Label htmlFor="fund-name">Fund name</Label>
@@ -402,22 +543,43 @@ function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: stri
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="api-key">Claude API key</Label>
+          <Label>AI provider</Label>
+          <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="AI provider">
+            {AI_PROVIDERS.map(p => (
+              <ChoiceTile
+                key={p.key}
+                selected={provider === p.key}
+                title={p.label}
+                onClick={() => {
+                  setProvider(p.key)
+                  setTestResult(null)
+                  setTestError(null)
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="api-key">{meta.label} API key</Label>
           <div className="flex gap-2">
             <Input
               id="api-key"
               type="password"
-              placeholder="sk-ant-…"
+              placeholder={meta.placeholder}
               value={apiKey}
               onChange={e => {
                 setApiKey(e.target.value)
                 setTestResult(null)
               }}
-              className="flex-1"
+              className="flex-1 font-mono"
+              autoComplete="off"
             />
-            <Button variant="outline" onClick={testKey} disabled={testing || !apiKey.trim()}>
-              {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test'}
-            </Button>
+            {meta.testUrl && (
+              <Button variant="outline" onClick={testKey} disabled={testing || !apiKey.trim()}>
+                {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test'}
+              </Button>
+            )}
           </div>
           {testResult === 'success' && (
             <p className="text-sm text-success flex items-center gap-1">
@@ -429,51 +591,218 @@ function Step1({ onComplete }: { onComplete: (fundId: string, webhookToken: stri
           )}
           <p className="text-xs text-muted-foreground">
             Get your key at{' '}
-            <a
-              href="https://console.anthropic.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline"
-            >
-              console.anthropic.com
+            <a href={meta.consoleUrl} target="_blank" rel="noopener noreferrer" className="underline">
+              {meta.consoleLabel}
             </a>
+            {provider === 'openrouter' && '. The model and endpoint can be changed in Settings, where you can also test the connection.'}
           </p>
         </div>
 
-        <Button className="w-full" onClick={submit} disabled={saving}>
-          {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
-        </Button>
+        <div className="space-y-2">
+          <Button className="w-full" onClick={() => submit(true)} disabled={saving}>
+            {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
+          </Button>
+          <LaterButton onClick={() => submit(false)} busy={saving}>
+            Skip — add a key later
+          </LaterButton>
+          <p className="text-xs text-muted-foreground text-center">
+            Without a key, AI imports, the Analyst and drafting a forecast stay off until you add one in Settings.
+          </p>
+        </div>
       </CardContent>
     </Card>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Inbound email setup (Postmark or Mailgun)
+// Step: What will you run here? — products + the first fund entity
 // ---------------------------------------------------------------------------
 
-function Step2({
+function ProductsStep({
+  fundName,
+  initialProducts,
+  onBack,
+  onComplete,
+}: {
+  fundName: string
+  initialProducts: WizardProduct[]
+  onBack: () => void
+  onComplete: (products: WizardProduct[]) => void
+}) {
+  const [products, setProducts] = useState<WizardProduct[]>(initialProducts)
+  const [entityName, setEntityName] = useState(fundName)
+  const [entityKind, setEntityKind] = useState<VehicleKind>(() =>
+    initialProducts.includes('management_company') && !initialProducts.includes('fund_operations') && !initialProducts.includes('lp_reporting')
+      ? 'manco'
+      : 'fund')
+  const [vintageYear, setVintageYear] = useState(String(new Date().getFullYear()))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const wantsEntity = needsFirstEntity(products)
+  const mancoOn = products.includes('management_company')
+  const kindOptions = VEHICLE_KIND_OPTIONS.filter(o => o.value !== 'manco' || mancoOn)
+  // Only the manco chosen: the first entity is the management company itself.
+  const onlyManco = mancoOn && !products.includes('fund_operations') && !products.includes('lp_reporting')
+  const effectiveKind: VehicleKind = entityKind === 'manco' && !mancoOn ? 'fund' : entityKind
+
+  function toggle(p: WizardProduct) {
+    const next = products.includes(p) ? products.filter(x => x !== p) : [...products, p]
+    const nextOnlyManco = next.includes('management_company') && !next.includes('fund_operations') && !next.includes('lp_reporting')
+    setProducts(next)
+    if (nextOnlyManco) setEntityKind('manco')
+    else if (entityKind === 'manco' && (onlyManco || !next.includes('management_company'))) setEntityKind('fund')
+  }
+
+  async function submit() {
+    if (products.length === 0) {
+      setError('Choose at least one. You can turn the rest on later in Settings.')
+      return
+    }
+    if (wantsEntity && !entityName.trim()) {
+      setError('Name the first entity.')
+      return
+    }
+    if (wantsEntity && vintageYear.trim() && !/^\d{4}$/.test(vintageYear.trim())) {
+      setError('Vintage year must be a year like 2024.')
+      return
+    }
+    setError(null)
+    setSaving(true)
+    try {
+      const body: Record<string, unknown> = { action: 'products', products }
+      if (wantsEntity) {
+        body.entity = { name: entityName.trim(), kind: effectiveKind, vintageYear: vintageYear.trim() || null }
+      }
+      const res = await fetch('/api/onboarding/fund', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      onComplete(products)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    }
+    setSaving(false)
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>What will you run here?</CardTitle>
+        <CardDescription>
+          Pick what you need today. Each one can be turned on or off later in Settings, so there is
+          no wrong answer.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <StepError error={error} />
+
+        <div className="space-y-2">
+          {WIZARD_PRODUCTS.map(p => (
+            <ChoiceTile
+              key={p.key}
+              role="checkbox"
+              selected={products.includes(p.key)}
+              title={p.label}
+              description={p.description}
+              onClick={() => toggle(p.key)}
+            />
+          ))}
+        </div>
+
+        {wantsEntity && (
+          <div className="space-y-4 rounded-card border p-4">
+            <div>
+              <h2 className="text-base font-medium">{onlyManco ? 'Your management company' : 'Your first fund entity'}</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Books and LP capital are kept per entity. Start with one; you can add SPVs and other
+                entities later.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="entity-name">Name</Label>
+              <Input
+                id="entity-name"
+                value={entityName}
+                placeholder={fundName || 'Acme Ventures Fund I'}
+                onChange={e => setEntityName(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="entity-kind">Kind</Label>
+                <Select value={effectiveKind} onValueChange={v => setEntityKind(v as VehicleKind)}>
+                  <SelectTrigger id="entity-kind">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {kindOptions.map(o => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="entity-vintage">Vintage year</Label>
+                <Input
+                  id="entity-vintage"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={vintageYear}
+                  onChange={e => setVintageYear(e.target.value.replace(/\D/g, ''))}
+                  className="tabular-nums"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onBack} disabled={saving}>
+            ← Back
+          </Button>
+          <Button className="flex-1" onClick={submit} disabled={saving}>
+            {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Step: Inbound email (Postmark or Mailgun) — optional
+// ---------------------------------------------------------------------------
+
+function InboundStep({
   fundId,
   webhookToken,
   onComplete,
+  onSkip,
 }: {
   fundId: string
-  webhookToken: string
+  webhookToken: string | null
   onComplete: () => void
+  onSkip: () => Promise<void>
 }) {
   const [provider, setProvider] = useState<'postmark' | 'mailgun'>('postmark')
   const [inboundAddress, setInboundAddress] = useState('')
   const [mgDomain, setMgDomain] = useState('')
   const [mgSigningKey, setMgSigningKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const [skipping, setSkipping] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const defaultBase = typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
     : ''
   const [baseUrl, setBaseUrl] = useState(defaultBase)
-  const postmarkWebhookUrl = `${baseUrl}/api/inbound-email?token=${webhookToken}`
+  const postmarkWebhookUrl = webhookToken ? `${baseUrl}/api/inbound-email?token=${webhookToken}` : null
   const mailgunWebhookUrl = `${baseUrl}/api/inbound-email/mailgun`
+  const webhookUrl = provider === 'postmark' ? postmarkWebhookUrl : mailgunWebhookUrl
 
   async function submit() {
     if (provider === 'postmark' && !inboundAddress.trim()) {
@@ -511,41 +840,30 @@ function Step2({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Inbound email integration</CardTitle>
+        <CardTitle>Inbound email</CardTitle>
         <CardDescription>
-          Choose how portfolio companies will send reports to your fund.
+          Give your fund an address that portfolio companies (or you) forward updates to. Each email
+          is read and its metrics and highlights are filed against the right company.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+        <StepError error={error} />
 
         <div className="space-y-2">
           <Label>Email provider</Label>
-          <div className="flex gap-2">
-            <button
-              type="button"
+          <div className="flex gap-2" role="radiogroup" aria-label="Email provider">
+            <ChoiceTile
+              selected={provider === 'postmark'}
               onClick={() => setProvider('postmark')}
-              className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition-colors ${ provider === 'postmark' ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-accent' }`}
-            >
-              <span className="font-medium">Postmark</span>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Managed inbound address with webhook forwarding
-              </p>
-            </button>
-            <button
-              type="button"
+              title="Postmark"
+              description="Managed inbound address with webhook forwarding"
+            />
+            <ChoiceTile
+              selected={provider === 'mailgun'}
               onClick={() => setProvider('mailgun')}
-              className={`flex-1 rounded-lg border px-4 py-3 text-left text-sm transition-colors ${ provider === 'mailgun' ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-accent' }`}
-            >
-              <span className="font-medium">Mailgun</span>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Route emails from your own domain
-              </p>
-            </button>
+              title="Mailgun"
+              description="Route emails from your own domain"
+            />
           </div>
         </div>
 
@@ -563,20 +881,24 @@ function Step2({
 
         <div className="space-y-2">
           <Label>Your webhook URL</Label>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 bg-muted rounded-md px-3 py-2 text-xs break-all font-mono">
-              {provider === 'postmark' ? postmarkWebhookUrl : mailgunWebhookUrl}
-            </code>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => navigator.clipboard.writeText(
-                provider === 'postmark' ? postmarkWebhookUrl : mailgunWebhookUrl
-              )}
-            >
-              Copy
-            </Button>
-          </div>
+          {webhookUrl ? (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-muted rounded-md px-3 py-2 text-xs break-all font-mono">
+                {webhookUrl}
+              </code>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigator.clipboard.writeText(webhookUrl)}
+              >
+                Copy
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Your Postmark webhook URL is shown under Settings → Inbound email.
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             {provider === 'postmark' ? (
               <>
@@ -646,23 +968,41 @@ function Step2({
           </>
         )}
 
-        <Button className="w-full" onClick={submit} disabled={saving}>
-          {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
-        </Button>
+        <div className="space-y-2">
+          <Button className="w-full" onClick={submit} disabled={saving || skipping}>
+            {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
+          </Button>
+          <LaterButton
+            busy={saving || skipping}
+            onClick={async () => { setSkipping(true); await onSkip(); setSkipping(false) }}
+          />
+          <p className="text-xs text-muted-foreground text-center">
+            Until this is set up, you can still add companies and metrics by hand or by import.
+          </p>
+        </div>
       </CardContent>
     </Card>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: Authorized senders
+// Step: Authorized senders — optional
 // ---------------------------------------------------------------------------
 
-function Step3({ fundId, onComplete }: { fundId: string; onComplete: () => void }) {
+function SendersStep({
+  fundId,
+  onComplete,
+  onSkip,
+}: {
+  fundId: string
+  onComplete: () => void
+  onSkip: () => Promise<void>
+}) {
   const [senders, setSenders] = useState<Sender[]>([])
   const [newEmail, setNewEmail] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [saving, setSaving] = useState(false)
+  const [skipping, setSkipping] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   function addSender() {
@@ -677,9 +1017,11 @@ function Step3({ fundId, onComplete }: { fundId: string; onComplete: () => void 
   }
 
   async function submit() {
-    const valid = senders.filter(s => s.email.trim())
+    // An address typed but not yet added with "+" still counts.
+    const pending = newEmail.trim() ? [{ email: newEmail.trim(), label: newLabel.trim() }] : []
+    const valid = [...senders, ...pending].filter(s => s.email.trim())
     if (valid.length === 0) {
-      setError('Add at least one authorized sender.')
+      setError('Add at least one authorized sender, or choose “Set up later”.')
       return
     }
     setError(null)
@@ -704,16 +1046,12 @@ function Step3({ fundId, onComplete }: { fundId: string; onComplete: () => void 
       <CardHeader>
         <CardTitle>Authorized senders</CardTitle>
         <CardDescription>
-          Only emails from these addresses will trigger report parsing. Add founders,
-          CFOs, and anyone who will send portfolio reports.
+          Whose emails are trusted. Only mail from these addresses is parsed; anything else is
+          ignored. Add yourself, plus the founders and CFOs who send you reports.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
+        <StepError error={error} />
 
         {/* Sender list */}
         {senders.length > 0 && (
@@ -733,6 +1071,7 @@ function Step3({ fundId, onComplete }: { fundId: string; onComplete: () => void 
                   size="icon"
                   onClick={() => removeSender(i)}
                   className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                  aria-label={`Remove ${sender.email}`}
                 >
                   <X className="h-4 w-4" />
                 </Button>
@@ -760,37 +1099,44 @@ function Step3({ fundId, onComplete }: { fundId: string; onComplete: () => void 
               onKeyDown={e => e.key === 'Enter' && addSender()}
               className="w-36"
             />
-            <Button variant="outline" size="icon" onClick={addSender} disabled={!newEmail.trim()}>
+            <Button variant="outline" size="icon" onClick={addSender} disabled={!newEmail.trim()} aria-label="Add sender">
               <Plus className="h-4 w-4" />
             </Button>
           </div>
         </div>
 
-        <Button className="w-full" onClick={submit} disabled={saving}>
-          {saving ? (
-            <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</>
-          ) : (
-            'Next →'
-          )}
-        </Button>
+        <div className="space-y-2">
+          <Button className="w-full" onClick={submit} disabled={saving || skipping}>
+            {saving ? (
+              <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</>
+            ) : (
+              'Next →'
+            )}
+          </Button>
+          <LaterButton
+            busy={saving || skipping}
+            onClick={async () => { setSkipping(true); await onSkip(); setSkipping(false) }}
+          />
+        </div>
       </CardContent>
     </Card>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: Google Drive (optional)
+// Step: Google Drive — optional, last
 // ---------------------------------------------------------------------------
 
-function Step4({
+function DriveStep({
   googleConnected,
-  onComplete,
+  onFinish,
 }: {
   googleConnected: boolean
-  onComplete: () => void
+  onFinish: () => void
 }) {
   const [configured, setConfigured] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
+  const [finishing, setFinishing] = useState(false)
 
   // Credential entry
   const [clientId, setClientId] = useState('')
@@ -826,13 +1172,34 @@ function Step4({
     }
   }
 
+  async function finish() {
+    setFinishing(true)
+    setConnectError(null)
+    try {
+      if (!googleConnected) await skipStep('drive')
+      const res = await fetch('/api/onboarding/fund', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'finish' }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Could not finish setup')
+      }
+      onFinish()
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : 'Could not finish setup')
+      setFinishing(false)
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Google Drive</CardTitle>
         <CardDescription>
-          Optionally connect Google Drive to automatically save email attachments and reports to a folder.
-          You can always set this up later in Settings.
+          Optional. Connect Google Drive to save email attachments and reports to a folder you
+          choose. Without it, files are kept in the app&apos;s own storage.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -860,16 +1227,18 @@ function Step4({
 
             <div className="space-y-2">
               <div>
-                <Label>Client ID</Label>
+                <Label htmlFor="google-client-id">Client ID</Label>
                 <Input
+                  id="google-client-id"
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
                   placeholder="123456789.apps.googleusercontent.com"
                 />
               </div>
               <div>
-                <Label>Client secret</Label>
+                <Label htmlFor="google-client-secret">Client secret</Label>
                 <Input
+                  id="google-client-secret"
                   type="password"
                   value={clientSecret}
                   onChange={(e) => setClientSecret(e.target.value)}
@@ -881,7 +1250,7 @@ function Step4({
                 <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="underline">
                   Google Cloud Console
                 </a>
-                . Add <code className="text-[11px] bg-muted px-1 rounded">{typeof window !== 'undefined' ? window.location.origin : ''}/api/auth/google/callback</code> as an authorized redirect URI.
+                . Add <code className="text-[11px] bg-muted px-1 rounded-sm font-mono">{typeof window !== 'undefined' ? window.location.origin : ''}/api/auth/google/callback</code> as an authorized redirect URI.
               </p>
               <Button
                 className="w-full"
@@ -906,11 +1275,7 @@ function Step4({
           </div>
         )}
 
-        {connectError && (
-          <Alert variant="destructive">
-            <AlertDescription>{connectError}</AlertDescription>
-          </Alert>
-        )}
+        <StepError error={connectError} />
 
         <div className="space-y-2">
           {!googleConnected && configured && (
@@ -926,8 +1291,9 @@ function Step4({
             </Button>
           )}
 
-          <Button className="w-full" onClick={onComplete}>
-            {googleConnected ? 'Finish setup' : 'Skip for now'}
+          <Button className="w-full" onClick={finish} disabled={finishing}>
+            {finishing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+            {googleConnected ? 'Finish setup' : 'Set up later and finish'}
           </Button>
         </div>
       </CardContent>

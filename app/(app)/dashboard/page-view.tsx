@@ -7,6 +7,7 @@ import { AnalystToggleButton } from '@/components/analyst-button'
 import { AnalystPanel } from '@/components/analyst-panel'
 import type { DashboardPageData } from './load'
 import { PortfolioSheetView } from '@/components/portfolio-sheet'
+import { GettingStartedBanner } from '@/components/getting-started-banner'
 
 export function DashboardPageView({ companies, entityOptions, initialExcluded, hasSavedSelection, canAdd, isAdmin, userId }: DashboardPageData) {
   // The entity selection drives both the company list and the holdings sheet below it.
@@ -16,6 +17,7 @@ export function DashboardPageView({ companies, entityOptions, initialExcluded, h
   return (
     <DashboardNotesLayout userId={userId} isAdmin={isAdmin} companies={companies.map(c => ({ id: c.id, name: c.name }))}>
     <div className="p-4 md:py-8 md:pl-8 md:pr-4">
+      <GettingStartedBanner isAdmin={isAdmin} className="mb-4 max-w-page" />
       <div className="mb-4 space-y-1">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold tracking-tight">Portfolio</h1>

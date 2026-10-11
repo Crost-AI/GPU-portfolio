@@ -8,6 +8,8 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { rateLimit } from '@/lib/rate-limit'
+import { ensureCapitalAccounts } from '@/lib/accounting/persist'
+import { ensureVehicleInvestments } from '@/lib/lp-import/ensure-investments'
 import {
   parseLpData, resolveOrCreateEntity, loadEntityCaches, toSafeNumber, MAX_LP_IMPORT_SIZE,
 } from '@/lib/lp-import/parse'
@@ -22,6 +24,10 @@ import {
 //
 // It also refreshes `commitment_events` from the pasted commitments, so the commitment shown
 // on the ledger side and in reports stays consistent with the latest paste.
+//
+// And it makes the imported partners visible to accounting: every entity gets an lp_investments
+// row for the vehicle and a capital account, exactly what the accounting Add-LP path creates.
+// Without them the vehicle read "No partners yet" (see lib/lp-import/ensure-investments.ts).
 //
 // POST { group, asOfDate, data }  — `data` is the pasted text; the AI maps the columns.
 
@@ -124,8 +130,34 @@ export async function POST(req: NextRequest) {
     await (admin as any).from('commitment_events').insert(newCommitRows)
   }
 
+  // Partners for accounting. Seeded from each entity's latest dated commitment for the vehicle (not
+  // necessarily this paste, which may be back-dated); existing rows are left alone.
+  const uniqueEntityIds = Array.from(new Set(entityIds))
+  const { data: latestPositions } = await (admin as any).from('lp_positions')
+    .select('lp_entity_id, commitment, as_of_date')
+    .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).in('lp_entity_id', uniqueEntityIds)
+    .order('as_of_date', { ascending: false })
+  const seedCommitment = new Map<string, number | null>(uniqueEntityIds.map(id => [id, null]))
+  const seen = new Set<string>()
+  for (const p of ((latestPositions as any[]) ?? [])) {
+    const c = toSafeNumber(p.commitment)
+    if (c == null || seen.has(p.lp_entity_id) || !seedCommitment.has(p.lp_entity_id)) continue
+    seen.add(p.lp_entity_id)
+    seedCommitment.set(p.lp_entity_id, c)
+  }
+  let partnersCreated = 0
+  try {
+    partnersCreated = (await ensureVehicleInvestments(admin, gate.fundId, group, seedCommitment)).created
+    await ensureCapitalAccounts(admin, gate.fundId, group, uniqueEntityIds)
+  } catch (e) {
+    // Positions are written; say what didn't land rather than failing the whole import.
+    console.error('[accounting-positions-import] partners for accounting', e)
+    errors.push('Positions saved, but the partners could not be added to accounting. Re-run the import to retry.')
+  }
+
   return NextResponse.json({
     ok: true,
+    partnersCreated,
     asOfDate,
     vehicle: group,
     written: positionRows.length,

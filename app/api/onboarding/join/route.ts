@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimit, getClientIp } from '@/lib/rate-limit'
 import { dbError } from '@/lib/api-error'
+import { claimableEmailDomain } from '@/lib/onboarding/wizard'
 
 export async function POST(req: NextRequest) {
   // Rate limit: 10 requests per 5 minutes per IP
@@ -52,7 +53,9 @@ export async function POST(req: NextRequest) {
 
   if (!fund) return NextResponse.json({ error: 'Fund not found' }, { status: 404 })
 
-  const userDomain = user.email?.split('@')[1]?.toLowerCase()
+  // A shared consumer domain (gmail.com …) proves nothing about who the caller works for, so it
+  // never matches — even against a fund created before funds stopped claiming such domains.
+  const userDomain = claimableEmailDomain(user.email)
   if (!userDomain || fund.email_domain?.toLowerCase() !== userDomain) {
     return NextResponse.json({ error: 'Email domain does not match this fund' }, { status: 403 })
   }

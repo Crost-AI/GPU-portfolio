@@ -351,7 +351,9 @@ function ImportBox({ group, onImported }: { group: string; onImported: () => voi
     const d = await res.json()
     setBusy(false)
     if (!res.ok) { setMsg(d.error ?? 'Import failed'); return }
-    setMsg(`Imported ${d.written} positions as of ${d.asOfDate}.`)
+    setMsg(`Imported ${d.written} positions as of ${d.asOfDate}.`
+      + (d.partnersCreated ? ` ${d.partnersCreated} partner${d.partnersCreated === 1 ? '' : 's'} added to accounting.` : '')
+      + (Array.isArray(d.errors) && d.errors.length ? ` ${d.errors.join(' ')}` : ''))
     setText('')
     onImported()
   }
@@ -365,7 +367,11 @@ function ImportBox({ group, onImported }: { group: string; onImported: () => voi
       <p className="text-xs text-muted-foreground">
         Paste a statement — the AI maps the columns (commitment, called/paid-in, distributions, NAV, and Net IRR if present).
         Each import is the cumulative position as of a date; re-importing a date replaces it. The table above is derived
-        from the dates you keep.
+        from the dates you keep. Imported partners are added to this entity&apos;s accounting with their commitment.{' '}
+        <a href="/templates/lp-import.csv" download className="underline underline-offset-4 hover:text-foreground">
+          Download a template
+        </a>{' '}
+        (the Vehicle column is ignored here — rows go to the entity you&apos;re viewing).
       </p>
       <label className="text-xs text-muted-foreground flex items-center gap-2">
         As of

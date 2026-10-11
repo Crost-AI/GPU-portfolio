@@ -66,6 +66,7 @@ See [LICENSE](./LICENSE.md) for full terms.
 - **Deploy to Netlify or Vercel** — One-click deploy buttons available in the full guide
 - **Configure auth and add your first user** — Set Supabase redirect URLs and whitelist your email
 - **Add an AI key and forward your first email** — Anthropic, OpenAI, Gemini, or run your LLM locally
+- **Set up your fund** — entity, LPs, investments, then open the books, with CSV templates: [Setting up a new fund](./DOCS.md#setting-up-a-new-fund)
 
 Full deployment guide with detailed steps, optional services, and local development setup: [DOCS](./DOCS.md)
 
