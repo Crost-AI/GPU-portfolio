@@ -6,25 +6,24 @@ type ValidationResult =
   | { ok: false; error: string }
 
 /**
- * Validates an Ollama / OpenAI-compatible base URL to prevent SSRF attacks.
+ * Validates the OpenRouter base URL (the one custom AI endpoint a fund can set, in Settings) to
+ * prevent SSRF: the server fetches it with the fund's key, so it must not reach inside the network.
  *
- * Allows:
- * - localhost / 127.0.0.1 / [::1], spelled exactly so (standard self-hosted Ollama setup)
- * - Public IPs and hostnames
+ * Allows: public IPs and hostnames, over HTTP(S).
  *
  * Blocks:
+ * - Loopback: localhost, *.localhost, 127.0.0.0/8, ::1 (there is no self-hosted provider any more)
  * - Cloud metadata endpoints (169.254.x.x, fe80::/10)
- * - Private network ranges (10.x, 172.16-31.x, 192.168.x, 100.64/10, fc00::/7), other loopback
- *   (127.0.0.0/8 beyond 127.0.0.1), 0.0.0.0/8, multicast/reserved, and IPv4-mapped IPv6 forms
- *   of any of these (`[::ffff:169.254.169.254]`)
+ * - Private network ranges (10.x, 172.16-31.x, 192.168.x, 100.64/10, fc00::/7), 0.0.0.0/8,
+ *   multicast/reserved, and IPv4-mapped IPv6 forms of any of these (`[::ffff:169.254.169.254]`)
  * - Non-HTTP(S) protocols
  * - URLs without a valid hostname
  *
  * This is the SYNCHRONOUS, literal-only check: a hostname is not resolved. Wherever the URL is
- * saved or fetched, use `validateOllamaUrlResolved`, which also resolves the hostname and checks
+ * saved or fetched, use `validateBaseUrlResolved`, which also resolves the hostname and checks
  * every address it returns — otherwise `internal.example` pointing at 10.0.0.5 passes.
  */
-export function validateOllamaUrl(input: string): ValidationResult {
+export function validateBaseUrl(input: string): ValidationResult {
   let parsed: URL
   try {
     parsed = new URL(input)
@@ -41,9 +40,8 @@ export function validateOllamaUrl(input: string): ValidationResult {
     return { ok: false, error: 'URL must include a hostname' }
   }
 
-  // Allow the loopback spellings a self-hosted Ollama uses.
-  if (LOOPBACK_ALLOWED.has(host)) {
-    return { ok: true, url: input }
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return { ok: false, error: 'Loopback addresses are not allowed' }
   }
 
   const blocked = blockedAddressReason(host)
@@ -53,22 +51,22 @@ export function validateOllamaUrl(input: string): ValidationResult {
 }
 
 /**
- * `validateOllamaUrl`, plus DNS: a hostname is resolved (every A/AAAA record) and refused if ANY
+ * `validateBaseUrl`, plus DNS: a hostname is resolved (every A/AAAA record) and refused if ANY
  * address lands in a blocked range. Used where the URL is saved (settings) and where it is about
  * to be fetched (lib/ai) — the second matters because DNS can change after the URL was saved.
  *
  * Residual risk: the fetch does its own lookup, so a rebinding server that answers public here and
  * private a moment later is not covered; closing that needs a pinned-address agent.
  */
-export async function validateOllamaUrlResolved(
+export async function validateBaseUrlResolved(
   input: string,
   lookup: (host: string) => Promise<{ address: string; family: number }[]> = host => dnsLookup(host, { all: true, verbatim: true }),
 ): Promise<ValidationResult> {
-  const literal = validateOllamaUrl(input)
+  const literal = validateBaseUrl(input)
   if (!literal.ok) return literal
 
   const host = normalizeHost(new URL(input).hostname)
-  if (LOOPBACK_ALLOWED.has(host) || isIP(host)) return literal
+  if (isIP(host)) return literal
 
   let addresses: { address: string }[]
   try {
@@ -85,8 +83,6 @@ export async function validateOllamaUrlResolved(
 }
 
 // ---------------------------------------------------------------------------------------------
-
-const LOOPBACK_ALLOWED = new Set(['localhost', '127.0.0.1', '::1'])
 
 /** URL.hostname keeps IPv6 brackets (`[::1]`) and a trailing root dot; strip both, lowercase. */
 function normalizeHost(hostname: string): string {
@@ -149,8 +145,7 @@ function blockedV6(host: string): string | null {
   const zeroPrefix = (n: number) => g.slice(0, n).every(x => x === 0)
 
   if (zeroPrefix(8)) return 'Invalid address' // ::
-  // ::1. The literal `[::1]` is allowed upstream, like 127.0.0.1; reaching here means a hostname
-  // RESOLVED to it, which is refused exactly as one resolving to 127.0.0.1 is.
+  // ::1, written literally or resolved from a hostname.
   if (zeroPrefix(7) && g[7] === 1) return 'Loopback addresses are not allowed'
   // IPv4-mapped (::ffff:a.b.c.d) and the deprecated IPv4-compatible (::a.b.c.d): judge the v4.
   if (zeroPrefix(5) && (g[5] === 0xffff || g[5] === 0)) {

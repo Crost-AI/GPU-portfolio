@@ -27,8 +27,8 @@ export const RECOMMENDED_TIER: Record<string, ModelTier> = {
   portfolio: 'balanced',
 }
 
-// Concrete fast/strong models per provider. Omitted providers (gemini, ollama)
-// fall back to the fund default model for every tier — no risky hardcoded ids.
+// Concrete fast/strong models per provider. A provider left out (OpenRouter's
+// models vary by account) falls back to the fund default model for every tier — no risky hardcoded ids.
 const TIER_MODELS: Record<string, { fast?: string; strong?: string }> = {
   anthropic: { fast: 'claude-haiku-4-5-20251001', strong: 'claude-opus-4-8' },
   openai: { fast: 'gpt-4o-mini', strong: 'gpt-4.1' },

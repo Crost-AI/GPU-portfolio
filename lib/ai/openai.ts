@@ -77,7 +77,7 @@ export class OpenAIProvider implements AIProvider {
 
   async testConnection(): Promise<void> {
     if (this.customBaseURL) {
-      // For Ollama/custom endpoints, list models to verify connectivity
+      // For a custom base URL (OpenRouter), list models to verify connectivity
       const list = await this.client.models.list()
       const models: OpenAI.Model[] = []
       for await (const model of list) {
@@ -102,7 +102,7 @@ export class OpenAIProvider implements AIProvider {
     }
 
     if (this.customBaseURL) {
-      // For Ollama/custom endpoints, return all models
+      // For a custom base URL (OpenRouter), return all models
       return models
         .sort((a, b) => b.created - a.created)
         .map(m => ({ id: m.id, name: m.id }))

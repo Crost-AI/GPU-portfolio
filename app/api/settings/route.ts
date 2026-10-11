@@ -12,7 +12,7 @@ import { logActivity } from '@/lib/activity'
 import { DEFAULT_FEATURE_VISIBILITY } from '@/lib/types/features'
 import { forgetFundCurrency } from '@/lib/accounting/currency'
 import { isLotMethod, LOT_METHODS } from '@/lib/portfolio/lots'
-import { validateOllamaUrlResolved } from '@/lib/validate-url'
+import { validateBaseUrlResolved } from '@/lib/validate-url'
 import type { FeatureKey, FeatureVisibility, FeatureVisibilityMap } from '@/lib/types/features'
 import { AUTH_TITLE_MAX } from '@/lib/auth-brand-shared'
 
@@ -490,7 +490,7 @@ export async function PATCH(req: NextRequest) {
   if (openrouterBaseUrl !== undefined) {
     const trimmed = openrouterBaseUrl?.trim() || null
     if (trimmed) {
-      const validation = await validateOllamaUrlResolved(trimmed)
+      const validation = await validateBaseUrlResolved(trimmed)
       if (!validation.ok) {
         return NextResponse.json({ error: validation.error }, { status: 400 })
       }

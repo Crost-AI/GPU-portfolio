@@ -1,21 +1,24 @@
 import { describe, it, expect } from 'vitest'
-import { validateOllamaUrl, validateOllamaUrlResolved } from '@/lib/validate-url'
+import { validateBaseUrl, validateBaseUrlResolved } from '@/lib/validate-url'
 
-/** SSRF filter for the user-supplied OpenAI-compatible / Ollama base URL. */
+/** SSRF filter for the fund's OpenRouter base URL — the one custom AI endpoint Settings accepts. */
 
-describe('validateOllamaUrl — literal hosts', () => {
+describe('validateBaseUrl — literal hosts', () => {
   it.each([
-    'http://localhost:11434',
-    'http://127.0.0.1:11434',
-    'http://[::1]:11434',
     'https://openrouter.ai/api/v1',
     'https://8.8.8.8/v1',
     'https://[2606:4700:4700::1111]/v1',
   ])('allows %s', url => {
-    expect(validateOllamaUrl(url).ok).toBe(true)
+    expect(validateBaseUrl(url).ok).toBe(true)
   })
 
   it.each([
+    // Loopback: there is no self-hosted provider any more, so nothing local is a valid endpoint.
+    'http://localhost:11434',
+    'http://LOCALHOST/',
+    'http://api.localhost/',
+    'http://127.0.0.1:11434',
+    'http://[::1]:11434',
     'http://169.254.169.254/latest/meta-data',
     'http://10.0.0.5',
     'http://172.16.0.1',
@@ -38,11 +41,11 @@ describe('validateOllamaUrl — literal hosts', () => {
     'gopher://example.com',
     'not a url',
   ])('blocks %s', url => {
-    expect(validateOllamaUrl(url).ok).toBe(false)
+    expect(validateBaseUrl(url).ok).toBe(false)
   })
 })
 
-describe('validateOllamaUrlResolved — DNS', () => {
+describe('validateBaseUrlResolved — DNS', () => {
   const resolver = (map: Record<string, string[]>) => async (host: string) => {
     const addrs = map[host]
     if (!addrs) throw new Error('ENOTFOUND')
@@ -52,24 +55,24 @@ describe('validateOllamaUrlResolved — DNS', () => {
   it('refuses a public-looking hostname that resolves to a private address', async () => {
     const lookup = resolver({ 'internal.example': ['10.0.0.5'], 'meta.example': ['169.254.169.254'], 'v6.example': ['fd00::1'], 'lo.example': ['::1'] })
     for (const host of ['internal.example', 'meta.example', 'v6.example', 'lo.example']) {
-      expect((await validateOllamaUrlResolved(`https://${host}/v1`, lookup)).ok, host).toBe(false)
+      expect((await validateBaseUrlResolved(`https://${host}/v1`, lookup)).ok, host).toBe(false)
     }
   })
 
   it('refuses when ANY of several records is private', async () => {
     const lookup = resolver({ 'mixed.example': ['93.184.216.34', '192.168.0.10'] })
-    expect((await validateOllamaUrlResolved('https://mixed.example/v1', lookup)).ok).toBe(false)
+    expect((await validateBaseUrlResolved('https://mixed.example/v1', lookup)).ok).toBe(false)
   })
 
   it('refuses an unresolvable host', async () => {
-    expect((await validateOllamaUrlResolved('https://nope.example/v1', resolver({}))).ok).toBe(false)
+    expect((await validateBaseUrlResolved('https://nope.example/v1', resolver({}))).ok).toBe(false)
   })
 
-  it('allows a host resolving only to public addresses, and skips DNS for literals and localhost', async () => {
+  it('allows a host resolving only to public addresses, and skips DNS for IP literals', async () => {
     const lookup = resolver({ 'openrouter.ai': ['104.18.2.115', '2606:4700::6812:273'] })
-    expect(await validateOllamaUrlResolved('https://openrouter.ai/api/v1', lookup)).toEqual({ ok: true, url: 'https://openrouter.ai/api/v1' })
+    expect(await validateBaseUrlResolved('https://openrouter.ai/api/v1', lookup)).toEqual({ ok: true, url: 'https://openrouter.ai/api/v1' })
     const never = async () => { throw new Error('should not resolve') }
-    expect((await validateOllamaUrlResolved('http://localhost:11434', never)).ok).toBe(true)
-    expect((await validateOllamaUrlResolved('https://8.8.8.8/v1', never)).ok).toBe(true)
+    expect((await validateBaseUrlResolved('http://localhost:11434', never)).ok).toBe(false)
+    expect((await validateBaseUrlResolved('https://8.8.8.8/v1', never)).ok).toBe(true)
   })
 })
