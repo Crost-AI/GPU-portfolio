@@ -57,13 +57,14 @@ export class ForecastError extends Error {
   }
 }
 
-export const HORIZONS = [12, 18, 24, 36] as const
+export const HORIZONS = [12, 18, 24, 36, 60, 120, 180, 240] as const
 
 /**
- * The longest window a plan may span, in months — the same cap as horizonMonths. A fixed end month
- * (or an actuals cutoff moved far back) could otherwise ask the compiler for centuries of months.
+ * The longest window a plan may span, in months — the same cap as horizonMonths. Twenty years: a
+ * fund's life runs 12–15 with extensions, and the series view reads up to 240 months too. A fixed
+ * end month (or an actuals cutoff moved far back) could otherwise ask the compiler for centuries.
  */
-export const MAX_PLAN_MONTHS = 120
+export const MAX_PLAN_MONTHS = 240
 /** Free-text limits: a plan's scenario name and a version's label and notes. */
 const MAX_SCENARIO = 200
 const MAX_LABEL = 200
@@ -670,7 +671,7 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     assertPlanWindow(startMonth, endMonth)
   } else {
     horizon = Number(input.horizonMonths ?? 12)
-    if (!Number.isInteger(horizon) || horizon < 1 || horizon > 120) throw new ForecastError('horizonMonths must be 1–120 (12, 18, 24 or 36 are the presets)')
+    if (!Number.isInteger(horizon) || horizon < 1 || horizon > MAX_PLAN_MONTHS) throw new ForecastError(`horizonMonths must be 1–${MAX_PLAN_MONTHS} (${HORIZONS.join(', ')} are the presets)`)
     startMonth = addMonths(cutoff, 1)
     endMonth = addMonths(cutoff, horizon)
   }
@@ -1022,7 +1023,7 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
       working.end_month = firstDay(p.endMonth)
     } else {
       const h = Number(p.horizonMonths)
-      if (!Number.isInteger(h) || h < 1 || h > 120) throw new ForecastError('horizonMonths must be 1–120')
+      if (!Number.isInteger(h) || h < 1 || h > MAX_PLAN_MONTHS) throw new ForecastError(`horizonMonths must be 1–${MAX_PLAN_MONTHS}`)
       patch.horizon_months = h
       working.horizon_months = h
     }

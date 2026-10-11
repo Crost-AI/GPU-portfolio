@@ -99,7 +99,7 @@ describe('a plan window is bounded, and checked before the plan row is written',
   it('refuses an end month centuries out on create, inserting nothing', async () => {
     const b = books([])
     await expect(createPlan(ctx(b.admin), { vehicle: 'Fund I', kind: 'rolling_forecast', name: 'X', endMonth: '9999-12' }))
-      .rejects.toThrow(/at most 120 months/)
+      .rejects.toThrow(/at most 240 months/)
     expect(b.writes).toEqual([])
     expect(b.rpc).not.toHaveBeenCalled()
   })
@@ -125,7 +125,7 @@ describe('a plan window is bounded, and checked before the plan row is written',
   it('refuses a patched end month past the cap without touching the plan or its primary flag', async () => {
     const b = books([plan({ id: 'p0', is_primary: true }), plan()])
     await expect(savePlan(ctx(b.admin), { vehicle: 'Fund I', planId: 'p1', expectedRevision: 3, patch: { endMonth: '9999-12', isPrimary: true } }))
-      .rejects.toThrow(/at most 120 months/)
+      .rejects.toThrow(/at most 240 months/)
     expect(b.writes).toEqual([])
     expect(b.rpc).not.toHaveBeenCalled()
   })

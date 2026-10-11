@@ -179,7 +179,7 @@ export const CREATE_PLAN_SCHEMA = {
     kind: { type: 'string', enum: ['budget', 'rolling_forecast'] },
     name: { type: 'string' },
     fiscalYear: { type: 'number', description: 'Required for a budget.' },
-    horizonMonths: { type: 'number', description: 'Rolling forecast: 12, 18, 24 or 36.' },
+    horizonMonths: { type: 'number', description: 'Rolling forecast, in months: up to 240 (20 years). Presets 12, 18, 24, 36, 60, 120, 180, 240.' },
     endMonth: { type: 'string', description: 'Rolling forecast: a fixed end month instead of a horizon.' },
     actualsCutoff: { type: 'string', description: 'YYYY-MM; omit for the last closed month.' },
     includeConstruction: { type: 'boolean', description: 'Ignored — portfolio construction is always part of a plan.' },

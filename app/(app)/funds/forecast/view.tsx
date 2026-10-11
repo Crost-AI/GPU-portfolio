@@ -1132,7 +1132,7 @@ function CreatePlanDialog({ open, onClose, onCreated, plans }: {
             <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">Horizon</span>
               <select className={cn(selectCls, 'w-full')} value={horizon} onChange={e => setHorizon(e.target.value)}>
-                {[12, 18, 24, 36].map(h => <option key={h} value={h}>{h} months</option>)}
+                {[12, 18, 24, 36, 60, 120, 180, 240].map(h => <option key={h} value={h}>{h < 60 ? `${h} months` : `${h / 12} years`}</option>)}
               </select>
             </label>
           )}

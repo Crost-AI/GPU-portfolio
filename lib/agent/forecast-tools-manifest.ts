@@ -129,7 +129,7 @@ export const FORECAST_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'forecast_create_plan',
     description:
       'Create a budget (a fiscal year, monthly) or a rolling forecast (starts after the last closed month, ' +
-      '12/18/24/36-month horizon) for one vehicle, seeded blank, from actuals, or from another plan. Seeding from a plan ' +
+      'horizon of up to 240 months — a fund’s whole life) for one vehicle, seeded blank, from actuals, or from another plan. Seeding from a plan ' +
       'copies it whole as a new scenario — its portfolio, fee and expense rules, calls/distributions policy and month edits, and hand ' +
       'edits. Never posts to the ledger.',
     scope: 'write',
