@@ -499,7 +499,9 @@ async function dashboardVisibility(ctx: AgentToolContext): Promise<{
   }
   const allowed = (d: SavedDashboardSummary) => viewDenial(ctx.access, d.view) === null
   return {
-    listed: d => allowed(d) && (d.kind !== 'shared' || inScope(d)),
+    // The member's OWN saved dashboards too: one saved on an entity they have since lost is a
+    // pointer to data they can no longer see, and listing it (on home, or here) names it.
+    listed: d => allowed(d) && inScope(d),
     resolvable: d => d.kind === 'mine' || (allowed(d) && (d.kind !== 'shared' || inScope(d))),
   }
 }

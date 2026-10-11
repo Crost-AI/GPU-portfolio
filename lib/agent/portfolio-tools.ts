@@ -168,6 +168,10 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       if (txns.length === 0) continue
       const s = computeSummary(txns as any, c.status, asOf)
       const exited = (s.rounds ?? []).reduce((sum: number, rd: any) => sum + Math.abs(rd.costBasisExited ?? 0), 0)
+      // `cost` is what is still held — the schedule's cost column, and the base of unrealized
+      // gain. The multiple divides by everything ever invested: realized proceeds over remaining
+      // cost would count the sold shares' return against none of their cost.
+      const invested = r2(s.totalInvested)
       const cost = r2(s.totalInvested - exited)
       const fairValue = r2(s.unrealizedValue)
       if (cost === 0 && fairValue === 0) continue
@@ -177,15 +181,17 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
         status: c.status,
         stage: c.stage ?? null,
         industry: c.industry ?? [],
+        invested,
         cost,
         fairValue,
         unrealized: r2(fairValue - cost),
         realized: r2(s.totalRealized ?? 0),
-        moic: cost > 0 ? r2((fairValue + (s.totalRealized ?? 0)) / cost) : null,
+        moic: invested > 0 ? r2((fairValue + (s.totalRealized ?? 0)) / invested) : null,
       })
     }
     positions.sort((a, b) => b.fairValue - a.fairValue)
 
+    const totalInvested = r2(positions.reduce((s, p) => s + p.invested, 0))
     const totalCost = r2(positions.reduce((s, p) => s + p.cost, 0))
     const totalFairValue = r2(positions.reduce((s, p) => s + p.fairValue, 0))
     const totalRealized = r2(positions.reduce((s, p) => s + p.realized, 0))
@@ -198,11 +204,12 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       vehicle: input?.vehicle ?? 'all',
       positions,
       totals: {
+        invested: totalInvested,
         cost: totalCost,
         fairValue: totalFairValue,
         unrealized: r2(totalFairValue - totalCost),
         realized: totalRealized,
-        grossMoic: totalCost > 0 ? r2((totalFairValue + totalRealized) / totalCost) : null,
+        grossMoic: totalInvested > 0 ? r2((totalFairValue + totalRealized) / totalInvested) : null,
       },
     }
   },

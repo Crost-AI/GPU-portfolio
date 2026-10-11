@@ -420,6 +420,9 @@ function TransactionTable({
 
   if (transactions.length === 0) return null
   const hasPostmoney = transactions.some(t => t.postmoney_valuation != null)
+  // A partial exit on a live position: what came back, and the cost that left with it, each in its
+  // own column — otherwise the proceeds row reads as a row of dashes.
+  const hasProceeds = transactions.some(t => t.transaction_type === 'proceeds')
   const hasFxRows = transactions.some(t => t.valuation_change_source === 'fx')
   const hasEscrow = transactions.some(t => t.transaction_type === 'proceeds' && (t.proceeds_escrow ?? 0) > 0)
   const hasInterestConversion = transactions.some(t =>
@@ -430,7 +433,7 @@ function TransactionTable({
   let escrowBalance = 0
   const colCount =
     (showGroup ? 1 : 0) +
-    (companyStatus === 'exited' ? 6 + (hasInterestConversion ? 1 : 0) + (hasEscrow ? 1 : 0) : 8 + (hasPostmoney ? 1 : 0))
+    (companyStatus === 'exited' ? 6 + (hasInterestConversion ? 1 : 0) + (hasEscrow ? 1 : 0) : 8 + (hasPostmoney ? 1 : 0) + (hasProceeds ? 2 : 0))
   return (
     <div className="border rounded-lg overflow-hidden">
       <table className="w-full text-sm">
@@ -450,6 +453,8 @@ function TransactionTable({
             ) : (
               <>
                 <th className="text-right px-3 py-2 font-medium">Invested</th>
+                {hasProceeds && <th className="text-right px-3 py-2 font-medium">Basis exited</th>}
+                {hasProceeds && <th className="text-right px-3 py-2 font-medium">Proceeds</th>}
                 {hasPostmoney && <th className="text-right px-3 py-2 font-medium">Postmoney</th>}
                 <th className="text-right px-3 py-2 font-medium">Shares</th>
                 <th className="text-right px-3 py-2 font-medium">Price</th>
@@ -540,6 +545,20 @@ function TransactionTable({
                     <td className="px-3 py-2 text-right tabular-nums">
                       {txn.transaction_type === 'investment' ? fmt(txn.investment_cost) : '-'}
                     </td>
+                    {hasProceeds && (
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {txn.transaction_type === 'proceeds' && txn.cost_basis_exited != null
+                          ? fmt(Math.abs(txn.cost_basis_exited))
+                          : '-'}
+                      </td>
+                    )}
+                    {hasProceeds && (
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {txn.transaction_type === 'proceeds' || txn.transaction_type === 'escrow_receipt'
+                          ? fmt(txn.proceeds_received)
+                          : '-'}
+                      </td>
+                    )}
                     {hasPostmoney && (
                       <td className="px-3 py-2 text-right tabular-nums">
                         {(txn.transaction_type === 'investment' || txn.transaction_type === 'round_info')
@@ -579,10 +598,14 @@ function TransactionTable({
                                 ? round.currentValue * ((txn.shares_acquired ?? 0) / round.sharesAcquired)
                                 : 0)
                             }
+                            // A round that cost nothing (warrants received with a deal) is still worth
+                            // what its marks say; split that by shares rather than reading the $0 cost.
                             return fmt(
                               round.investmentCost > 0
                                 ? (txn.investment_cost ?? 0) / round.investmentCost * round.currentValue
-                                : txn.investment_cost ?? 0
+                                : round.sharesAcquired > 0
+                                ? round.currentValue * ((txn.shares_acquired ?? 0) / round.sharesAcquired)
+                                : round.currentValue
                             )
                           })()
                         : txn.transaction_type === 'unrealized_gain_change'

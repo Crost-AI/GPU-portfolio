@@ -48,6 +48,18 @@ function serverInfo(origin: string | undefined) {
   return { ...SERVER_INFO, title: 'Portfolio', websiteUrl: origin, icons: [icon(192), icon(512)] }
 }
 
+/**
+ * Server instructions (MCP `InitializeResult.instructions`): read by the host's model before any
+ * tool description. Tool descriptions alone were not enough for "help" — a model answered it from
+ * its own idea of the server instead of opening the home dashboard, so the home page a member sees
+ * depended on how they phrased the question.
+ */
+const SERVER_INSTRUCTIONS =
+  'When the user asks for help, asks what you can do or what they can ask, says "hi", "start", ' +
+  '"get started", "home" or "menu", or seems unsure what to ask, call show_home and present its ' +
+  'overview. Do not describe these tools from memory: show_home lists only what this member may ' +
+  'open, filtered to their own entities and access.'
+
 interface RpcRequest { jsonrpc: string; id?: string | number | null; method: string; params?: any }
 
 function ok(id: any, result: any) {
@@ -67,6 +79,7 @@ async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: 
         // Prompts are the templates a host lists in its prompt menu (lib/agent/getting-started.ts).
         capabilities: { tools: {}, resources: {}, prompts: {} },
         serverInfo: serverInfo(ctx.origin),
+        instructions: SERVER_INSTRUCTIONS,
       })
     case 'ping':
       return ok(rpc.id, {})
