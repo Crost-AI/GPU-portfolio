@@ -76,10 +76,11 @@ describe('script execution vectors', () => {
 })
 
 describe('the allowlist is actually in effect', () => {
-  // This is the regression test for a config mistake, not for a payload. DOMPurify treats
-  // `USE_PROFILES` as an ALTERNATIVE to `ALLOWED_TAGS` rather than an addition, so setting both
-  // made the profile win and quietly re-admitted every HTML tag. Nothing about the config looked
-  // wrong; only the output did.
+  // This is the regression test for a config mistake, not for a payload. Under DOMPurify (the
+  // previous engine) `USE_PROFILES` was an ALTERNATIVE to `ALLOWED_TAGS` rather than an addition,
+  // so setting both made the profile win and quietly re-admitted every HTML tag. Nothing about the
+  // config looked wrong; only the output did — which is why these assert on output, and why they
+  // carried over unchanged when the engine became sanitize-html.
   it.each(['img', 'video', 'audio', 'input', 'button', 'select', 'textarea', 'canvas'])(
     'drops <%s>, which is not on the allowlist',
     tag => {
@@ -95,7 +96,7 @@ describe('the allowlist is actually in effect', () => {
   })
 
   it('takes the content WITH the element for the few tags where text is not text', () => {
-    // DOMPurify's FORBID_CONTENTS defaults — script, style, svg, math, video, audio, template and
+    // `nonTextTags` in lib/sanitize.ts — script, style, svg, math, video, audio, template and
     // friends. Keeping their children would mean re-parenting bytes that were never markup into a
     // context where they are, which is its own bypass. Asserted so the distinction is deliberate.
     expect(clean('<video>Quarterly results</video>')).toBe('')

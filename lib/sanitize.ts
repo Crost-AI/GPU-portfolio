@@ -1,4 +1,4 @@
-import DOMPurify from 'isomorphic-dompurify'
+import sanitize from 'sanitize-html'
 
 /**
  * Allowlist sanitization for GP-authored letter HTML, which is rendered into LP browsers through
@@ -16,10 +16,19 @@ import DOMPurify from 'isomorphic-dompurify'
  * unquoted values, entity-encoded schemes, embedded newlines and nulls, `<svg>` and MathML
  * foreign-content switches, namespace confusion, mixed case.
  *
- * So this parses instead of pattern-matching. DOMPurify builds a real DOM, walks it, and keeps only
- * what is named below; anything unrecognised is dropped rather than rewritten. It runs in the
- * browser and in Node from the same import, which matters because one of the four call sites is a
- * client component (app/(app)/letters/[id]/page.tsx).
+ * So this parses instead of pattern-matching. sanitize-html runs a real HTML tokenizer (htmlparser2),
+ * keeps only what is named below, and re-serializes from the parse — so the output is markup it
+ * wrote itself, with every text node and attribute value escaped, never a filtered copy of the
+ * input. It runs in the browser and in Node from the same import, which matters because one of the
+ * four call sites is a client component (app/(app)/letters/[id]/page.tsx).
+ *
+ * WHY NOT DOMPURIFY. This was isomorphic-dompurify, which needs jsdom on the server. jsdom would
+ * not load in the deployed functions: every route that imported this file — the letter routes, and
+ * through lib/lp-report-pdf.ts every PDF route, the assistant's report links included — died at
+ * module load with an empty 500, while the same build worked locally. Externalising it moved the
+ * failure rather than fixing it. sanitize-html is plain JavaScript with no DOM to provide, so there
+ * is nothing to externalise and nothing to fail to load. lib/sanitize.test.ts pins the policy on
+ * OUTPUT, which is what made the swap checkable.
  *
  * WHAT IS ALLOWED is deliberately close to what `buildPortfolioTableHtml` actually emits
  * (lib/lp-letters/generate.ts): a table, `colspan`, `<strong>`, and two inline styles. The letter
@@ -32,7 +41,7 @@ import DOMPurify from 'isomorphic-dompurify'
  */
 
 /** Schemes an `href` may use. Everything else — javascript:, data:, vbscript:, file: — is dropped. */
-const ALLOWED_URI = /^(?:https?:|mailto:|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i
+const ALLOWED_SCHEMES = ['http', 'https', 'mailto']
 
 /**
  * CSS declarations that survive on a `style` attribute.
@@ -49,65 +58,25 @@ const ALLOWED_STYLE: Record<string, RegExp> = {
   'white-space': /^(nowrap|normal|pre-wrap)$/,
 }
 
-const CONFIG = {
-  ALLOWED_TAGS: [
-    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
-    'p', 'br', 'div', 'span', 'strong', 'em', 'b', 'i', 'u', 'small',
-    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'a',
-  ],
-  ALLOWED_ATTR: ['colspan', 'rowspan', 'style', 'href', 'title', 'scope', 'align'],
-  ALLOWED_URI_REGEXP: ALLOWED_URI,
-  // Redundant with the allowlist above — nothing not in ALLOWED_TAGS survives anyway — but stated
-  // so that widening ALLOWED_TAGS later cannot quietly readmit them.
-  FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base', 'form',
-                'svg', 'math', 'template', 'noscript'],
-  // NO `USE_PROFILES` HERE, deliberately. DOMPurify treats it as an ALTERNATIVE to ALLOWED_TAGS,
-  // not an addition: setting both makes the profile win and silently widens the allowlist back to
-  // all of HTML. The first version of this file set `USE_PROFILES: { html: true }` alongside the
-  // list above, and `<img src=x onerror=…>` sailed through — caught only because a test asserted
-  // on the output rather than on the config. Foreign content is excluded by ALLOWED_TAGS omitting
-  // svg/math and FORBID_TAGS naming them, which is enough.
-  ALLOW_DATA_ATTR: false,
-  ALLOW_ARIA_ATTR: false,
-  ALLOW_UNKNOWN_PROTOCOLS: false,
-  KEEP_CONTENT: true,
-}
+const ALLOWED_TAGS = [
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
+  'p', 'br', 'div', 'span', 'strong', 'em', 'b', 'i', 'u', 'small',
+  'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'a',
+]
+const ALLOWED_ATTR = ['colspan', 'rowspan', 'style', 'title', 'scope', 'align']
 
 /**
- * DOMPurify hands hooks a DOM node, but WHICH DOM depends on where this runs: the browser's in a
- * client component, jsdom's under Node. `instanceof Element` is true in one and a ReferenceError in
- * the other, since Node has no such global. So the check is structural.
- */
-interface AttributedNode {
-  nodeType: number
-  tagName?: string
-  hasAttribute(name: string): boolean
-  getAttribute(name: string): string | null
-  setAttribute(name: string, value: string): void
-  removeAttribute(name: string): void
-}
-
-const ELEMENT_NODE = 1
-
-function asElement(node: unknown): AttributedNode | null {
-  const candidate = node as AttributedNode | null
-  return candidate && candidate.nodeType === ELEMENT_NODE && typeof candidate.getAttribute === 'function'
-    ? candidate
-    : null
-}
-
-/**
- * Reduce a `style` attribute to the declarations named in ALLOWED_STYLE.
+ * Reduce a `style` attribute to the declarations named in ALLOWED_STYLE; undefined when none
+ * survive, so the attribute goes rather than lingering empty.
  *
- * A hook rather than a pre-pass: it runs after DOMPurify has parsed the document, so it sees the
- * attribute the browser sees rather than a guess at where the quotes were.
+ * Done here rather than with sanitize-html's own `allowedStyles`, which lets each value through on
+ * a per-property regex but parses with postcss first — a second parser to agree with, for five
+ * keyword-only properties. Splitting on `;` and `:` is safe for exactly that reason: no allowed
+ * value can contain either, so a declaration that does is one we drop anyway.
  */
-DOMPurify.addHook('afterSanitizeAttributes', node => {
-  const element = asElement(node)
-  if (!element || !element.hasAttribute('style')) return
-
-  const kept = element
-    .getAttribute('style')!
+function filterStyle(style: string | undefined): string | undefined {
+  if (!style) return undefined
+  const kept = style
     .split(';')
     .map(declaration => {
       const index = declaration.indexOf(':')
@@ -118,23 +87,53 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
       return allowed && allowed.test(value) ? `${property}:${value}` : null
     })
     .filter((declaration): declaration is string => declaration !== null)
+  return kept.length ? kept.join(';') : undefined
+}
 
-  if (kept.length) element.setAttribute('style', kept.join(';'))
-  else element.removeAttribute('style')
-})
-
-/**
- * An `<a>` that survives sanitization still opens in the LP's tab and still hands the destination a
- * `window.opener`. Letters are read by people who did not write them, so links leave with the
- * usual mitigations attached.
- */
-DOMPurify.addHook('afterSanitizeAttributes', node => {
-  const element = asElement(node)
-  if (element && element.tagName === 'A' && element.hasAttribute('href')) {
-    element.setAttribute('target', '_blank')
-    element.setAttribute('rel', 'noopener noreferrer nofollow')
-  }
-})
+const CONFIG: sanitize.IOptions = {
+  allowedTags: ALLOWED_TAGS,
+  allowedAttributes: {
+    '*': ALLOWED_ATTR,
+    a: ['href', 'target', 'rel'],
+  },
+  allowedSchemes: ALLOWED_SCHEMES,
+  allowedSchemesAppliedToAttributes: ['href'],
+  // Our own filter above; turning sanitize-html's off keeps postcss out of the path entirely.
+  parseStyleAttributes: false,
+  // A disallowed element is dropped and its text kept — a disallowed wrapper should not take the
+  // letter's words with it. EXCEPT for the elements whose content is not text: keeping their
+  // children would re-parent bytes that were never markup into a context where they are.
+  disallowedTagsMode: 'discard',
+  nonTextTags: [
+    'script', 'style', 'textarea', 'option', 'noscript', 'template', 'iframe', 'object', 'embed',
+    'svg', 'math', 'video', 'audio', 'noembed', 'noframes', 'xmp', 'plaintext', 'title',
+  ],
+  allowVulnerableTags: false,
+  transformTags: {
+    '*': (tagName, attribs) => {
+      const { style, ...rest } = attribs
+      const filtered = filterStyle(style)
+      return { tagName, attribs: filtered ? { ...rest, style: filtered } : rest }
+    },
+    /**
+     * An `<a>` still opens in the LP's tab and still hands the destination a `window.opener`.
+     * Letters are read by people who did not write them, so links leave with the usual
+     * mitigations attached — whatever the source said about target and rel is overwritten.
+     */
+    a: (tagName, attribs) => {
+      const { style, target: _target, rel: _rel, ...rest } = attribs
+      const filtered = filterStyle(style)
+      return {
+        tagName,
+        attribs: {
+          ...rest,
+          ...(filtered ? { style: filtered } : {}),
+          ...(rest.href ? { target: '_blank', rel: 'noopener noreferrer nofollow' } : {}),
+        },
+      }
+    },
+  },
+}
 
 /**
  * Sanitize letter HTML for storage or for rendering.
@@ -144,5 +143,5 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
  */
 export function sanitizeLetterHtml(html: string | null | undefined): string | null {
   if (!html) return html ?? null
-  return DOMPurify.sanitize(html, CONFIG)
+  return sanitize(html, CONFIG)
 }
