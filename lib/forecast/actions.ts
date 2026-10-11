@@ -3,7 +3,8 @@
 // (preview now, execute on approval), so the two cannot interpret the same request differently.
 
 import { randomUUID } from 'node:crypto'
-import { AdjustmentError, cashCellAdjustments, NO_ADJUSTMENTS, validateAdjustments, type Adjustments, type CashCategory } from './adjustments'
+import { CapitalError, validateCapital, type CapitalSettings } from './capital'
+import { AdjustmentError, cashCellAdjustments, NO_ADJUSTMENTS, validateAdjustments, type Adjustments, type CashCategory, dealEditRefusal } from './adjustments'
 import { getPlan, savePlan, publishPlan, createPlan, suggestRules, ForecastError, type CreatePlanInput, type ForecastServiceContext, type PlanDetail, type SavePlanInput } from './service'
 import { isMonthKey } from './months'
 
@@ -24,8 +25,14 @@ export interface UpdatePlanAction {
   entries?: { id?: string; date: string; memo: string; lines: { account: string; amount: number }[]; replaces?: string | null }[]
   removeEntries?: string[]
   restoreEntries?: string[]
-  /** A month's cash on an investing/financing line, as a figure — the entry is written (cashCellAdjustments). */
-  cashFigures?: { line: CashCategory; month: string; amount: number }[]
+  /**
+   * A month's cash on a line, as a figure. Investments and exit proceeds write that month's entry
+   * (cashCellAdjustments); capital calls and distributions are month edits to the plan's capital
+   * management (lib/forecast/capital.ts), and the waterfall reruns on them.
+   */
+  cashFigures?: { line: CashCategory; month: string; amount: number | null }[]
+  /** The plan's call and distribution policy (lib/forecast/capital.ts CapitalPolicy). */
+  capitalPolicy?: { callReserve?: number; distributionLagMonths?: number; distributionReserve?: number }
   patch?: SavePlanInput['patch']
   explanation?: string
 }
@@ -47,18 +54,20 @@ export const UPDATE_PLAN_SCHEMA = {
         additionalProperties: false,
         properties: {
           account: { type: 'string', description: 'Account code (e.g. "5210") or id.' },
-          method: { type: 'string', enum: ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'linked_fee', 'linked_construction'] },
+          method: { type: 'string', enum: ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'seasonal', 'linked_fee', 'management_fee'] },
           params: {
             type: 'object',
             description:
               'manual {amounts:{"YYYY-MM":n}} · fixed {amount,start?,end?} · recurring {amount,everyMonths,anchor:"YYYY-MM",start?,end?,annualEscalation?,exceptions?,oneOffs?} · ' +
               'run_rate {window:3|6|12} or {from,to}, includeUnclosed? · growth {base,baseMonth,rate,per:"month"|"year"} · ' +
-              'linked_fee {fundVehicle} · linked_construction {flow:"fees"|"expenses"}. Amounts are positive for revenue and for expense.',
+              'management_fee {rate, basis:"committed"|"invested"|"nav", termYears, stepDownYear?, stepDownRate?} — a fund\'s fee on its fee-paying commitments (GP stake exempt) · ' +
+              'linked_fee {fundVehicle} — a management company\'s fee income from its funds. Amounts are positive for revenue and for expense.',
           },
           cashTiming: {
             type: 'object',
             description: '{mode:"same"} · {mode:"offset",months:-36..36} (negative = in advance) · {mode:"month",month:1-12,direction:"advance"|"arrears"} · ' +
-              '{mode:"prepaid"} — already paid before the plan (a prepaid fee being expensed monthly): draws down the prepaid balance, no cash in the plan.',
+              '{mode:"prepaid"} — already paid before the plan (a prepaid fee being expensed monthly): draws down the prepaid balance, no cash in the plan. ' +
+              'Add refundMonth:"YYYY-MM" when what is still prepaid is refunded (a fee prepaid for the fund\'s life, refunded when it winds up early): the cost stops that month and the rest comes back as cash paid out to the investors.',
           },
           note: { type: 'string' },
         },
@@ -96,17 +105,23 @@ export const UPDATE_PLAN_SCHEMA = {
     cashFigures: {
       type: 'array',
       description:
-        'The simplest edit: what a cash line should be in a month — Investments, Exit proceeds, Capital contributions or ' +
-        'Distributions. The month\'s generated entries for that line are replaced by one entry shaped like them (an exit keeps ' +
-        'its cost; the gain takes the rest). Amount is positive; 0 clears the month. Prefer this to writing entries.',
+        'The simplest edit: a month\'s capital call or distribution, as an amount — it overrides the calls/distributions ' +
+        'policy for that month and the waterfall reruns on it. Amount is positive; null goes back to the policy. ' +
+        'Investments and exits are not set here: change the deal with update_portfolio_construction (the Investments tab).',
       items: {
         type: 'object', required: ['line', 'month', 'amount'], additionalProperties: false,
         properties: {
-          line: { type: 'string', enum: ['invested', 'proceeds', 'called', 'distributed'] },
+          line: { type: 'string', enum: ['called', 'distributed'] },
           month: { type: 'string', description: 'YYYY-MM' },
-          amount: { type: 'number' },
+          amount: { type: ['number', 'null'], description: 'null clears a call/distribution month edit (back to the policy)' },
         },
       },
+    },
+    capitalPolicy: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'How calls and distributions are worked out when no month is set: keep callReserve of cash (calls fund any shortfall); pay exit proceeds distributionLagMonths after they arrive, keeping distributionReserve.',
+      properties: { callReserve: { type: 'number' }, distributionLagMonths: { type: 'number' }, distributionReserve: { type: 'number' } },
     },
     overrides: {
       type: 'array',
@@ -133,7 +148,7 @@ export const UPDATE_PLAN_SCHEMA = {
         horizonMonths: { type: 'number' },
         endMonth: { type: 'string' },
         status: { type: 'string', enum: ['active', 'archived'] },
-        includeConstruction: { type: 'boolean', description: "Fund/SPV: include construction's investments, exits, calls and distributions." },
+        isPrimary: { type: 'boolean', description: "true makes this the entity's primary plan — the one its headline figures, a management company's fee income and a GP entity's share are read from. Only on the user's say-so." },
         openingSettlementMonths: { type: 'number', description: 'When payables/receivables open at the start settle (1 = first month, 0 = never).' },
       },
     },
@@ -167,7 +182,7 @@ export const CREATE_PLAN_SCHEMA = {
     horizonMonths: { type: 'number', description: 'Rolling forecast: 12, 18, 24 or 36.' },
     endMonth: { type: 'string', description: 'Rolling forecast: a fixed end month instead of a horizon.' },
     actualsCutoff: { type: 'string', description: 'YYYY-MM; omit for the last closed month.' },
-    includeConstruction: { type: 'boolean', description: "Fund/SPV: include construction's investment and capital flows." },
+    includeConstruction: { type: 'boolean', description: 'Ignored — portfolio construction is always part of a plan.' },
     seed: {
       type: 'object',
       description:
@@ -207,7 +222,8 @@ export function toSaveInput(detail: PlanDetail, a: UpdatePlanAction): SavePlanIn
     rules: (a.rules ?? []).map(r => ({ accountId: accountId(detail, r.account), method: r.method as any, params: r.params, cashTiming: r.cashTiming, note: r.note ?? null })),
     removeRules: (a.removeRules ?? []).map(r => accountId(detail, r)),
     overrides: (a.overrides ?? []).map(o => ({ accountId: accountId(detail, o.account), month: o.month, amount: o.amount, note: o.note ?? null })),
-    ...(a.entries?.length || a.removeEntries?.length || a.restoreEntries?.length || a.cashFigures?.length ? { adjustments: nextAdjustments(detail, a) } : {}),
+    ...(a.entries?.length || a.removeEntries?.length || a.restoreEntries?.length || dealFigures(a).length ? { adjustments: nextAdjustments(detail, a) } : {}),
+    ...(capitalFigures(a).length || a.capitalPolicy ? { capital: nextCapital(detail, a) } : {}),
   }
 }
 
@@ -231,26 +247,18 @@ export function nextAdjustments(detail: PlanDetail, a: UpdatePlanAction): Adjust
     entries = [...entries.filter(x => x.id !== id), next]
   }
   const restore = new Set(a.restoreEntries ?? [])
-  let removed = [...new Set([...cur.removed.filter(k => !restore.has(k)), ...[...removeKeys].filter(k => !k.startsWith('manual|'))])]
-  // Cash figures last, on top of the entries above: each writes (or rewrites) its month's entry.
-  for (const f of a.cashFigures ?? []) {
-    if (!isMonthKey(f.month)) throw new ForecastError(`cash figure month "${f.month}" must be YYYY-MM`)
-    let r: Adjustments
-    try {
-      r = cashCellAdjustments({ entries, removed }, {
-        category: f.line, month: f.month, cash: Number(f.amount), entries: detail.entries,
-        accounts: detail.allAccounts, cashAccountIds: detail.cashAccountIds,
-      })
-    } catch (err) {
-      if (err instanceof AdjustmentError) throw new ForecastError(err.message)
-      throw err
-    }
-    entries = r.entries
-    removed = r.removed
+  // Investments and exits are entered on the Investments tab (update_portfolio_construction), never as
+  // a cash figure; calls and distributions are capital edits (nextCapital).
+  if (dealFigures(a).length) {
+    throw new ForecastError('Investments and exits are entered on the Investments tab — change the deal with update_portfolio_construction, not a cash figure')
   }
+  const removed = [...new Set([...cur.removed.filter(k => !restore.has(k)), ...[...removeKeys].filter(k => !k.startsWith('manual|'))])]
   // Checked the way the service checks it, so a bad entry is refused when staged, not at approval.
   try {
-    return validateAdjustments({ entries, removed }, detail.allAccounts)
+    const next = validateAdjustments({ entries, removed }, detail.allAccounts)
+    const refused = dealEditRefusal(cur, next, detail.allAccounts)
+    if (refused) throw new ForecastError(refused)
+    return next
   } catch (err) {
     if (err instanceof AdjustmentError) throw new ForecastError(err.message)
     throw err
@@ -295,7 +303,19 @@ export async function describeUpdate(ctx: ForecastServiceContext, a: UpdatePlanA
     ...before.entries.filter(b => !after.entries.some(e => e.id === b.id)).map(b => b.memo),
   ]
   const handRestored = before.removed.filter(k => !after.removed.includes(k))
+  // Capital management: month edits set or cleared, and the policy.
+  const capBefore = detail.plan.capital ?? validateCapital({})
+  const capAfter = (save.capital as CapitalSettings | undefined) ?? capBefore
+  const capitalEdits = (['calls', 'distributions'] as const).flatMap(k => {
+    const months = new Set([...Object.keys(capBefore[k]), ...Object.keys(capAfter[k])])
+    return [...months].sort().filter(m => capBefore[k][m] !== capAfter[k][m]).map(m => ({
+      line: k === 'calls' ? 'Capital call' : 'Distribution', month: m, before: capBefore[k][m] ?? null, after: capAfter[k][m] ?? 'back to the policy',
+    }))
+  })
+  const policyChanged = JSON.stringify(capBefore.policy) !== JSON.stringify(capAfter.policy)
   const parts = [
+    capitalEdits.length && `${capitalEdits.length} call/distribution month${capitalEdits.length === 1 ? '' : 's'}`,
+    policyChanged && 'capital policy',
     handEntries.length && `${handEntries.length} hand entr${handEntries.length === 1 ? 'y' : 'ies'}`,
     handRemoved.length && `remove ${handRemoved.length} entr${handRemoved.length === 1 ? 'y' : 'ies'}`,
     handRestored.length && `restore ${handRestored.length} entr${handRestored.length === 1 ? 'y' : 'ies'}`,
@@ -313,6 +333,8 @@ export async function describeUpdate(ctx: ForecastServiceContext, a: UpdatePlanA
       rules,
       removed,
       overrides,
+      ...(capitalEdits.length ? { capital: capitalEdits } : {}),
+      ...(policyChanged ? { capitalPolicy: { before: capBefore.policy, after: capAfter.policy } } : {}),
       ...(handEntries.length ? { entries: handEntries } : {}),
       ...(handRemoved.length ? { removedEntries: handRemoved } : {}),
       ...(handRestored.length ? { restoredEntries: handRestored.length } : {}),
@@ -401,5 +423,30 @@ export async function describeCreate(ctx: ForecastServiceContext, input: CreateP
       warnings: s?.warnings ?? [],
       ...(input.explanation ? { explanation: input.explanation } : {}),
     },
+  }
+}
+
+const dealFigures = (a: UpdatePlanAction) => (a.cashFigures ?? []).filter(f => f.line === 'invested' || f.line === 'proceeds') as { line: CashCategory; month: string; amount: number }[]
+const capitalFigures = (a: UpdatePlanAction) => (a.cashFigures ?? []).filter(f => f.line === 'called' || f.line === 'distributed')
+
+/** The plan's capital settings after this update: month edits set or cleared, policy changed. */
+export function nextCapital(detail: PlanDetail, a: UpdatePlanAction): CapitalSettings {
+  const cur = detail.plan.capital ?? validateCapital({})
+  const next = { policy: { calls: { ...cur.policy.calls }, distributions: { ...cur.policy.distributions } }, calls: { ...cur.calls }, distributions: { ...cur.distributions } }
+  for (const f of capitalFigures(a)) {
+    if (!isMonthKey(f.month)) throw new ForecastError(`cash figure month "${f.month}" must be YYYY-MM`)
+    const into = f.line === 'called' ? next.calls : next.distributions
+    if (f.amount == null) delete into[f.month]
+    else into[f.month] = Math.abs(Number(f.amount))
+  }
+  const p = a.capitalPolicy
+  if (p?.callReserve != null) next.policy.calls.reserve = Number(p.callReserve)
+  if (p?.distributionLagMonths != null) next.policy.distributions.lagMonths = Number(p.distributionLagMonths)
+  if (p?.distributionReserve != null) next.policy.distributions.reserve = Number(p.distributionReserve)
+  try {
+    return validateCapital(next)
+  } catch (err) {
+    if (err instanceof CapitalError) throw new ForecastError(err.message)
+    throw err
   }
 }

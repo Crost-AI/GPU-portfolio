@@ -13,7 +13,7 @@ import { matchRoute, type Section } from './route-table'
  * server page as its view with its loader's recorded output (data/pages.json) or the snapshot
  * fallback. The table itself (patterns, URL enumeration) is route-table.ts.
  *
- * Admin-only pages (usage, pending actions, the portal preview, memo-agent settings) are not
+ * Admin-only pages (usage, the portal preview, memo-agent settings) are not
  * here: the demo is a viewer, as the hosted demo account is, and the sidebar does not offer them.
  */
 export type { RouteContext } from './route-helpers'

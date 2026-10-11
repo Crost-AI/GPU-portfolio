@@ -23,6 +23,8 @@ export interface StatementLine {
   code: string
   name: string
   type: 'income' | 'expense'
+  /** The account's subtype — a realized or unrealized investment gain is income, but not operating revenue. */
+  subtype?: string | null
   /** Natural-side amount by month: revenue and expense both positive. */
   byMonth: Record<MonthKey, number>
 }
@@ -88,7 +90,7 @@ export function monthlyStatement(input: StatementInput): MonthlyStatement {
     const natural = acct.type === 'income' ? -p.amount : p.amount
     let line = lines.get(acct.id)
     if (!line) {
-      line = { accountId: acct.id, code: acct.code, name: acct.name, type: acct.type, byMonth: zero() }
+      line = { accountId: acct.id, code: acct.code, name: acct.name, type: acct.type, subtype: (acct as { subtype?: string | null }).subtype ?? null, byMonth: zero() }
       lines.set(acct.id, line)
     }
     line.byMonth[m] += natural

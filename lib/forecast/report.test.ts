@@ -102,3 +102,51 @@ describe('months with no data', () => {
     expect(r.months.find(m => m.month === '2026-07')?.status).toBe('none')
   })
 })
+
+describe('accrual and cash basis', () => {
+  // Rent accrued in January, paid in February; fee income earned and received in January.
+  const entries = [
+    e('2026-01-05', [['op', 50_000], ['fee', -50_000]]),
+    e('2026-01-31', [['rent', 8_000], ['ap', -8_000]]),
+    e('2026-02-10', [['ap', 8_000], ['op', -8_000]]),
+  ]
+  const r = buildReport({
+    view: 'actual', accounts: A, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+    actualsAvailableThrough: '2026-02', closedThrough: '2026-02', start: '2026-01', end: '2026-02', interval: 'month',
+    actualEntries: entries, planEntries: [],
+  })
+
+  it('cash basis: income when received, an accrual when it is paid', () => {
+    expect(r.cashBasis!.revenue).toEqual([50_000, 0])
+    expect(r.cashBasis!.accruals).toEqual([0, -8_000])
+    expect(r.cashBasis!.netIncome).toEqual([50_000, -8_000])
+  })
+
+  it('indirect method: net income plus the change in payables is the operating cash', () => {
+    expect(r.indirect!.netIncome).toEqual([42_000, 0])
+    expect(r.indirect!.workingCapital).toEqual([8_000, -8_000])
+    expect(r.indirect!.operating).toEqual([50_000, -8_000])
+  })
+})
+
+describe('distributions, broken down', () => {
+  const A2: Account[] = [...A, { id: 'cap', fundId: 'f', code: '3100', name: 'Partners capital', type: 'equity' } as Account]
+  const plan = [
+    { date: '2027-03-31', kind: 'distribution', memo: 'Distribution to the LPs', postings: [{ accountId: 'cap', amount: 900, currency: 'USD', entryDate: '2027-03-31' }, { accountId: 'op', amount: -900, currency: 'USD', entryDate: '2027-03-31' }] },
+    { date: '2027-03-31', kind: 'distribution', memo: 'Distribution to the GP, on its own commitment', postings: [{ accountId: 'cap', amount: 10, currency: 'USD', entryDate: '2027-03-31' }, { accountId: 'op', amount: -10, currency: 'USD', entryDate: '2027-03-31' }] },
+    { date: '2027-03-31', kind: 'distribution', memo: 'Carried interest to GP I LLC', postings: [{ accountId: 'cap', amount: 90, currency: 'USD', entryDate: '2027-03-31' }, { accountId: 'op', amount: -90, currency: 'USD', entryDate: '2027-03-31' }] },
+  ]
+  const r = buildReport({
+    view: 'plan', accounts: A2, actuals: [], plan: plan.flatMap(x => x.postings), planFirst: '2027-01', planLast: '2027-12', cutoff: '2026-12',
+    actualsAvailableThrough: '2026-12', closedThrough: null, start: '2027-03', end: '2027-03', interval: 'month', actualEntries: [], planEntries: plan,
+  } as any)
+  const v = (key: string) => r.cashDetail!.find(l => l.key === key)?.values[0]
+
+  it('keeps one Distributions line, with the LPs, the GP and the carry beneath it', () => {
+    expect(v('distributed')).toBe(-1000)
+    expect(v('distributed:lp')).toBe(-900)
+    expect(v('distributed:gp')).toBe(-10)
+    expect(v('distributed:carry')).toBe(-90)
+    expect(r.cashDetail!.find(l => l.key === 'distributed:carry')?.parent).toBe('distributed')
+  })
+})

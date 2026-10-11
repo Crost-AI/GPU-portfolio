@@ -13,11 +13,11 @@ describe('write-action registry', () => {
     expect(getWriteAction('update_portfolio_construction')?.stageAccess).toBe('write')
   })
 
-  it('stages budget & forecast changes behind accounting write and the budgeting switch', () => {
+  it('stages budget & forecast changes behind accounting write, with no switch of their own', () => {
     for (const name of ['create_forecast_plan', 'update_forecast_plan', 'publish_forecast_plan']) {
       const a = getWriteAction(name)!
       expect(a.domain, name).toBe('accounting')
-      expect(a.accessFeature, name).toBe('budgeting')
+      expect(a.accessFeature, name).toBeUndefined()
       expect(a.stageAccess, name).toBe('write')
       expect(a.entity, name).toBe('required')
       expect(a.managementCompanies, name).toBe(true)

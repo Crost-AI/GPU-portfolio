@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Check, ChevronDown, MoreHorizontal, PencilLine, Plus, Sparkles } from 'lucide-react'
+import { Check, ChevronDown, Settings2, PencilLine, Plus, Sparkles, Copy, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -54,7 +54,7 @@ export function MonthRangePicker({ preset, onPreset, start, end, onStart, onEnd,
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" className="h-9 font-normal" aria-label="Date range">
+        <Button variant="outline" className="h-9 font-normal text-muted-foreground" aria-label="Date range">
           {short(start)} – {short(end)}
           <ChevronDown className="ml-1.5 h-3.5 w-3.5 opacity-60" />
         </Button>
@@ -104,7 +104,7 @@ export function MoreMenu({ items }: { items: MoreItem[] }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="icon" aria-label="More actions"><MoreHorizontal className="h-4 w-4" /></Button>
+        <Button variant="outline" size="icon" className="text-muted-foreground" aria-label="Plan settings" title="Plan settings"><Settings2 className="h-4 w-4" /></Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56 p-1">
         {visible.map(i => {
@@ -130,28 +130,28 @@ export function MoreMenu({ items }: { items: MoreItem[] }) {
 
 /**
  * New plan, the one way to start one: build it yourself, or have the Analyst draft it from the
- * entity's history. Without an AI key there is only one way, so the button just opens the dialog.
+ * entity's history, or copy the open plan — portfolio and fund forecast both — as a scenario to
+ * change. With only one way, the button just opens the dialog.
  */
-export function NewPlanMenu({ onManual, onDraftWithAi }: { onManual: () => void; onDraftWithAi?: () => void }) {
+export function NewPlanMenu({ onManual, onDraftWithAi, onCopy, onSave }: { onManual: () => void; onDraftWithAi?: () => void; onCopy?: () => void; onSave?: () => void }) {
   const [open, setOpen] = useState(false)
-  if (!onDraftWithAi) {
-    return <Button variant="outline" onClick={onManual}><Plus className="mr-1.5 h-4 w-4" /> New plan</Button>
-  }
   const choose = (fn: () => void) => () => { setOpen(false); fn() }
+  const item = (icon: React.ReactNode, title: string, hint: string, fn: () => void) => (
+    <button type="button" className={cn(itemCls(false), 'items-start gap-2 justify-start')} onClick={choose(fn)}>
+      {icon}
+      <span><span className="block font-medium text-foreground">{title}</span><span className="block text-xs">{hint}</span></span>
+    </button>
+  )
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" aria-haspopup="menu"><Plus className="mr-1.5 h-4 w-4" /> New plan <ChevronDown className="ml-1.5 h-3.5 w-3.5 opacity-70" /></Button>
+        <Button variant="outline" className="text-muted-foreground" aria-haspopup="menu">Scenario <ChevronDown className="ml-1.5 h-3.5 w-3.5 opacity-70" /></Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-1">
-        <button type="button" className={cn(itemCls(false), 'items-start gap-2 justify-start')} onClick={choose(onManual)}>
-          <PencilLine className="mt-0.5 h-4 w-4 shrink-0" />
-          <span><span className="block font-medium text-foreground">Start from scratch</span><span className="block text-xs">Pick the accounts and rules yourself.</span></span>
-        </button>
-        <button type="button" className={cn(itemCls(false), 'items-start gap-2 justify-start')} onClick={choose(onDraftWithAi)}>
-          <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
-          <span><span className="block font-medium text-foreground">Draft with AI</span><span className="block text-xs">The Analyst suggests rules from the books&rsquo; history for you to review.</span></span>
-        </button>
+        {onSave && item(<Save className="mt-0.5 h-4 w-4 shrink-0" />, 'Save scenario', 'Keep this plan as it stands, as a scenario or the budget, to compare against.', onSave)}
+        {onCopy && item(<Copy className="mt-0.5 h-4 w-4 shrink-0" />, 'Copy as a new scenario', 'Its portfolio, fees, expenses and calls, to change without touching this one.', onCopy)}
+        {item(<PencilLine className="mt-0.5 h-4 w-4 shrink-0" />, 'New from scratch', 'Pick the accounts and rules yourself.', onManual)}
+        {onDraftWithAi && item(<Sparkles className="mt-0.5 h-4 w-4 shrink-0" />, 'Draft with AI', 'The Analyst suggests rules from the books’ history for you to review.', onDraftWithAi)}
       </PopoverContent>
     </Popover>
   )

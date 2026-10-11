@@ -61,7 +61,6 @@ interface MobileMoreSheetProps {
   reviewBadge: number
   settingsBadge?: number
   notesBadge?: number
-  pendingActionsBadge?: number
   isAdmin?: boolean
   updateAvailable?: boolean
   featureVisibility?: FeatureVisibilityMap
@@ -75,7 +74,6 @@ export function MobileMoreSheet({
   reviewBadge,
   settingsBadge,
   notesBadge,
-  pendingActionsBadge,
   isAdmin,
   updateAvailable,
   featureVisibility,
@@ -88,22 +86,15 @@ export function MobileMoreSheet({
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
-  const sections = navSectionsFor(!!isAdmin, access, {
-    review: reviewBadge,
-    pendingActions: pendingActionsBadge,
-  })
+  const sections = navSectionsFor(!!isAdmin, access, { review: reviewBadge })
 
   const badgeFor = (key: NavItem['badgeKey']) =>
     key === 'review' ? reviewBadge
-      : key === 'pendingActions' ? (pendingActionsBadge ?? 0)
       : key === 'settings' ? (settingsBadge ?? 0)
       : key === 'notes' ? (notesBadge ?? 0)
       : 0
 
-  const grid = moreSectionsFor(!!isAdmin, access, tabHrefs, {
-    review: reviewBadge,
-    pendingActions: pendingActionsBadge,
-  })
+  const grid = moreSectionsFor(!!isAdmin, access, tabHrefs, { review: reviewBadge })
 
   // The section you are IN, whether or not it is a tab — its sub-pages are the reason
   // most people open this menu, and the tab bar has no way to reach them.
@@ -155,8 +146,8 @@ export function MobileMoreSheet({
                       aria-current={active ? 'page' : undefined}
                       // min-h-[3.25rem] is the tap target, and it is a MINIMUM: the
                       // label wraps rather than truncating, because half a phone's
-                      // width is not enough for "Pending Actions" on one line and
-                      // "Pending A…" is not a destination anyone recognises.
+                      // width is not enough for the longer section names on one line,
+                      // and a truncated one is not a destination anyone recognises.
                       className={`flex min-h-[3.25rem] items-center gap-3 rounded-card border px-3 py-2 text-sm transition-colors ${
                         active
                           ? 'border-transparent bg-accent text-foreground font-medium'

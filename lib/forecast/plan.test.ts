@@ -164,6 +164,16 @@ describe('fund plans with construction (acceptance #10, #11)', () => {
     linked: new Map([['r-fee', [feeDriver]]]),
     construction: mc,
   }))
+  // Calls and distributions are the fund forecast's capital management now (lib/forecast/capital.ts,
+  // booked by the service): construction gives only the deal flows. Book the same two here.
+  const capitalEntry = (date: string, kind: 'capital_call' | 'distribution', amount: number) => ({
+    entryDate: date, kind, memo: kind, accountId: 'f3100', ruleId: null, overrideId: null, source: 'construction' as const,
+    postings: kind === 'capital_call'
+      ? [{ accountId: 'f1000', amount, currency: 'USD' }, { accountId: FUND.find(a => a.subtype === 'lp_capital')!.id, amount: -amount, currency: 'USD' }]
+      : [{ accountId: FUND.find(a => a.subtype === 'lp_capital')!.id, amount, currency: 'USD' }, { accountId: 'f1000', amount: -amount, currency: 'USD' }],
+  })
+  expect(built.entries.some(e => e.kind === 'capital_call' || e.kind === 'distribution')).toBe(false)
+  built.entries.push(capitalEntry('2026-08-31', 'capital_call', 1_100_000), capitalEntry('2027-02-28', 'distribution', 2_900_000))
   const postings = built.entries.flatMap(e => e.postings.map(p => ({ ...p, entryDate: e.entryDate })))
   const report = buildReport({
     view: 'plan', accounts: FUND, actuals: [], plan: postings, planFirst: built.first, cutoff: null,
@@ -201,7 +211,7 @@ describe('fund plans with construction (acceptance #10, #11)', () => {
     expect(line('f5000').values[i]).toBe(-20_000)
     expect(line('called')).toMatchObject({ section: 'financing', label: 'Capital contributions' })
     expect(line('invested').values[i]).toBe(-1_000_000)
-    report.cash.forEach((c, k) => expect(d.reduce((s, l) => s + l.values[k], 0)).toBeCloseTo(c!.movement, 2))
+    report.cash.forEach((c, k) => expect(d.filter(l => !l.parent).reduce((s, l) => s + l.values[k], 0)).toBeCloseTo(c!.movement, 2))
   })
 
   it('every construction entry balances', () => {

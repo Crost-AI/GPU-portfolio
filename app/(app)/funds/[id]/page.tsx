@@ -46,6 +46,8 @@ export async function generateMetadata(props: { params: Promise<{ id: string }> 
 export default async function EntityPage(props: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await props.params;
 
+  // Portfolio construction is the Forecast page's Portfolio tab now.
+  if (params.id === 'construction') redirect('/funds/forecast')
   if (FUND_SUBPAGE_SLUGS.has(params.id)) {
     // Only the capital accounts landing has a query to forward — see FirmVehiclesTable's `action`.
     const sp = await props.searchParams

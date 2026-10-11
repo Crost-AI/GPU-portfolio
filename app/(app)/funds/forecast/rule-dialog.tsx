@@ -23,8 +23,9 @@ const METHODS: { value: string; label: string; hint: string }[] = [
   { value: 'run_rate', label: 'Historical run rate', hint: 'Average of closed months; unclosed months are left out unless you include them.' },
   { value: 'growth', label: 'Growth', hint: 'A base amount growing by a rate per month or per year.' },
   { value: 'seasonal', label: 'Seasonal profile', hint: 'A 12-month shape repeated each year — payroll with a December bonus — with optional yearly growth.' },
-  { value: 'linked_fee', label: 'Linked management fee', hint: 'The fund’s construction fee schedule, on the fee link’s billing cycle. Set up the link under Fee links.' },
-  { value: 'linked_construction', label: 'Portfolio construction', hint: 'This fund’s construction fees or expenses by month (construction states them per year; they are spread evenly).' },
+  { value: 'management_fee', label: 'Management fee', hint: 'The fund’s fee terms — a rate on committed, invested or NAV for a term, with an optional step-down — charged on the fee-paying commitments (the GP’s own stake pays none). Paid on the fee link’s cycle when the fund has one.' },
+  { value: 'linked_fee', label: 'Fee income from funds', hint: 'A management company’s income: each linked fund’s management fee from its forecast, on the fee link’s billing cycle. Set up the links under Fee links.' },
+  { value: 'linked_construction', label: 'Portfolio construction (old)', hint: 'Replaced by the Management fee rule and ordinary expense rules — fees and expenses are the forecast’s now.' },
 ]
 
 const selectCls = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm'
@@ -66,11 +67,13 @@ export function RuleDialog({ account, rule, open, saving, error, onClose, onSave
       window: str(p.window ?? 12), from: str(p.from), to: str(p.to), includeUnclosed: p.includeUnclosed ? '1' : '',
       base: str(p.base), baseMonth: str(p.baseMonth), rate: p.rate != null ? String(Number(p.rate) * 100) : '', per: str(p.per ?? 'year'),
       fundVehicle: str(p.fundVehicle), flow: str(p.flow ?? 'fees'),
+      feeBasis: str(p.basis ?? 'committed'), termYears: str(p.termYears ?? 10),
+      stepDownYear: str(p.stepDownYear), stepDownRate: p.stepDownRate != null ? String(Number(p.stepDownRate) * 100) : '',
       seasonAnchor: str(p.anchor), annualGrowth: p.annualGrowth != null ? String(Number(p.annualGrowth) * 100) : '',
       ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`m${i + 1}`, str((p.profile as any)?.[String(i + 1)])])),
     })
     const t = (rule?.cashTiming ?? { mode: 'same' }) as Record<string, unknown>
-    setTiming({ mode: str(t.mode), months: str(t.months ?? 1), month: str(t.month ?? 1), direction: str(t.direction ?? 'advance') })
+    setTiming({ mode: str(t.mode), months: str(t.months ?? 1), month: str(t.month ?? 1), direction: str(t.direction ?? 'advance'), refundMonth: str(t.refundMonth ?? '') })
     setNote(rule?.note ?? '')
   }, [open, rule])
 
@@ -113,11 +116,17 @@ export function RuleDialog({ account, rule, open, saving, error, onClose, onSave
       case 'linked_construction':
         params = { flow: f.flow || 'fees' }
         break
+      case 'management_fee':
+        params = {
+          rate: f.rate ? Number(f.rate) / 100 : 0, basis: f.feeBasis || 'committed', termYears: num(f.termYears) ?? 0,
+          stepDownYear: f.stepDownYear ? Number(f.stepDownYear) : null, stepDownRate: f.stepDownRate ? Number(f.stepDownRate) / 100 : null,
+        }
+        break
     }
     const cashTiming =
       timing.mode === 'offset' ? { mode: 'offset', months: Number(timing.months) }
       : timing.mode === 'month' ? { mode: 'month', month: Number(timing.month), direction: timing.direction }
-      : timing.mode === 'prepaid' ? { mode: 'prepaid' }
+      : timing.mode === 'prepaid' ? { mode: 'prepaid', ...(timing.refundMonth ? { refundMonth: timing.refundMonth } : {}) }
       : { mode: 'same' }
     onSave({ method, params, cashTiming, note: note.trim() || null })
   }
@@ -135,7 +144,11 @@ export function RuleDialog({ account, rule, open, saving, error, onClose, onSave
         <div className="space-y-4">
           <Field label="Method">
             <select className={selectCls} value={method} onChange={e => setMethod(e.target.value)}>
-              {METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              {METHODS
+                // The fee rule is an expense; fee income is income; the old construction link only
+                // shows on a rule that still uses it.
+                .filter(m => (m.value !== 'management_fee' || isExpense) && (m.value !== 'linked_fee' || !isExpense) && (m.value !== 'linked_construction' || rule?.method === 'linked_construction'))
+                .map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </Field>
           <p className="text-xs text-muted-foreground">{METHODS.find(m => m.value === method)?.hint}</p>
@@ -204,6 +217,22 @@ export function RuleDialog({ account, rule, open, saving, error, onClose, onSave
             </div>
           )}
 
+          {method === 'management_fee' && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Annual rate %"><Input inputMode="decimal" value={f.rate ?? ''} onChange={e => set('rate', e.target.value)} placeholder="2" /></Field>
+              <Field label="Charged on">
+                <select className={selectCls} value={f.feeBasis ?? 'committed'} onChange={e => set('feeBasis', e.target.value)}>
+                  <option value="committed">Committed capital</option>
+                  <option value="invested">Capital invested</option>
+                  <option value="nav">Net asset value</option>
+                </select>
+              </Field>
+              <Field label="Years from now"><Input inputMode="numeric" value={f.termYears ?? ''} onChange={e => set('termYears', e.target.value)} /></Field>
+              <div />
+              <Field label="Steps down in year (optional)"><Input inputMode="numeric" value={f.stepDownYear ?? ''} onChange={e => set('stepDownYear', e.target.value)} /></Field>
+              <Field label="to rate %"><Input inputMode="decimal" value={f.stepDownRate ?? ''} onChange={e => set('stepDownRate', e.target.value)} /></Field>
+            </div>
+          )}
           {method === 'linked_fee' && (
             <Field label="Only this fund (optional — blank uses every linked fund)">
               <Input value={f.fundVehicle ?? ''} onChange={e => set('fundVehicle', e.target.value)} />
@@ -229,6 +258,13 @@ export function RuleDialog({ account, rule, open, saving, error, onClose, onSave
                   <option value="prepaid">{isExpense ? 'Already paid (prepaid)' : 'Already received (in advance)'}</option>
                 </select>
               </Field>
+              {timing.mode === 'prepaid' && isExpense && (
+                // A fee prepaid for the fund's life is refunded if the fund winds up early: the cost stops
+                // that month and what is still prepaid comes back, to be paid out to the investors.
+                <Field label="Refund what is still prepaid in">
+                  <Input type="month" value={timing.refundMonth ?? ''} onChange={e => setTiming(t => ({ ...t, refundMonth: e.target.value }))} />
+                </Field>
+              )}
               {timing.mode === 'offset' && (
                 <Field label="Months (negative = in advance)"><Input inputMode="numeric" value={timing.months} onChange={e => setTiming(t => ({ ...t, months: e.target.value }))} /></Field>
               )}

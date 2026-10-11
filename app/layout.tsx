@@ -6,8 +6,6 @@ import { NONCE_HEADER } from '@/lib/security/csp'
 import { Hanken_Grotesk, Plus_Jakarta_Sans, Inter, Geist, DM_Sans, Inter_Tight, Instrument_Sans, Newsreader, Source_Serif_4, Libre_Caslon_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { SpeedInsights } from '@vercel/speed-insights/next'
-import { BotIdClient } from 'botid/client'
-import { BOTID_PROTECTED_ROUTES } from '@/lib/botid-routes'
 import { ThemeProvider } from '@/components/theme-provider'
 import { Toaster } from '@/components/toaster'
 import { ConfirmProvider } from '@/components/confirm-dialog'
@@ -123,13 +121,7 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${geist.variable} ${dmSans.variable} ${interTight.variable} ${instrumentSans.variable} ${newsreader.variable} ${sourceSerif.variable} ${libreCaslon.variable} ${hankenGrotesk.variable} ${plusJakarta.variable}`}>
       <head>
-        {/* BotId's client half. It must be mounted HERE and not in instrumentation-client.ts:
-            that file is a Next 15.3+ entry point and this app is on 14, so it was compiled by
-            nothing and loaded by nothing — silently, with the only symptom being that every
-            visitor to /demo was classified as a bot. Move it back only when Next is upgraded.
-            Renders an inline <script>, which the CSP in next.config.mjs allows via
-            'unsafe-inline'; the challenge itself is same-origin through withBotId's rewrites. */}
-        <BotIdClient protect={BOTID_PROTECTED_ROUTES} />
+        {/* BotId's client half runs from instrumentation-client.ts (Next 15.3+). */}
       </head>
       <body className="font-sans">
         <ThemeProvider
@@ -162,13 +154,22 @@ export default async function RootLayout({
             NEXT_PUBLIC_DISABLE_SW=true is the escape hatch that incident earned. It
             does not merely skip registration — it unregisters whatever is already
             installed, so setting it and redeploying is a complete way out without
-            asking anyone to clear site data. */}
+            asking anyone to clear site data.
+
+            Development never gets the worker either: it caches /_next/static/ cache-first, which is
+            only safe because production chunk names change with their content. Dev chunks keep
+            their names across edits, so an installed worker serves the first version of the code
+            forever — removed imports "missing", fixed warnings still firing. The dev branch also
+            clears the cache a worker installed before this rule existed. */}
         <Script id="sw-register" strategy="afterInteractive" nonce={nonce}>{
-          process.env.NEXT_PUBLIC_DISABLE_SW === 'true'
+          process.env.NEXT_PUBLIC_DISABLE_SW === 'true' || process.env.NODE_ENV !== 'production'
             ? `if ('serviceWorker' in navigator) {
                  navigator.serviceWorker.getRegistrations().then(function (regs) {
                    regs.forEach(function (r) { r.unregister(); });
                  });
+               }
+               if ('caches' in window) {
+                 caches.keys().then(function (names) { names.forEach(function (n) { caches.delete(n); }); });
                }`
             : `if ('serviceWorker' in navigator) {
                  navigator.serviceWorker.register('/sw.js?v=${SW_VERSION}').catch(function () {});

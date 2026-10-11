@@ -19,14 +19,32 @@ export type RuleMethod =
   | 'seasonal'
   | 'linked_fee'
   | 'linked_construction'
+  | 'management_fee'
 
-export const RULE_METHODS: RuleMethod[] = ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'seasonal', 'linked_fee', 'linked_construction']
+export const RULE_METHODS: RuleMethod[] = ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'seasonal', 'linked_fee', 'linked_construction', 'management_fee']
 
 /** Methods the engine can evaluate today. Linked drivers arrive with their source mappings. */
 export const SUPPORTED_METHODS: RuleMethod[] = RULE_METHODS
 
 /** Methods whose amounts come from another part of the app, supplied by the service, not evaluated here. */
-export const LINKED_METHODS: RuleMethod[] = ['linked_fee', 'linked_construction']
+export const LINKED_METHODS: RuleMethod[] = ['linked_fee', 'linked_construction', 'management_fee']
+
+/**
+ * A fund's management fee, owned by the plan (plans/plan-unified-plan.md §1.3): the rate on a basis,
+ * for a term of years from now, optionally stepping down. Charged on the fee-paying share of
+ * commitments (the GP's own stake is exempt). Evaluated by lib/forecast/fee-rule.ts, which needs the
+ * fund's commitments and deployment — so it is supplied by the service, like the linked methods.
+ */
+export interface ManagementFeeParams {
+  /** Annual rate, e.g. 0.02. */
+  rate: number
+  basis: 'committed' | 'invested' | 'nav'
+  /** Years of fees from now. */
+  termYears: number
+  /** The forward year (1-based) from which `stepDownRate` applies. */
+  stepDownYear?: number | null
+  stepDownRate?: number | null
+}
 
 export interface LinkedFeeParams {
   /** Only this managed fund (by name). Omitted on a manco = every linked fund; on a fund = its link. */
@@ -215,6 +233,18 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
     case 'linked_construction': {
       if (p.flow !== 'fees' && p.flow !== 'expenses') throw new RuleError("flow must be 'fees' or 'expenses'")
       return { method: m, params: { flow: p.flow } satisfies LinkedConstructionParams }
+    }
+    case 'management_fee': {
+      const rate = num(p.rate, 'rate')
+      if (rate < 0 || rate > 0.2) throw new RuleError('rate is an annual fraction between 0 and 0.2 (0.02 = 2%)')
+      if (p.basis !== 'committed' && p.basis !== 'invested' && p.basis !== 'nav') throw new RuleError("basis must be 'committed', 'invested' or 'nav'")
+      const termYears = num(p.termYears, 'termYears')
+      if (termYears < 0 || termYears > 20) throw new RuleError('termYears must be 0–20')
+      const stepDownYear = p.stepDownYear == null || p.stepDownYear === '' ? null : num(p.stepDownYear, 'stepDownYear')
+      const stepDownRate = p.stepDownRate == null || p.stepDownRate === '' ? null : num(p.stepDownRate, 'stepDownRate')
+      if (stepDownYear != null && (stepDownYear < 1 || stepDownYear > 20)) throw new RuleError('stepDownYear must be 1–20')
+      if (stepDownRate != null && (stepDownRate < 0 || stepDownRate > 0.2)) throw new RuleError('stepDownRate is an annual fraction between 0 and 0.2')
+      return { method: m, params: { rate, basis: p.basis, termYears, stepDownYear, stepDownRate } satisfies ManagementFeeParams }
     }
     case 'seasonal': {
       const prof = obj(p.profile)

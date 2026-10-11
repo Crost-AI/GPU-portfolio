@@ -26,7 +26,7 @@ vi.mock('@/lib/accounting/vehicle-domain', async orig => ({
 import { listPlans, savePlan, ForecastError } from '@/lib/forecast/service'
 import { resolveVehicleWithAccess, VehicleAccessError } from '@/lib/accounting/http-vehicle'
 
-const ON: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', budgeting: 'everyone', management_company: 'everyone' }
+const ON: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', management_company: 'everyone' }
 
 const access = (over: Partial<AccessContext> = {}): AccessContext => ({
   fundId: 'f1',
@@ -60,8 +60,8 @@ beforeEach(() => {
 })
 
 describe('forecast service authorization', () => {
-  it('refuses everyone when the budgeting switch is off, admins included', async () => {
-    const off = { ...ON, budgeting: 'off' } as FeatureVisibilityMap
+  it('follows the accounting switch — Forecast has none of its own — refusing everyone when it is off, admins included', async () => {
+    const off = { ...ON, accounting: 'off' } as FeatureVisibilityMap
     expect(await status(listPlans(ctx(access({ features: off })), { vehicle: 'Fund I' }))).toBe(403)
     expect(await status(listPlans(ctx(access({ features: off, role: 'admin' })), { vehicle: 'Fund I' }))).toBe(403)
   })

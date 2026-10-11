@@ -38,7 +38,7 @@ describe('monthlyConstruction (acceptance #10)', () => {
     expect(at('invested', 'Acme')).toMatchObject({ month: '2027-03', amount: 1_000_000, timing: 'stated' })
     expect(at('proceeds', 'Acme')).toMatchObject({ month: '2028-04', amount: 3_000_000, cost: 1_000_000, timing: 'stated' })
     expect(at('proceeds', 'Beta')).toMatchObject({ month: '2027-11', cost: 2_000_000, timing: 'inferred' })
-    expect(m.warnings.some(w => w.includes('fund-wide pacing'))).toBe(true)
+    expect(m.warnings.some(w => w.includes('hold period'))).toBe(false)
   })
 
   it('re-adds every year to the annual construction figure', () => {

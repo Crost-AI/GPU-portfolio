@@ -71,10 +71,9 @@ export function FeeLinksDialog({ open, vehicle, onClose, onChanged }: {
     <Dialog open={open} onOpenChange={o => { if (!o) onClose() }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Fee links</DialogTitle>
+          <DialogTitle>Entity links</DialogTitle>
           <DialogDescription>
-            A fee link says a fund pays a management company, and when. The fee amount always comes from the fund’s
-            portfolio-construction fee terms, so the fund’s expense and the management company’s revenue use the same schedule.
+            Ties the fund’s management fee expense to the management company’s revenue.
           </DialogDescription>
         </DialogHeader>
 
@@ -120,7 +119,7 @@ export function FeeLinksDialog({ open, vehicle, onClose, onChanged }: {
           <Button disabled={busy || !manco.trim() || !fund.trim()} onClick={() => send('PUT', {
             manco: manco.trim(), fund: fund.trim(), everyMonths: Number(every), anchorMonth: Number(anchor),
             direction, cashLagMonths: Number(lag),
-          })}>{busy ? 'Saving…' : 'Save link'}</Button>
+          })}>{busy ? 'Saving…' : 'Save'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

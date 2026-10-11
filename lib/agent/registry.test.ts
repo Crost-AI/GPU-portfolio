@@ -87,20 +87,20 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('exposes budget & forecast as fund-scoped reads behind the budgeting switch', () => {
+  it('exposes budget & forecast as fund-scoped reads on accounting, with no switch of their own', () => {
     for (const name of ['forecast_list_plans', 'forecast_series', 'forecast_explain', 'forecast_variance', 'forecast_fee_links', 'forecast_suggest_rules']) {
       const tool = getTool(name)!
       expect(tool.scope, name).toBe('read')
       expect(tool.domain, name).toBe('portfolio')
       expect(tool.accessDomain, name).toBe('accounting')
-      expect(tool.accessFeature, name).toBe('budgeting')
+      expect(tool.accessFeature, name).toBeUndefined()
       expect(tool.inputSchema.required, name).toContain('vehicle')
       expect(isLedgerTool(tool), name).toBe(false)
     }
     for (const name of ['forecast_create_plan', 'forecast_update_plan', 'forecast_publish', 'forecast_set_fee_link']) {
       const tool = getTool(name)!
       expect(tool.scope, name).toBe('write')
-      expect(tool.accessFeature, name).toBe('budgeting')
+      expect(tool.accessFeature, name).toBeUndefined()
     }
   })
 

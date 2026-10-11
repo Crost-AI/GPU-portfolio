@@ -40,7 +40,6 @@ interface MobileNavProps {
   reviewBadge: number
   settingsBadge?: number
   notesBadge?: number
-  pendingActionsBadge?: number
   isAdmin?: boolean
   updateAvailable?: boolean
   featureVisibility?: FeatureVisibilityMap
@@ -78,7 +77,6 @@ export function MobileNav({
   reviewBadge,
   settingsBadge,
   notesBadge,
-  pendingActionsBadge,
   isAdmin,
   updateAvailable,
   featureVisibility,
@@ -94,7 +92,6 @@ export function MobileNav({
 
   const badgeFor = (key: string | undefined) =>
     key === 'review' ? reviewBadge
-      : key === 'pendingActions' ? (pendingActionsBadge ?? 0)
       : key === 'settings' ? (settingsBadge ?? 0)
       : key === 'notes' ? (notesBadge ?? 0)
       : 0
@@ -104,7 +101,7 @@ export function MobileNav({
   // sheet, which is exactly the state you would not think to check.
   const shownBadges = new Set(tabs.map(t => t.badgeKey).filter(Boolean))
   const moreHasBadge =
-    (['review', 'pendingActions', 'settings', 'notes'] as const).some(
+    (['review', 'settings', 'notes'] as const).some(
       key => !shownBadges.has(key) && badgeFor(key) > 0
     ) || !!updateAvailable
 
@@ -213,7 +210,6 @@ export function MobileNav({
         reviewBadge={reviewBadge}
         settingsBadge={settingsBadge}
         notesBadge={notesBadge}
-        pendingActionsBadge={pendingActionsBadge}
         isAdmin={isAdmin}
         updateAvailable={updateAvailable}
         featureVisibility={featureVisibility}

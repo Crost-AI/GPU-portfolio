@@ -19,7 +19,7 @@ const NOT_IN_DEMO: Record<string, string> = {
   'companies': 'redirect to /dashboard',
   'lps/live': 'redirect to /lps',
   'lps/preview': 'admin only',
-  'pending-actions': 'admin only',
+  'pending-actions': 'redirect to /dashboard',
   'usage': 'admin only',
   'entities/[id]/documents': 'an entity\'s uploaded governing documents — the demo fund has none to show',
   'updates': 'admin only',

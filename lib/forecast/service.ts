@@ -10,7 +10,18 @@
 // to forecast_* through forecast_save / forecast_publish, which make each save one transaction
 // guarded by the plan's revision.
 
-import { applyAdjustments, entryKey, NO_ADJUSTMENTS, validateAdjustments, AdjustmentError, type Adjustments } from './adjustments'
+import { loadCarryTerms } from '@/lib/accounting/carry'
+import { planReturns, type PlanReturns } from './plan-returns'
+import { percentiles, sampleRuns, type Percentiles } from '@/lib/accounting/construction-simulation'
+import { constructionBaseline, forecastSchedule } from '@/lib/accounting/construction-forecast'
+import { monthlyConstruction } from './construction-adapter'
+import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
+import { roundCents } from '@/lib/accounting/ledger'
+import { CapitalError, computeCapital, splitDistributions, validateCapital, type CapitalSettings } from './capital'
+import { loadPlanConstruction, pickPrimaryPlan, primaryPlanRow, setPrimaryPlan } from './plan-construction'
+import { getConstructionModel, loadConstructionSeed } from '@/lib/accounting/construction-service'
+import { feeRuleFromConstruction } from './fee-rule'
+import { applyAdjustments, entryKey, NO_ADJUSTMENTS, validateAdjustments, AdjustmentError, type Adjustments, dealEditRefusal } from './adjustments'
 import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { hasAccess, type AccessContext } from '@/lib/access/effective'
@@ -27,7 +38,7 @@ import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntr
 import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, fundSchedule, loadFeeLinks, loadLinkedDrivers, seesFund } from './linked'
+import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesFund } from './linked'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 
@@ -52,7 +63,8 @@ export const HORIZONS = [12, 18, 24, 36] as const
 // ---------------------------------------------------------------------------------------------
 
 function authorize(ctx: ForecastServiceContext, need: 'read' | 'write') {
-  if (!hasAccess(ctx.access, 'accounting', need, 'budgeting')) {
+  // Part of accounting — Forecast has no switch of its own (plans/plan-unified-plan.md D3).
+  if (!hasAccess(ctx.access, 'accounting', need)) {
     throw new ForecastError(
       need === 'write' ? 'You need write access to Forecast.' : 'You do not have access to Forecast.',
       403,
@@ -145,6 +157,12 @@ export interface PlanSummary {
   includeConstruction: boolean
   /** Hand edits on top of the sources (lib/forecast/adjustments.ts). */
   adjustments: Adjustments
+  /** The entity's primary plan — its headline figures, a manco's fee income and a GP's share read it. */
+  isPrimary: boolean
+  /** True once the plan holds its own portfolio construction (lib/forecast/plan-construction.ts). */
+  hasConstruction: boolean
+  /** Capital management: call and distribution policy, and month edits (lib/forecast/capital.ts). */
+  capital: CapitalSettings
   status: 'active' | 'archived'
   revision: number
   compiledAt: string | null
@@ -185,13 +203,18 @@ export interface VersionView {
   publishedAt: string
 }
 
-const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
+const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, construction, capital, is_primary, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
+
+/** A stored capital setting, read leniently (a bad row reads as the default rather than breaking the plan). */
+function safeCapital(raw: unknown): CapitalSettings {
+  try { return validateCapital(raw) } catch { return validateCapital({}) }
+}
 
 function mapPlan(r: any, vehicle: string): PlanSummary {
   return {
     id: r.id, vehicle, kind: r.kind, name: r.name, scenario: r.scenario ?? null, fiscalYear: r.fiscal_year ?? null,
     startMonth: monthOf(r.start_month), endMonth: monthOf(r.end_month), horizonMonths: r.horizon_months ?? null,
-    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
+    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, isPrimary: r.is_primary === true, hasConstruction: r.construction != null, capital: safeCapital(r.capital), status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
     compiledCutoff: r.compiled_cutoff ?? null, createdAt: r.created_at, updatedAt: r.updated_at,
   }
 }
@@ -231,7 +254,7 @@ async function loadInputs(ctx: ForecastServiceContext, planId: string) {
 
 async function loadEntries(ctx: ForecastServiceContext, planId: string, versionId: string | null): Promise<FlowEntry[]> {
   const rows = await fetchAllRows((f, t) => {
-    let q = (ctx.admin as any).from('forecast_entries').select('id, entry_date, kind, account_id, source, forecast_postings(account_id, amount, currency)')
+    let q = (ctx.admin as any).from('forecast_entries').select('id, entry_date, kind, memo, account_id, source, forecast_postings(account_id, amount, currency)')
       .eq('fund_id', ctx.fundId).eq('plan_id', planId)
     q = versionId ? q.eq('version_id', versionId) : q.is('version_id', null)
     return q.order('entry_date').order('id').range(f, t)
@@ -239,18 +262,19 @@ async function loadEntries(ctx: ForecastServiceContext, planId: string, versionI
   return (rows as any[]).map(e => ({
     date: e.entry_date,
     kind: e.kind,
+    memo: e.memo ?? null,
     driver: e.account_id,
     postings: ((e.forecast_postings as any[]) ?? []).map(p => ({ accountId: p.account_id, amount: Number(p.amount), currency: p.currency, entryDate: e.entry_date })),
   }))
 }
 
 /** Posted actuals grouped back into entries, for classifying what moved the cash. */
-function actualFlowEntries(sourced: { entryId: string; accountId: string; amount: number; currency: string; entryDate?: string | null }[]): FlowEntry[] {
+function actualFlowEntries(sourced: { entryId: string; accountId: string; amount: number; currency: string; entryDate?: string | null; lpEntityId?: string | null; memo?: string | null }[]): FlowEntry[] {
   const byEntry = new Map<string, FlowEntry>()
   for (const p of sourced) {
     if (!p.entryDate) continue
-    const e = byEntry.get(p.entryId) ?? { date: p.entryDate, kind: null, postings: [] }
-    e.postings.push({ accountId: p.accountId, amount: p.amount, currency: p.currency, entryDate: p.entryDate })
+    const e = byEntry.get(p.entryId) ?? { date: p.entryDate, kind: null, memo: p.memo ?? null, postings: [] }
+    e.postings.push({ accountId: p.accountId, amount: p.amount, currency: p.currency, entryDate: p.entryDate, lpEntityId: p.lpEntityId ?? null })
     byEntry.set(p.entryId, e)
   }
   return [...byEntry.values()]
@@ -269,11 +293,14 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
   // Hand edits on top of what the sources say (lib/forecast/adjustments.ts).
   const adj = validateAdjustments(plan.adjustments ?? NO_ADJUSTMENTS, v.accounts)
   const applied = applyAdjustments(result.built.entries, adj, { first: result.built.first, last: result.built.last }, v.currency)
+  // Then the fund's capital management, on the plan's cash after everything else.
+  const cap = await capitalEntries(ctx, v, plan, applied.entries, { first: result.built.first, last: result.built.last }, result.ledgerPostings, result.isGpEntity)
   return {
     ...result,
-    built: { ...result.built, entries: applied.entries },
+    built: { ...result.built, entries: cap.entries },
     generated: result.built.entries,
-    warnings: [...new Set([...result.warnings, ...applied.warnings])],
+    capital: cap.capital,
+    warnings: [...new Set([...result.warnings, ...applied.warnings, ...cap.warnings])],
   }
 }
 
@@ -282,7 +309,9 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
   const ruleRows = toRuleRows(rules)
   const [ledger, drivers] = await Promise.all([
     loadPostedLedger(ctx.admin, ctx.fundId, v.name, lastDay(cutoff)),
-    loadLinkedDrivers(ctx, v, ruleRows, plan.include_construction === true),
+    // Always: construction feeds every plan with a portfolio (no switch — plans/plan-unified-plan.md),
+    // and it is THIS plan's construction (a downside case has its own exits).
+    loadLinkedDrivers(ctx, v, ruleRows, true, plan.id ?? null),
   ])
   const built = buildPlan({
     kind: plan.kind,
@@ -304,12 +333,97 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
     construction: drivers.construction,
     gpShare: drivers.gpShare,
   })
-  return { built, cutoff, warnings: [...new Set([...warnings, ...drivers.warnings, ...built.warnings])] }
+  // An entity that keeps no books here has no actuals to be unclosed: its plan starts from nothing
+  // recorded (opening cash zero), which is what the warning should say.
+  const noBooks = ledger.postings.length === 0 && !v.closedThrough
+  const cutoffWarnings = noBooks ? [`No books are kept for ${v.name} here, so the plan starts from nothing recorded — calls fund what it spends from the first month`] : warnings
+  return { built, cutoff, ledgerPostings: ledger.postings, isGpEntity: !!drivers.gpShare, warnings: [...new Set([...cutoffWarnings, ...drivers.warnings, ...built.warnings])] }
 }
 
+/**
+ * The fund forecast's capital management (lib/forecast/capital.ts): with the plan's other entries in
+ * place, work out each month's call and distribution from its cash, apply the plan's month edits,
+ * split each distribution through the waterfall, and book them. Not for a management company (no
+ * partners' capital to call) or a GP entity (its calls and distributions are its share of the fund's).
+ */
+async function capitalEntries(
+  ctx: ForecastServiceContext, v: VehicleCtx, plan: any, entries: CompiledEntry[],
+  window: { first: MonthKey; last: MonthKey }, ledgerPostings: Posting[], isGpEntity: boolean,
+): Promise<{ entries: CompiledEntry[]; warnings: string[]; capital: CapitalSettings }> {
+  // Calls and distributions typed into the cash statement before they were capital edits were kept
+  // as hand entries ('cell-called-YYYY-MM', 'cell-distributed-YYYY-MM'): read them as month edits.
+  const settings = safeCapital(plan.capital)
+  const cashIds = new Set(v.accounts.filter(a => a.subtype === 'cash' && !a.lpEntityId && !a.companyId).map(a => a.id))
+  const cashOf = (e: CompiledEntry) => roundCents(e.postings.filter(p => cashIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0))
+  const kept: CompiledEntry[] = []
+  for (const e of entries) {
+    const legacy = /^manual\|cell-(called|distributed)-(\d{4}-\d{2})$/.exec(e.key ?? '')
+    if (!legacy) { kept.push(e); continue }
+    const into = legacy[1] === 'called' ? settings.calls : settings.distributions
+    if (into[legacy[2]] == null) into[legacy[2]] = Math.abs(cashOf(e))
+  }
+  if (isManagementCompany(v.kind) || isGpEntity || !cashIds.size) return { entries: kept, warnings: [], capital: settings }
+  const capitalAccount = v.accounts.filter(a => a.subtype === 'lp_capital' && !a.lpEntityId && !a.companyId).sort((a, b) => a.code.localeCompare(b.code))[0]
+    ?? v.accounts.filter(a => a.type === 'equity' && !a.lpEntityId && !a.companyId).sort((a, b) => a.code.localeCompare(b.code))[0]
+  if (!capitalAccount) return { entries: kept, warnings: ['This chart has no partners\' capital account, so calls and distributions are not forecast'], capital: settings }
+
+  const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name, planId: plan.id ?? null }).catch(() => null)
+  const months = monthRange(window.first, window.last)
+  const cashFlows = new Map<MonthKey, number>()
+  const proceeds = new Map<MonthKey, number>()
+  for (const e of kept) {
+    const m = e.entryDate.slice(0, 7) as MonthKey
+    const c = cashOf(e)
+    if (!c) continue
+    cashFlows.set(m, roundCents((cashFlows.get(m) ?? 0) + c))
+    // Exit proceeds, and cash that belongs to the investors (an unused prepaid fee refunded), are paid out.
+    if (e.kind === 'proceeds' || e.distributable) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
+  }
+  // Cash in the bank when the plan's window opens — the books through the month before it (a
+  // budget's window can start before the cutoff; a rolling forecast's starts just after it).
+  const opensAfter = lastDay(addMonths(window.first, -1))
+  const openingCash = roundCents(ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
+  const result = computeCapital({
+    months, openingCash, cashFlows, proceeds, uncalled: model?.actuals.uncalledCapital ?? 0, settings,
+  })
+  const split = splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
+  // Who the carry goes to is the fund's setting (Allocation terms → Carry, "Carry accrues to"):
+  // usually its GP entity, but any partner or associate vehicle, in any split.
+  const carryTo = [...split.values()].some(s => s.carry > 0) ? await carryRecipientLabel(ctx, v.name) : ''
+  if (carryTo === null) result.warnings.push('Carry is forecast but the fund names no one to receive it — set who it accrues to in Allocation terms → Carry')
+  const out = [...kept]
+  const c = v.currency
+  const base = (m: MonthKey) => ({ entryDate: lastDay(m), ruleId: null, overrideId: null, source: 'construction' as const })
+  for (const m of months) {
+    const call = result.calls.get(m)
+    if (call) out.push({ ...base(m), kind: 'capital_call', accountId: capitalAccount.id, memo: `Capital call${settings.calls[m] != null ? ' (your amount)' : ''}`,
+      postings: [{ accountId: [...cashIds][0], amount: call, currency: c }, { accountId: capitalAccount.id, amount: -call, currency: c }] })
+    const s = split.get(m)
+    // The LPs' share and the GP's share on its own commitment as two entries, so the cash-flow
+    // statement can show them apart (report.ts distributionSplit reads the memo).
+    const yours = settings.distributions[m] != null ? ' (your amount)' : ''
+    for (const [amount, memo] of [[s ? roundCents(s.toLp) : 0, `Distribution to the LPs${yours}`], [s ? roundCents(s.toGpStake) : 0, `Distribution to the GP, on its own commitment${yours}`]] as const) {
+      if (amount) out.push({ ...base(m), kind: 'distribution', accountId: capitalAccount.id, memo,
+        postings: [{ accountId: capitalAccount.id, amount, currency: c }, { accountId: [...cashIds][0], amount: -amount, currency: c }] })
+    }
+    if (s?.carry) out.push({ ...base(m), kind: 'carry_distribution', accountId: capitalAccount.id, memo: carryTo ? `Carried interest to ${carryTo}` : 'Carried interest',
+      postings: [{ accountId: capitalAccount.id, amount: s.carry, currency: c }, { accountId: [...cashIds][0], amount: -s.carry, currency: c }] })
+  }
+  out.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.memo.localeCompare(b.memo))
+  return { entries: out, warnings: result.warnings, capital: settings }
+}
+
+/**
+ * A carry payment is stored as a distribution — it is one, to the carry recipients — whose memo says
+ * "Carried interest…" (the fund forecast reads it back that way: linked.ts fundPlanCapital). So the
+ * save does not depend on the database allowing a separate entry kind; compiled entries keep
+ * `carry_distribution` in memory, where the statements and charts read it.
+ */
+export const CARRY_MEMO = /^Carried interest/
+const storedKind = (e: CompiledEntry) => (e.kind === 'carry_distribution' ? 'distribution' : e.kind)
 const entriesJson = (entries: CompiledEntry[]) =>
   entries.map(e => ({
-    entry_date: e.entryDate, kind: e.kind, memo: e.memo, account_id: e.accountId, rule_id: e.ruleId,
+    entry_date: e.entryDate, kind: storedKind(e), memo: e.memo, account_id: e.accountId, rule_id: e.ruleId,
     override_id: e.overrideId, source: e.source,
     postings: e.postings.map(p => ({ account_id: p.accountId, amount: p.amount, currency: p.currency })),
   }))
@@ -423,7 +537,7 @@ export async function getPlan(ctx: ForecastServiceContext, input: { vehicle: str
     overrides,
     versions: ((versionRows.data as any[]) ?? []).map(mapVersion),
     warnings: actualsMoved ? [...warnings, 'Actuals have moved since this draft was last saved — refresh to recompile']
-      : sourcesMoved ? [...warnings, 'Portfolio construction or a linked fund has changed since this draft was last saved — refresh to recompile']
+      : sourcesMoved ? [...warnings, 'This forecast is out of date: its investments, a linked fund or the books changed after it was worked out. Refresh to update it.']
       : warnings,
   }
 }
@@ -436,6 +550,26 @@ export function entriesFingerprint(entries: { date: string; postings: { accountI
     sums.set(k, (sums.get(k) ?? 0) + Number(p.amount))
   }
   return [...sums].filter(([, v]) => Math.abs(v) >= 0.005).map(([k, v]) => `${k}=${v.toFixed(2)}`).sort().join(';')
+}
+
+/** The construction a new plan starts from (see createPlan). */
+async function constructionToCopy(ctx: ForecastServiceContext, v: VehicleCtx, fromPlanId: string | null): Promise<Record<string, unknown> | null> {
+  const ref = await loadPlanConstruction(ctx.admin, ctx.fundId, v.id, fromPlanId, () => loadConstructionSeed(ctx.admin, ctx.fundId, v.id)).catch(() => null)
+  return ref?.assumptions ?? null
+}
+
+/**
+ * The entity's primary plan, made if need be: an existing plan is marked primary (its first active
+ * rolling forecast), or — with no plan at all — a "Base case" rolling forecast is created, seeded
+ * from history where there is any, holding the entity's construction. Returns its id.
+ */
+export async function ensurePrimaryPlan(ctx: ForecastServiceContext, vehicle: string): Promise<string> {
+  const v = await loadVehicle(ctx, vehicle, 'write')
+  const picked = await pickPrimaryPlan(ctx.admin, ctx.fundId, v.id)
+  if (picked) return picked
+  const make = (seed: CreatePlanInput['seed']) => createPlan(ctx, { vehicle: v.name, kind: 'rolling_forecast', name: 'Base case', horizonMonths: 36, seed })
+  const created = await make({ from: 'suggested' }).catch(() => make({ from: 'blank' }))
+  return created.plan.id
 }
 
 export interface CreatePlanInput {
@@ -454,7 +588,14 @@ export interface CreatePlanInput {
 }
 
 export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanInput): Promise<PlanDetail> {
-  const v = await loadVehicle(ctx, input.vehicle, 'write')
+  let v = await loadVehicle(ctx, input.vehicle, 'write')
+  // AN ENTITY WITHOUT BOOKS still gets a forecast (plans/plan-unified-plan.md §3): its kind's standard
+  // chart, so the plan's rules have accounts to name. Chart rows only — no entry is posted, and the
+  // entity's capital still comes from its positions, not a ledger.
+  if (v.accounts.length === 0) {
+    await ensureVehicleAccounts(ctx.admin, ctx.fundId, v.name)
+    v = await loadVehicle(ctx, input.vehicle, 'write')
+  }
   if (input.kind !== 'budget' && input.kind !== 'rolling_forecast') throw new ForecastError("kind must be 'budget' or 'rolling_forecast'")
   const name = typeof input.name === 'string' ? input.name.trim() : ''
   if (!name || name.length > 200) throw new ForecastError('name is required (up to 200 characters)')
@@ -483,12 +624,28 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
   }
 
   const seed = input.seed ?? { from: 'blank' }
-  const rules = await seedRules(ctx, v, input.kind, seed, cutoff, fiscalYear)
+  const seeded = await seedRules(ctx, v, input.kind, seed, cutoff, fiscalYear)
+  // A copied plan keeps its source's rules; any other gets the fund's fee and expense rules.
+  const rules = seed.from === 'plan' ? seeded : await withCostRules(ctx, v, seeded)
 
+  // THE PLAN'S OWN CONSTRUCTION — a budget's too. Copied from the plan it was seeded from, else the
+  // entity's primary plan, else the entity's construction model; a management company has none.
+  // The first plan of an entity becomes its primary.
+  const construction = v.kind === 'manco' ? null : await constructionToCopy(ctx, v, seed.from === 'plan' ? seed.planId ?? null : null)
+  const hasPrimary = !!(await primaryPlanRow(ctx.admin, ctx.fundId, v.id))
+  // A copy is the whole plan as a new scenario: its calls/distributions policy and month edits, and
+  // its hand edits, come with its rules and construction.
+  let copied: { capital?: unknown; adjustments?: unknown } = {}
+  if (seed.from === 'plan' && seed.planId) {
+    const { data: src } = await (ctx.admin as any).from('forecast_plans').select('capital, adjustments')
+      .eq('fund_id', ctx.fundId).eq('vehicle_id', v.id).eq('id', seed.planId).maybeSingle()
+    if (src) copied = { ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}) }
+  }
   const { data: inserted, error } = await (ctx.admin as any).from('forecast_plans').insert({
+    construction, is_primary: !hasPrimary, ...copied,
     fund_id: ctx.fundId, vehicle_id: v.id, kind: input.kind, name, scenario: input.scenario?.trim() || null,
     fiscal_year: fiscalYear, start_month: firstDay(startMonth), end_month: firstDay(endMonth), horizon_months: horizon,
-    actuals_cutoff: cutoffDate, seed, created_by: ctx.userId || null, include_construction: input.includeConstruction === true,
+    actuals_cutoff: cutoffDate, seed, created_by: ctx.userId || null, include_construction: true,
   }).select(PLAN_COLS).single()
   if (error) throw error
 
@@ -592,14 +749,9 @@ async function suggestFor(ctx: ForecastServiceContext, v: VehicleCtx, lookbackMo
   const links = (await loadFeeLinks(ctx.admin, ctx.fundId, v.id)).filter(l => l.active)
   const mancoLinks = links.filter(l => l.mancoVehicleId === v.id)
   const fundLink = links.find(l => l.fundVehicleId === v.id)
-  let hasSchedule = false
-  if (!manco) {
-    try {
-      hasSchedule = !!(await fundSchedule(ctx, v.name, false)).monthly
-    } catch {
-      hasSchedule = false
-    }
-  }
+  // A fund's fee and expense terms as construction held them — the starting point for the plan's
+  // own rules now that the plan owns fees and expenses (plans/plan-unified-plan.md §1.3).
+  const costs = manco ? null : await constructionCostTerms(ctx, v)
 
   const suggestions: AccountSuggestion[] = []
   for (const a of v.accounts) {
@@ -613,17 +765,26 @@ async function suggestFor(ctx: ForecastServiceContext, v: VehicleCtx, lookbackMo
     // when it is confident — a prepaid fee amortized at exactly $2,100 a month is the fact, and
     // construction's assumptions may differ — and construction fills in where history is thin.
     const fromHistory = () => suggestRule({ actuals: history.get(a.id) ?? new Map(), closedFrom: closedFrom!, closedThrough: closedThrough!, lookbackMonths })
-    if (!manco && a.subtype === 'management_fee' && fundLink) {
-      suggestions.push({ ...meta, method: 'linked_fee', params: {}, confidence: 'high', evidence: `Construction fee schedule, ${cycleLabel(fundLink)}`, warnings: [] })
-      continue
-    }
-    if (!manco && (a.subtype === 'management_fee' || a.subtype === 'partnership_expense') && hasSchedule) {
+    // A fund's fee: the books' own confident pattern wins (a prepaid fee amortized at exactly $2,100
+    // a month is the fact); otherwise the management-fee rule on the fund's terms — paid on the fee
+    // link's cycle when there is one.
+    if (!manco && a.subtype === 'management_fee' && costs?.fee) {
       const h = fromHistory()
       if (!h || h.confidence !== 'high') {
-        const flow = a.subtype === 'management_fee' ? 'fees' : 'expenses'
         suggestions.push({
-          ...meta, method: 'linked_construction', params: { flow }, confidence: 'medium',
-          evidence: `Portfolio construction ${flow === 'fees' ? 'fee schedule' : 'partnership expenses (annual, spread by month)'}${h ? ` — history was ${h.confidence} confidence: ${h.evidence}` : ''}`,
+          ...meta, method: 'management_fee', params: { ...costs.fee }, confidence: 'medium',
+          evidence: `The fund's fee terms — ${(costs.fee.rate * 100).toFixed(2)}% on ${costs.fee.basis} capital for ${costs.fee.termYears} years${fundLink ? `, ${cycleLabel(fundLink)}` : ''}${h ? ` (history was ${h.confidence} confidence: ${h.evidence})` : ''}`,
+          warnings: [],
+        })
+        continue
+      }
+    }
+    if (!manco && a.subtype === 'partnership_expense' && costs && costs.annualExpense > 0) {
+      const h = fromHistory()
+      if (!h || h.confidence !== 'high') {
+        suggestions.push({
+          ...meta, method: 'fixed', params: costs.expenseParams, confidence: 'medium',
+          evidence: `${costs.annualExpense.toLocaleString('en-US')} a year of partnership expenses, spread by month${h ? ` (history was ${h.confidence} confidence: ${h.evidence})` : ''}`,
           warnings: [],
         })
         continue
@@ -636,7 +797,7 @@ async function suggestFor(ctx: ForecastServiceContext, v: VehicleCtx, lookbackMo
         suggestions.push({
           ...meta, method: 'manual', params: { amounts: {} }, confidence: 'high',
           evidence: 'Investment marks and gains are not forecast from history',
-          warnings: manco ? [] : ['Include portfolio construction flows (⋯ menu) to forecast exits and their realized gains'],
+          warnings: manco ? [] : ['Exits and their realized gains come from portfolio construction'],
         })
       }
       continue
@@ -648,6 +809,53 @@ async function suggestFor(ctx: ForecastServiceContext, v: VehicleCtx, lookbackMo
     suggestions.push({ ...meta, ...s })
   }
   return { suggestions, window: window.length ? { first: window[0], last: window[window.length - 1] } : null, warnings }
+}
+
+/**
+ * The fee and expense terms construction held for a fund — the starting point for a plan's own fee
+ * and expense rules. Null when construction states none.
+ */
+async function constructionCostTerms(ctx: ForecastServiceContext, v: VehicleCtx) {
+  try {
+    const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name })
+    const a = model.assumptions
+    const fee = feeRuleFromConstruction(a)
+    const start = addMonths(thisMonth(), 1)
+    const termMonths = Math.max(1, Math.round(a.feeTermYears * 12))
+    return {
+      fee,
+      annualExpense: a.annualPartnershipExpense,
+      expenseParams: { amount: Math.round((a.annualPartnershipExpense / 12) * 100) / 100, start, end: addMonths(start, termMonths - 1) },
+      orgCosts: a.remainingOrgCosts,
+      firstMonth: start,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fees and expenses are the plan's (plans/plan-unified-plan.md §1.3): a new fund plan gets a
+ * management-fee rule, a partnership-expense rule and the remaining org costs from the terms
+ * construction held — on any account that does not already have a rule.
+ */
+async function withCostRules(ctx: ForecastServiceContext, v: VehicleCtx, rules: RuleView[]): Promise<RuleView[]> {
+  if (isManagementCompany(v.kind)) return rules
+  const costs = await constructionCostTerms(ctx, v)
+  if (!costs) return rules
+  const taken = new Set(rules.map(r => r.accountId))
+  const bySubtype = (st: string) => v.accounts.filter(a => a.type === 'expense' && a.subtype === st && !a.lpEntityId && !a.companyId).sort((x, y) => x.code.localeCompare(y.code))[0]
+  const out = [...rules]
+  const add = (st: string, method: RuleMethod, params: unknown, note: string) => {
+    const a = bySubtype(st)
+    if (!a || taken.has(a.id)) return
+    out.push({ id: randomUUID(), accountId: a.id, method, params, cashTiming: { mode: 'same' } as CashTiming, source: 'seeded', note })
+    taken.add(a.id)
+  }
+  if (costs.fee) add('management_fee', 'management_fee', costs.fee, "The fund's fee terms, moved from portfolio construction")
+  if (costs.annualExpense > 0) add('partnership_expense', 'fixed', costs.expenseParams, 'Partnership expenses from portfolio construction, spread by month')
+  if (costs.orgCosts > 0) add('organizational_expense', 'manual', { amounts: { [costs.firstMonth]: costs.orgCosts } }, 'Remaining organizational costs from portfolio construction')
+  return out
 }
 
 /** Income accounts that record investment outcomes — marks, gains, currency — never forecast from history. */
@@ -663,7 +871,7 @@ export interface SavePlanInput {
   vehicle: string
   planId: string
   expectedRevision: number
-  patch?: { name?: string; scenario?: string | null; actualsCutoff?: string | null; horizonMonths?: number | null; endMonth?: MonthKey; status?: 'active' | 'archived'; openingSettlementMonths?: number; includeConstruction?: boolean }
+  patch?: { name?: string; scenario?: string | null; actualsCutoff?: string | null; horizonMonths?: number | null; endMonth?: MonthKey; status?: 'active' | 'archived'; openingSettlementMonths?: number; includeConstruction?: boolean; isPrimary?: boolean }
   /** Upsert a rule per account. */
   rules?: { accountId: string; method: RuleMethod; params: unknown; cashTiming?: unknown; note?: string | null }[]
   /** Remove the rule on these accounts. */
@@ -672,6 +880,8 @@ export interface SavePlanInput {
   overrides?: { accountId: string; month: MonthKey; amount: number | null; note?: string | null }[]
   /** Replace the plan's hand edits whole (lib/forecast/adjustments.ts). */
   adjustments?: unknown
+  /** Replace the plan's capital settings whole: policy and month edits (lib/forecast/capital.ts). */
+  capital?: unknown
 }
 
 /**
@@ -707,11 +917,9 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
     if (p.status !== 'active' && p.status !== 'archived') throw new ForecastError("status must be 'active' or 'archived'")
     patch.status = p.status
   }
-  if (p.includeConstruction !== undefined) {
-    if (typeof p.includeConstruction !== 'boolean') throw new ForecastError('includeConstruction must be true or false')
-    patch.include_construction = p.includeConstruction
-    working.include_construction = p.includeConstruction
-  }
+  // includeConstruction is accepted and ignored: construction is always part of the plan.
+  // Primary: set here, outside the save transaction (it touches the entity's other plans too).
+  if (p.isPrimary === true && !row.is_primary) await setPrimaryPlan(ctx.admin, ctx.fundId, v.id, row.id)
   if (p.openingSettlementMonths !== undefined) {
     const n = Number(p.openingSettlementMonths)
     if (!Number.isInteger(n) || n < 0 || n > 24) throw new ForecastError('openingSettlementMonths must be 0–24')
@@ -739,9 +947,21 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
     }
   }
 
+  if (input.capital !== undefined) {
+    try {
+      const cap = validateCapital(input.capital)
+      patch.capital = cap
+      working.capital = cap
+    } catch (e) {
+      if (e instanceof CapitalError) throw new ForecastError(e.message)
+      throw e
+    }
+  }
   if (input.adjustments !== undefined) {
     try {
       const adj = validateAdjustments(input.adjustments, v.accounts)
+      const refused = dealEditRefusal(validateAdjustments(row.adjustments, v.accounts), adj, v.accounts)
+      if (refused) throw new ForecastError(refused)
       patch.adjustments = adj
       working.adjustments = adj
     } catch (e) {
@@ -850,6 +1070,11 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
     p_entries: entriesJson(built.entries),
   })
   if (error) rpcError(error)
+  // A version freezes BOTH halves: the exits and deals it assumed, with its capital policy.
+  const { data: halves } = await (ctx.admin as any).from('forecast_plans').select('construction, capital').eq('fund_id', ctx.fundId).eq('id', row.id).single()
+  await (ctx.admin as any).from('forecast_versions')
+    .update({ construction: (halves as any)?.construction ?? await constructionToCopy(ctx, v, row.id), capital: (halves as any)?.capital ?? {} })
+    .eq('fund_id', ctx.fundId).eq('id', (data as any).id)
   return { versionId: (data as any).id as string, versionNo: (data as any).versionNo as number }
 }
 
@@ -974,6 +1199,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
     view, accounts: v.accounts, actuals: ledger.postings, plan: planEntries.flatMap(e => e.postings), planFirst, planLast, cutoff,
     actualsAvailableThrough, closedThrough: v.closedThrough, start: input.start, end: input.end, interval,
     actualEntries: actualFlowEntries(ledger.sourcedPostings), planEntries,
+    gpEntityIds: await gpPartnerIds(ctx),
   })
 
   return {
@@ -1071,6 +1297,7 @@ function describeRule(r: RuleView): string {
       case 'seasonal': return `Repeating 12-month profile from ${p.anchor}${p.annualGrowth ? `, +${p.annualGrowth * 100}%/yr` : ''}`
       case 'linked_fee': return 'Linked management fee'
       case 'linked_construction': return `Portfolio construction ${p.flow}`
+      case 'management_fee': return `Management fee ${(p.rate * 100).toFixed(2)}% on ${p.basis} capital for ${p.termYears} years${p.stepDownYear ? `, ${(p.stepDownRate * 100).toFixed(2)}% from year ${p.stepDownYear}` : ''}`
       default: return r.method
     }
   } catch {
@@ -1168,4 +1395,140 @@ export async function deleteFeeLink(ctx: ForecastServiceContext, input: { manco:
     .eq('fund_id', ctx.fundId).eq('manco_vehicle_id', manco.id).eq('fund_vehicle_id', fund.id).select('id')
   if (error) throw error
   return { deleted: ((data as any[]) ?? []).length > 0 }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Returns — the plan's net figures and their simulated range (plans/plan-unified-plan.md §2)
+// ---------------------------------------------------------------------------------------------
+
+export interface PlanReturnsResponse {
+  plan: { id: string; name: string; isPrimary: boolean }
+  base: PlanReturns
+  /** The portfolio's gross figures (construction: cost in, realized and forecast proceeds out). */
+  gross: { moic: number | null; reserveLeft: number | null }
+  /** The cash the capital policy keeps (for the chart's reference line). */
+  callReserve: number
+  /** Ranges across simulated exits (value and timing), each rerun through the plan's capital management. */
+  simulation: null | {
+    runs: number
+    distributed: Percentiles
+    carry: Percentiles
+    lpTvpi: Percentiles
+    lpIrr: Percentiles | null
+    halfBackYear: Percentiles | null
+    nothingBack: number
+    /** Distributions paid by the end of each year (from the plan's start), across the runs — when AND how much. */
+    distributedByYear: ({ calendarYear: number } & Percentiles)[]
+    /** The same by month, so a monthly or quarterly chart shows the timing spread too. */
+    distributedByMonth: ({ month: MonthKey } & Percentiles)[]
+  }
+}
+
+const CAPITAL_KINDS = new Set(['capital_call', 'distribution', 'carry_distribution'])
+
+/**
+ * A plan's returns: the point forecast's calls, distributions, carry and LP net figures by year, from
+ * the plan's own entries — and, with `simulate`, the same calculation rerun on each simulated set of
+ * exits. Every view of a plan's returns reads this, so the yearly chart, the monthly cash statement
+ * and the simulated range cannot disagree.
+ */
+export async function getPlanReturns(
+  ctx: ForecastServiceContext,
+  input: { vehicle: string; planId?: string | null; simulate?: boolean },
+): Promise<PlanReturnsResponse> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  const planId = input.planId || (await primaryPlanRow(ctx.admin, ctx.fundId, v.id))?.id
+  if (!planId) throw new ForecastError(`${v.name} has no plan yet`, 404)
+  const row = await loadPlanRow(ctx, v, planId)
+  const { rules, overrides } = await loadInputs(ctx, row.id)
+  const compiled = await compile(ctx, v, row, rules, overrides)
+  const { built } = compiled
+  const months = monthRange(built.first, built.last)
+  const cashIds = new Set(v.accounts.filter(a => a.subtype === 'cash' && !a.lpEntityId && !a.companyId).map(a => a.id))
+  const cashOf = (e: CompiledEntry) => roundCents(e.postings.filter(p => cashIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0))
+  const otherFlows = new Map<MonthKey, number>()
+  const invested = new Map<MonthKey, number>()
+  const proceeds = new Map<MonthKey, number>()
+  for (const e of built.entries) {
+    if (CAPITAL_KINDS.has(e.kind)) continue
+    const m = e.entryDate.slice(0, 7) as MonthKey
+    const c = cashOf(e)
+    if (!c) continue
+    const into = e.kind === 'investment' ? invested : e.kind === 'proceeds' || e.distributable ? proceeds : otherFlows
+    into.set(m, roundCents((into.get(m) ?? 0) + c))
+  }
+  const opensAfter = lastDay(addMonths(built.first, -1))
+  const openingCash = roundCents(compiled.ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
+  const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name, planId: row.id })
+  const gross = model.grossTimeline ?? model.timeline
+  const endYear = Number(built.last.slice(0, 4))
+  const navAt = (years: { calendarYear: number; nav: number }[] | undefined) =>
+    (years?.find(y => y.calendarYear >= endYear) ?? years?.[years.length - 1])?.nav ?? 0
+  const common = {
+    months, asOfMonth: compiled.cutoff, openingCash, uncalled: model.actuals.uncalledCapital ?? 0,
+    settings: compiled.capital ?? safeCapital(row.capital), otherFlows, waterfall: model.actuals.waterfall,
+  }
+  const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) })
+
+  let simulation: PlanReturnsResponse['simulation'] = null
+  const sim = model.assumptions.simulation
+  if (input.simulate && gross && (sim.lossRate > 0 || sim.dispersion > 0 || sim.holdSpreadYears > 0)) {
+    const baseline = constructionBaseline(model.actuals, model.forecast, model.asOf.slice(0, 10))
+    const { runs, pacing } = sampleRuns(model.forecast, model.assumptions, model.assumptions.pacing, sim, baseline, 500)
+    const totals: number[] = [], carry: number[] = [], tvpi: number[] = [], irr: number[] = [], half: number[] = []
+    const yearsOf = base.years.map(y => y.calendarYear)
+    const cumulative = new Map<number, number[]>(yearsOf.map(y => [y, []]))
+    const byMonthRuns: number[][] = months.map(() => [])
+    let nothing = 0
+    for (const override of runs) {
+      const s = forecastSchedule(model.forecast, model.assumptions, pacing, baseline, override, 'none')
+      const mc = monthlyConstruction(s, model.asOf.slice(0, 10))
+      const runInvested = new Map<MonthKey, number>(), runProceeds = new Map<MonthKey, number>()
+      for (const e of mc.events) {
+        if (e.month < built.first || e.month > built.last) continue
+        if (e.flow === 'invested') runInvested.set(e.month, roundCents((runInvested.get(e.month) ?? 0) - e.amount))
+        if (e.flow === 'proceeds') runProceeds.set(e.month, roundCents((runProceeds.get(e.month) ?? 0) + e.amount))
+      }
+      const r = planReturns({ ...common, invested: runInvested, proceeds: runProceeds, terminalNav: navAt(s.years) })
+      totals.push(r.totals.distributed)
+      r.distributedToDate.forEach((v, i) => byMonthRuns[i].push(v))
+      let running = 0
+      const byYear = new Map(r.years.map(y => [y.calendarYear, y.distributed]))
+      for (const y of yearsOf) { running += byYear.get(y) ?? 0; cumulative.get(y)!.push(running) }
+      carry.push(r.totals.carry)
+      if (r.lp.tvpi != null) tvpi.push(r.lp.tvpi)
+      if (r.lp.irr != null) irr.push(r.lp.irr)
+      if (r.halfBackYear != null) half.push(r.halfBackYear)
+      if (r.totals.distributed <= 0) nothing++
+    }
+    simulation = {
+      runs: runs.length,
+      distributed: percentiles(totals), carry: percentiles(carry), lpTvpi: percentiles(tvpi),
+      lpIrr: irr.length ? percentiles(irr) : null, halfBackYear: half.length ? percentiles(half) : null,
+      nothingBack: nothing / runs.length,
+      distributedByYear: yearsOf.map(y => ({ calendarYear: y, ...percentiles(cumulative.get(y)!) })),
+      distributedByMonth: months.map((m, i) => ({ month: m, ...percentiles(byMonthRuns[i]) })),
+    }
+  }
+  return {
+    plan: { id: row.id, name: row.name, isPrimary: row.is_primary === true }, base, simulation,
+    gross: { moic: model.forecast.returns.estimatedGrossMoic ?? null, reserveLeft: model.forecast.capital.remaining ?? null },
+    callReserve: common.settings.policy.calls.reserve,
+  }
+}
+
+/** "GP I LLC" or "GP I LLC 60%, Jane Doe 40%" — the fund's carry recipients; null when it names none. */
+async function carryRecipientLabel(ctx: ForecastServiceContext, vehicleName: string): Promise<string | null> {
+  const terms = await loadCarryTerms(ctx.admin, ctx.fundId, vehicleName)
+  if (terms.recipients.length === 0) return null
+  const { data } = await (ctx.admin as any).from('lp_entities').select('id, entity_name').eq('fund_id', ctx.fundId).in('id', terms.recipients.map(r => r.lpEntityId))
+  const names = new Map<string, string>(((data as any[]) ?? []).map(e => [e.id, e.entity_name]))
+  const one = terms.recipients.length === 1
+  return terms.recipients.map(r => `${names.get(r.lpEntityId) ?? 'a partner'}${one ? '' : ` ${Math.round(r.pct * 10) / 10}%`}`).join(', ')
+}
+
+/** The fund's partners who are the GP (partner class 'gp'), to split their distributions from the LPs'. */
+async function gpPartnerIds(ctx: ForecastServiceContext): Promise<Set<string>> {
+  const { data } = await (ctx.admin as any).from('lp_entities').select('id').eq('fund_id', ctx.fundId).eq('partner_class', 'gp')
+  return new Set(((data as any[]) ?? []).map(r => r.id as string))
 }

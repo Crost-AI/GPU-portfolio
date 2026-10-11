@@ -10,6 +10,7 @@ export type ActionType =
   | 'update_forecast_plan'
   | 'publish_forecast_plan'
   | 'create_forecast_plan'
+  | 'set_entity_link'
 
 export type PendingActionStatus = 'pending' | 'approved' | 'applied' | 'rejected' | 'failed'
 

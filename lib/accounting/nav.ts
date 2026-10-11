@@ -4,7 +4,7 @@
 
 import {
   Landmark, Users, ScrollText, Gauge,
-  Lock, Layers, FileText, Target, Table2, Upload, ClipboardList, Settings2, TrendingUp,
+  Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Domain } from '@/lib/access/domains'
@@ -112,21 +112,12 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     hideFor: ['associate', 'manco'],
   },
   {
-    href: '/funds/construction',
-    label: 'Portfolio construction',
-    icon: Target,
-    desc: 'How much investable capital is left, how many more deals fit, and what exit the portfolio needs to return the fund.',
-    // Any investing entity can forecast what its holdings have to return — an SPV's one deal, an
-    // individual's angel book, a GP entity's fund stake. Only a management company, which holds
-    // no portfolio at all, has nothing to construct.
-    hideFor: ['manco'],
-  },
-  {
     href: '/funds/forecast',
     label: 'Forecast',
     icon: TrendingUp,
-    desc: 'Monthly budgets and rolling forecasts beside the actuals, with P&L and cash by month, quarter or year.',
-    feature: 'budgeting',
+    // One page for the plan (plans/plan-unified-plan.md §5): its portfolio construction and its fund
+    // forecast, in two tabs. A management company, which holds no portfolio, sees the fund forecast.
+    desc: 'Plan the portfolio — deals, timing, exits — and the fund around it: fees, expenses, calls and distributions by month, beside the actuals.',
   },
   {
     href: '/funds/statements',

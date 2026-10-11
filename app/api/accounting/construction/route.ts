@@ -1,3 +1,4 @@
+import { ensurePrimaryPlan } from '@/lib/forecast/service'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -27,9 +28,10 @@ export async function GET(req: NextRequest) {
   try {
     const model = await getConstructionModel(
       { admin, fundId: gate.fundId, access: await loadAccessContext(admin, gate.fundId, gate.userId, gate.role) },
-      { vehicle: group },
+      { vehicle: group, planId: req.nextUrl.searchParams.get('plan') },
     )
     return NextResponse.json({
+      plan: model.plan ?? null,
       group: model.vehicle,
       vehicleId: model.vehicleId,
       actuals: model.actuals,
@@ -54,9 +56,14 @@ export async function PUT(req: NextRequest) {
   const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
   try {
+    const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+    // Onto a plan (plans/plan-unified-plan.md): the one asked for, else the entity's primary —
+    // made if it has none yet. If no plan can be made, the service keeps the seed row instead.
+    const planId = req.nextUrl.searchParams.get('plan')
+      ?? await ensurePrimaryPlan({ admin, fundId: gate.fundId, userId: gate.userId, access }, group).catch(() => null)
     const model = await updateConstructionAssumptions(
-      { admin, fundId: gate.fundId, access: await loadAccessContext(admin, gate.fundId, gate.userId, gate.role) },
-      { vehicle: group, assumptions: body },
+      { admin, fundId: gate.fundId, access },
+      { vehicle: group, assumptions: body, planId },
     )
     return NextResponse.json({ assumptions: model.assumptions })
   } catch (error) {

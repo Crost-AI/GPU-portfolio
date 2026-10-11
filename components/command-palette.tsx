@@ -44,12 +44,11 @@ export function useShortcutLabel(): string {
 
 interface CommandPaletteProviderProps {
   reviewBadge?: number
-  pendingActionsBadge?: number
   fofActive?: boolean
   children: ReactNode
 }
 
-export function CommandPaletteProvider({ reviewBadge, pendingActionsBadge, fofActive, children }: CommandPaletteProviderProps) {
+export function CommandPaletteProvider({ reviewBadge, fofActive, children }: CommandPaletteProviderProps) {
   const [isOpen, setIsOpen] = useState(false)
   const open = useCallback(() => setIsOpen(true), [])
 
@@ -73,7 +72,6 @@ export function CommandPaletteProvider({ reviewBadge, pendingActionsBadge, fofAc
         open={isOpen}
         onOpenChange={setIsOpen}
         reviewBadge={reviewBadge}
-        pendingActionsBadge={pendingActionsBadge}
         fofActive={fofActive}
       />
     </PaletteContext.Provider>
@@ -177,11 +175,10 @@ interface CommandPaletteDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   reviewBadge?: number
-  pendingActionsBadge?: number
   fofActive?: boolean
 }
 
-function CommandPaletteDialog({ open, onOpenChange, reviewBadge, pendingActionsBadge, fofActive }: CommandPaletteDialogProps) {
+function CommandPaletteDialog({ open, onOpenChange, reviewBadge, fofActive }: CommandPaletteDialogProps) {
   const navigate = useAppNavigate()
   const access = useAccess()
   const isAdmin = useIsAdmin()
@@ -192,12 +189,12 @@ function CommandPaletteDialog({ open, onOpenChange, reviewBadge, pendingActionsB
     ...pageEntries(isAdmin, access, {
       fofActive,
       vehicles: records.vehicles,
-      badges: { review: reviewBadge, pendingActions: pendingActionsBadge },
+      badges: { review: reviewBadge },
     }),
     ...records.companies,
     ...records.lps,
     ...records.deals,
-  ], [isAdmin, access, fofActive, records, reviewBadge, pendingActionsBadge])
+  ], [isAdmin, access, fofActive, records, reviewBadge])
 
   const go = useCallback((entry: PaletteEntry) => {
     onOpenChange(false)

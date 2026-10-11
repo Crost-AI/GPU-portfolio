@@ -1,7 +1,7 @@
 /**
  * Paths BotId should classify before the handler runs.
  *
- * Mounted by `<BotIdClient>` in app/layout.tsx. It lives in its own module so the list and the
+ * Mounted by `initBotId()` in instrumentation-client.ts. It lives in its own module so the list and the
  * mount can be asserted separately — see tests/botid-client.test.ts, which exists because a
  * declared-but-never-loaded protect list is indistinguishable from a working one until the
  * server-side check starts failing closed in production.

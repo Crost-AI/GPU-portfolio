@@ -1,4 +1,4 @@
-export type FeatureKey = 'interactions' | 'investments' | 'notes' | 'lp_letters' | 'imports' | 'asks' | 'lps' | 'lp_tracking' | 'lp_portal' | 'lp_activity' | 'compliance' | 'deals' | 'diligence' | 'accounting' | 'gp_economics' | 'tax_reporting' | 'management_company' | 'budgeting'
+export type FeatureKey = 'interactions' | 'investments' | 'notes' | 'lp_letters' | 'imports' | 'asks' | 'lps' | 'lp_tracking' | 'lp_portal' | 'lp_activity' | 'compliance' | 'deals' | 'diligence' | 'accounting' | 'gp_economics' | 'tax_reporting' | 'management_company'
 
 export type FeatureVisibility = 'everyone' | 'admin' | 'hidden' | 'off'
 
@@ -57,7 +57,6 @@ export const DEFAULT_FEATURE_VISIBILITY: FeatureVisibilityMap = {
   // domain like `tax_reporting`: a forecast is built from the vehicle's chart and its posted actuals,
   // so anyone who can read the books can read every figure it shows. Its own switch because a fund
   // keeping books need not be planning in the product. Off by default, like all of Fund Operations.
-  budgeting: 'off',
 }
 
 /**

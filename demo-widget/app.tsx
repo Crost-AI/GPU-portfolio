@@ -25,7 +25,7 @@ export const FEATURES: FeatureVisibilityMap = {
   interactions: 'everyone', notes: 'everyone', lp_letters: 'everyone', asks: 'everyone', lps: 'everyone',
   lp_tracking: 'everyone', lp_portal: 'everyone', lp_activity: 'everyone', compliance: 'everyone',
   deals: 'everyone', diligence: 'everyone', accounting: 'everyone', imports: 'everyone', investments: 'everyone',
-  gp_economics: 'everyone', budgeting: 'everyone',
+  gp_economics: 'everyone',
 }
 export const ACCESS: ClientAccess = { role: 'viewer', features: FEATURES, grants: {}, defaults: {} }
 
@@ -134,7 +134,6 @@ export function DemoApp({ data, fetch, initialPath = '/dashboard', onNavigate, e
             userEmail="viewer@hemrock.demo"
             reviewBadge={0}
             notesBadge={0}
-            pendingActionsBadge={0}
             isAdmin={false}
             currency={data.snapshot.fund.currency}
             hasAIKey

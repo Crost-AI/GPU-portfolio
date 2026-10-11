@@ -14,6 +14,8 @@ import {
   previewCreateForecast, executeCreateForecast,
 } from './forecast'
 import { CREATE_PLAN_SCHEMA, PUBLISH_PLAN_SCHEMA, UPDATE_PLAN_SCHEMA } from '@/lib/forecast/actions'
+import { previewSetEntityLink, executeSetEntityLink } from './entity-link'
+import { UPDATE_CONSTRUCTION_SCHEMA } from './construction-schema'
 
 /**
  * One write action the Analyst may DRAFT. Each maps to the access `domain` (+ optional feature)
@@ -43,6 +45,7 @@ export interface WriteAction {
   preview: (deps: ActionDeps, input: any) => Promise<PreviewResult>
   execute: (deps: ActionDeps, input: any) => Promise<Record<string, unknown>>
 }
+
 
 export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
   update_company_metric: {
@@ -119,66 +122,15 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
     // Unlike conversational suggestions, changing a fund plan is only draftable by a writer.
     stageAccess: 'write',
     description:
-      'Propose changes to the forward-looking portfolio-construction assumptions for one vehicle. ' +
-      'This stages a preview for human approval and does not save the model immediately.',
-    inputSchema: {
-      type: 'object',
-      required: ['vehicle'],
-      additionalProperties: false,
-      properties: {
-        vehicle: { type: 'string', description: 'Investment vehicle name.' },
-        feeAnnualRate: { type: 'number', minimum: 0 },
-        feeBasis: { type: 'string', enum: ['committed', 'invested', 'nav'] },
-        feeTermYears: { type: 'number', minimum: 0 },
-        feeStartDate: { type: 'string' },
-        feeStepDownYear: { type: ['number', 'null'], minimum: 0 },
-        feeStepDownRate: { type: ['number', 'null'], minimum: 0 },
-        annualPartnershipExpense: { type: 'number', minimum: 0 },
-        remainingOrgCosts: { type: 'number', minimum: 0 },
-        targetPortfolioSize: { type: 'number', minimum: 0 },
-        targetFundMultiple: { type: 'number', minimum: 0 },
-        stages: {
-          type: 'array',
-          items: {
-            type: 'object',
-            required: ['key', 'label', 'initialCheck', 'initialPostMoney', 'followOnMultiple', 'dilutionFactor'],
-            additionalProperties: false,
-            properties: {
-              key: { type: 'string' },
-              label: { type: 'string' },
-              initialCheck: { type: 'number', minimum: 0 },
-              initialPostMoney: { type: 'number', minimum: 0 },
-              followOnMultiple: { type: 'number', minimum: 0 },
-              followOnCheck: { type: 'number', minimum: 0 },
-              dilutionFactor: { type: 'number', minimum: 0 },
-              ownershipAtExit: { type: 'number', minimum: 0 },
-              additionalDilution: { type: 'number', minimum: 0, maximum: 1 },
-              expectedExitValue: { type: 'number', minimum: 0 },
-              forecastMoic: { type: 'number', minimum: 0 },
-              returnMethod: { type: 'string', enum: ['ownership', 'moic'] },
-            },
-          },
-        },
-        positionForecasts: {
-          type: 'object',
-          description: 'Forecast changes keyed by stable company UUID.',
-          propertyNames: { format: 'uuid' },
-          additionalProperties: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              plannedFollowOn: { type: 'number', minimum: 0 },
-              ownershipAtExit: { type: 'number', minimum: 0 },
-              additionalDilution: { type: 'number', minimum: 0, maximum: 1 },
-              expectedExitValue: { type: 'number', minimum: 0 },
-              forecastMoic: { type: 'number', minimum: 0 },
-              returnMethod: { type: 'string', enum: ['ownership', 'moic'] },
-            },
-          },
-        },
-        explanation: { type: 'string', description: 'Optional explanation supplied by the user.' },
-      },
-    },
+      "Propose changes to a plan's Investments tab — its portfolio construction — for one vehicle: add, change or " +
+      'remove planned deals (check, timing, exit), set the exit (value or multiple, and when) and follow-on of a ' +
+      'company the fund already holds, each deal\'s simulation settings, the fund-wide return assumptions ' +
+      '(hold, default exit multiple, write-off rate, exit timing range), and the portfolio targets. Investments and exits are entered here and ' +
+      'nowhere else; the forecast\'s cash, calls, distributions and returns follow from them. Fees and expenses ' +
+      "are not here: they are the Financials tab's (update_forecast_plan). Omit planId for the entity's primary " +
+      'plan; pass it to change a scenario or budget. Stages a preview for human approval and saves nothing until approved. ' +
+      FORECASTING_PRINCIPLES,
+    inputSchema: UPDATE_CONSTRUCTION_SCHEMA as any,
     preview: previewUpdatePortfolioConstruction,
     execute: executeUpdatePortfolioConstruction,
   },
@@ -186,7 +138,6 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
     entity: 'required',
     managementCompanies: true,
     domain: 'accounting',
-    accessFeature: 'budgeting',
     stageAccess: 'write',
     description:
       'Propose a new budget or rolling forecast for a vehicle. Seeded by default with a rule per account ' +
@@ -202,11 +153,12 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
     entity: 'required',
     managementCompanies: true,
     domain: 'accounting',
-    accessFeature: 'budgeting',
     stageAccess: 'write',
     description:
-      'Propose changes to a budget or forecast draft — account rules (by account code), month overrides, ' +
-      'or its cutoff/horizon. Stages a before/after preview for human approval; nothing changes until approved. ' +
+      "Propose changes to a plan's Financials and Capital planning tabs — account rules (fees, expenses; by account code), " +
+      'month overrides, a month\'s capital call or distribution (cashFigures), the calls/distributions policy (capitalPolicy), hand ' +
+      'entries, or its cutoff/horizon/name, or making it the primary plan. Investments and exits are update_portfolio_construction. ' +
+      'Stages a before/after preview for human approval; nothing changes until approved. ' +
       FORECASTING_PRINCIPLES,
     inputSchema: UPDATE_PLAN_SCHEMA as any,
     preview: previewUpdateForecast,
@@ -216,14 +168,41 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
     entity: 'required',
     managementCompanies: true,
     domain: 'accounting',
-    accessFeature: 'budgeting',
     stageAccess: 'write',
     description:
-      'Propose publishing a plan as an immutable version, or approving it as the budget baseline. ' +
-      'Stages for human approval.',
+      'Propose saving a plan as it stands — investments, financials and capital — as a scenario (status ' +
+      '"published") or as the plan\'s budget (status "approved", one per plan), the base later actuals are compared ' +
+      'against. A saved scenario never changes. Stages for human approval.',
     inputSchema: PUBLISH_PLAN_SCHEMA as any,
     preview: previewPublishForecast,
     execute: executePublishForecast,
+  },
+  set_entity_link: {
+    entity: 'required',
+    managementCompanies: true,
+    domain: 'accounting',
+    stageAccess: 'write',
+    description:
+      "Propose adding or changing an entity link (the Forecast page's settings → Entity links): a fund pays the management " +
+      'company its management fee, billed every everyMonths (1/3/6/12) from anchorMonth, in advance or arrears, cash ' +
+      'cashLagMonths later. vehicle is the management company. Needs write on both. Stages for human approval.',
+    inputSchema: {
+      type: 'object',
+      required: ['vehicle', 'fund'],
+      additionalProperties: false,
+      properties: {
+        vehicle: { type: 'string', description: 'The management company.' },
+        fund: { type: 'string', description: 'The fund that pays it.' },
+        everyMonths: { type: 'number', enum: [1, 3, 6, 12] },
+        anchorMonth: { type: 'number', minimum: 1, maximum: 12 },
+        direction: { type: 'string', enum: ['advance', 'arrears'] },
+        cashLagMonths: { type: 'number', minimum: 0, maximum: 12 },
+        active: { type: 'boolean' },
+        explanation: { type: 'string' },
+      },
+    },
+    preview: previewSetEntityLink as any,
+    execute: executeSetEntityLink as any,
   },
 }
 

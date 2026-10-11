@@ -28,6 +28,8 @@ export interface CashDetailLine {
   label: string
   code: string | null
   values: number[]
+  /** A breakdown of another line (key), shown under it and not added again into the section. */
+  parent?: string
 }
 
 const CATEGORY_LINE: Record<Exclude<FlowCategory, 'operating'>, { section: CashSection; label: string }> = {
@@ -45,12 +47,16 @@ const BORROWING_SUBTYPES = new Set(['loan_payable', 'note_payable'])
 export interface FlowEntry {
   date: string
   kind?: string | null
+  /** The entry's memo: tells a carry payment ("Carried interest…") and the GP's own share apart. */
+  memo?: string | null
   /** A forecast entry's P&L account — its cash is shown against that line, not the accrual it clears. */
   driver?: string | null
   postings: Posting[]
 }
 
 export interface ReportInput {
+  /** Partners who are the GP (partner class 'gp'), to split their distributions from the LPs'. */
+  gpEntityIds?: Set<string>
   view: ReportView
   accounts: Account[]
   /** Posted actuals, dated. May run past the cutoff; the view decides what is used. */
@@ -92,6 +98,7 @@ export interface ReportLine {
   code: string
   name: string
   type: 'income' | 'expense'
+  subtype?: string | null
   values: number[]
 }
 
@@ -111,12 +118,26 @@ export interface Report {
   cashFlows: Record<FlowCategory, number[]> | null
   /** The cash-flow statement's lines, per period. Sums to the cash movement. */
   cashDetail: CashDetailLine[] | null
+  /**
+   * The income statement on a CASH basis: each revenue and expense line as the cash it moved, in the
+   * period it moved. Cash that clears an earlier accrual (a payable paid, a prepaid fee) with no P&L
+   * account on the entry is one line of its own, `accruals`.
+   */
+  cashBasis: { lines: ReportLine[]; accruals: number[]; revenue: number[]; expenses: number[]; netIncome: number[] } | null
+  /**
+   * Operating cash on the ACCRUAL basis (the indirect method): net income, less investment gains
+   * (not operating cash), plus the change in accruals, prepaids and payables. Re-adds to the direct
+   * method's operating cash.
+   */
+  indirect: { netIncome: number[]; investmentGains: number[]; workingCapital: number[]; operating: number[] } | null
   /** Ending balance of each cash account, per period (operating, reserve, …). */
   cashAccounts: { accountId: string; code: string; name: string; ending: number[] }[]
 }
 
 const FORECAST_KIND: Record<string, FlowCategory> = {
   investment: 'invested', proceeds: 'proceeds', capital_call: 'called', distribution: 'distributed',
+  // Carry paid to the GP leaves the fund as a distribution does (lib/forecast/capital.ts).
+  carry_distribution: 'distributed',
 }
 
 /**
@@ -207,6 +228,9 @@ export function reportPostings(input: Pick<ReportInput, 'view' | 'actuals' | 'pl
   }
 }
 
+/** Income that is an investment's gain or loss, not operating revenue: investing on a cash-flow statement. */
+export const INVESTMENT_GAIN_SUBTYPES = new Set(['realized_gain', 'unrealized', 'fx_translation', 'equity_method'])
+
 export function buildReport(input: ReportInput): Report {
   const months = monthRange(input.start, input.end)
   const actualsThrough =
@@ -245,14 +269,16 @@ export function buildReport(input: ReportInput): Report {
 
   let cashFlows: Report['cashFlows'] = null
   let cashDetail: Report['cashDetail'] = null
+  let cashBasis: Report['cashBasis'] = null
+  let indirect: Report['indirect'] = null
   const byId = new Map(input.accounts.map(a => [a.id, a]))
   const cashIds = new Set(st.cashAccountIds)
   const flowEntries = flowEntriesFor(input)
   if (flowEntries) {
     const inRange = new Set(months)
     const byCat = Object.fromEntries(FLOW_CATEGORIES.map(c => [c, new Map<MonthKey, number>()])) as Record<FlowCategory, Map<MonthKey, number>>
-    const lines = new Map<string, { section: CashSection; label: string; code: string | null; byMonth: Map<MonthKey, number> }>()
-    const add = (key: string, meta: { section: CashSection; label: string; code: string | null }, m: MonthKey, amount: number) => {
+    const lines = new Map<string, { section: CashSection; label: string; code: string | null; parent?: string; byMonth: Map<MonthKey, number> }>()
+    const add = (key: string, meta: { section: CashSection; label: string; code: string | null; parent?: string }, m: MonthKey, amount: number) => {
       const line = lines.get(key) ?? { ...meta, byMonth: new Map<MonthKey, number>() }
       line.byMonth.set(m, (line.byMonth.get(m) ?? 0) + amount)
       lines.set(key, line)
@@ -260,6 +286,21 @@ export function buildReport(input: ReportInput): Report {
     const accountLine = (id: string, m: MonthKey, amount: number) => {
       const a = byId.get(id)
       add(id, { section: 'operating', label: a ? a.name : 'Other', code: a?.code ?? null }, m, amount)
+    }
+    // Cash basis: the same operating cash, by the P&L account it was for (natural sign: revenue in,
+    // expense out, both positive), and what cleared an accrual with no P&L account on the entry.
+    const cashPnl = new Map<string, Map<MonthKey, number>>()
+    const accrualCash = new Map<MonthKey, number>()
+    const toCashPnl = (id: string, m: MonthKey, cash: number) => {
+      const a = byId.get(id)
+      if (a?.type === 'income' || a?.type === 'expense') {
+        const natural = a.type === 'income' ? cash : -cash
+        const row = cashPnl.get(id) ?? new Map<MonthKey, number>()
+        row.set(m, (row.get(m) ?? 0) + natural)
+        cashPnl.set(id, row)
+      } else {
+        accrualCash.set(m, (accrualCash.get(m) ?? 0) + cash)
+      }
     }
     // Read across ALL entries, not just the range: the loan was usually drawn before the repayments.
     const investmentLoans = investmentFundingLoans([...(input.actualEntries ?? []), ...(input.planEntries ?? [])], byId, cashIds)
@@ -271,16 +312,45 @@ export function buildReport(input: ReportInput): Report {
       byCat[c.category].set(m, (byCat[c.category].get(m) ?? 0) + c.cash)
       if (c.category !== 'operating') {
         add(c.category, { ...CATEGORY_LINE[c.category], code: null }, m, c.cash)
+        // Distributions, broken down beneath their line: to the LPs, to the GP on its own
+        // commitment, and the GP's carried interest.
+        if (c.category === 'distributed') {
+          for (const [k, v] of distributionSplit(e, c.cash, cashIds, input.gpEntityIds)) {
+            if (Math.abs(v) >= 0.005) add(`distributed:${k}`, { section: 'financing', label: SPLIT_LABEL[k], code: null, parent: 'distributed' } as any, m, v)
+          }
+        }
       } else if (e.driver) {
         accountLine(e.driver, m, c.cash)
+        toCashPnl(e.driver, m, c.cash)
       } else {
         // Each non-cash leg's share of the cash: a $100 expense debit is $100 of cash out. Scaled so
         // the shares re-add to the cash even when an entry also moves money between cash accounts.
         const legs = e.postings.filter(p => !cashIds.has(p.accountId))
         const total = legs.reduce((s, p) => s + p.amount, 0)
         if (total === 0) continue
-        for (const p of legs) accountLine(p.accountId, m, (p.amount / total) * c.cash)
+        for (const p of legs) {
+          accountLine(p.accountId, m, (p.amount / total) * c.cash)
+          toCashPnl(p.accountId, m, (p.amount / total) * c.cash)
+        }
       }
+    }
+    const pnlLines: ReportLine[] = [...cashPnl.entries()].map(([id, byMonth]) => {
+      const a = byId.get(id)!
+      return { accountId: id, code: a.code, name: a.name, type: a.type as 'income' | 'expense', subtype: a.subtype ?? null, values: aggregateFlow(byMonth, ps) }
+    }).filter(l => l.values.some(v => Math.abs(v) >= 0.005)).sort((a, b) => a.code.localeCompare(b.code))
+    const sumOf = (type: 'income' | 'expense') => ps.map((_, i) => roundCents(pnlLines.filter(l => l.type === type).reduce((s, l) => s + (l.values[i] ?? 0), 0)))
+    const accruals = aggregateFlow(accrualCash, ps)
+    const rev = sumOf('income'), exp = sumOf('expense')
+    cashBasis = { lines: pnlLines, accruals, revenue: rev, expenses: exp, netIncome: ps.map((_, i) => roundCents(rev[i] - exp[i] + (accruals[i] ?? 0))) }
+    // Indirect: operating cash = net income − investment gains + the change in working capital (the rest).
+    const accrualNet = aggregateFlow(asMap(st.netIncome), ps)
+    const gains = ps.map((_, i) => roundCents(st.lines.filter(l => l.type === 'income' && INVESTMENT_GAIN_SUBTYPES.has(l.subtype ?? ''))
+      .reduce((s, l) => s + (aggregateFlow(asMap(l.byMonth), ps)[i] ?? 0), 0)))
+    const operating = aggregateFlow(byCat.operating, ps)
+    indirect = {
+      netIncome: accrualNet, investmentGains: gains.map(g => -g),
+      workingCapital: ps.map((_, i) => roundCents((operating[i] ?? 0) - (accrualNet[i] ?? 0) + (gains[i] ?? 0))),
+      operating,
     }
     cashFlows = Object.fromEntries(FLOW_CATEGORIES.map(c => [c, aggregateFlow(byCat[c], ps)])) as Record<FlowCategory, number[]>
     const order = (key: string) => {
@@ -288,9 +358,9 @@ export function buildReport(input: ReportInput): Report {
       return a ? ({ income: 0, expense: 1 } as Record<string, number>)[a.type] ?? 2 : 3
     }
     cashDetail = [...lines.entries()]
-      .map(([key, l]) => ({ section: l.section, key, label: l.label, code: l.code, values: aggregateFlow(l.byMonth, ps) }))
+      .map(([key, l]) => ({ section: l.section, key, label: l.label, code: l.code, ...(l.parent ? { parent: l.parent } : {}), values: aggregateFlow(l.byMonth, ps) }))
       .filter(l => l.values.some(v => v !== 0))
-      .sort((a, b) => order(a.key) - order(b.key) || (a.code ?? a.label).localeCompare(b.code ?? b.label))
+      .sort((a, b) => order(a.key) - order(b.key) || (a.parent ?? a.key).localeCompare(b.parent ?? b.key) || (a.parent ? 1 : 0) - (b.parent ? 1 : 0) || (a.code ?? a.label).localeCompare(b.code ?? b.label))
   }
 
   // Each cash account's own balance, so a reserve sweep shows as one account down and another up.
@@ -336,7 +406,7 @@ export function buildReport(input: ReportInput): Report {
       }
     }),
     months: st.months,
-    lines: st.lines.map(l => ({ accountId: l.accountId, code: l.code, name: l.name, type: l.type, values: aggregateFlow(asMap(l.byMonth), ps) })),
+    lines: st.lines.map(l => ({ accountId: l.accountId, code: l.code, name: l.name, type: l.type, subtype: l.subtype ?? null, values: aggregateFlow(asMap(l.byMonth), ps) })),
     revenue: aggregateFlow(asMap(st.revenue), ps),
     expenses: aggregateFlow(asMap(st.expenses), ps),
     netIncome: aggregateFlow(asMap(st.netIncome), ps),
@@ -344,6 +414,28 @@ export function buildReport(input: ReportInput): Report {
     boundary,
     cashFlows,
     cashDetail,
+    cashBasis,
+    indirect,
     cashAccounts,
   }
+}
+
+const SPLIT_LABEL = { lp: 'To the LPs', gp: 'To the GP, on its own commitment', carry: 'Carried interest' } as const
+
+/**
+ * One distribution's cash, split. A forecast entry says which it is (a carry payment's memo is
+ * "Carried interest…", the GP's own share "Distribution to the GP…"); a posted one is split by
+ * whose capital it reduced — the GP's partners against the LPs' — with a carry posting as carry.
+ */
+function distributionSplit(e: FlowEntry, cash: number, cashIds: Set<string>, gpIds?: Set<string>): [keyof typeof SPLIT_LABEL, number][] {
+  const memo = e.memo ?? ''
+  if (e.kind === 'carry_distribution' || /^Carried interest/.test(memo)) return [['carry', cash]]
+  if (/^Distribution to the GP/.test(memo)) return [['gp', cash]]
+  if (e.kind) return [['lp', cash]]
+  const legs = e.postings.filter(p => !cashIds.has(p.accountId) && p.amount > 0)
+  const total = legs.reduce((s, p) => s + p.amount, 0)
+  if (total <= 0 || !gpIds?.size) return [['lp', cash]]
+  const gp = legs.filter(p => p.lpEntityId && gpIds.has(p.lpEntityId)).reduce((s, p) => s + p.amount, 0)
+  const carry = /carr(y|ied)/i.test(memo) ? gp : 0
+  return [['lp', cash * (total - gp) / total], [carry ? 'carry' : 'gp', cash * gp / total]]
 }

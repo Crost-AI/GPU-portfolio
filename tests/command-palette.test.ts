@@ -60,13 +60,12 @@ describe('pageEntries', () => {
     expect(entries.some(e => e.label === 'Overview')).toBe(false)
   })
 
-  it('hides Review and Pending Actions at zero, like the sidebar', () => {
-    const quiet = pageEntries(true, allowAll, { badges: { review: 0, pendingActions: 0 } }).map(e => e.href)
+  it('hides Review at zero, like the sidebar', () => {
+    const quiet = pageEntries(true, allowAll, { badges: { review: 0 } }).map(e => e.href)
     expect(quiet).not.toContain('/review')
-    expect(quiet).not.toContain('/pending-actions')
-    const busy = pageEntries(true, allowAll, { badges: { review: 2, pendingActions: 1 } }).map(e => e.href)
+    const busy = pageEntries(true, allowAll, { badges: { review: 2 } }).map(e => e.href)
     expect(busy).toContain('/review')
-    expect(busy).toContain('/pending-actions')
+    expect(busy).not.toContain('/pending-actions')
   })
 
   it('has a unique id per entry, so the list has a stable key and an active row', () => {

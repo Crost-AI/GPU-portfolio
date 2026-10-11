@@ -75,7 +75,7 @@ async function renderHref(pathname: string, data: DemoPages): Promise<string> {
           {/* DemoApp's shell, as it mounts it: the providers the pages read (Analyst, vehicle, currency, access). */}
           <AppShell
             fundName={snapshot.fund.name} fundLogo={null} userEmail="viewer@hemrock.demo" reviewBadge={0} notesBadge={0}
-            pendingActionsBadge={0} isAdmin={false} currency={snapshot.fund.currency} hasAIKey configuredProviders={['anthropic']}
+            isAdmin={false} currency={snapshot.fund.currency} hasAIKey configuredProviders={['anthropic']}
             defaultAIProvider="anthropic" updateAvailable={false} featureVisibility={FEATURES} domainAccess={ACCESS} lpPortalEnabled fofActive={false}
           >
             {screen}

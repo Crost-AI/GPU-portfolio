@@ -8,8 +8,6 @@ import {
   getReviewBadge,
   getNotesBadge,
   getPendingRequests,
-  getPendingActionCountsByDomain,
-  pendingActionsBadgeFor,
   getFundData,
   getFundSettings,
   getMembership,
@@ -17,7 +15,7 @@ import {
   getUpdateAvailable,
   getFofActive,
 } from '@/lib/cache/layout'
-import { accessContextFrom, hasAccess } from '@/lib/access/effective'
+import { accessContextFrom } from '@/lib/access/effective'
 import { DEFAULT_FEATURE_VISIBILITY } from '@/lib/types/features'
 import type { FeatureVisibilityMap } from '@/lib/types/features'
 import { themeCssVars, type FundTheme } from '@/lib/theme'
@@ -60,18 +58,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         supabase.from('fund_vehicles').select('id', { count: 'exact', head: true }).eq('fund_id', fund.id),
         supabase.from('parsing_reviews').select('id', { count: 'exact', head: true }).is('resolution', null).eq('fund_id', fund.id),
         supabase.from('inbound_emails').select('id', { count: 'exact', head: true }).eq('processing_status', 'needs_review').eq('fund_id', fund.id),
-        (supabase as any).from('pending_actions').select('domain').eq('status', 'pending').eq('fund_id', fund.id),
       ])
     : null
   const noEntities = !!scopedCounts && (scopedCounts[0].count ?? 0) === 0
-  const [pendingRequestCount, updateAvailable, pendingActionCounts] = await Promise.all([
+  const [pendingRequestCount, updateAvailable] = await Promise.all([
     isAdmin ? getPendingRequests(fund.id) : Promise.resolve(0),
     isAdmin ? getUpdateAvailable() : Promise.resolve(false),
-    // Not admin-gated any more. A member with grants can open /pending-actions and see their
-    // readable rows, so withholding the badge from them hid a queue they were meant to act on;
-    // and giving admins the raw total counted rows a fund-level switch had turned off for
-    // everyone. The count is now resolved against the same access the page filters by.
-    getPendingActionCountsByDomain(fund.id),
   ])
 
   const featureVisibility = { ...DEFAULT_FEATURE_VISIBILITY, ...(fundSettings?.feature_visibility as Partial<FeatureVisibilityMap> | null) }
@@ -98,18 +90,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   })
   const { role, features, grants, defaults } = accessContext
   const domainAccess = { role, features, grants, defaults }
-
-  // Resolved AFTER the access context exists, because the whole point is that the number matches
-  // what the queue will actually show this person.
-  const visibleActionCounts: Record<string, number> = scopedCounts
-    ? (((scopedCounts[3].data as { domain: string | null }[] | null) ?? [])).reduce<Record<string, number>>((acc, r) => {
-        if (r.domain) acc[r.domain] = (acc[r.domain] ?? 0) + 1
-        return acc
-      }, {})
-    : pendingActionCounts
-  const pendingActionsBadge = pendingActionsBadgeFor(visibleActionCounts, domain =>
-    hasAccess(accessContext, domain, 'read'),
-  )
 
   const fundCurrency = fundSettings?.currency ?? 'USD'
   const configuredProviders = [
@@ -138,7 +118,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           reviewBadge={scopedCounts ? (scopedCounts[1].count ?? 0) + (scopedCounts[2].count ?? 0) : reviewBadge}
           settingsBadge={pendingRequestCount}
           notesBadge={notesBadge}
-          pendingActionsBadge={pendingActionsBadge}
           isAdmin={isAdmin}
           currency={fundCurrency}
           hasAIKey={hasAIKey}

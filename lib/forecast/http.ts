@@ -34,7 +34,11 @@ export async function forecastRequest(
   } catch (error) {
     if (error instanceof ForecastError) return NextResponse.json({ error: error.message }, { status: error.status })
     console.error('[forecast]', error)
-    return NextResponse.json({ error: 'Failed' }, { status: 500 })
+    // In development, say what failed — a database refusal names its constraint or column, which is
+    // the whole diagnosis. Production keeps the generic message.
+    const detail = process.env.NODE_ENV === 'development' && error && typeof error === 'object' && 'message' in error
+      ? `Failed: ${String((error as { message: unknown }).message)}` : 'Failed'
+    return NextResponse.json({ error: detail }, { status: 500 })
   }
 }
 

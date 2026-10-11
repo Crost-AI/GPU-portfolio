@@ -69,13 +69,14 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // Forecast (plans/plan-budget-forecast.md). Each route file is its own key. The service
   // re-checks accounting + budgeting at the operation's level and the management_company grant for
   // a manco vehicle, so MCP and the Analyst get the same answer without this boundary.
-  'api/accounting/forecast': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/[id]': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/[id]/publish': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/series': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/export': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/variance': { domain: 'accounting', feature: 'budgeting' },
-  'api/accounting/forecast/fee-links': { domain: 'accounting', feature: 'budgeting' },
+  'api/accounting/forecast': { domain: 'accounting' },
+  'api/accounting/forecast/[id]': { domain: 'accounting' },
+  'api/accounting/forecast/[id]/publish': { domain: 'accounting' },
+  'api/accounting/forecast/series': { domain: 'accounting' },
+  'api/accounting/forecast/returns': { domain: 'accounting' },
+  'api/accounting/forecast/export': { domain: 'accounting' },
+  'api/accounting/forecast/variance': { domain: 'accounting' },
+  'api/accounting/forecast/fee-links': { domain: 'accounting' },
   'api/accounting/fund-economics': { domain: 'accounting' },
   // QuickBooks migration. `mapping/discover` is its own route file and therefore needs its
   // own entry — route-domains.test.ts matches on the route path, not on a prefix.

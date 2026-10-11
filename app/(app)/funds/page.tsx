@@ -4,7 +4,7 @@ import { FundOverview } from './fund-overview'
 import { MancoOverview } from './manco-overview'
 import { AccountingPageHeader, AccountingBody } from '@/components/accounting-chrome'
 
-export const metadata: Metadata = { title: 'Entities' }
+export const metadata: Metadata = { title: 'Financials' }
 
 /**
  * The entity overview — the landing page for the whole accounting section.
@@ -30,7 +30,7 @@ export default async function AccountingPage() {
     // so the title goes all the way to the top with the toggle inline at its right, and the Analyst
     // panel opens below it rather than level with it. AccountingChrome steps aside on this route.
     <div className="pt-4 md:pt-8 pb-8 w-full">
-      <AccountingPageHeader title="Entities">
+      <AccountingPageHeader title="Financials">
         Performance per investment vehicle, derived from reported balances and accounting records,
         and the firm&rsquo;s own operating entities below it.
       </AccountingPageHeader>

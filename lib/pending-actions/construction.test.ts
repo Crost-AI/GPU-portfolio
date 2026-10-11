@@ -95,7 +95,7 @@ describe('update_portfolio_construction pending action', () => {
   it('previews explicit before/after changes without saving', async () => {
     const preview = await previewUpdatePortfolioConstruction(deps(), {
       vehicle: 'Fund II',
-      feeAnnualRate: 0.015,
+      targetPortfolioSize: 25,
       positionForecasts: {
         [companyId]: { plannedFollowOn: 250_000, returnMethod: 'moic', forecastMoic: 3 },
       },
@@ -106,7 +106,7 @@ describe('update_portfolio_construction pending action', () => {
     expect(preview.details).toMatchObject({
       vehicle: 'Fund II',
       changes: {
-        feeAnnualRate: { before: 0.02, after: 0.015 },
+        targetPortfolioSize: { before: DEFAULT_ASSUMPTIONS.targetPortfolioSize, after: 25 },
       },
       explanation: 'Use the revised reserve plan.',
     })
@@ -116,7 +116,7 @@ describe('update_portfolio_construction pending action', () => {
   it('re-reads live state and executes through the shared service exactly once', async () => {
     await executeUpdatePortfolioConstruction(deps(), {
       vehicle: 'Fund II',
-      remainingOrgCosts: 15_000,
+      upsertStages: [{ label: 'Series A bet', initialCheck: 500_000, investInYears: 1, exitInYears: 6, forecastMoic: 3, returnMethod: 'moic' }],
     })
 
     expect(mocks.getConstructionModel).toHaveBeenCalledTimes(1)
@@ -125,7 +125,9 @@ describe('update_portfolio_construction pending action', () => {
       expect.objectContaining({ fundId: 'fund-1' }),
       expect.objectContaining({
         vehicle: 'Fund II',
-        assumptions: expect.objectContaining({ remainingOrgCosts: 15_000 }),
+        assumptions: expect.objectContaining({
+          stages: expect.arrayContaining([expect.objectContaining({ key: 'series-a-bet', initialCheck: 500_000, exitInYears: 6 })]),
+        }),
       }),
     )
   })
@@ -152,5 +154,24 @@ describe('update_portfolio_construction pending action', () => {
       enableDrafts: true,
     })
     expect(viewer.tools.some(tool => tool.name === 'update_portfolio_construction')).toBe(false)
+  })
+
+  it('sends fees and expenses to the Financials tab', async () => {
+    await expect(previewUpdatePortfolioConstruction(deps(), { vehicle: 'Fund II', feeAnnualRate: 0.015 } as any))
+      .rejects.toThrow(/Financials tab/)
+  })
+
+  it('changes one planned deal by key and removes another, leaving the rest', async () => {
+    const stages = [
+      { key: 'a', label: 'A', initialCheck: 100, initialPostMoney: 1000, followOnMultiple: 0, dilutionFactor: 1 },
+      { key: 'b', label: 'B', initialCheck: 200, initialPostMoney: 2000, followOnMultiple: 0, dilutionFactor: 1 },
+      { key: 'c', label: 'C', initialCheck: 300, initialPostMoney: 3000, followOnMultiple: 0, dilutionFactor: 1 },
+    ]
+    mocks.getConstructionModel.mockResolvedValue({ ...model, assumptions: { ...model.assumptions, stages } })
+    await executeUpdatePortfolioConstruction(deps(), { vehicle: 'Fund II', planId: 'plan-2', upsertStages: [{ key: 'b', exitInYears: 4 }], removeStages: ['c'] })
+    expect(mocks.getConstructionModel).toHaveBeenCalledWith(expect.anything(), { vehicle: 'Fund II', planId: 'plan-2' })
+    const saved = mocks.updateConstructionAssumptions.mock.calls[0][1]
+    expect(saved.planId).toBe('plan-2')
+    expect(saved.assumptions.stages.map((s: any) => [s.key, s.exitInYears ?? null])).toEqual([['a', null], ['b', 4]])
   })
 })

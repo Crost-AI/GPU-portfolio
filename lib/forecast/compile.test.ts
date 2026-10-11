@@ -94,7 +94,7 @@ describe('compileForecast', () => {
   })
 
   it('draws a fee paid before the plan down from prepaid, with no cash in the plan', () => {
-    // Bluefish: a 10-year fee prepaid in March 2026, expensed 2,100 a month.
+    // A 10-year fee prepaid up front, expensed 2,100 a month.
     const fund = chart(DEFAULT_CHART)
     const fc = counterAccountsFor('fund', fund)!
     const fee = fund.find(a => a.code === '5000')!
@@ -106,6 +106,21 @@ describe('compileForecast', () => {
     expect(r.entries.every(e => e.kind === 'release')).toBe(true)
     expect(r.entries.flatMap(e => e.postings).some(p => p.accountId === fc.cash)).toBe(false)
     expect(r.entries[0].postings).toEqual([{ accountId: fee.id, amount: 2100, currency: 'USD' }, { accountId: fc.prepaid, amount: -2100, currency: 'USD' }])
+  })
+
+  it('refunds what is still prepaid in the refund month, stops the cost there, and marks it for the investors', () => {
+    const fund = chart(DEFAULT_CHART)
+    const fc = counterAccountsFor('fund', fund)!
+    const fee = fund.find(a => a.code === '5000')!
+    const months = ['2026-10', '2026-11', '2026-12'] as const
+    const r = compileForecast(
+      [{ account: fee, ruleId: 'r', amounts: new Map(months.map(m => [m, { amount: 2100 }])), timing: validateCashTiming({ mode: 'prepaid', refundMonth: '2026-11' }) }],
+      { firstMonth: '2026-10', lastMonth: '2026-12', currency: 'USD', counters: fc, openingBalances: new Map([[fc.prepaid!, 10_000]]) },
+    )
+    expect(r.entries.filter(e => e.kind === 'release')).toHaveLength(2) // Oct and Nov; Dec is after the refund
+    const refund = r.entries.find(e => e.kind === 'settlement')!
+    expect(refund).toMatchObject({ entryDate: '2026-11-30', distributable: true })
+    expect(refund.postings).toEqual([{ accountId: fc.cash, amount: 5_800, currency: 'USD' }, { accountId: fc.prepaid, amount: -5_800, currency: 'USD' }])
   })
 
   it('records the override that set a month (acceptance #4)', () => {

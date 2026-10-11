@@ -27,7 +27,6 @@ interface AppShellProps {
   reviewBadge: number
   settingsBadge?: number
   notesBadge?: number
-  pendingActionsBadge?: number
   isAdmin?: boolean
   currency?: string
   hasAIKey?: boolean
@@ -44,7 +43,7 @@ interface AppShellProps {
   children: React.ReactNode
 }
 
-export function AppShell({ fundName, fundLogo, userEmail, reviewBadge, settingsBadge, notesBadge, pendingActionsBadge, isAdmin, currency, hasAIKey, configuredProviders, defaultAIProvider, updateAvailable, featureVisibility, domainAccess, lpPortalEnabled, fofActive, children }: AppShellProps) {
+export function AppShell({ fundName, fundLogo, userEmail, reviewBadge, settingsBadge, notesBadge, isAdmin, currency, hasAIKey, configuredProviders, defaultAIProvider, updateAvailable, featureVisibility, domainAccess, lpPortalEnabled, fofActive, children }: AppShellProps) {
   const router = useRouter()
   const navigate = useMemo(
     () => (href: string, opts?: { replace?: boolean }) => (opts?.replace ? router.replace(href) : router.push(href)),
@@ -63,7 +62,7 @@ export function AppShell({ fundName, fundLogo, userEmail, reviewBadge, settingsB
           <VehicleProvider>
           {/* The palette sits above the shell so the header's button and any page can open it,
               and below the vehicle context so an entity-scoped jump can pin the entity. */}
-          <CommandPaletteProvider reviewBadge={reviewBadge} pendingActionsBadge={pendingActionsBadge} fofActive={fofActive}>
+          <CommandPaletteProvider reviewBadge={reviewBadge} fofActive={fofActive}>
             {/* fofActive was being dropped here, which is why "Underlying funds" and the
                 fund-of-funds ledger pages never appeared in the nav on any surface: the
                 layout resolves it, AppShell takes it, and AppShellInner was never handed
@@ -75,7 +74,6 @@ export function AppShell({ fundName, fundLogo, userEmail, reviewBadge, settingsB
               reviewBadge={reviewBadge}
               settingsBadge={settingsBadge}
               notesBadge={notesBadge}
-              pendingActionsBadge={pendingActionsBadge}
               isAdmin={isAdmin}
               updateAvailable={updateAvailable}
               featureVisibility={featureVisibility}
@@ -94,7 +92,7 @@ export function AppShell({ fundName, fundLogo, userEmail, reviewBadge, settingsB
   )
 }
 
-function AppShellInner({ fundName, fundLogo, userEmail, reviewBadge, settingsBadge, notesBadge, pendingActionsBadge, isAdmin, updateAvailable, featureVisibility, fofActive, children }: AppShellProps) {
+function AppShellInner({ fundName, fundLogo, userEmail, reviewBadge, settingsBadge, notesBadge, isAdmin, updateAvailable, featureVisibility, fofActive, children }: AppShellProps) {
   const { collapsed } = useSidebar()
   const pathname = usePathname()
 
@@ -117,7 +115,7 @@ function AppShellInner({ fundName, fundLogo, userEmail, reviewBadge, settingsBad
         <aside
           className={`hidden md:flex flex-col shrink-0 pt-6 transition-all duration-200 ${ collapsed ? 'w-16' : 'w-56' }`}
         >
-          <AppSidebar reviewBadge={reviewBadge} settingsBadge={settingsBadge} notesBadge={notesBadge} pendingActionsBadge={pendingActionsBadge} isAdmin={isAdmin} updateAvailable={updateAvailable} featureVisibility={featureVisibility} fofActive={fofActive} />
+          <AppSidebar reviewBadge={reviewBadge} settingsBadge={settingsBadge} notesBadge={notesBadge} isAdmin={isAdmin} updateAvailable={updateAvailable} featureVisibility={featureVisibility} fofActive={fofActive} />
         </aside>
 
         {/* Page content. The width cap lives one level up, on the wrapper in
@@ -142,7 +140,6 @@ function AppShellInner({ fundName, fundLogo, userEmail, reviewBadge, settingsBad
         reviewBadge={reviewBadge}
         settingsBadge={settingsBadge}
         notesBadge={notesBadge}
-        pendingActionsBadge={pendingActionsBadge}
         isAdmin={isAdmin}
         updateAvailable={updateAvailable}
         featureVisibility={featureVisibility}

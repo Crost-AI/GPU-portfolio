@@ -27,6 +27,8 @@ export interface ConstructionEvent {
   /** Cost basis released by an exit (proceeds only), so the gain can be split from the return of capital. */
   cost?: number
   deal?: string
+  /** A company the fund already holds (its id), so its own cost, mark and gain accounts are used. */
+  companyId?: string
   timing: 'stated' | 'inferred'
   note?: string
 }
@@ -80,7 +82,7 @@ export function monthlyConstruction(schedule: ForecastSchedule, asOf: string): M
       let k = monthIndex(t)
       let note: string | undefined
       if (yearOfIndex(k) > H) { k = 12 * H; note = 'Beyond the horizon — construction books it in its last year' }
-      events.push({ month: at(k), flow: 'invested', amount: roundCents(amount), deal: d.name, timing: 'stated', note })
+      events.push({ month: at(k), flow: 'invested', amount: roundCents(amount), deal: d.name, ...(d.kind === 'existing' ? { companyId: d.key } : {}), timing: 'stated', note })
     }
     place(d.initialAt, d.initialCheck)
     place(d.followOnAt, d.followOn)
@@ -88,14 +90,13 @@ export function monthlyConstruction(schedule: ForecastSchedule, asOf: string): M
       if (d.exitAt <= 0) dropped++
       else if (d.exitAt <= H + 1e-9) {
         const cost = d.investedToDate + d.initialCheck + d.followOn
-        events.push({ month: at(monthIndex(d.exitAt)), flow: 'proceeds', amount: roundCents(d.proceeds), cost: roundCents(cost), deal: d.name, timing })
+        events.push({ month: at(monthIndex(d.exitAt)), flow: 'proceeds', amount: roundCents(d.proceeds), cost: roundCents(cost), deal: d.name, ...(d.kind === 'existing' ? { companyId: d.key } : {}), timing })
       }
     }
   }
   if (dropped) warnings.push(`${dropped} construction flow${dropped === 1 ? '' : 's'} dated today or earlier ${dropped === 1 ? 'is' : 'are'} not in the forecast (construction leaves them out too)`)
-  if (events.some(e => e.timing === 'inferred' && e.flow === 'proceeds')) {
-    warnings.push('Some exit months come from fund-wide pacing, not a stated date — they are marked inferred')
-  }
+  // An exit on the fund's default hold period is an assumption, not a problem: Investments shows
+  // each company's hold, so there is no note for it.
 
   // Annual flows, year by year.
   for (const y of schedule.years) {

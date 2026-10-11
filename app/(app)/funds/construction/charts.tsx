@@ -2,8 +2,7 @@
 
 import { useMemo } from 'react'
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  Cell, ReferenceLine, LabelList,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ReferenceLine, LabelList, Treemap,
 } from 'recharts'
 import {
   ChartCard, EmptyPlot, AXIS, tooltipStyle, HUE, sliceFill,
@@ -31,58 +30,60 @@ type Fmt = (v: number | null) => string
 // into deals is one hue split by intensity (deployed solid, planned as its tint) so the eye reads
 // "investment" as one block that happens to be part-done; expenses take their own slots; what is
 // left over is muted ink, because unallocated capital is an absence, not a category.
+// Actual and forecast share a slot: the forecast is a lighter tint of what has already happened, so
+// "fees" reads as one thing split in time rather than two things.
+const tintOf = (hue: string) => hue.replace(/\)$/, ' / 0.45)')
 const USAGE_SERIES = [
-  { key: 'deployed', name: 'Invested to date', color: INVEST_NEW },
-  { key: 'planned', name: 'Planned investments', color: INVEST_FOLLOW },
-  { key: 'fees', name: 'Management fees', color: HUE.chart4 },
-  { key: 'expenses', name: 'Fund expenses', color: HUE.chart5 },
-  { key: 'unallocated', name: 'Unallocated', color: HUE.muted },
+  { key: 'deployed', name: 'Invested to date', color: INVEST_NEW, forecast: false },
+  { key: 'planned', name: 'Planned investments', color: INVEST_FOLLOW, forecast: true },
+  { key: 'feesActual', name: 'Management fees paid', color: HUE.chart4, forecast: false },
+  { key: 'feesForecast', name: 'Management fees to come', color: tintOf(HUE.chart4), forecast: true },
+  { key: 'expensesActual', name: 'Fund expenses paid', color: HUE.chart5, forecast: false },
+  { key: 'expensesForecast', name: 'Fund expenses to come', color: tintOf(HUE.chart5), forecast: true },
+  { key: 'unallocated', name: 'Unallocated', color: HUE.muted, forecast: false },
 ] as const
 
+/**
+ * Where the commitment goes, as one rectangle divided by area — what has happened solid, what is
+ * forecast a lighter tint of the same slot — with the legend under it carrying the dollars and the
+ * share, line for line with the Capital planning table.
+ */
 export function CapitalUsageChart({ model, fmt, fmtFull }: { model: ConstructionResult; fmt: Fmt; fmtFull: Fmt }) {
   const { capital } = model
   const committed = capital.committedCapital
 
-  const row = useMemo(() => ({
-    label: 'Committed',
-    deployed: capital.deployedTotal,
-    planned: capital.plannedCost,
-    fees: capital.lifetimeFees,
-    // Org costs and partnership expenses read as one thing against management fees; the Capital
-    // planning table directly below breaks them apart for anyone who needs the split.
-    expenses: capital.lifetimeExpenses,
-    // A plan that overruns has nothing left over — the shortfall is already shown as a warning
-    // above, and a negative segment here would break the "these sum to committed" reading.
-    unallocated: Math.max(0, committed - capital.deployedTotal - capital.plannedCost - capital.lifetimeFees - capital.lifetimeExpenses),
-  }), [capital, committed])
+  const row = useMemo(() => {
+    const feesActual = capital.feesIncurred
+    const feesForecast = capital.feesProjected
+    const expensesActual = capital.orgCostsIncurred + capital.expensesIncurred
+    const expensesForecast = capital.orgCostsProjected + capital.expensesProjected
+    return {
+      deployed: capital.deployedTotal,
+      planned: capital.plannedCost,
+      feesActual, feesForecast, expensesActual, expensesForecast,
+      // A plan that overruns has nothing left over — the shortfall is already shown as a warning
+      // above, and a negative area here would break the "these sum to committed" reading.
+      unallocated: Math.max(0, committed - capital.deployedTotal - capital.plannedCost - feesActual - feesForecast - expensesActual - expensesForecast),
+    }
+  }, [capital, committed])
 
-  const series = USAGE_SERIES.filter(s => Math.abs(row[s.key]) > 0.5)
+  const series = USAGE_SERIES.filter(s => row[s.key] > 0.5)
   const pctOf = (v: number) => (committed > 0 ? `${Math.round((v / committed) * 100)}%` : '—')
+  const tiles = series.map(s => ({ name: s.name, size: row[s.key], fill: s.color, ink: s.forecast ? HUE.ink : 'hsl(0 0% 100%)', caption: `${fmt(row[s.key])} · ${pctOf(row[s.key])}` }))
 
   return (
     <ChartCard title="Committed capital usage">
       {committed <= 0 ? (
         <EmptyPlot label="No committed capital recorded." />
       ) : (
-        <>
-          <ResponsiveContainer width="100%" height={110}>
-            <BarChart data={[row]} layout="vertical" margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-border" />
-              <XAxis type="number" domain={[0, committed]} tick={AXIS} tickLine={false} axisLine={false} tickFormatter={v => fmt(v as number)} className="text-muted-foreground" />
-              <YAxis type="category" dataKey="label" hide />
-              <Tooltip
-                cursor={{ fill: 'hsl(var(--muted) / 0.4)' }}
-                contentStyle={tooltipStyle}
-                formatter={(v: any, n: any) => [`${fmtFull(v as number)} · ${pctOf(v as number)}`, n]}
-              />
-              {series.map(s => (
-                <Bar key={s.key} dataKey={s.key} name={s.name} stackId="usage" fill={s.color} stroke={HUE.surface} strokeWidth={2} />
-              ))}
-            </BarChart>
+        <div className="space-y-4">
+          <ResponsiveContainer width="100%" height={220}>
+            <Treemap data={tiles} dataKey="size" aspectRatio={4 / 3} stroke={HUE.surface} isAnimationActive={false}
+              content={<UsageTile />}>
+              <Tooltip contentStyle={tooltipStyle} formatter={(v: any, _n: any, item: any) => [`${fmtFull(v as number)} · ${pctOf(v as number)}`, item?.payload?.name ?? '']} />
+            </Treemap>
           </ResponsiveContainer>
-          {/* A legend list rather than recharts' own: it carries the dollar and the percentage,
-              which is what makes this agree line-for-line with the Capital planning table. */}
-          <ul className="mt-1 space-y-1.5 text-xs">
+          <ul className="space-y-1.5 text-xs">
             {series.map(s => (
               <li key={s.key} className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} />
@@ -92,9 +93,35 @@ export function CapitalUsageChart({ model, fmt, fmtFull }: { model: Construction
               </li>
             ))}
           </ul>
-        </>
+        </div>
       )}
     </ChartCard>
+  )
+}
+
+/**
+ * One area of the treemap: its slot colour, a 2px surface gap around it, rounded like a card's
+ * controls — and, where the area is big enough to hold it, its name and amount written in it: white
+ * on a solid slot, ink on a forecast tint (which is light). Smaller areas leave it to the legend beneath.
+ */
+function UsageTile(props: any) {
+  const { x, y, width, height, fill, name, caption, ink } = props
+  if (!(width > 0 && height > 0)) return null
+  const fitsName = width >= 96 && height >= 30
+  const fitsCaption = fitsName && height >= 48
+  // Roughly 6.5px a character at 12px: shorten a long name rather than spill it.
+  const room = Math.floor((width - 16) / 6.5)
+  const label = typeof name === 'string' && name.length > room ? `${name.slice(0, Math.max(1, room - 1))}…` : name
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} rx={4} ry={4} fill={fill} stroke={HUE.surface} strokeWidth={2} />
+      {fitsName && (
+        <text x={x + 10} y={y + 20} fontSize={12} fontWeight={500} fill={ink ?? HUE.ink} stroke="none" style={{ pointerEvents: 'none' }}>{label}</text>
+      )}
+      {fitsCaption && caption && (
+        <text x={x + 10} y={y + 37} fontSize={11} fill={ink ?? HUE.ink} fillOpacity={0.85} stroke="none" style={{ pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' }}>{caption}</text>
+      )}
+    </g>
   )
 }
 
@@ -240,10 +267,6 @@ export function ReturnRangeChart({ model, fmt, multiple }: { model: Construction
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Net MOIC on committed capital if the portfolio exits at each average ownership. The
-            solid column is the plan as entered; the grey columns move it ±1 and ±2 points.
-          </p>
         </>
       )}
     </ChartCard>

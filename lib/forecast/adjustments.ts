@@ -213,3 +213,33 @@ function lastDayOfMonth(month: string): string {
   const [y, m] = month.split('-').map(Number)
   return `${month}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`
 }
+
+/**
+ * Investments and exits are entered on the Investments tab — the plan's portfolio construction —
+ * and nowhere else (plans/plan-unified-plan.md §4). So a change to a plan's hand edits may not add or
+ * change an entry on an investment account, nor remove or replace a generated investment or exit
+ * entry. What is already there is left alone (an earlier hand edit stays until someone removes it);
+ * removing one is always allowed. Returns the reason it is refused, or null.
+ */
+export function dealEditRefusal(
+  before: Adjustments,
+  after: Adjustments,
+  accounts: Pick<Account, 'id' | 'subtype'>[],
+): string | null {
+  const investment = new Set(accounts.filter(a => a.subtype === 'investment').map(a => a.id))
+  const was = new Map(before.entries.map(e => [e.id, JSON.stringify(e)]))
+  for (const e of after.entries) {
+    if (was.get(e.id) === JSON.stringify(e)) continue
+    if (e.postings.some(p => investment.has(p.accountId))) {
+      return `"${e.memo}" moves an investment — enter investments and exits on the Investments tab, where the deal lives`
+    }
+    if (e.replaces && isDealKey(e.replaces)) return `"${e.memo}" changes a generated investment or exit — change that deal on the Investments tab instead`
+  }
+  const removedBefore = new Set(before.removed)
+  if (after.removed.some(k => !removedBefore.has(k) && isDealKey(k))) {
+    return 'Investments and exits come from the Investments tab — remove or change the deal there, not its entry'
+  }
+  return null
+}
+
+const isDealKey = (k: string) => /^construction\|(investment|proceeds)\|/.test(k)

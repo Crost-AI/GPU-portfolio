@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Building2, ClipboardCheck, ListChecks, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles } from 'lucide-react'
+import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTheme } from 'next-themes'
@@ -38,7 +38,7 @@ interface NavItem {
   href: string
   label: string
   icon: LucideIcon
-  badgeKey?: 'review' | 'settings' | 'notes' | 'pendingActions'
+  badgeKey?: 'review' | 'settings' | 'notes'
   adminOnly?: boolean
   featureKey?: FeatureKey
   /** Only where the featureKey can't imply it (or there is no featureKey). */
@@ -77,9 +77,6 @@ export function canSee(
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/review', label: 'Review', icon: ClipboardCheck, badgeKey: 'review', domain: 'portfolio' },
-  // Admin-only, and — like Review — only shown when there's something waiting (badgeKey hides it
-  // at zero). The list still filters rows by per-domain access; members reach theirs via the API/URL.
-  { href: '/pending-actions', label: 'Pending Actions', icon: ListChecks, domain: 'portfolio', adminOnly: true, badgeKey: 'pendingActions' },
   // Portfolio, not dealflow — the mailbox is where portfolio updates arrive and where the review
   // queue's emails live, so gating it on the Deals product hid the only page that can reprocess an
   // email from every fund running Portfolio Reporting alone. Deal-specific actions inside it gate
@@ -128,7 +125,8 @@ const NAV_ITEMS: NavItem[] = [
     ],
   },
   {
-    // "Entities", not "Funds", because it is every entity the firm keeps books for — funds,
+    // "Financials" — every entity's books, statements and forecast. Not "Funds", because it is
+    // every entity the firm keeps books for — funds,
     // SPVs, GP entities, individuals AND the management company. The manco had a section of its
     // own while its pages were a parallel copy of these ones; they are the same pages now, so it
     // is one more kind of row. What it is NOT is one more grant: `requireVehicleAccess` still
@@ -138,7 +136,7 @@ const NAV_ITEMS: NavItem[] = [
     // No `adminOnly` — the featureKey already gates it (defaults to 'off', and a fund
     // that turns it on to 'admin' still only shows it to admins). Hard-coding adminOnly
     // on top of that also hid it from the read-only demo viewer, who should see the books.
-    href: '/funds', label: 'Entities', icon: BookOpen, featureKey: 'accounting',
+    href: '/funds', label: 'Financials', icon: BookOpen, featureKey: 'accounting',
     children: ACCOUNTING_SECTIONS.map(({ href, label, domain, requiresFof, feature }) => ({ href, label, domain, requiresFof, featureKey: feature })),
   },
   { href: '/usage', label: 'Usage', icon: Users, adminOnly: true, domain: 'admin' },
@@ -203,19 +201,17 @@ export function navItemMatches(item: NavItem, pathname: string): boolean {
  * the access question differently — the sheet is no longer the sidebar rendered in a
  * drawer, so without this it would be a second list to keep in step.
  *
- * The badge counts are here because two entries are conditional on having something
- * waiting: Review and Pending Actions are noise at zero, and Pending Actions in
- * particular is an empty page most days.
+ * The badge counts are here because Review is conditional on having something waiting:
+ * it is noise at zero.
  */
 export function navSectionsFor(
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
-  badges: { review?: number; pendingActions?: number } = {},
+  badges: { review?: number } = {},
 ): NavItem[] {
   return NAV_ITEMS.filter(item => {
     if (!canSee(item, isAdmin, access)) return false
     if (item.badgeKey === 'review' && (badges.review ?? 0) === 0) return false
-    if (item.badgeKey === 'pendingActions' && (badges.pendingActions ?? 0) === 0) return false
     return true
   })
 }
@@ -233,7 +229,7 @@ export function moreSectionsFor(
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
   tabHrefs: string[],
-  badges: { review?: number; pendingActions?: number } = {},
+  badges: { review?: number } = {},
 ): NavItem[] {
   const inBar = new Set(tabHrefs)
   return navSectionsFor(isAdmin, access, badges).filter(item => !inBar.has(item.href))
@@ -301,7 +297,6 @@ interface AppSidebarProps {
   reviewBadge: number
   settingsBadge?: number
   notesBadge?: number
-  pendingActionsBadge?: number
   isAdmin?: boolean
   updateAvailable?: boolean
   featureVisibility?: FeatureVisibilityMap
@@ -322,7 +317,7 @@ interface AppSidebarProps {
   onNavigate?: () => void
 }
 
-export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, pendingActionsBadge, isAdmin, updateAvailable, featureVisibility, fofActive, mobile, onNavigate }: AppSidebarProps) {
+export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, isAdmin, updateAvailable, featureVisibility, fofActive, mobile, onNavigate }: AppSidebarProps) {
   const pathname = usePathname()
   const access = useAccess()
   const { collapsed: collapsedPref, toggle } = useSidebar()
@@ -350,7 +345,7 @@ export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, pendingActi
   return (
     <div className="flex flex-col flex-1">
       <nav className={`flex-1 p-2 space-y-0.5 ${collapsed ? 'md:px-1' : ''}`}>
-        {navSectionsFor(!!isAdmin, access, { review: reviewBadge, pendingActions: pendingActionsBadge }).map((item) => {
+        {navSectionsFor(!!isAdmin, access, { review: reviewBadge }).map((item) => {
           const { href, label, icon: Icon, badgeKey, adminOnly, featureKey, beta } = item
           // The parent row is highlighted ONLY when it is the exact current page — never
           // merely because a child is open. Otherwise the highlight was inconsistent: Funds
@@ -361,7 +356,6 @@ export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, pendingActi
           // page you're actually on, with section context coming from the expanded children.
           const isActive = pathname === href
           const badgeCount = badgeKey === 'review' ? reviewBadge
-            : badgeKey === 'pendingActions' ? (pendingActionsBadge ?? 0)
             : badgeKey === 'settings' ? (settingsBadge ?? 0)
             : badgeKey === 'notes' ? (notesBadge ?? 0)
             : 0

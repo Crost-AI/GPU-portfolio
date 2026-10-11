@@ -22,6 +22,8 @@ vi.mock('@/lib/api-helpers', () => ({
 }))
 vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: mocks.resolveGroupOr400 }))
 vi.mock('@/lib/access/effective', () => ({ loadAccessContext: async () => ({ vehicles: { all: true, ids: [] } }) }))
+// Saving lands on the entity's primary plan, made if it has none.
+vi.mock('@/lib/forecast/service', () => ({ ensurePrimaryPlan: async () => 'plan-1' }))
 vi.mock('@/lib/accounting/construction-service', () => ({
   getConstructionModel: mocks.getConstructionModel,
   updateConstructionAssumptions: mocks.updateConstructionAssumptions,
@@ -58,9 +60,10 @@ describe('legacy construction route', () => {
 
     expect(mocks.getConstructionModel).toHaveBeenCalledWith(
       { admin: mocks.admin, fundId: 'fund-1', access: expect.anything() },
-      { vehicle: 'Fund II' },
+      { vehicle: 'Fund II', planId: null },
     )
     expect(await response.json()).toEqual({
+      plan: null,
       group: 'Fund II',
       vehicleId: 'vehicle-2',
       actuals: canonical.actuals,
@@ -77,7 +80,7 @@ describe('legacy construction route', () => {
 
     expect(mocks.updateConstructionAssumptions).toHaveBeenCalledWith(
       { admin: mocks.admin, fundId: 'fund-1', access: expect.anything() },
-      { vehicle: 'Fund II', assumptions: body },
+      { vehicle: 'Fund II', assumptions: body, planId: 'plan-1' },
     )
     expect(await response.json()).toEqual({ assumptions: DEFAULT_ASSUMPTIONS })
   })

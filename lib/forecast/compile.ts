@@ -22,9 +22,12 @@ export type CashTiming =
   /**
    * Already paid (or received) before the plan — a prepaid fee being expensed month by month, a
    * retainer collected up front. Each month draws down the prepaid (or deferred revenue) balance
-   * and no cash moves in the plan.
+   * and no cash moves in the plan. With `refundMonth`, the cost stops there and whatever is still
+   * prepaid comes back to the fund in cash that month, to be paid out to the investors — a fee
+   * prepaid for a fund's life, refunded when it liquidates early. The month is the plan's own (a
+   * rule in the database), never the engine's.
    */
-  | { mode: 'prepaid' }
+  | { mode: 'prepaid'; refundMonth?: MonthKey }
   /**
    * Paid/received in one calendar month. 'advance' settles each recognised month in the most
    * recent payment month at or before it (an annual premium); 'arrears' in the next one at or after.
@@ -48,8 +51,11 @@ export function validateCashTiming(raw: unknown): CashTiming {
   switch (t.mode) {
     case 'same':
       return SAME_MONTH
-    case 'prepaid':
-      return { mode: 'prepaid' }
+    case 'prepaid': {
+      if (t.refundMonth == null || t.refundMonth === '') return { mode: 'prepaid' }
+      if (typeof t.refundMonth !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(t.refundMonth)) throw new CashTimingError('cashTiming.refundMonth must be YYYY-MM')
+      return { mode: 'prepaid', refundMonth: t.refundMonth as MonthKey }
+    }
     case 'offset': {
       const n = t.months
       if (typeof n !== 'number' || !Number.isInteger(n) || Math.abs(n) > 36) {
@@ -150,6 +156,8 @@ export type EntryKind =
   | 'recognition' | 'settlement' | 'prepayment' | 'release'
   // Construction's non-P&L flows (lib/forecast/construction-adapter.ts).
   | 'investment' | 'proceeds' | 'capital_call' | 'distribution'
+  /** The carry a distribution pays the GP (lib/forecast/capital.ts). */
+  | 'carry_distribution'
 
 export interface CompiledEntry {
   entryDate: string
@@ -164,6 +172,8 @@ export interface CompiledEntry {
   source: 'rule' | 'override' | 'opening' | 'construction' | 'manual'
   /** A hand-entered entry's id ('manual|<id>'), for editing it; not stored. */
   key?: string
+  /** Cash that belongs to the investors (a refund of unused prepaid fees): distributed with the exit proceeds. Not stored. */
+  distributable?: boolean
   postings: Posting[]
 }
 
@@ -181,6 +191,8 @@ export interface CompileOptions {
   lastMonth: MonthKey
   currency: string
   counters: CounterAccounts
+  /** Balances of the counter accounts when the plan opens (a prepaid balance to refund from). */
+  openingBalances?: Map<string, number>
 }
 
 export interface CompileResult {
@@ -222,6 +234,8 @@ export function compileForecast(lines: CompileLine[], opts: CompileOptions): Com
     for (const [month, { amount, overrideId }] of [...line.amounts].sort(([a], [b]) => a.localeCompare(b))) {
       if (!inRange(month) || amount === 0) continue
       const s = signed(amount)
+      // A prepaid cost refunded in refundMonth stops there.
+      if (line.timing.mode === 'prepaid' && line.timing.refundMonth && month > line.timing.refundMonth) continue
       if (line.timing.mode === 'prepaid') {
         // Paid before the plan: release the prepaid balance; nothing settles in the window.
         if (!earlier) {
@@ -300,11 +314,36 @@ export function compileForecast(lines: CompileLine[], opts: CompileOptions): Com
 
   entries.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.memo.localeCompare(b.memo))
   for (const e of entries) assertEntryBalanced(e)
+  // Refunds of unused prepaid fees (cashTiming {mode:'prepaid', refundMonth}): the prepaid balance at
+  // the plan's open, less what was released through the refund month, comes back in cash that month.
+  if (counters.prepaid) {
+    const prepaid = counters.prepaid
+    for (const line of lines) {
+      const t = line.timing
+      if (t.mode !== 'prepaid' || !t.refundMonth || !inRange(t.refundMonth) || line.account.type !== 'expense') continue
+      const released = entries
+        .filter(e => e.kind === 'release' && e.entryDate <= lastDay(t.refundMonth!))
+        .reduce((sum, e) => sum + e.postings.filter(p => p.accountId === prepaid).reduce((a, p) => a + p.amount, 0), 0)
+      const left = roundCents((opts.openingBalances?.get(prepaid) ?? 0) + released)
+      if (left <= 0.005) continue
+      entries.push({
+        accountId: line.account.id, ruleId: line.ruleId, overrideId: null, source: 'rule',
+        entryDate: lastDay(t.refundMonth), kind: 'settlement', distributable: true,
+        memo: `${line.account.code} ${line.account.name} — unused prepaid refunded (${t.refundMonth})`,
+        postings: [
+          { accountId: counters.cash, amount: left, currency },
+          { accountId: prepaid, amount: -left, currency },
+        ],
+      })
+      break // one prepaid balance, refunded once
+    }
+  }
+
   return { entries, warnings }
 }
 
 const KIND_ORDER: Record<EntryKind, number> = {
-  capital_call: 0, prepayment: 1, recognition: 2, release: 3, settlement: 4, investment: 5, proceeds: 6, distribution: 7,
+  capital_call: 0, prepayment: 1, recognition: 2, release: 3, settlement: 4, investment: 5, proceeds: 6, distribution: 7, carry_distribution: 8,
 }
 
 export function assertEntryBalanced(e: { memo: string; postings: Posting[] }) {

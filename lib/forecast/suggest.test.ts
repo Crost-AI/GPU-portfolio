@@ -53,13 +53,13 @@ describe('suggestRule', () => {
     expect(suggestRule({ actuals: series((_, i) => 3000 + (i % 3) * 40 - 40), ...closed })).toMatchObject({ method: 'run_rate', params: { window: 12 }, confidence: 'high' })
   })
 
-  it('a fee that started partway through is fixed at its own level, not averaged with the months before it (Bluefish)', () => {
+  it('a fee that started partway through is fixed at its own level, not averaged with the months before it', () => {
     const fee = new Map(['2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'].map(m => [m, 2100] as [string, number]))
     const s = suggestRule({ actuals: fee, closedFrom: '2026-02', closedThrough: '2026-09' })!
     expect(s).toMatchObject({ method: 'fixed', params: { amount: 2100 }, confidence: 'high' })
   })
 
-  it('a one-off in short history is not spread forward (Bluefish loan interest)', () => {
+  it('a one-off in short history is not spread forward (loan interest)', () => {
     const s = suggestRule({ actuals: new Map([['2026-03', 5697.31]]), closedFrom: '2026-02', closedThrough: '2026-09' })!
     expect(s).toMatchObject({ method: 'manual', params: { amounts: {} } })
     expect(s.evidence).toMatch(/One-off: 5,697 in Mar 2026/)

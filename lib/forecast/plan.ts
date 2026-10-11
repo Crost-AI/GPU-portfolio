@@ -175,36 +175,8 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
     outcomes.push({ ruleId: r.id, accountId: r.accountId, basis: res.basis, warnings: res.warnings })
     lines.push({ account, ruleId: r.id, amounts, timing: r.cashTiming })
   }
-  // Construction's fees and expenses, on the plan's management-fee and partnership-expense
-  // accounts, when the plan includes construction and the account has no rule of its own. A rule
-  // always wins — it is what someone decided for that account (a prepaid fee, a known invoice) —
-  // and is told what construction would have said, so a gap between the two is visible.
-  if (input.construction) {
-    const fromConstruction = (flow: 'fees' | 'expenses', subtypes: string[], label: string) => {
-      const account = input.accounts
-        .filter(a => a.type === 'expense' && subtypes.includes(a.subtype ?? '') && !a.lpEntityId && !a.companyId)
-        .sort((a, b) => a.code.localeCompare(b.code))[0]
-      if (!account) return
-      const amounts = new Map<MonthKey, { amount: number; overrideId?: string | null }>()
-      for (const e of input.construction!.events) {
-        if (e.flow !== flow || e.month < first || e.month > last) continue
-        amounts.set(e.month, { amount: roundCents((amounts.get(e.month)?.amount ?? 0) + e.amount) })
-      }
-      const total = roundCents([...amounts.values()].reduce((s, v) => s + v.amount, 0))
-      if (seen.has(account.id)) {
-        const o = outcomes.find(x => x.accountId === account.id)
-        if (o && total) o.warnings.push(`Portfolio construction has ${total.toLocaleString('en-US')} of ${label} in this window; this account's own rule is used instead`)
-        return
-      }
-      if (!total) return
-      seen.add(account.id)
-      for (const ov of overridesByAccount.get(account.id) ?? []) amounts.set(ov.month, { amount: ov.amount, overrideId: ov.id })
-      lines.push({ account, ruleId: null, amounts, timing: { mode: 'same' } as CashTiming })
-      outcomes.push({ ruleId: `construction:${flow}`, accountId: account.id, basis: `Portfolio construction ${label}, spread evenly within each construction year`, warnings: [] })
-    }
-    fromConstruction('fees', ['management_fee'], 'management fees')
-    fromConstruction('expenses', ['partnership_expense', 'operating_expense'], 'partnership expenses')
-  }
+  // Fees and expenses are the plan's own rules (plans/plan-unified-plan.md §1.3) — construction no
+  // longer fills them in; a new plan is given them from construction's terms when it is created.
 
   // An override on an account with no rule still counts — the month was typed in on purpose.
   for (const [accountId, list] of overridesByAccount) {
@@ -219,7 +191,14 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
     })
   }
 
-  const compiled = compileForecast(lines, { firstMonth: first, lastMonth: last, currency: input.currency, counters })
+  // What the counter accounts hold when the plan opens — a prepaid fee's balance, to refund from.
+  const openingBalances = new Map<string, number>()
+  const opensOn = `${first}-01`
+  for (const p of input.actuals ?? []) {
+    if (!p.entryDate || p.entryDate >= opensOn) continue
+    openingBalances.set(p.accountId, roundCents((openingBalances.get(p.accountId) ?? 0) + p.amount))
+  }
+  const compiled = compileForecast(lines, { firstMonth: first, lastMonth: last, currency: input.currency, counters, openingBalances })
   for (const o of outcomes) o.warnings.push(...(compiled.warnings.get(o.accountId) ?? []))
 
   const opening = openingSettlements(input, first, last, counters.cash)
@@ -312,7 +291,7 @@ export function openingSettlements(
  * fund's bank account.
  */
 export function constructionEntries(
-  input: Pick<BuildPlanInput, 'accounts' | 'currency'>,
+  input: Pick<BuildPlanInput, 'accounts' | 'currency'> & Partial<Pick<BuildPlanInput, 'actuals'>>,
   mc: MonthlyConstruction,
   first: MonthKey,
   last: MonthKey,
@@ -322,9 +301,8 @@ export function constructionEntries(
     input.accounts.filter(a => a.subtype === subtype && !a.lpEntityId && !a.companyId).sort((a, b) => a.code.localeCompare(b.code))[0]
   const inv = find('investment')
   const gain = find('realized_gain')
-  const capital = find('lp_capital')
   const warnings: string[] = []
-  const missing = [!inv && 'investments at cost', !gain && 'realized gain', !capital && 'LP capital'].filter(Boolean)
+  const missing = [!inv && 'investments at cost', !gain && 'realized gain'].filter(Boolean)
   if (missing.length) {
     return { entries: [], warnings: [`Construction flows need ${missing.join(', ')} account${missing.length === 1 ? '' : 's'} in this chart; none are forecast`] }
   }
@@ -332,8 +310,20 @@ export function constructionEntries(
   let before = 0
   let after = 0
   const c = input.currency
+  // A company the fund already holds has its own accounts (lib/accounting/investments.ts): cost
+  // (1100-), its mark (1200-), its currency translation (1250-) and its realized gain (4000-). At
+  // its exit everything unrealized becomes realized, so the mark and the translation on the books
+  // are reversed against their income lines and the whole gain over cost is realized.
+  const companyAccount = (companyId: string | undefined, subtype: string, type: string) =>
+    companyId ? input.accounts.find(a => a.companyId === companyId && a.subtype === subtype && a.type === type) : undefined
+  const unrealizedIncome = input.accounts.find(a => a.type === 'income' && a.subtype === 'unrealized' && !a.companyId)
+  const fxIncome = input.accounts.find(a => a.type === 'income' && a.subtype === 'fx_translation' && !a.companyId)
+  const balance = new Map<string, number>()
+  for (const p of input.actuals ?? []) balance.set(p.accountId, roundCents((balance.get(p.accountId) ?? 0) + p.amount))
   for (const e of mc.events) {
-    if (e.flow === 'fees' || e.flow === 'expenses') continue
+    // Construction gives the gross deal flows only. Calls and distributions are the fund forecast's
+    // capital management (lib/forecast/capital.ts), worked out on the plan's own cash.
+    if (e.flow === 'fees' || e.flow === 'expenses' || e.flow === 'called' || e.flow === 'distributed') continue
     if (e.month < first) { before++; continue }
     if (e.month > last) { after++; continue }
     const date = lastDay(e.month)
@@ -341,30 +331,34 @@ export function constructionEntries(
     const base = { entryDate: date, ruleId: null, overrideId: null, source: 'construction' as const }
     const a = roundCents(e.amount)
     switch (e.flow) {
-      case 'invested':
-        entries.push({ ...base, kind: 'investment', accountId: inv!.id, memo: `Investment${label} (${e.timing})`, postings: [
-          { accountId: inv!.id, amount: a, currency: c }, { accountId: cashId, amount: -a, currency: c },
+      case 'invested': {
+        const costAcct = companyAccount(e.companyId, 'investment', 'asset') ?? inv!
+        entries.push({ ...base, kind: 'investment', accountId: costAcct.id, memo: `Investment${label} (${e.timing})`, postings: [
+          { accountId: costAcct.id, amount: a, currency: c }, { accountId: cashId, amount: -a, currency: c },
         ] })
         break
+      }
       case 'proceeds': {
         const cost = roundCents(e.cost ?? 0)
-        entries.push({ ...base, kind: 'proceeds', accountId: gain!.id, memo: `Exit proceeds${label} (${e.timing})`, postings: [
+        const costAcct = companyAccount(e.companyId, 'investment', 'asset') ?? inv!
+        const gainAcct = companyAccount(e.companyId, 'realized_gain', 'income') ?? gain!
+        // The mark and the translation on the books at the plan's start, reversed: unrealized no more.
+        const reversals: { accountId: string; amount: number; currency: string }[] = []
+        for (const [assetSubtype, income] of [['unrealized', unrealizedIncome], ['fx_translation', fxIncome]] as const) {
+          const asset = companyAccount(e.companyId, assetSubtype, 'asset')
+          const held = asset ? balance.get(asset.id) ?? 0 : 0
+          if (!asset || !income || Math.abs(held) < 0.005) continue
+          reversals.push({ accountId: asset.id, amount: -held, currency: c }, { accountId: income.id, amount: held, currency: c })
+          balance.set(asset.id, 0)
+        }
+        entries.push({ ...base, kind: 'proceeds', accountId: gainAcct.id, memo: `Exit proceeds${label} (${e.timing})`, postings: [
           { accountId: cashId, amount: a, currency: c },
-          { accountId: inv!.id, amount: -cost, currency: c },
-          { accountId: gain!.id, amount: roundCents(cost - a), currency: c },
+          { accountId: costAcct.id, amount: -cost, currency: c },
+          ...reversals,
+          { accountId: gainAcct.id, amount: roundCents(cost - a), currency: c },
         ].filter(p => p.amount !== 0) })
         break
       }
-      case 'called':
-        entries.push({ ...base, kind: 'capital_call', accountId: capital!.id, memo: 'Capital call (construction, inferred month)', postings: [
-          { accountId: cashId, amount: a, currency: c }, { accountId: capital!.id, amount: -a, currency: c },
-        ] })
-        break
-      case 'distributed':
-        entries.push({ ...base, kind: 'distribution', accountId: capital!.id, memo: 'Distribution (construction, gross of carry)', postings: [
-          { accountId: capital!.id, amount: a, currency: c }, { accountId: cashId, amount: -a, currency: c },
-        ] })
-        break
     }
   }
   if (before) warnings.push(`${before} construction flow${before === 1 ? '' : 's'} fall before the plan starts and are not included`)

@@ -10,7 +10,16 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('./vehicle-resolver', () => ({ resolveVehicle: mocks.resolveVehicle }))
-vi.mock('./fund-economics', () => ({ fundEconomics: mocks.fundEconomics }))
+vi.mock('./fund-economics', () => ({
+  fundEconomics: mocks.fundEconomics,
+  // The service reads one vehicle's economics; served from the same fund-wide fixture.
+  vehicleEconomics: async (_a: unknown, _f: unknown, group: string) => {
+    const all = (await mocks.fundEconomics()) as { vehicle: string }[] | undefined
+    const v = all?.find(x => x.vehicle === group)
+    if (!v) throw new Error('no such vehicle')
+    return v
+  },
+}))
 vi.mock('./load', () => ({ loadPostedLedger: mocks.loadPostedLedger }))
 vi.mock('./carry', async importOriginal => {
   const actual = await importOriginal<typeof import('./carry')>()
@@ -27,6 +36,7 @@ function query(result: { data: unknown; error?: { message: string } | null }) {
   const chain: Record<string, any> = {
     select: () => chain,
     eq: () => chain,
+    order: () => chain,
     maybeSingle: async () => result,
     then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
       Promise.resolve(result).then(resolve, reject),
@@ -49,6 +59,8 @@ function adminFixture(args: {
         chain.upsert = upsert
         return chain
       }
+      // No forecast plan yet: construction reads the seed row, as before plans held it.
+      if (table === 'forecast_plans') return query({ data: null, error: null })
       throw new Error(`Unexpected table ${table}`)
     },
   }

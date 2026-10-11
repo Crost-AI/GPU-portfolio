@@ -66,7 +66,6 @@ export const AREAS: Area[] = [
     label: 'Forecast',
     blurb: 'Budgets, rolling forecasts and variance.',
     domain: 'accounting',
-    feature: 'budgeting',
     questions: [
       'Draft a 12-month forecast for the management company.',
       'What are the largest variances to budget this quarter?',
@@ -178,7 +177,6 @@ export const PROMPT_TEMPLATES: PromptTemplate[] = [
       { name: 'months', description: 'Horizon: 12 (default), 18, 24 or 36.' },
     ],
     domain: 'accounting',
-    feature: 'budgeting',
     text: a => `Draft a ${a.months || '12'}-month rolling forecast for ${a.vehicle || 'the entity'}. Start from forecast_suggest_rules, which reads up to 36 months of its closed history. Show me the suggested rule for each account, say which ones you are unsure about and why, and ask what I know that history does not (hires, price changes, new costs) before creating anything.`,
   },
   {
@@ -187,7 +185,6 @@ export const PROMPT_TEMPLATES: PromptTemplate[] = [
     description: 'Actuals against the approved budget: the largest variances and why.',
     arguments: [{ name: 'vehicle', description: 'The entity with a budget.', required: true }],
     domain: 'accounting',
-    feature: 'budgeting',
     text: a => `Compare ${a.vehicle || 'the entity'}'s actuals this year with its approved budget. List the largest variances by account, favourable and unfavourable, and for each say whether it looks like timing or a real change.`,
   },
 ]

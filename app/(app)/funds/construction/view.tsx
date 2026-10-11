@@ -1,31 +1,32 @@
 'use client'
 
+import type { PlanReturnsResponse } from '@/lib/forecast/service'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import type { HeadlinePeriod, PlanCashFlows } from './forecast-charts'
 import type { ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, Pencil, Plus, X } from 'lucide-react'
 import { useCurrency, formatCurrency, formatCurrencyFull } from '@/components/currency-context'
-import { useVehicle, FundSwitcher } from '@/components/accounting-vehicle'
-import { AccountingBody, AccountingPageHeader } from '@/components/accounting-chrome'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Button } from '@/components/ui/button'
 import { Metric } from '@/components/ui/metric'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { SortTh, compareVals, nextSort, type SortState } from '@/components/sortable-th'
-import { CapitalUsageChart, ValueSourcesChart } from './charts'
-import { ForecastSection } from './forecast-section'
+import { CapitalUsageChart } from './charts'
+import { ForecastSection, InlineNumber } from './forecast-section'
 import { cn } from '@/lib/utils'
 import {
   constructionModel, parseAssumptions, DEFAULT_ASSUMPTIONS, blankStage,
   type ConstructionActuals, type ConstructionAssumptions, type ConstructionPositionForecast,
-  type ConstructionStage, type PositionReturn, type StageReturn,
+  type ConstructionStage, type ConstructionResult, type PositionReturn, type StageReturn,
 } from '@/lib/accounting/construction'
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 type ForecastEditor = { kind: 'position'; companyId: string } | { kind: 'stage'; key: string }
-type PortfolioSortKey = 'name' | 'initialCheck' | 'currentValue' |
-  'realizedProceeds' | 'forecastReturn' | 'forecastMoic'
+type PortfolioSortKey = 'name' | 'initialCheck' | 'currentValue' | 'currentMoic' |
+  'realizedProceeds' | 'holdYears' | 'forecastReturn' | 'forecastMoic'
 
 function positionSortValue(row: PositionReturn, key: PortfolioSortKey): string | number | null {
   const { actual } = row
@@ -33,6 +34,8 @@ function positionSortValue(row: PositionReturn, key: PortfolioSortKey): string |
     case 'name': return actual.name
     case 'initialCheck': return actual.investedTotal + row.forecast.plannedFollowOn
     case 'currentValue': return row.currentValue
+    case 'currentMoic': return row.currentMoic
+    case 'holdYears': return row.forecast.exitInYears ?? null
     case 'realizedProceeds': return actual.distributions
     case 'forecastReturn': return row.estimatedReturn
     case 'forecastMoic': return row.estimatedMoic
@@ -44,6 +47,8 @@ function stageSortValue(row: StageReturn, key: PortfolioSortKey): string | numbe
     case 'name': return row.label
     case 'initialCheck': return row.allocation
     case 'currentValue': return null
+    case 'currentMoic': return null
+    case 'holdYears': return row.exitInYears ?? null
     case 'realizedProceeds': return null
     case 'forecastReturn': return row.estimatedReturn
     case 'forecastMoic': return row.estimatedMoic
@@ -80,33 +85,56 @@ function returnForecastYears(actuals: ConstructionActuals, assumptions: Construc
   return Math.min(10, Math.max(1, Math.ceil(latestExit || fallback)))
 }
 
-export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehicleId: string | null }) {
+/**
+ * The Forecast page's Portfolio tab (plans/plan-unified-plan.md §5): the selected plan's portfolio
+ * construction — deals, timing, reserves, exits. `planId` names the plan (else the entity's primary);
+ * `onSaved` tells the page its fund forecast is now out of date.
+ */
+export type ConstructionSection = 'investments' | 'capital'
+
+export function ConstructionView({ vehicle, planId: planParam, readOnly, onSaved, section, addInvestment, planReturns, rangeFlows, chartsSlot, usageSlot, outcomesSlot, headline, assumptionsOpen, onAssumptionsClose }: {
+  assumptionsOpen?: boolean
+  onAssumptionsClose?: () => void
+  /** The Forecast page's periods and date range, for the headline charts. */
+  headline?: { periods: HeadlinePeriod[]; years: { first: number; last: number } } | null
+  /** Where the headline charts render (above the Forecast page's tabs). */
+  chartsSlot?: HTMLElement | null
+  /** Bumped by the Forecast page's Add Investment button: add a planned deal and open it. */
+  addInvestment?: number
+  /** The plan's returns (with the simulation), fetched once by the Forecast page. */
+  planReturns?: PlanReturnsResponse | null
+  /** The page's date range, as cash by line (actual / forecast): Capital planning shows that range. */
+  rangeFlows?: RangeFlows | null
+  /** Where Committed capital usage and the outcome histogram render (the Charts tab). */
+  usageSlot?: HTMLElement | null
+  outcomesSlot?: HTMLElement | null
+  /** Which part to show — one per Forecast tab; the view stays mounted so edits carry across. */
+  section: ConstructionSection
+  vehicle: string
+  planId?: string | null
+  /** A published version: shown, not edited. */
+  readOnly?: boolean
+  onSaved?: () => void
+}) {
   const currency = useCurrency()
   const fmt = (v: number | null) => (v == null ? '—' : formatCurrency(v, currency))
   const fmtFull = (v: number | null) => (v == null ? '—' : formatCurrencyFull(v, currency))
   const pct = (v: number | null) => (v == null ? '—' : `${(v * 100).toFixed(2)}%`)
   const multiple = (v: number | null) => (v == null ? '—' : `${v.toFixed(2)}x`)
-  const { setVehicle } = useVehicle()
-  useEffect(() => { setVehicle(vehicle, vehicleId) }, [vehicle, vehicleId, setVehicle])
 
   const [actuals, setActuals] = useState<ConstructionActuals | null>(null)
   const [a, setA] = useState<ConstructionAssumptions>(DEFAULT_ASSUMPTIONS)
   const [persisted, setPersisted] = useState('')
+  // The plan this construction belongs to, and its returns (lib/forecast/plan-returns.ts) — the
+  // yearly calls, distributions and carry as the fund forecast works them out, reloaded after a save.
+  const [planId, setPlanId] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sort, setSort] = useState<SortState | null>(null)
   const [forecastEditor, setForecastEditor] = useState<ForecastEditor | null>(null)
-  const [expenseInputsOpen, setExpenseInputsOpen] = useState(false)
-  const [capitalGroupsOpen, setCapitalGroupsOpen] = useState({
-    committed: true,
-    incurred: false,
-    projected: false,
-    total: true,
-    invested: false,
-  })
-  const g = `group=${encodeURIComponent(vehicle)}`
+  const g = `group=${encodeURIComponent(vehicle)}${planParam ? `&plan=${encodeURIComponent(planParam)}` : ''}`
 
   useEffect(() => {
     let cancelled = false
@@ -120,15 +148,22 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
       .then(d => {
         if (cancelled) return
         const assumptions = parseAssumptions(d.assumptions, null)
-        setActuals(d.actuals); setA(assumptions); setPersisted(JSON.stringify(assumptions)); setSaveState('idle'); setSaveError(null)
+        setActuals(d.actuals); setPlanId(d.plan?.id ?? null); setA(assumptions); setPersisted(JSON.stringify(assumptions)); setSaveState('idle'); setSaveError(null)
       })
       .catch(e => { if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Could not load the construction model.') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [g])
 
+  // The plan's returns, fetched once by the Forecast page: the yearly calls and the simulated range.
+  const planFlows = useMemo<PlanCashFlows | null>(() => planReturns?.base ? {
+    years: planReturns.base.years,
+    band: planReturns.simulation?.distributedByYear ?? null,
+    bandByMonth: planReturns.simulation?.distributedByMonth ?? null,
+  } : null, [planReturns])
+
   useEffect(() => {
-    if (loading || !actuals) return
+    if (loading || !actuals || readOnly) return
     const serialized = JSON.stringify(a)
     if (serialized === persisted) return
     const t = setTimeout(() => {
@@ -138,7 +173,7 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
       }).then(async r => {
         const d = await r.json().catch(() => null)
         if (!r.ok) throw new Error(d?.error || 'Could not save the construction model.')
-        setPersisted(JSON.stringify(parseAssumptions(d.assumptions, null))); setSaveState('saved'); setSaveError(null)
+        setPersisted(JSON.stringify(parseAssumptions(d.assumptions, null))); setSaveState('saved'); setSaveError(null); onSaved?.()
       }).catch(error => {
         setSaveState('error')
         setSaveError(error instanceof Error ? error.message : 'Could not save changes.')
@@ -165,6 +200,12 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
     setA(prev => ({ ...prev, stages: [...prev.stages, stage] }))
     setForecastEditor({ kind: 'stage', key: stage.key })
   }, [])
+  const lastAdd = useRef(addInvestment ?? 0)
+  useEffect(() => {
+    if (!addInvestment || addInvestment === lastAdd.current || !model) return
+    lastAdd.current = addInvestment
+    addStage()
+  }, [addInvestment, addStage, model])
   const removeStage = useCallback((key: string) => setA(prev => ({ ...prev, stages: prev.stages.filter(s => s.key !== key) })), [])
   const setPositionForecast = useCallback((companyId: string, patch: Partial<ConstructionPositionForecast>) => {
     setA(prev => {
@@ -183,50 +224,58 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
     ? model?.returns.stages.find(row => row.key === forecastEditor.key) ?? null
     : null
 
+  // Each deal's share of the forecasted proceeds (the footer's total), and whether a multiple was set
+  // for it rather than taken from the fund default.
+  const forecastTotal = model?.returns.estimatedPortfolioValue ?? 0
+  const shareOf = (v: number | null) => (v == null || forecastTotal <= 0 ? '—' : `${Math.round((v / forecastTotal) * 1000) / 10}%`)
+  const hasMoicOverride = (f: { forecastMoicOverride?: boolean; forecastMoic?: number }) => f.forecastMoicOverride === true || (f.forecastMoic ?? 0) > 0
+
   const body = loading ? (
     <div className="rounded-card border bg-card p-6 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading construction model…</div>
   ) : loadError ? <EmptyState>{loadError}</EmptyState>
     : !model || !actuals || actuals.committedCapital <= 0 ? <EmptyState>No construction model for {vehicle}. It needs recorded commitments to plan against.</EmptyState>
     : (
       <div className="space-y-6">
+        {section === 'investments' && <>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5">
-          <Metric label="Invested capital" value={fmt(model.capital.deployedTotal)} sub={`${pct(model.capital.deployedTotal / model.capital.committedCapital)} of committed capital`} />
-          <Metric label="Uncalled capital" value={fmt(model.capital.uncalledCapital)} sub={`${pct(model.capital.uncalledCapital / model.capital.committedCapital)} of committed capital`} />
-          <Metric label="Portfolio" value={`${model.capital.companyCount}`} sub="Current investments" />
-          <Metric label="Gross MOIC" value={multiple(model.returns.actualGrossMoic)} sub="Current value and realized proceeds" />
-          <Metric label="Net MOIC" value={multiple(model.returns.actualNetMoic)} sub="Fund TVPI on called capital" />
+          <Metric label="Invested capital" value={fmt(model.capital.deployedTotal)} />
+          <Metric label="Uncalled capital" value={fmt(model.capital.uncalledCapital)} />
+          <Metric label="Portfolio" value={`${model.capital.companyCount}`} />
+          <Metric label="Gross MOIC today" value={multiple(model.returns.actualGrossMoic)} />
+          <Metric label="Gross NAV" value={fmt(model.returns.currentPortfolioValue)} />
         </div>
 
         {model.warnings.filter(w => !w.startsWith('Fees and expenses are not on the ledger')).map((w, i) => <div key={i} className="flex items-start gap-2 rounded-card border border-warning/40 bg-warning-subtle p-3 text-sm text-warning"><AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />{w}</div>)}
 
         <section>
-          <div className="flex items-end justify-between gap-4">
-            <div><h2 className="text-lg font-semibold">Investments</h2><p className="mt-1 text-sm text-muted-foreground">Current positions and planned investments</p></div>
-            <Button size="sm" variant="outline" onClick={addStage}><Plus className="mr-1 h-3.5 w-3.5" />Add Forecasted Investment</Button>
-          </div>
-          <div className="mt-4 overflow-hidden rounded-card border bg-card shadow-sm dark:shadow-none dark:border">
+          <div className="overflow-hidden rounded-card border bg-card shadow-sm dark:shadow-none dark:border">
           <div className="overflow-x-auto">
             <table className="w-full whitespace-nowrap text-sm">
               <thead><tr className="border-b bg-muted/50">
                 <SortTh label="Investment" sortKey="name" sort={sort} onSort={key => setSort(s => nextSort(s, key, 'asc'))} />
                 {([
-                  ['Total invested capital', 'initialCheck'], ['Current value', 'currentValue'],
-                  ['Realized proceeds', 'realizedProceeds'], ['Forecasted proceeds', 'forecastReturn'],
-                  ['Gross MOIC', 'forecastMoic'],
-                ] as [string, PortfolioSortKey][]).map(([label, key]) => <SortTh key={key} label={label} sortKey={key} sort={sort} onSort={key => setSort(s => nextSort(s, key))} align="right" />)}
+                  ['Total invested capital', 'initialCheck'], ['Current value', 'currentValue'], ['Current MOIC', 'currentMoic'],
+                  ['Hold period', 'holdYears'], ['Forecast multiple', 'forecastMoic'], ['Realized proceeds', 'realizedProceeds'],
+                  ['Forecasted proceeds', 'forecastReturn'], ['% of forecasted proceeds', 'forecastReturn'],
+                ] as [string, PortfolioSortKey][]).map(([label, key], i) => <SortTh key={`${key}-${i}`} label={label} sortKey={key} sort={sort} onSort={key => setSort(s => nextSort(s, key))} align="right" />)}
               </tr></thead>
               <tbody>
                 {model.returns.positions.length === 0
-                  ? <tr><td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">No portfolio investments are recorded for this vehicle.</td></tr>
+                  ? <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">No portfolio investments are recorded for this vehicle.</td></tr>
                   : sortedPositions.map(row => {
                     const { actual } = row
                     return <tr key={actual.companyId} className="group border-b hover:bg-muted/20">
                       <td className="px-3 py-2"><div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><Link href={`/companies/${actual.companyId}`} className="min-w-0 truncate hover:underline" title={actual.name}>{actual.name}</Link>{actual.status === 'exited' ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Exited</span> : <button type="button" title="Edit forecast" aria-label={`Edit forecast for ${actual.name}`} className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100" onClick={() => setForecastEditor({ kind: 'position', companyId: actual.companyId })}><Pencil className="h-3.5 w-3.5" /></button>}</div></td>
                       <MoneyCell full={fmtFull(actual.investedTotal + row.forecast.plannedFollowOn)}>{fmt(actual.investedTotal + row.forecast.plannedFollowOn)}</MoneyCell>
                       <MoneyCell full={fmtFull(row.currentValue)}>{fmt(row.currentValue)}</MoneyCell>
+                      <td className="px-3 py-2 text-right tabular-nums">{multiple(row.currentMoic)}</td>
+                      {actual.status === 'exited' ? <><td className="px-3 py-2 text-right text-muted-foreground">—</td><td className="px-3 py-2 text-right text-muted-foreground">—</td></> : <>
+                        <td className="px-3 py-1 text-right"><InlineNumber label={`Hold period for ${actual.name}`} value={row.forecast.exitInYears ?? null} placeholder={String(a.pacing.holdYears)} suffix="yr" onChange={v => setPositionForecast(actual.companyId, { exitInYears: v })} /></td>
+                        <td className="px-3 py-1 text-right"><InlineNumber label={`Forecast multiple for ${actual.name}`} value={hasMoicOverride(row.forecast) ? Number((row.forecast.forecastMoic ?? 0).toFixed(2)) : null} placeholder={String(a.simulation.defaultExitMultiple)} suffix="x" onChange={v => setPositionForecast(actual.companyId, { forecastMoic: v ?? 0, forecastMoicOverride: v != null, returnMethod: 'moic' })} /></td>
+                      </>}
                       <MoneyCell full={fmtFull(actual.distributions)}>{fmt(actual.distributions)}</MoneyCell>
                       <MoneyCell full={fmtFull(row.estimatedReturn)}>{fmt(row.estimatedReturn)}</MoneyCell>
-                      <td className="px-3 py-2 text-right tabular-nums">{multiple(row.estimatedMoic)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{shareOf(row.estimatedReturn)}</td>
                     </tr>
                   })}
 
@@ -235,132 +284,45 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
                     <MoneyCell full={fmtFull(stage.allocation)}>{fmt(stage.allocation)}</MoneyCell>
                     <td className="px-3 py-2 text-right text-muted-foreground">—</td>
                     <td className="px-3 py-2 text-right text-muted-foreground">—</td>
+                    <td className="px-3 py-1 text-right"><InlineNumber label={`Hold period for ${stage.label || 'new investment'}`} value={a.stages.find(s => s.key === stage.key)?.exitInYears ?? null} placeholder={String(a.pacing.holdYears)} suffix="yr" onChange={v => setStage(stage.key, { exitInYears: v })} /></td>
+                    <td className="px-3 py-1 text-right"><InlineNumber label={`Forecast multiple for ${stage.label || 'new investment'}`} value={(() => { const raw = a.stages.find(s => s.key === stage.key); return raw && hasMoicOverride(raw) ? Number((raw.forecastMoic ?? 0).toFixed(2)) : null })()} placeholder={String(a.simulation.defaultExitMultiple)} suffix="x" onChange={v => setStage(stage.key, { forecastMoic: v ?? 0, forecastMoicOverride: v != null, returnMethod: 'moic' })} /></td>
+                    <td className="px-3 py-2 text-right text-muted-foreground">—</td>
                     <MoneyCell full={fmtFull(stage.estimatedReturn)}>{fmt(stage.estimatedReturn)}</MoneyCell>
-                    <td className="px-3 py-2 text-right tabular-nums">{multiple(stage.estimatedMoic)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{shareOf(stage.estimatedReturn)}</td>
                   </tr>)}
               </tbody>
               <tfoot><tr className="bg-muted/40 font-semibold">
                 <td className="bg-muted px-3 py-2.5">Projected portfolio</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(model.capital.deployedTotal + model.capital.plannedCost)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(model.returns.currentPortfolioValue)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{multiple(model.returns.actualGrossMoic)}</td>
+                <td className="px-3 py-2" />
+                <td className="px-3 py-2 text-right tabular-nums">{multiple(model.returns.estimatedGrossMoic)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(model.returns.positions.reduce((sum, row) => sum + row.actual.distributions, 0))}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(model.returns.estimatedPortfolioValue)}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{multiple(model.returns.estimatedGrossMoic)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{forecastTotal > 0 ? '100%' : '—'}</td>
               </tr></tfoot>
             </table>
           </div>
           </div>
         </section>
 
-        <section>
-          <div className="flex items-end justify-between gap-4">
-            <div><h2 className="text-lg font-semibold">Capital planning</h2><p className="mt-1 text-sm text-muted-foreground">Capital calls, expenses, investments, and reserves</p></div>
-            <Button size="sm" variant="outline" onClick={() => setExpenseInputsOpen(open => !open)}>
-              <Pencil className="mr-1 h-3.5 w-3.5" />{expenseInputsOpen ? 'Close expense forecast' : 'Edit expense forecast'}
-            </Button>
-          </div>
-          {expenseInputsOpen && <div className="mt-4 rounded-card border bg-muted/30 px-3">
-            <div className="grid gap-3 border-b py-3 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
-              <div><p className="text-sm">Organizational expenses</p><p className="mt-0.5 text-xs text-muted-foreground">One-time costs</p></div>
-              <NumberField label="Projected one-time costs" hideLabel value={a.remainingOrgCosts} onChange={v => setA({ ...a, remainingOrgCosts: v })} />
-            </div>
-            <div className="grid gap-3 border-b py-3 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center">
-              <div><p className="text-sm">Partnership expenses</p><p className="mt-0.5 text-xs text-muted-foreground">Annual expenses through the final modeled exit, up to 10 years</p></div>
-              <NumberField label="Annual expenses, for term below" hideLabel value={a.annualPartnershipExpense} onChange={v => setA({ ...a, annualPartnershipExpense: v })} />
-            </div>
-            <div className="py-3">
-              <p className="text-sm">Management fees</p>
-              <div className="mt-2 space-y-2">
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem] sm:items-center"><p className="text-xs text-muted-foreground">Annual rate</p><PercentField label="Annual rate" hideLabel value={a.feeAnnualRate} onChange={v => setA({ ...a, feeAnnualRate: v })} /></div>
-                <p className="text-xs text-muted-foreground">Forecast through the final modeled exit ({modeledA.feeTermYears} {modeledA.feeTermYears === 1 ? 'year' : 'years'}), capped at 10 years.</p>
-                {/* The GP's own commitment pays no fee (construction.ts feePayingShare). */}
-                {(actuals?.feePayingShare ?? 1) < 1 && (
-                  <p className="text-xs text-muted-foreground">Charged on {(((actuals?.feePayingShare ?? 1)) * 100).toFixed(1)}% of commitments — the GP&rsquo;s own stake pays no fee.</p>
-                )}
-              </div>
-            </div>
-          </div>}
-          <div className="mt-4 grid items-start gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(20rem,0.85fr)]">
+        </>}
+
+        {section === 'capital' && <section>
+          <div>
           <div className="min-w-0">
-          <div className="overflow-hidden rounded-card border bg-card shadow-sm dark:shadow-none dark:border">
-            <table className="w-full text-sm">
-              <thead><tr className="border-b bg-muted/50"><th className="px-3 py-2 text-left font-medium">Capital</th><th className="px-3 py-2 text-right font-medium">Amount</th><th className="w-32 whitespace-nowrap px-3 py-2 text-right font-medium">% committed</th></tr></thead>
-              <tbody>
-                <CapitalPlanningGroup
-                  label="Committed capital"
-                  value={model.capital.committedCapital}
-                  items={[
-                    ['Called capital', model.capital.calledCapital],
-                    ['Uncalled capital', model.capital.uncalledCapital],
-                  ]}
-                  open={capitalGroupsOpen.committed}
-                  onToggle={() => setCapitalGroupsOpen(s => ({ ...s, committed: !s.committed }))}
-                  committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull}
-                />
-                <CapitalPlanningGroup
-                  label="Actual expenses"
-                  value={model.capital.incurredExpenses}
-                  items={[
-                    ['Organizational expenses', model.capital.orgCostsIncurred],
-                    ['Partnership expenses', model.capital.expensesIncurred],
-                    ['Management fees', model.capital.feesIncurred],
-                  ]}
-                  open={capitalGroupsOpen.incurred}
-                  onToggle={() => setCapitalGroupsOpen(s => ({ ...s, incurred: !s.incurred }))}
-                  committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull}
-                />
-                <CapitalPlanningGroup
-                  label="Projected expenses"
-                  value={model.capital.projectedExpenses}
-                  items={[
-                    ['Organizational expenses', model.capital.orgCostsProjected],
-                    ['Partnership expenses', model.capital.expensesProjected],
-                    ['Management fees', model.capital.feesProjected],
-                  ]}
-                  open={capitalGroupsOpen.projected}
-                  onToggle={() => setCapitalGroupsOpen(s => ({ ...s, projected: !s.projected }))}
-                  committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull}
-                />
-                <CapitalPlanningGroup
-                  label="Total expenses"
-                  value={model.capital.totalExpenses}
-                  items={[
-                    ['Organizational expenses', model.capital.orgCostsIncurred + model.capital.orgCostsProjected],
-                    ['Partnership expenses', model.capital.expensesIncurred + model.capital.expensesProjected],
-                    ['Management fees', model.capital.feesIncurred + model.capital.feesProjected],
-                  ]}
-                  open={capitalGroupsOpen.total}
-                  onToggle={() => setCapitalGroupsOpen(s => ({ ...s, total: !s.total }))}
-                  committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull}
-                />
-                <CapitalPlanningGroup
-                  label="Invested capital"
-                  value={model.capital.deployedTotal}
-                  items={[
-                    ['New invested', model.capital.deployedInitial],
-                    ['Follow-on invested', model.capital.deployedFollowOn],
-                  ]}
-                  open={capitalGroupsOpen.invested}
-                  onToggle={() => setCapitalGroupsOpen(s => ({ ...s, invested: !s.invested }))}
-                  committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull}
-                />
-                <CapitalPlanningRow label="Reserved for investment" value={model.capital.remaining} committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull} />
-                {model.capital.plannedCost > 0 && <CapitalPlanningRow label="Forecasted investment" value={model.capital.plannedCost} committed={model.capital.committedCapital} fmt={fmt} fmtFull={fmtFull} indent />}
-              </tbody>
-            </table>
-          </div>
+          <CapitalPlanningTable capital={model.capital} range={rangeFlows ?? null} planYears={planFlows?.years ?? null} fmt={fmt} fmtFull={fmtFull} />
           {model.warnings.filter(w => w.startsWith('Fees and expenses are not on the ledger')).map(w => (
             <div key={w} className="mt-3 flex items-start gap-2 rounded-card border border-warning/40 bg-warning-subtle p-3 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{w}</div>
           ))}
           </div>
-          <div className="flex flex-col gap-6">
-            <CapitalUsageChart model={model} fmt={fmt} fmtFull={fmtFull} />
-            <ValueSourcesChart model={model} fmt={fmt} fmtFull={fmtFull} />
           </div>
-          </div>
-        </section>
+        </section>}
 
-        <ForecastSection model={model} actuals={actuals} a={modeledA} setA={setA} vehicle={vehicle} fmt={fmt} fmtFull={fmtFull} multiple={multiple} />
+        {/* Committed capital usage lives on the Forecast page's Charts tab. */}
+        {usageSlot && createPortal(<CapitalUsageChart model={model} fmt={fmt} fmtFull={fmtFull} />, usageSlot)}
+        {<ForecastSection outcomesSlot={outcomesSlot} assumptionsOpen={assumptionsOpen} onAssumptionsClose={onAssumptionsClose} headline={headline} chartsSlot={chartsSlot} model={model} actuals={actuals} a={modeledA} setA={setA} vehicle={vehicle} fmt={fmt} fmtFull={fmtFull} multiple={multiple} planFlows={planFlows} />}
         <div className="flex min-h-5 justify-end"><SaveIndicator state={saveState} error={saveError} /></div>
         {(editingPosition || editingStage) && <ForecastEditorDialog
           position={editingPosition}
@@ -376,10 +338,7 @@ export function ConstructionView({ vehicle, vehicleId }: { vehicle: string; vehi
       </div>
     )
 
-  return <div className="pt-4 md:pt-8 pb-8 w-full">
-    <AccountingPageHeader title="Portfolio construction" actions={<FundSwitcher />}><span className="block truncate" title={vehicle}>{vehicle} · Plan capital and return expectations</span></AccountingPageHeader>
-    <AccountingBody>{body}</AccountingBody>
-  </div>
+  return <div className="w-full">{body}</div>
 }
 
 function ForecastEditorDialog({
@@ -434,6 +393,33 @@ function ForecastEditorDialog({
         </div>}
       </div>
 
+      {/* When: the check (a planned deal) and the exit. Blank hold uses the fund-wide one. */}
+      <div className="space-y-3 rounded-md border p-4">
+        <div><h3 className="text-base font-medium">Timing</h3></div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {stage && (
+            <OptionalNumberField
+              label="Invest in"
+              hint="Years from today the first check is written"
+              value={stage.investInYears ?? null}
+              placeholder="Required"
+              suffix="yr"
+              step="0.25"
+              onChange={v => onStageChange({ investInYears: v })}
+            />
+          )}
+          <OptionalNumberField
+            label="Hold period"
+            hint={`Years from the first investment to the exit · fund default ${a.pacing.holdYears} yr`}
+            value={(stage ? a.stages.find(s => s.key === stage.key)?.exitInYears : forecast?.exitInYears) ?? null}
+            placeholder={String(a.pacing.holdYears)}
+            suffix="yr"
+            step="0.5"
+            onChange={v => position ? onPositionChange({ exitInYears: v }) : onStageChange({ exitInYears: v })}
+          />
+        </div>
+      </div>
+
       <div className="space-y-3 rounded-md border p-4">
         <div><h3 className="text-base font-medium">Return forecast</h3><p className="mt-0.5 text-xs text-muted-foreground">Override the fund-wide default only when this company has a more specific underwriting case.</p></div>
         <OptionalNumberField
@@ -473,33 +459,6 @@ function ForecastEditorDialog({
 function ForecastStat({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
   return <div className="min-w-0 rounded-md bg-muted/40 px-3 py-2"><p className="text-xs leading-tight text-muted-foreground">{label}</p><p className={cn('mt-1 truncate tabular-nums', emphasis ? 'font-semibold' : 'font-medium')} title={value}>{value}</p></div>
 }
-function CapitalPlanningRow({
-  label, value, committed, fmt, fmtFull, indent = false,
-}: {
-  label: string; value: number; committed: number; fmt: (v: number | null) => string; fmtFull: (v: number | null) => string
-  indent?: boolean
-}) {
-  return <tr className="border-b last:border-b-0">
-    <td className={cn('px-3 py-2', indent && 'pl-7 text-muted-foreground')}>{label}</td>
-    <td className="px-3 py-2 text-right tabular-nums" title={fmtFull(value)}>{fmt(value)}</td>
-    <td className="w-24 px-3 py-2 text-right tabular-nums text-muted-foreground">{committed > 0 ? `${((value / committed) * 100).toFixed(2)}%` : '—'}</td>
-  </tr>
-}
-function CapitalPlanningGroup({
-  label, value, items, open, onToggle, committed, fmt, fmtFull,
-}: {
-  label: string; value: number; items: [string, number][]; open: boolean; onToggle: () => void
-  committed: number; fmt: (v: number | null) => string; fmtFull: (v: number | null) => string
-}) {
-  return <>
-    <tr className="border-b">
-      <td className="px-3 py-2"><button type="button" aria-expanded={open} onClick={onToggle} className="flex items-center gap-1 rounded-sm hover:text-foreground text-left">{open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}{label}</button></td>
-      <td className="px-3 py-2 text-right tabular-nums" title={fmtFull(value)}>{fmt(value)}</td>
-      <td className="w-24 px-3 py-2 text-right tabular-nums text-muted-foreground">{committed > 0 ? `${((value / committed) * 100).toFixed(2)}%` : '—'}</td>
-    </tr>
-    {open && items.map(([itemLabel, itemValue]) => <CapitalPlanningRow key={itemLabel} label={itemLabel} value={itemValue} committed={committed} fmt={fmt} fmtFull={fmtFull} indent />)}
-  </>
-}
 function MoneyCell({ children, full }: { children: ReactNode; full: string }) { return <td className="px-3 py-2 text-right tabular-nums" title={full}>{children}</td> }
 const NO_NUMBER_SPINNERS = '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
 function NumberField({ label, value, onChange, step = 'any', suffix, hideLabel = false }: { label: string; value: number; onChange: (v: number) => void; step?: string; suffix?: string; hideLabel?: boolean }) {
@@ -519,4 +478,103 @@ function SaveIndicator({ state, error }: { state: SaveState; error?: string | nu
   if (state === 'saved') return <span className="flex items-center gap-1.5 text-xs text-success"><Check className="h-3.5 w-3.5" />Saved</span>
   if (state === 'error') return <span className="max-w-sm text-right text-sm text-destructive">{error || 'Could not save changes.'}</span>
   return null
+}
+
+/**
+ * Capital planning on one row per line: what has happened (Actual — cash paid, called, invested),
+ * what the plan still has to come (Forecast), and the two together, against the commitment. Cash
+ * basis throughout: a fee paid up front counts as paid.
+ */
+export type Split = { actual: number; forecast: number }
+export type RangeFlows = { called: Split; distributed: Split; invested: Split; fees: Split; org: Split; partnership: Split; label: string }
+
+function CapitalPlanningTable({ capital: c, range, planYears, fmt, fmtFull }: {
+  capital: ConstructionResult['capital']
+  /** The page's date range; without it, the life of the plan. */
+  range: RangeFlows | null
+  /** The plan's calls by calendar year (lib/forecast/plan-returns.ts), for the calls still to come. */
+  planYears: { calendarYear: number; called: number }[] | null
+  fmt: (v: number | null) => string
+  fmtFull: (v: number | null) => string
+}) {
+  const committed = c.committedCapital
+  const pct = (v: number | null) => (v == null || committed <= 0 ? '' : `${((v / committed) * 100).toFixed(1)}%`)
+  const callsToCome = planYears ? planYears.reduce((s, y) => s + y.called, 0) : null
+  const lastCall = planYears?.filter(y => y.called > 0.5).at(-1)?.calendarYear ?? null
+  const unallocated = c.remaining - c.plannedCost
+  type Line = { label: string; note?: string; actual?: number | null; forecast?: number | null; total?: number | null; strong?: boolean; warn?: boolean }
+  const sum = (a?: number | null, b?: number | null) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0))
+  const split = (x: Split, strong?: boolean): Pick<Line, 'actual' | 'forecast' | 'total' | 'strong'> => ({ actual: x.actual, forecast: x.forecast, total: x.actual + x.forecast, strong })
+  const groups: { title: string; lines: Line[] }[] = range ? [
+    { title: 'Capital', lines: [
+      { label: 'Committed capital', total: committed, strong: true },
+      { label: 'Capital called', ...split(range.called) },
+      { label: 'Uncalled capital', note: 'at the end of the range', actual: c.uncalledCapital, forecast: -range.called.forecast, total: c.uncalledCapital - range.called.forecast },
+      { label: 'Distributions', ...split(range.distributed) },
+    ] },
+    { title: 'Fees and expenses', lines: [
+      { label: 'Management fees', ...split(range.fees) },
+      { label: 'Organizational expenses', ...split(range.org) },
+      { label: 'Partnership expenses', ...split(range.partnership) },
+      { label: 'Total fees and expenses', ...split({ actual: range.fees.actual + range.org.actual + range.partnership.actual, forecast: range.fees.forecast + range.org.forecast + range.partnership.forecast }, true) },
+    ] },
+    { title: 'Investments', lines: [
+      { label: 'Invested capital', ...split(range.invested, true) },
+      { label: unallocated < 0 ? 'Over-committed' : 'Not yet allocated', note: 'over the plan', total: unallocated, strong: true, warn: unallocated < 0 },
+    ] },
+  ] : [
+    { title: 'Capital', lines: [
+      { label: 'Committed capital', total: committed, strong: true },
+      { label: 'Capital called', note: lastCall ? `last call ${lastCall}` : undefined, actual: c.calledCapital, forecast: callsToCome, total: sum(c.calledCapital, callsToCome) },
+      { label: 'Uncalled capital', actual: c.uncalledCapital, forecast: callsToCome == null ? null : -callsToCome, total: callsToCome == null ? c.uncalledCapital : c.uncalledCapital - callsToCome },
+    ] },
+    { title: 'Fees and expenses', lines: [
+      { label: 'Management fees', actual: c.feesIncurred, forecast: c.feesProjected, total: c.feesIncurred + c.feesProjected },
+      { label: 'Organizational expenses', actual: c.orgCostsIncurred, forecast: c.orgCostsProjected, total: c.orgCostsIncurred + c.orgCostsProjected },
+      { label: 'Partnership expenses', actual: c.expensesIncurred, forecast: c.expensesProjected, total: c.expensesIncurred + c.expensesProjected },
+      { label: 'Total fees and expenses', actual: c.incurredExpenses, forecast: c.projectedExpenses, total: c.totalExpenses, strong: true },
+    ] },
+    { title: 'Investments', lines: [
+      { label: 'New investments', actual: c.deployedInitial, forecast: c.plannedNewCapital, total: c.deployedInitial + c.plannedNewCapital },
+      { label: 'Follow-on investments', actual: c.deployedFollowOn, forecast: c.plannedExistingFollowOn + c.plannedNewFollowOn, total: c.deployedFollowOn + c.plannedExistingFollowOn + c.plannedNewFollowOn },
+      { label: 'Invested capital', actual: c.deployedTotal, forecast: c.plannedCost, total: c.deployedTotal + c.plannedCost, strong: true },
+      { label: unallocated < 0 ? 'Over-committed' : 'Not yet allocated', total: unallocated, strong: true, warn: unallocated < 0 },
+    ] },
+  ]
+  // A line with nothing in it for this vehicle — no actual, no forecast, no total — is left out.
+  const hasFigures = (l: Line) => [l.actual, l.forecast, l.total].some(v => v != null && Math.abs(v) >= 0.5)
+  const cell = (v: number | null | undefined, cls = '') => (
+    <td className={cn('px-3 py-2 text-right tabular-nums', cls)} title={v == null ? undefined : fmtFull(v)}>{v == null ? '' : fmt(v)}</td>
+  )
+  return (
+    <div className="overflow-x-auto rounded-card border bg-card shadow-sm dark:shadow-none dark:border">
+      <table className="w-full whitespace-nowrap text-sm">
+        <thead><tr className="border-b bg-muted/50">
+          <th className="px-3 py-2 text-left font-medium">Capital planning{range && <span className="ml-2 text-xs font-normal text-muted-foreground">{range.label}</span>}</th>
+          <th className="px-3 py-2 text-right font-medium">Actual</th>
+          <th className="px-3 py-2 text-right font-medium">Forecast</th>
+          <th className="px-3 py-2 text-right font-medium">Total</th>
+          <th className="w-28 px-3 py-2 text-right font-medium">% committed</th>
+        </tr></thead>
+        <tbody>
+          {groups.map(g => ({ ...g, lines: g.lines.filter(hasFigures) })).filter(g => g.lines.length > 0).map(g => (
+            <Fragment key={g.title}>
+              <tr className="border-b"><td colSpan={5} className="px-3 pt-3 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{g.title}</td></tr>
+              {g.lines.map(l => (
+                <tr key={l.label} className={cn('border-b last:border-b-0', l.strong && 'font-medium')}>
+                  <td className={cn('px-3 py-2', l.warn && 'text-destructive')}>
+                    {l.label}{l.note && <span className="ml-2 text-xs font-normal text-muted-foreground">{l.note}</span>}
+                  </td>
+                  {cell(l.actual)}
+                  {cell(l.forecast)}
+                  {cell(l.total, l.warn ? 'text-destructive' : '')}
+                  <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{pct(l.total ?? null)}</td>
+                </tr>
+              ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }

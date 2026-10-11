@@ -17,7 +17,7 @@ export default function SupportPage() {
       <li><a href="#portfolio" className="hover:text-foreground underline underline-offset-4">Portfolio</a></li>
       <li className="pl-4"><a href="#company-detail" className="hover:text-foreground underline underline-offset-4">Company detail</a></li>
       <li><a href="#review" className="hover:text-foreground underline underline-offset-4">Review</a></li>
-      <li className="pl-4"><a href="#pending-actions" className="hover:text-foreground underline underline-offset-4">Pending actions</a></li>
+      <li className="pl-4"><a href="#approving-changes" className="hover:text-foreground underline underline-offset-4">Approving changes</a></li>
       <li><a href="#inbound" className="hover:text-foreground underline underline-offset-4">Inbound</a></li>
       <li className="pl-4"><a href="#email-detail" className="hover:text-foreground underline underline-offset-4">Email detail</a></li>
       <li className="pl-4"><a href="#company-updates" className="hover:text-foreground underline underline-offset-4">Company updates</a></li>
@@ -347,13 +347,13 @@ export default function SupportPage() {
           </p>
         </div>
 
-        <div id="pending-actions" className="pl-4 border-l-2 border-border">
+        <div id="approving-changes" className="pl-4 border-l-2 border-border">
           <h3 className="text-base font-medium mb-2 flex items-center gap-2">
             <ListChecks className="h-3.5 w-3.5 text-muted-foreground" />
-            Pending actions
+            Approving changes
           </h3>
           <p className="text-muted-foreground">
-            <strong>Pending actions</strong> (admins) lists changes the Analyst or a connected agent staged rather than made &mdash; metric updates, investments, capital calls &mdash; each to approve or reject. It appears in the sidebar only when something is waiting.
+            Changes the Analyst drafts rather than makes &mdash; metric updates, investments, capital calls &mdash; are approved or rejected in the <a href="#analyst" className="underline underline-offset-4 hover:text-foreground">Analyst</a> panel, which also lists any still waiting from earlier conversations.
           </p>
         </div>
 
@@ -759,7 +759,7 @@ export default function SupportPage() {
             <strong>Entities</strong> lists every fund, SPV, GP entity, individual and management company,
             with performance &mdash; committed, called, distributed, NAV, DPI, TVPI, IRR &mdash; derived from the
             books, and a <em>Net to LP</em> lens. Open one for its pages: journal, bank, capital accounts,
-            schedule of investments, statements, portfolio construction, forecast, tax and close.
+            schedule of investments, statements, forecast, tax and close.
           </p>
           <div id="accounting" className="pl-4 border-l-2 border-border mb-2">
             <h3 className="font-medium mb-1">Accounting is always on</h3>
@@ -805,22 +805,26 @@ export default function SupportPage() {
             Forecast
           </h2>
           <p className="text-muted-foreground mb-2">
-            Budgets and rolling forecasts for each entity, built on the posted books and never written to them.
-            Turn on <strong>Forecast</strong> in Settings &rarr; Feature visibility (Fund Operations). A 
-            <strong>budget</strong> is a year planned by month and approved as the baseline; a 
-            <strong>rolling forecast</strong> starts after the last closed month and runs 12&ndash;36 months.
+            One plan of the whole entity, built on the posted books and never written to them: its key figures on top
+            (forecast gross MOIC, LP TVPI and IRR, distributions and carry to come) and four tabs &mdash;
+            <strong> Charts</strong> (cash flows and multiples by year with their simulated ranges, revenue and
+            expenses, cash, committed capital usage, simulated outcomes), <strong>Investments</strong> (current and
+            planned deals, each with its hold period and forecast multiple), <strong>Capital planning</strong> (calls,
+            fees and expenses, and investment, actual and forecast, over the selected dates) and
+            <strong> Financials</strong> (income statement and statement of cash flows on an accrual or cash basis,
+            and journal entries). The date range and month/quarter/year apply on every tab.
           </p>
           <p className="text-muted-foreground mb-2">
-            Each income and expense account has a rule &mdash; fixed, recurring schedule, historical run rate,
-            growth, seasonal, manual, a linked management fee, or portfolio construction &mdash; and any month
-            can be overridden. Cash timing (in advance, in arrears, a billing cycle) separates cash from P&amp;L.
-            View any range by month, quarter or year as a P&amp;L, a cash-flow statement, or variance against
-            the budget; every chart and table follows the same filters, and everything exports to CSV.
+            Investments and exits are entered on Investments; fees and expenses are rules on Financials (any month can
+            be overridden); calls and distributions follow a policy (a cash reserve, a payout lag) with any month set by
+            hand, and the waterfall works out the carry on what is distributed. <strong>Scenario</strong> saves the plan
+            as a scenario or as the budget actuals are compared against, copies it as a new scenario, or drafts one with
+            the Analyst. Settings hold the return assumptions, the calls and distributions policy, and
+            <strong> entity links</strong> &mdash; which fund pays which management company its fee.
           </p>
           <p className="text-muted-foreground">
-            <strong>Draft with AI</strong> asks the Analyst to suggest a rule for every account from up to 36
-            months of history, adjust for what you tell it, and stage the plan for your approval. A 
-            <strong>fee link</strong> ties a management company&rsquo;s fee revenue to each fund&rsquo;s fee terms.
+            The Analyst can change any of it &mdash; deals, exits, return assumptions, fees, calls, scenarios &mdash;
+            as drafts you approve; a connected agent (MCP) can do the same directly with write access.
           </p>
         </div>
 
@@ -1075,7 +1079,7 @@ export default function SupportPage() {
             <strong>Attach a document</strong> (PDF, Word, Excel, Markdown, CSV or text) to ask about it; in an
             entity&rsquo;s books the Analyst drafts the journal entry from a capital-call notice, invoice or wire,
             saved as a draft for you to review. Changes it proposes elsewhere &mdash; metric updates, investments,
-            capital calls &mdash; appear as Approve/Reject cards and in Pending actions. On Forecast, <em>Draft with
+            capital calls &mdash; appear as Approve/Reject cards in the panel, which also lists any still waiting from earlier conversations. On Forecast, <em>Draft with
             AI</em> opens it with the entity&rsquo;s history.
           </p>
         </div>

@@ -18,10 +18,6 @@ import type { SeriesResult } from '@/lib/forecast/service'
 
 type Fmt = (v: number | null) => string
 
-const REVENUE = HUE.chart1
-const REVENUE_FC = 'hsl(var(--chart-1) / 0.45)'
-const EXPENSES = HUE.chart2
-const EXPENSES_FC = 'hsl(var(--chart-2) / 0.45)'
 const CASH = HUE.chart3
 
 const isActual = (status: string) => status === 'actual' || status === 'actual_unclosed'
@@ -76,42 +72,75 @@ export function CashChart({ series, fmt }: { series: SeriesResult; fmt: Fmt }) {
   )
 }
 
+// Revenue and expenses, the fund's operating P&L, with realized gains (an exit's gain over cost) as
+// their own series — unrealized and FX changes are left out. Forecast periods are a lighter tint. A
+// single exit would dwarf every month, so the scale is set by the ordinary periods and one far
+// larger is cut at the edge with its full figure on it.
+const NOT_REVENUE = new Set(['realized_gain', 'unrealized', 'fx_translation', 'equity_method', 'carried_interest'])
+const REVENUE_HUE = 'var(--chart-1)'
+const EXPENSE_HUE = 'var(--chart-2)'
+// Realized gains (an exit's gain over cost) are shown, as their own series: they are what a fund
+// earns, just not operating revenue. Unrealized and FX changes stay out.
+const GAIN_HUE = 'var(--chart-3)'
+
 export function PnlChart({ series, fmt }: { series: SeriesResult; fmt: Fmt }) {
-  const data = useMemo(
-    () => series.periods.map((p, i) => ({
+  const { data, cap } = useMemo(() => {
+    const revenueLines = series.lines.filter(l => l.type === 'income' && !NOT_REVENUE.has(l.subtype ?? ''))
+    const expenseLines = series.lines.filter(l => l.type === 'expense')
+    const gainLines = series.lines.filter(l => l.type === 'income' && l.subtype === 'realized_gain')
+    const rows = series.periods.map((p, i) => ({
       label: p.label,
       status: p.status,
-      revenue: series.revenue[i],
-      expenses: series.expenses[i],
-    })),
-    [series],
-  )
+      revenue: revenueLines.reduce((s, l) => s + (l.values[i] ?? 0), 0),
+      gains: gainLines.reduce((s, l) => s + (l.values[i] ?? 0), 0),
+      expenses: -expenseLines.reduce((s, l) => s + (l.values[i] ?? 0), 0),
+    })).map(r => ({ ...r, up: r.revenue + Math.max(0, r.gains), down: r.expenses + Math.min(0, r.gains) }))
+    const mags = rows.flatMap(r => [Math.abs(r.up), Math.abs(r.down)]).filter(v => v > 0).sort((a, b) => a - b)
+    const p80 = mags.length ? mags[Math.min(mags.length - 1, Math.floor(mags.length * 0.8))] : 0
+    const max = mags[mags.length - 1] ?? 0
+    const cap = p80 > 0 && max > 4.5 * p80 ? p80 * 1.5 : null
+    return { data: rows, cap }
+  }, [series])
   const edge = boundaryLabel(series)
-  const any = data.some(d => d.revenue || d.expenses)
+  const any = data.some(d => d.revenue || d.expenses || d.gains)
+  const hasGains = data.some(d => Math.abs(d.gains) >= 0.5)
+  const clipped = cap ? data.filter(d => Math.abs(d.up) > cap || Math.abs(d.down) > cap) : []
+  const fill = (hue: string, status: string) => (isActual(status) ? `hsl(${hue})` : `hsl(${hue} / 0.45)`)
   return (
-    <ChartCard title="Revenue and expenses">
-      {!any ? <EmptyPlot label="No income or expense in this range" /> : (
+    <ChartCard title={hasGains ? 'Revenue, gains and expenses' : 'Revenue and expenses'}>
+      {!any ? <EmptyPlot label="No revenue or expenses in this range" /> : (
         <ResponsiveContainer width="100%" height={240}>
-          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }} barGap={2}>
+          <ComposedChart data={data} stackOffset="sign" margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
             <XAxis dataKey="label" tick={AXIS} tickLine={false} axisLine={false} minTickGap={16} />
-            <YAxis tick={AXIS} tickLine={false} axisLine={false} width={64} tickFormatter={v => fmt(v)} />
+            <YAxis tick={AXIS} tickLine={false} axisLine={false} width={64} tickFormatter={v => fmt(Math.abs(v))}
+              {...(cap ? { domain: [-cap, cap], allowDataOverflow: true } : {})} />
             <Tooltip
               contentStyle={tooltipStyle}
-              formatter={(v: any, name: any) => [fmt(v as number), name]}
+              formatter={(v: any, name: any) => [fmt(Math.abs(v as number)), name]}
               labelFormatter={(label: any, payload: any) => {
                 const st = payload?.[0]?.payload?.status
                 return `${label} · ${st === 'forecast' ? 'forecast' : st === 'mixed' ? 'part forecast' : st === 'actual_unclosed' ? 'actual, not closed' : 'actual'}`
               }}
             />
             <Legend wrapperStyle={{ fontSize: 12 }} />
+            <ReferenceLine y={0} stroke={HUE.muted} />
             {edge && <ReferenceLine x={edge} stroke={HUE.muted} strokeDasharray="4 4" />}
-            <Bar dataKey="revenue" name="Revenue" radius={[4, 4, 0, 0]} fill={REVENUE} isAnimationActive={false}>
-              {data.map(d => <Cell key={d.label} fill={isActual(d.status) ? REVENUE : REVENUE_FC} />)}
+            {clipped.map(d => (
+              <ReferenceLine key={`clip-${d.label}`} x={d.label} stroke="none"
+                label={{ value: Math.abs(d.up) > cap! ? `▲ ${fmt(d.up)}` : `▼ ${fmt(Math.abs(d.down))}`, position: Math.abs(d.up) > cap! ? 'insideTop' : 'insideBottom', fontSize: 10, fill: HUE.ink }} />
+            ))}
+            <Bar dataKey="revenue" name="Revenue" stackId="pnl" fill={`hsl(${REVENUE_HUE})`} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+              {data.map(d => <Cell key={d.label} fill={fill(REVENUE_HUE, d.status)} />)}
             </Bar>
-            <Bar dataKey="expenses" name="Expenses" radius={[4, 4, 0, 0]} fill={EXPENSES} isAnimationActive={false}>
-              {data.map(d => <Cell key={d.label} fill={isActual(d.status) ? EXPENSES : EXPENSES_FC} />)}
+            <Bar dataKey="expenses" name="Expenses" stackId="pnl" fill={`hsl(${EXPENSE_HUE})`} radius={[0, 0, 4, 4]} isAnimationActive={false}>
+              {data.map(d => <Cell key={d.label} fill={fill(EXPENSE_HUE, d.status)} />)}
             </Bar>
+            {hasGains && (
+              <Bar dataKey="gains" name="Realized gains" stackId="pnl" fill={`hsl(${GAIN_HUE})`} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                {data.map(d => <Cell key={d.label} fill={fill(GAIN_HUE, d.status)} />)}
+              </Bar>
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       )}

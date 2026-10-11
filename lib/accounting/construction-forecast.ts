@@ -330,8 +330,13 @@ export function forecastSchedule(
   for (let t = 0; t <= horizonYears; t++) {
     const fundIsOperating = t > 0 && (finalExitYear == null || t <= finalExitYear)
     // Fee-paying commitments only — the GP's own stake pays no fee (CapitalBlock.feePayingShare).
-    const fees = fundIsOperating ? Math.round(projectFeesForYear(a, committed, deployedTotal, baseline.nav, t) * (model.capital.feePayingShare ?? 1) * 100) / 100 : 0
-    const expenses = fundIsOperating ? (t <= a.feeTermYears ? a.annualPartnershipExpense : 0) + (t === 1 ? a.remainingOrgCosts : 0) : 0
+    // The plan's own fees and expenses when it has them (its rules decide when they stop); else
+    // construction's inputs, fee-paying commitments only — the GP's own stake pays no fee.
+    const planCosts = model.capital.planCosts
+    const fees = planCosts ? (t > 0 ? planCosts.feesByYear[t] ?? 0 : 0)
+      : fundIsOperating ? Math.round(projectFeesForYear(a, committed, deployedTotal, baseline.nav, t) * (model.capital.feePayingShare ?? 1) * 100) / 100 : 0
+    const expenses = planCosts ? (t > 0 ? planCosts.expensesByYear[t] ?? 0 : 0)
+      : fundIsOperating ? (t <= a.feeTermYears ? a.annualPartnershipExpense : 0) + (t === 1 ? a.remainingOrgCosts : 0) : 0
     const inv = t === 0 ? 0 : invested[t]
     const grossProceeds = t === 0 ? 0 : proceeds[t]
     let dist = grossProceeds

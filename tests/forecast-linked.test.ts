@@ -18,7 +18,8 @@ function fakeAdmin(tables: Record<string, any[]>) {
   return {
     from(table: string) {
       const q: any = {
-        select: () => q, eq: () => q, in: () => q, or: () => q,
+        select: () => q, eq: () => q, in: () => q, or: () => q, limit: () => q, order: () => q,
+        maybeSingle: () => Promise.resolve({ data: (tables[table] ?? [])[0] ?? null, error: null }),
         then: (res: any) => Promise.resolve({ data: tables[table] ?? [], error: null }).then(res),
       }
       return q
@@ -29,7 +30,7 @@ function fakeAdmin(tables: Record<string, any[]>) {
 const access = (vehicleIds: string[] | 'all'): AccessContext => ({
   fundId: 'f1', userId: 'u1', role: 'member',
   vehicles: vehicleIds === 'all' ? { all: true, ids: [] } : { all: false, ids: vehicleIds },
-  features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', budgeting: 'everyone', management_company: 'everyone' },
+  features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', management_company: 'everyone' },
   grants: { accounting: 'read', management_company: 'write' },
   defaults: {},
 })
@@ -75,6 +76,25 @@ describe('linked management fees', () => {
     expect(JSON.stringify(r)).not.toContain('Fund II')
     // The schedule was read with the books opened for this one calculation — not the caller's scope.
     expect(mocks.getConstructionModel.mock.calls[0][0].access.vehicles).toEqual({ all: true, ids: [] })
+  })
+
+  it("come from the fund's own fee rule once its primary plan has one — one schedule, both sides", async () => {
+    const withPlan = fakeAdmin({
+      manco_fee_links: [{ id: 'l1', manco_vehicle_id: 'm1', fund_vehicle_id: 'v2', every_months: 3, anchor_month: 1, direction: 'advance', cash_lag_months: 0, active: true }],
+      fund_vehicles: [{ id: 'm1', name: 'Hemrock Management' }, { id: 'v2', name: 'Fund II' }],
+      forecast_plans: [{ id: 'pp', name: 'Base case', is_primary: true }],
+      forecast_rules: [{ params: { rate: 0.02, basis: 'committed', termYears: 10, stepDownYear: null, stepDownRate: null } }],
+    })
+    mocks.getConstructionModel.mockResolvedValue({
+      timeline: schedule, timelineNetOfCarry: false, grossTimeline: null, asOf: '2026-12-15T00:00:00Z',
+      actuals: { committedCapital: 60_000_000, deployedInitial: 0, deployedFollowOn: 0, nav: 0, feePayingShare: 0.99 },
+    })
+    const r = await loadLinkedDrivers({ admin: withPlan, fundId: 'f1', access: access('all') }, MANCO, feeRule, false)
+    const [d] = r.linked.get('r1')!
+    // 2% of 60M, 99% fee-paying (the GP's stake exempt), a twelfth a month.
+    expect(d.amounts.get('2027-01')).toBe(99_000)
+    expect(d.basis).toContain("Fund II's forecast")
+    expect(mocks.getConstructionModel.mock.calls[0][1]).toEqual({ vehicle: 'Fund II', planId: 'pp' })
   })
 
   it('never guess a link that is not there', async () => {

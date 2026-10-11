@@ -21,7 +21,7 @@ export interface StagedAction {
 
 type CardState = 'idle' | 'busy' | 'applied' | 'rejected' | 'error'
 
-export function AnalystPendingActions({ actions }: { actions: StagedAction[] }) {
+export function AnalystPendingActions({ actions, title = 'Proposed changes — approve to apply' }: { actions: StagedAction[]; title?: string }) {
   const [state, setState] = useState<Record<string, CardState>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -44,12 +44,14 @@ export function AnalystPendingActions({ actions }: { actions: StagedAction[] }) 
     }
   }
 
-  if (actions.length === 0) return null
+  // A rejected draft is gone: nothing more to do with it, so it leaves the panel.
+  const shown = actions.filter(a => state[a.id] !== 'rejected')
+  if (shown.length === 0) return null
 
   return (
     <div className="mt-2 space-y-2">
-      <p className="text-xs font-medium text-muted-foreground">Proposed changes — approve to apply</p>
-      {actions.map(a => {
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      {shown.map(a => {
         const st = state[a.id] ?? 'idle'
         return (
           <div key={a.id} className="border rounded-card p-3 space-y-2">

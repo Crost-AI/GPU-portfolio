@@ -27,6 +27,8 @@ export interface ActualPoint {
   label: string
   tvpi: number | null
   dpi: number | null
+  /** Capital paid in to date (called, or invested for a tracking-only vehicle). */
+  paidIn?: number
 }
 
 export interface ActualCashFlow {
@@ -43,8 +45,6 @@ const TVPI_HUE = HUE.chart1
 const DPI_HUE = HUE.chart2
 const TVPI_BAND_OUTER = 'hsl(var(--chart-1) / 0.12)'
 const TVPI_BAND_INNER = 'hsl(var(--chart-1) / 0.24)'
-const DPI_BAND_OUTER = 'hsl(var(--chart-2) / 0.12)'
-const DPI_BAND_INNER = 'hsl(var(--chart-2) / 0.24)'
 const DISTRIBUTION_BAND = 'hsl(var(--chart-2) / 0.24)'
 
 function niceCurrencyScale(min: number, max: number): { domain: [number, number]; ticks: number[] } {
@@ -68,7 +68,17 @@ function niceCurrencyScale(min: number, max: number): { domain: [number, number]
 // behind the forecast line as two bands of the TVPI hue at two opacities — a sequential encoding of
 // "how likely", not a second series — and the legend names the lines; the caption names the bands.
 
-export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple }: {
+// RVPI and PIC (paid-in over committed) join TVPI and DPI as lines, drawn the same way — solid to
+// date, dashed forecast. RVPI is what is still held; PIC is how much of the commitment is in.
+// Violet, not the palette's amber: amber sits beside DPI's orange (ΔE 14, below the 15 a reader with
+// full colour vision needs) — checked with the dataviz palette validator against the other three lines.
+const RVPI_LINE_HUE = 'hsl(var(--cat-7))'
+const PIC_HUE = INVEST_NEW
+
+export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple, committed, years: yearRange }: {
+  committed: number
+  /** The page's date range, in calendar years: the chart shows only these. */
+  years?: { first: number; last: number } | null
   actual: ActualPoint[]
   schedule: ForecastSchedule
   simulation: SimulationResult | null
@@ -82,7 +92,11 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
     // chart has the same annual cadence as the cash-flow chart beside it.
     for (const p of actual) {
       const year = Math.floor(p.x)
-      rows.set(year, { x: year, label: String(year), tvpiActual: p.tvpi, dpiActual: p.dpi })
+      rows.set(year, {
+        x: year, label: String(year), tvpiActual: p.tvpi, dpiActual: p.dpi,
+        rvpiActual: p.tvpi != null && p.dpi != null ? p.tvpi - p.dpi : null,
+        picActual: committed > 0 && p.paidIn != null ? p.paidIn / committed : null,
+      })
     }
     const simByYear = new Map((simulation?.years ?? []).map(y => [y.year, y]))
     for (const y of schedule.years) {
@@ -92,24 +106,26 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
       // Year 0 is today: the forecast starts from the last actual point, so the two lines meet.
       row.tvpiForecast = y.tvpi
       row.dpiForecast = y.dpi
+      row.rvpiForecast = y.rvpi
+      row.picForecast = committed > 0 ? y.cumCalled / committed : null
       row.label = String(x)
       if (sim) {
         row.tvpiOuter = [sim.tvpi.p10, sim.tvpi.p90]
         row.tvpiInner = [sim.tvpi.p25, sim.tvpi.p75]
-        row.dpiOuter = [sim.dpi.p10, sim.dpi.p90]
-        row.dpiInner = [sim.dpi.p25, sim.dpi.p75]
       }
       rows.set(x, row)
     }
-    return Array.from(rows.values()).sort((a, b) => (a.x as number) - (b.x as number))
-  }, [actual, schedule, simulation])
+    return Array.from(rows.values())
+      .filter(r => !yearRange || ((r.x as number) >= yearRange.first && (r.x as number) <= yearRange.last))
+      .sort((a, b) => (a.x as number) - (b.x as number))
+  }, [actual, schedule, simulation, committed, yearRange])
 
   const hasForecast = schedule.years.length > 1
   const hasBand = !!simulation && simulation.stated
   const yMax = useMemo(() => {
     const values: number[] = []
     for (const row of data) {
-      for (const key of ['tvpiActual', 'dpiActual', 'tvpiForecast', 'dpiForecast', 'tvpiOuter', 'dpiOuter'] as const) {
+      for (const key of ['tvpiActual', 'dpiActual', 'rvpiActual', 'picActual', 'tvpiForecast', 'dpiForecast', 'rvpiForecast', 'picForecast', 'tvpiOuter'] as const) {
         const value = row[key]
         if (typeof value === 'number') values.push(value)
         else if (Array.isArray(value)) values.push(...value)
@@ -121,7 +137,7 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
   const yTicks = useMemo(() => Array.from({ length: yMax + 1 }, (_, index) => index), [yMax])
 
   return (
-    <ChartCard title={`${netOfCarry ? 'LP net' : 'Gross fund'} DPI and TVPI by year`}>
+    <ChartCard title={`${netOfCarry ? 'LP net' : 'Gross fund'} multiples by year`}>
       {!hasForecast ? (
         <EmptyPlot label="State the pacing assumptions to see the J-curve." />
       ) : (
@@ -142,12 +158,14 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
               <ReferenceLine y={1} stroke="hsl(var(--border))" />
               {hasBand && <Area dataKey="tvpiOuter" name="TVPI, 10th–90th percentile" stroke="none" fill={TVPI_BAND_OUTER} isAnimationActive={false} connectNulls legendType="none" />}
               {hasBand && <Area dataKey="tvpiInner" name="TVPI, 25th–75th percentile" stroke="none" fill={TVPI_BAND_INNER} isAnimationActive={false} connectNulls legendType="none" />}
-              {hasBand && <Area dataKey="dpiOuter" name="DPI, 10th–90th percentile" stroke="none" fill={DPI_BAND_OUTER} isAnimationActive={false} connectNulls legendType="none" />}
-              {hasBand && <Area dataKey="dpiInner" name="DPI, 25th–75th percentile" stroke="none" fill={DPI_BAND_INNER} isAnimationActive={false} connectNulls legendType="none" />}
               <Line type="monotone" dataKey="tvpiActual" name="TVPI to date" stroke={TVPI_HUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
               <Line type="monotone" dataKey="tvpiForecast" name="TVPI forecast" stroke={TVPI_HUE} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2 }} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
               <Line type="monotone" dataKey="dpiActual" name="DPI to date" stroke={DPI_HUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
               <Line type="monotone" dataKey="dpiForecast" name="DPI forecast" stroke={DPI_HUE} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2 }} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
+              <Line type="monotone" dataKey="rvpiActual" name="RVPI to date" stroke={RVPI_LINE_HUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
+              <Line type="monotone" dataKey="rvpiForecast" name="RVPI forecast" stroke={RVPI_LINE_HUE} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2 }} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
+              <Line type="monotone" dataKey="picActual" name="PIC to date" stroke={PIC_HUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
+              <Line type="monotone" dataKey="picForecast" name="PIC forecast" stroke={PIC_HUE} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 2 }} activeDot={{ r: 4 }} connectNulls isAnimationActive={false} legendType="none" />
             </ComposedChart>
           </ResponsiveContainer>
           {/* A legend of our own: recharts' would list six entries for what are two series
@@ -155,13 +173,10 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
           <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
             <li className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded" style={{ background: TVPI_HUE }} /> TVPI</li>
             <li className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded" style={{ background: DPI_HUE }} /> DPI</li>
-            {hasBand && <li className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: `linear-gradient(90deg, ${TVPI_BAND_INNER} 50%, ${DPI_BAND_INNER} 50%)` }} /> Simulation bands</li>}
+            <li className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded" style={{ background: RVPI_LINE_HUE }} /> RVPI</li>
+            <li className="flex items-center gap-1.5"><span className="h-0.5 w-4 rounded" style={{ background: PIC_HUE }} /> PIC (paid in ÷ committed)</li>
+            {hasBand && <li className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: TVPI_BAND_INNER }} /> TVPI range (simulated)</li>}
           </ul>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Solid is the fund to date; dashed is the plan on the stated pacing.
-            {hasBand ? ' The shaded bands use each forecast line’s color and show its 25th–75th and 10th–90th percentiles.' : ''}
-            {' '}Multiples are {netOfCarry ? 'LP-only and net of carry' : 'gross fund performance before carry'}.
-          </p>
         </>
       )}
     </ChartCard>
@@ -174,9 +189,47 @@ export function JCurveChart({ actual, schedule, simulation, netOfCarry, multiple
 // as a line — all in dollars, one axis. Called capital keeps the fund page's "invested" hue and
 // proceeds its own; the net line is ink.
 
-export function CashFlowChart({ actual, schedule, simulation, accounting, fmt, fmtFull }: { actual: ActualCashFlow[]; schedule: ForecastSchedule; simulation: SimulationResult | null; accounting: boolean; fmt: Fmt; fmtFull: Fmt }) {
+/** The plan's own yearly figures and simulated range (lib/forecast/plan-returns.ts), when the entity has a plan. */
+export interface PlanCashFlows {
+  years: { calendarYear: number; called: number; distributed: number; carry: number; invested: number }[]
+  /** Distributions paid by the end of each year (from the plan's start), across the simulated runs. */
+  band: { calendarYear: number; p10: number; p50: number; p90: number }[] | null
+  /** The same range month by month, for a monthly or quarterly chart. */
+  bandByMonth?: { month: string; p10: number; p50: number; p90: number }[] | null
+}
+
+/**
+ * The page's own periods (the Forecast page's date range and Month/Quarter/Year), from the same
+ * series the statements read: calls, distributions and carry per period, actual or forecast.
+ */
+export interface HeadlinePeriod { label: string; year: number; yearEnd: boolean; lastMonth: string; actual: boolean; called: number; distributed: number; carry: number }
+
+export function CashFlowChart({ actual, schedule, accounting, fmt, fmtFull, plan, periods }: { actual: ActualCashFlow[]; schedule: ForecastSchedule; accounting: boolean; fmt: Fmt; fmtFull: Fmt; plan?: PlanCashFlows | null; periods?: HeadlinePeriod[] | null }) {
   const data = useMemo(() => {
-    const rows: { label: string; called: number; distributed: number; carry: number; fees: number; expenses: number; expensesRaw: number; invested: number; distP10: number; distBand: number; period: 'Actual' | 'Forecast' }[] = actual.map(y => ({
+    // On the page's timescale: its periods, with the simulated range placed at each year's last
+    // period (the band joins them, so it reads the same monthly, quarterly or annually).
+    if (periods?.length) {
+      const rows: { label: string; called: number; distributed: number; carry: number; fees: number; expenses: number; expensesRaw: number; invested: number; period: 'Actual' | 'Forecast'; low?: number; spread?: number; median?: number; planned?: number }[] = []
+      // Every period reads the range at its own last month, so the band follows the timing as well
+      // as the amount at any interval. It starts where the plan does, on top of what was paid before.
+      const monthly = plan?.bandByMonth ?? []
+      const band = new Map(monthly.map(b => [b.month, b]))
+      const firstBandMonth = monthly.length ? monthly[0].month : null
+      const paidBefore = firstBandMonth ? periods.filter(p => p.lastMonth < firstBandMonth).reduce((s, p) => s + p.distributed + p.carry, 0) : 0
+      let toDate = 0
+      for (const p of periods) {
+        toDate += p.distributed + p.carry
+        const b = band.get(p.lastMonth)
+        rows.push({
+          label: p.label, called: -p.called, distributed: p.distributed, carry: p.carry, fees: 0, expenses: 0, expensesRaw: 0, invested: 0,
+          period: p.actual ? 'Actual' : 'Forecast',
+          ...(b ? { low: paidBefore + b.p10, spread: Math.max(0, b.p90 - b.p10), median: paidBefore + b.p50 } : {}),
+          ...(band.size ? { planned: roundTo(toDate) } : {}),
+        })
+      }
+      return rows
+    }
+    const rows: { label: string; called: number; distributed: number; carry: number; fees: number; expenses: number; expensesRaw: number; invested: number; period: 'Actual' | 'Forecast'; low?: number; spread?: number; median?: number; planned?: number }[] = actual.map(y => ({
       label: String(y.year),
       called: -y.called,
       distributed: y.distributed,
@@ -185,12 +238,32 @@ export function CashFlowChart({ actual, schedule, simulation, accounting, fmt, f
       expenses: accounting ? 0 : -y.expenses,
       expensesRaw: y.expenses,
       invested: y.invested,
-      distP10: 0,
-      distBand: 0,
       period: 'Actual',
     }))
+    // With a plan, the forecast years are the plan's own — its calls, distributions and carry, as the
+    // fund forecast works them out monthly — added to the year's actuals where the year is part-way.
+    if (plan) {
+      for (const y of plan.years) {
+        const label = String(y.calendarYear)
+        const existing = rows.find(r => r.label === label)
+        const add = { called: -y.called, distributed: roundTo(y.distributed - y.carry), carry: y.carry, invested: y.invested }
+        if (existing) Object.assign(existing, { called: existing.called + add.called, distributed: existing.distributed + add.distributed, carry: existing.carry + add.carry, invested: existing.invested + add.invested, period: 'Forecast' as const })
+        else rows.push({ label, ...add, fees: 0, expenses: 0, expensesRaw: 0, period: 'Forecast' })
+      }
+      // The simulated range, as distributions paid to date: when AND how much in one band (10th–90th
+      // percentile), with the median and the plan's own forecast as lines.
+      if (plan.band?.length) {
+        let planned = 0
+        const byYear = new Map(plan.years.map(y => [y.calendarYear, y.distributed]))
+        for (const b of plan.band) {
+          planned += byYear.get(b.calendarYear) ?? 0
+          const row = rows.find(r => r.label === String(b.calendarYear))
+          if (row) Object.assign(row, { low: b.p10, spread: Math.max(0, b.p90 - b.p10), median: b.p50, planned: roundTo(planned) })
+        }
+      }
+      return rows
+    }
     return schedule.years.slice(1).reduce<typeof rows>((forecastRows, y) => {
-    const simulated = simulation?.years.find(point => point.year === y.year)?.distributed
     forecastRows.push({
       label: String(y.calendarYear),
       called: -(accounting ? y.called : y.invested),
@@ -200,24 +273,23 @@ export function CashFlowChart({ actual, schedule, simulation, accounting, fmt, f
       expenses: accounting ? 0 : -(y.fees + y.expenses),
       expensesRaw: y.expenses,
       invested: y.invested,
-      distP10: simulated?.p10 ?? y.distributed,
-      distBand: simulated ? Math.max(0, simulated.p90 - simulated.p10) : 0,
       period: 'Forecast',
     })
     return forecastRows
     }, rows)
-  }, [actual, schedule, simulation, accounting])
+  }, [actual, schedule, accounting, plan, periods])
 
+  const hasBand = data.some(row => row.spread != null)
   const outflowLabel = accounting ? 'Called' : 'Invested'
   const inflowLabel = accounting ? 'Distributed' : 'Proceeds'
   const cashScale = useMemo(() => {
     const minimum = Math.min(0, ...data.map(row => row.called + row.expenses))
-    const maximum = Math.max(0, ...data.map(row => Math.max(row.distributed + row.carry, row.distP10 + row.distBand)))
+    const maximum = Math.max(0, ...data.map(row => Math.max(row.distributed + row.carry, (row.low ?? 0) + (row.spread ?? 0), row.planned ?? 0)))
     return niceCurrencyScale(minimum, maximum)
   }, [data])
 
   return (
-    <ChartCard title={`Actual and forecast ${accounting ? 'cash flows' : 'investment flows'} by year`}>
+    <ChartCard title={`Actual and forecast ${accounting ? 'cash flows' : 'investment flows'}${periods?.length ? '' : ' by year'}`}>
       {data.length === 0 ? (
         <EmptyPlot label="State the pacing assumptions to see the cash flows." />
       ) : (
@@ -239,17 +311,16 @@ export function CashFlowChart({ actual, schedule, simulation, accounting, fmt, f
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <ReferenceLine y={0} stroke="hsl(var(--border))" />
-              {simulation && <Area dataKey="distP10" stackId="distribution-band" stroke="none" fill="transparent" legendType="none" tooltipType="none" isAnimationActive={false} />}
-              {simulation && <Area dataKey="distBand" name={`${inflowLabel} P10–P90`} stackId="distribution-band" stroke="none" fill={DISTRIBUTION_BAND} isAnimationActive={false} />}
               <Bar dataKey="called" name={outflowLabel} stackId="flow" fill={INVEST_NEW} maxBarSize={28} radius={[0, 0, 4, 4]} stroke={HUE.surface} strokeWidth={2} isAnimationActive={false} />
               {!accounting && <Bar dataKey="expenses" name="Expenses" stackId="flow" fill={HUE.chart4} maxBarSize={28} radius={[0, 0, 4, 4]} stroke={HUE.surface} strokeWidth={2} isAnimationActive={false} />}
               <Bar dataKey="distributed" name={inflowLabel} stackId="flow" fill={PROCEEDS_HUE} maxBarSize={28} radius={[4, 4, 0, 0]} stroke={HUE.surface} strokeWidth={2} isAnimationActive={false} />
               {accounting && <Bar dataKey="carry" name="Carried interest" stackId="flow" fill={HUE.chart4} maxBarSize={28} radius={[4, 4, 0, 0]} stroke={HUE.surface} strokeWidth={2} isAnimationActive={false} />}
+              {hasBand && <Area dataKey="low" stackId="band" stroke="none" fill="transparent" legendType="none" tooltipType="none" connectNulls isAnimationActive={false} />}
+              {hasBand && <Area dataKey="spread" name="Distributed to date, 10th–90th percentile" stackId="band" stroke="none" fill={PROCEEDS_HUE} fillOpacity={0.15} tooltipType="none" connectNulls isAnimationActive={false} />}
+              {hasBand && <Line dataKey="median" name="Distributed to date, median" stroke={PROCEEDS_HUE} strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls isAnimationActive={false} />}
+              {hasBand && <Line dataKey="planned" name="Distributed to date, forecast" stroke={HUE.ink} strokeWidth={2} dot={false} isAnimationActive={false} />}
             </ComposedChart>
           </ResponsiveContainer>
-          <p className="mt-1 text-xs text-muted-foreground">{accounting
-            ? 'Historical ledger cash flows continue into the forecast. Capital is called as each forecast year needs it; LP distributions and GP carried interest are separate, and the orange band is the simulated distribution P10–P90 range.'
-            : 'Known investment and proceeds dates from the portfolio continue into the forecast. Forecast fund expenses are shown separately; the orange band is the simulated proceeds P10–P90 range.'}</p>
         </>
       )}
     </ChartCard>
@@ -299,11 +370,10 @@ export function OutcomeHistogram({ simulation, target, multiple }: { simulation:
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Final TVPI at the end of the horizon across {simulation.runs.toLocaleString('en-US')} runs, in bins of half a turn.
-          </p>
         </>
       )}
     </ChartCard>
   )
 }
+
+const roundTo = (n: number) => Math.round(n * 100) / 100

@@ -3,11 +3,14 @@
 // calculation live here so the web route and every agent surface share one implementation.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fundEconomics } from './fund-economics'
+import { vehicleEconomics } from './fund-economics'
 import { loadPostedLedger } from './load'
+import { loadReportingCapital } from './reporting-capital'
 import { accountBalances, normalBalance } from './ledger'
 import { bucketForSourceType } from './capital-account'
 import { loadCarryTerms } from './carry'
+import { planCostsByYear } from '@/lib/forecast/plan-costs'
+import { copyConstructionToPlansWithout, loadPlanConstruction, primaryPlanRow, writePlanConstruction, type PlanConstructionRef } from '@/lib/forecast/plan-construction'
 import { lpCapitalSummary } from './capital-calls'
 import { buildSoiPositions, txnsForVehicle, type SoiCompany } from './soi'
 import { resolveVehicle } from './vehicle-resolver'
@@ -20,7 +23,7 @@ import {
   type ConstructionResult,
   type ConstructionStage,
 } from './construction'
-import { applyLpWaterfall, constructionBaseline, forecastSchedule, type ForecastSchedule, type ForecastBaseline } from './construction-forecast'
+import { applyLpWaterfall, constructionBaseline, dealTimelines, forecastSchedule, type ForecastSchedule, type ForecastBaseline } from './construction-forecast'
 import { simulateFund, type SimulationResult } from './construction-simulation'
 import type { Account } from './types'
 import type { InvestmentTransaction } from '@/lib/types/database'
@@ -54,6 +57,8 @@ export interface ConstructionAssumptionsRow {
 export interface ConstructionModelResponse {
   vehicle: string
   vehicleId: string | null
+  /** The forecast plan this construction belongs to (null until the entity has a plan). */
+  plan?: { id: string; name: string | null; isPrimary: boolean } | null
   vintageYear: number | null
   ledgerAvailable: boolean
   actuals: ConstructionActuals
@@ -250,17 +255,35 @@ async function loadConstructionActuals(
   fundId: string,
   vehicle: string,
 ): Promise<{ actuals: ConstructionActuals; vintageYear: number | null; vehicleId: string | null }> {
-  const [vehicles, ledger, transactionResult, companyResult, carryTerms] = await Promise.all([
-    fundEconomics(admin, fundId),
+  const [vehicles, ledger, transactionResult, companyResult, carryTerms, reporting] = await Promise.all([
+    // This vehicle's economics only — the fund-wide read derived every vehicle to use one.
+    vehicleEconomics(admin, fundId, vehicle).then(v => [v]).catch(() => []),
     loadPostedLedger(admin, fundId, vehicle).catch(() => null),
     (admin as any).from('investment_transactions').select('*').eq('fund_id', fundId),
     (admin as any).from('companies')
       .select('id, name, holding_type, status, industry, stage, country, portfolio_group')
       .eq('fund_id', fundId),
     loadCarryTerms(admin, fundId, vehicle),
+    loadReportingCapital(admin, fundId, vehicle).catch(() => null),
   ])
 
   const economics = vehicles.find(item => item.vehicle === vehicle) ?? null
+  // CALLED BUT NOT YET PAID IN. A partner whose capital comes from their statement shows what they
+  // have paid; a call the books record against them on Due from LPs (1300) is called all the same,
+  // so it is not "uncalled" — it is money the fund is owed. Capped at what their commitment leaves,
+  // and only for statement-based partners: where the books are the source, the call already
+  // credited their capital and is in paid-in.
+  const unfundedCalls = (() => {
+    if (!reporting) return 0
+    let total = 0
+    for (const [lpId, receivable] of reporting.receivableByLp) {
+      const evidence = reporting.evidenceByLp.get(lpId)
+      if (evidence?.basis !== 'reported' || receivable <= 0) continue
+      const room = (reporting.commitmentByLp.get(lpId) ?? 0) - (evidence.values.contributions ?? 0)
+      total += Math.max(0, Math.min(receivable, room))
+    }
+    return Math.round(total * 100) / 100
+  })()
   const lpEconomics = economics ? (economics.lp ?? economics.fund) : null
   const recipientIds = new Set(carryTerms.recipients.map(recipient => recipient.lpEntityId))
   // THE GP'S OWN STAKE. The carry recipients' own commitments (the GP entity's 1%) pay no
@@ -292,9 +315,18 @@ async function loadConstructionActuals(
   let cashBalance: number | undefined
   if (ledger && ledgerAvailable) {
     const balances = accountBalances(ledger.postings)
-    managementFeesIncurred = expenseTotal(ledger.accounts, balances, 'management_fee')
+    // CASH, not accrual: capital planning asks what has left the bank. A fee paid up front and
+    // expensed month by month has all been paid — the expense to date plus what is still prepaid —
+    // and a cost incurred but not yet paid has not. (Projected costs count cash too: plan-costs.ts.)
+    const balanceOf = (subtypes: string[]) => ledger.accounts
+      .filter(account => subtypes.includes(account.subtype ?? ''))
+      .reduce((sum, account) => sum + normalBalance(account, balances.get(account.id) ?? 0), 0)
+    const prepaidFees = balanceOf(['prepaid_management_fee'])
+    const prepaidOther = balanceOf(['prepaid'])
+    const unpaid = balanceOf(['accrued', 'accounts_payable'])
+    managementFeesIncurred = expenseTotal(ledger.accounts, balances, 'management_fee') + prepaidFees
     orgCostsIncurred = expenseTotal(ledger.accounts, balances, 'organizational_expense')
-    partnershipExpensesIncurred = expenseTotal(ledger.accounts, balances, 'partnership_expense')
+    partnershipExpensesIncurred = Math.max(0, expenseTotal(ledger.accounts, balances, 'partnership_expense') + prepaidOther - unpaid)
     const cashAccounts = ledger.accounts
       .filter(account => account.type === 'asset' && account.subtype === 'cash')
     if (ledger.postings.some(posting => cashAccounts.some(account => account.id === posting.accountId))) {
@@ -368,8 +400,8 @@ async function loadConstructionActuals(
       capitalAvailable: !!economics && economics.fund.paidIn != null && economics.fund.distributions != null && economics.fund.nav != null,
       committedCapital: economics?.fund.committed ?? 0,
       feePayingShare: 1 - gpStakeShare,
-      calledCapital: economics?.fund.paidIn ?? 0,
-      uncalledCapital: economics?.fund.uncalled ?? 0,
+      calledCapital: (economics?.fund.paidIn ?? 0) + unfundedCalls,
+      uncalledCapital: Math.max(0, Math.round(((economics?.fund.uncalled ?? 0) - unfundedCalls) * 100) / 100),
       distributedCapital: economics?.fund.distributions ?? 0,
       waterfall: economics && economics.fund.paidIn != null && economics.fund.distributions != null && economics.fund.nav != null ? {
         asOf: new Date().toISOString().slice(0, 10),
@@ -416,20 +448,19 @@ async function loadConstructionActuals(
   }
 }
 
+/**
+ * The construction assumptions for a plan — the named one, else the entity's primary plan — or,
+ * until a plan has its own, the entity's fund_construction_models row (lib/forecast/plan-construction.ts).
+ */
 async function loadStoredAssumptions(
   ctx: ConstructionServiceContext,
   vehicleId: string | null,
   vintageYear: number | null,
-): Promise<ConstructionAssumptions> {
-  if (!vehicleId) return parseAssumptions(null, vintageYear)
-  const { data, error } = await (ctx.admin as any)
-    .from('fund_construction_models')
-    .select('*')
-    .eq('fund_id', ctx.fundId)
-    .eq('vehicle_id', vehicleId)
-    .maybeSingle()
-  if (error) throw new Error(error.message)
-  return parseAssumptions(data ? mapConstructionAssumptionsRow(data) : null, vintageYear)
+  planId?: string | null,
+): Promise<{ assumptions: ConstructionAssumptions; plan: PlanConstructionRef | null }> {
+  if (!vehicleId) return { assumptions: parseAssumptions(null, vintageYear), plan: null }
+  const plan = await loadPlanConstruction(ctx.admin, ctx.fundId, vehicleId, planId, () => loadConstructionSeed(ctx.admin, ctx.fundId, vehicleId))
+  return { assumptions: parseAssumptions(plan.assumptions, vintageYear), plan }
 }
 
 function constructionResponse(args: {
@@ -478,20 +509,111 @@ function constructionResponse(args: {
   }
 }
 
+/**
+ * One request's construction work, done once. Compiling a plan reads the model (for its deals and
+ * its capital), and the plan's returns read it again — each a ledger, economics and portfolio load.
+ * Keyed on the request's access context, which lives exactly as long as the request; a write
+ * through updateConstructionAssumptions clears it.
+ */
+const requestCache = new WeakMap<object, Map<string, Promise<unknown>>>()
+function cached<T>(ctx: ConstructionServiceContext, key: string, load: () => Promise<T>): Promise<T> {
+  const scope = ctx.access as unknown as object | undefined
+  if (!scope) return load()
+  const map = requestCache.get(scope) ?? new Map<string, Promise<unknown>>()
+  requestCache.set(scope, map)
+  const hit = map.get(key)
+  if (hit) return hit as Promise<T>
+  const p = load().catch(e => { map.delete(key); throw e })
+  map.set(key, p)
+  return p
+}
+
 export async function getConstructionModel(
   ctx: ConstructionServiceContext,
-  input: { vehicle: string },
+  /** `planId` picks a plan's construction; omitted = the entity's primary plan. */
+  input: { vehicle: string; planId?: string | null },
+): Promise<ConstructionModelResponse> {
+  return cached(ctx, `model|${ctx.fundId}|${input.vehicle}|${input.planId ?? ''}`, () => buildConstructionModel(ctx, input))
+}
+
+async function buildConstructionModel(
+  ctx: ConstructionServiceContext,
+  input: { vehicle: string; planId?: string | null },
 ): Promise<ConstructionModelResponse> {
   const vehicle = await resolveVehicle(ctx.admin, ctx.fundId, input.vehicle, { access: ctx.access })
-  const { actuals, vintageYear, vehicleId } = await loadConstructionActuals(ctx.admin, ctx.fundId, vehicle)
-  const assumptions = await loadStoredAssumptions(ctx, vehicleId, vintageYear)
-  return constructionResponse({ vehicle, vehicleId, vintageYear, actuals, assumptions })
+  const { actuals, vintageYear, vehicleId } = await cached(ctx, `actuals|${ctx.fundId}|${vehicle}`, () => loadConstructionActuals(ctx.admin, ctx.fundId, vehicle))
+  const { assumptions, plan } = await loadStoredAssumptions(ctx, vehicleId, vintageYear, input.planId)
+  const withCosts = plan?.planId && vehicleId ? await withPlanCosts(ctx, vehicle, vehicleId, plan.planId, actuals, assumptions) : actuals
+  return { ...constructionResponse({ vehicle, vehicleId, vintageYear, actuals: withCosts, assumptions }), plan: planSummary(plan) }
 }
+
+/**
+ * The plan's fees and expenses, by forward year, on the actuals construction plans from — so its
+ * capital planning (investable capital, calls) reads what the plan's fund forecast says, not its own
+ * inputs (plans/plan-unified-plan.md §1.3). Unchanged actuals when the plan has no expense rules.
+ */
+async function withPlanCosts(
+  ctx: ConstructionServiceContext, vehicle: string, vehicleId: string, planId: string,
+  actuals: ConstructionActuals, assumptions: ConstructionAssumptions,
+): Promise<ConstructionActuals> {
+  const [{ data: rules }, { data: chart }] = await Promise.all([
+    (ctx.admin as any).from('forecast_rules').select('account_id, method, params, cash_timing').eq('fund_id', ctx.fundId).eq('plan_id', planId),
+    (ctx.admin as any).from('chart_of_accounts').select('id, type, subtype').eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId),
+  ])
+  const ruleRows = ((rules as any[]) ?? []).map(r => ({ accountId: r.account_id as string, method: r.method, params: r.params, cashTiming: r.cash_timing ?? null }))
+  if (!ruleRows.length) return actuals
+  // History for rules that read it (a run rate), from the posted books.
+  const ledger = await loadPostedLedger(ctx.admin, ctx.fundId, vehicle).catch(() => null)
+  const types = new Map(((chart as any[]) ?? []).map(a => [a.id as string, a.type as string]))
+  const history = new Map<string, Map<string, number>>()
+  for (const p of ledger?.postings ?? []) {
+    const t = types.get(p.accountId)
+    if (t !== 'expense' || !p.entryDate) continue
+    const m = p.entryDate.slice(0, 7)
+    const byMonth = history.get(p.accountId) ?? new Map<string, number>()
+    byMonth.set(m, (byMonth.get(m) ?? 0) + p.amount)
+    history.set(p.accountId, byMonth)
+  }
+  // The fee stops with the fund's last modelled exit, as construction's own projection did.
+  const preliminary = constructionModel(actuals, assumptions)
+  const exits = dealTimelines(preliminary, assumptions.pacing, new Date().toISOString().slice(0, 10))
+    .filter(d => d.proceeds != null && d.exitAt > 0).map(d => Math.ceil(d.exitAt - 1e-9))
+  const today = new Date().toISOString().slice(0, 7) as `${number}-${number}`
+  const planCosts = planCostsByYear({
+    rules: ruleRows,
+    accounts: ((chart as any[]) ?? []).map(a => ({ id: a.id, type: a.type, subtype: a.subtype ?? null })),
+    history: history as any,
+    closedFrom: null,
+    closedThrough: null,
+    horizonYears: Math.max(10, assumptions.pacing.horizonYears || 0, ...exits),
+    fee: {
+      asOfMonth: today,
+      committed: actuals.committedCapital,
+      deployedTotal: (actuals.deployedInitial ?? 0) + (actuals.deployedFollowOn ?? 0),
+      nav: actuals.nav ?? 0,
+      feePayingShare: actuals.feePayingShare ?? 1,
+      lastOperatingYear: exits.length ? Math.max(...exits) : null,
+    },
+  })
+  return planCosts ? { ...actuals, planCosts } : actuals
+}
+
+/** The entity's fund_construction_models row as assumptions — the seed a plan copies. */
+export async function loadConstructionSeed(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<Record<string, unknown> | null> {
+  const { data, error } = await (admin as any).from('fund_construction_models').select('*')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).maybeSingle()
+  if (error) throw new Error(error.message)
+  return data ? mapConstructionAssumptionsRow(data) : null
+}
+
+const planSummary = (plan: PlanConstructionRef | null) =>
+  plan?.planId ? { id: plan.planId, name: plan.planName, isPrimary: plan.isPrimary } : null
 
 export async function updateConstructionAssumptions(
   ctx: ConstructionServiceContext,
-  input: { vehicle: string; assumptions: ConstructionAssumptionsInput },
+  input: { vehicle: string; assumptions: ConstructionAssumptionsInput; planId?: string | null },
 ): Promise<ConstructionModelResponse> {
+  if (ctx.access) requestCache.delete(ctx.access as unknown as object)
   const vehicle = await resolveVehicle(ctx.admin, ctx.fundId, input.vehicle, { access: ctx.access })
   const { actuals, vintageYear, vehicleId } = await loadConstructionActuals(ctx.admin, ctx.fundId, vehicle)
   if (!vehicleId) {
@@ -499,6 +621,19 @@ export async function updateConstructionAssumptions(
   }
   // Validate before constructing or awaiting the write query.
   const assumptions = validateConstructionAssumptions(input.assumptions, vintageYear)
+
+  // ONTO THE PLAN. The named plan, else the primary; the entity's other plans still without their
+  // own get a copy too, so nothing keeps reading the seed once construction has been saved.
+  // An entity with no plan at all (the caller could not create one) still writes the seed, so a save
+  // is never lost — its first plan copies it from there.
+  const target = input.planId ?? (await primaryPlanRow(ctx.admin, ctx.fundId, vehicleId))?.id ?? null
+  if (target) {
+    const stored = assumptions as unknown as Record<string, unknown>
+    await writePlanConstruction(ctx.admin, ctx.fundId, target, stored)
+    if (!input.planId) await copyConstructionToPlansWithout(ctx.admin, ctx.fundId, vehicleId, stored, target)
+    const { plan } = await loadStoredAssumptions(ctx, vehicleId, vintageYear, target)
+    return { ...constructionResponse({ vehicle, vehicleId, vintageYear, actuals, assumptions }), plan: planSummary(plan) }
+  }
   const { error } = await (ctx.admin as any).from('fund_construction_models').upsert({
     fund_id: ctx.fundId,
     vehicle_id: vehicleId,
@@ -520,5 +655,5 @@ export async function updateConstructionAssumptions(
     updated_at: new Date().toISOString(),
   }, { onConflict: 'fund_id,vehicle_id' })
   if (error) throw new Error(error.message)
-  return constructionResponse({ vehicle, vehicleId, vintageYear, actuals, assumptions })
+  return { ...constructionResponse({ vehicle, vehicleId, vintageYear, actuals, assumptions }), plan: null }
 }

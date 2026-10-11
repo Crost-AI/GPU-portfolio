@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { applyAdjustments, cashCellAdjustments, entryKey, NO_ADJUSTMENTS, validateAdjustments, AdjustmentError } from './adjustments'
+import { applyAdjustments, cashCellAdjustments, entryKey, NO_ADJUSTMENTS, validateAdjustments, AdjustmentError, dealEditRefusal } from './adjustments'
 import type { CompiledEntry } from './compile'
 
 const exit: CompiledEntry = {
-  entryDate: '2031-02-28', kind: 'proceeds', memo: 'Exit proceeds — Bluefish Labs (inferred)', accountId: 'gain', ruleId: null, overrideId: null,
+  entryDate: '2031-02-28', kind: 'proceeds', memo: 'Exit proceeds — Acme (inferred)', accountId: 'gain', ruleId: null, overrideId: null,
   source: 'construction', postings: [{ accountId: 'cash', amount: 8_250_000, currency: 'USD' }, { accountId: 'inv', amount: -3_000_000, currency: 'USD' }, { accountId: 'gain', amount: -5_250_000, currency: 'USD' }],
 }
 const fee: CompiledEntry = {
@@ -15,12 +15,12 @@ const window = { first: '2026-10' as const, last: '2031-09' as const }
 
 describe('editing a forecast by hand', () => {
   it('gives generated entries a key, and rule entries none (they edit through the rule)', () => {
-    expect(entryKey(exit)).toBe('construction|proceeds|2031-02-28|Exit proceeds — Bluefish Labs (inferred)')
+    expect(entryKey(exit)).toBe('construction|proceeds|2031-02-28|Exit proceeds — Acme (inferred)')
     expect(entryKey(fee)).toBeNull()
   })
 
   it('replaces a construction exit with the edited one — a later month, a different amount', () => {
-    const adj = validateAdjustments({ entries: [{ id: 'm1', date: '2031-09-30', memo: 'Exit proceeds — Bluefish Labs (our view)', replaces: entryKey(exit),
+    const adj = validateAdjustments({ entries: [{ id: 'm1', date: '2031-09-30', memo: 'Exit proceeds — Acme (our view)', replaces: entryKey(exit),
       postings: [{ accountId: 'cash', amount: 9_000_000 }, { accountId: 'inv', amount: -3_000_000 }, { accountId: 'gain', amount: -6_000_000 }] }], removed: [] }, ACCOUNTS)
     const r = applyAdjustments([exit, fee], adj, window, 'USD')
     expect(r.entries.map(e => [e.entryDate, e.source])).toEqual([['2027-01-31', 'rule'], ['2031-09-30', 'manual']])
@@ -70,5 +70,24 @@ describe('editing a cash figure', () => {
     expect(twice.entries).toHaveLength(1)
     expect(twice.entries[0].postings[0].amount).toBe(-750_000)
     expect(cashCellAdjustments(twice, { ...base, entries: shown, category: 'distributed', month: '2028-06', cash: 0 }).entries).toEqual([])
+  })
+})
+
+describe('investments and exits are entered on the Investments tab', () => {
+  const accounts = [{ id: 'cash', subtype: 'cash' }, { id: 'inv', subtype: 'investment' }, { id: 'fee', subtype: 'management_fee' }] as any
+  const none = { entries: [], removed: [] }
+  const handInvestment = { id: 'h1', date: '2027-03-31', memo: 'Buy more', postings: [{ accountId: 'inv', amount: 100 }, { accountId: 'cash', amount: -100 }] }
+
+  it('refuses a new hand entry on an investment account, or removing a generated exit', () => {
+    expect(dealEditRefusal(none, { entries: [handInvestment], removed: [] } as any, accounts)).toMatch(/Investments tab/)
+    expect(dealEditRefusal(none, { entries: [], removed: ['construction|proceeds|2027-06-30|Exit — Acme'] }, accounts)).toMatch(/Investments tab/)
+  })
+
+  it('allows other hand entries, and leaves an earlier investment hand entry alone (removing it too)', () => {
+    const fee = { id: 'h2', date: '2027-03-31', memo: 'Fee true-up', postings: [{ accountId: 'fee', amount: 50 }, { accountId: 'cash', amount: -50 }] }
+    expect(dealEditRefusal(none, { entries: [fee], removed: [] } as any, accounts)).toBeNull()
+    const before = { entries: [handInvestment], removed: [] } as any
+    expect(dealEditRefusal(before, { entries: [handInvestment, fee], removed: [] } as any, accounts)).toBeNull()
+    expect(dealEditRefusal(before, none, accounts)).toBeNull()
   })
 })

@@ -18,7 +18,7 @@ import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-a
  * caller's CURRENT write access, which is why approving is not merely "you could see the queue".
  *
  * The HTTP shape is unchanged — `{ ok: true, result }`, or a status with `{ error }` — because the
- * pending-actions page and the Analyst cards read exactly that.
+ * Analyst panel's cards read exactly that.
  */
 export async function POST(_req: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;

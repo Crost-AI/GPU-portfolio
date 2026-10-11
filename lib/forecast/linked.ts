@@ -26,7 +26,9 @@ import type { CashTiming } from './compile'
 import { monthlyConstruction, type MonthlyConstruction } from './construction-adapter'
 import { monthDiff, type MonthKey } from './months'
 import type { LinkedDriver, PlanRuleRow } from './plan'
-import type { LinkedConstructionParams, LinkedFeeParams } from './rules'
+import type { LinkedConstructionParams, LinkedFeeParams, ManagementFeeParams } from './rules'
+import { managementFeeByMonth, type FeeInputs } from './fee-rule'
+import { primaryPlanRow } from './plan-construction'
 
 export interface FeeLinkRow {
   id: string
@@ -71,9 +73,11 @@ export async function fundSchedule(
   ctx: { admin: SupabaseClient; fundId: string; access: AccessContext },
   fundName: string,
   open: boolean,
+  /** A plan's own construction; omitted = the entity's primary plan. */
+  planId?: string | null,
 ): Promise<ScheduleResult> {
   const access = open ? { ...ctx.access, vehicles: { all: true, ids: [] } } : ctx.access
-  const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access }, { vehicle: fundName })
+  const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access }, { vehicle: fundName, planId: planId ?? null })
   const gross = model.timelineNetOfCarry ? model.grossTimeline : model.timeline
   if (!gross) {
     return { monthly: null, warnings: ['Portfolio construction has no pacing stated, so it has no schedule to link to'] }
@@ -138,6 +142,23 @@ export async function gpShareOf(
   const inferred = model.actuals.waterfall?.carryPaidInferred ?? 0
   if (inferred > 0) warnings.push(`${label}'s books record no carry paid, so ${Math.round(inferred).toLocaleString('en-US')} is taken as already paid on its past distributions; only carry still to come is forecast`)
 
+  // THE FUND'S PLAN, when it has one: its calls, distributions and carry as its fund forecast made
+  // them (the waterfall on what it actually distributes, month edits included). The GP's stake is its
+  // share of every distribution, carry included in the total; its carry is its percent of the carry.
+  const fromPlan = await fundPlanCapital(ctx, link.servesVehicleId)
+  if (fromPlan) {
+    const months = new Map<MonthKey, { called: number; distributed: number; carry: number }>()
+    const row = (m: MonthKey) => months.get(m) ?? (months.set(m, { called: 0, distributed: 0, carry: 0 }), months.get(m)!)
+    for (const [m, f] of fromPlan) {
+      const r = row(m)
+      r.called = roundCents(f.called * share)
+      r.distributed = roundCents((f.distributed + f.carry) * share)
+      r.carry = roundCents(f.carry * carryPct)
+    }
+    const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
+    return { fund: label, months, basis: `${pct(share)} of ${label}'s calls and distributions${carryPct > 0 ? `, ${pct(carryPct)} of its carry` : ''}, from its forecast`, warnings }
+  }
+
   const mc = monthlyConstruction(gross, model.asOf.slice(0, 10))
   // Carry is stated per construction year (the net timeline's waterfall); place it in the months of
   // that year's distributions, so it arrives with the exits that produce it.
@@ -184,6 +205,8 @@ export async function loadLinkedDrivers(
   vehicle: { id: string; name: string; kind: string },
   rules: PlanRuleRow[],
   includeConstruction: boolean,
+  /** The plan being compiled — its own construction, not the primary's. */
+  planId?: string | null,
 ): Promise<LinkedLoad> {
   const linked = new Map<string, LinkedDriver[]>()
   const warnings: string[] = []
@@ -192,18 +215,17 @@ export async function loadLinkedDrivers(
 
   let own: MonthlyConstruction | null = null
   if (needsOwn) {
-    const s = await fundSchedule(ctx, vehicle.name, false)
+    const s = await fundSchedule(ctx, vehicle.name, false, planId)
     own = s.monthly
     warnings.push(...s.warnings)
   }
-  if (manco && includeConstruction) warnings.push('A management company has no portfolio construction; investment flows are not included')
 
   // A GP entity's flows come from the fund it is GP of — its share of that fund's forecast exits —
   // not from a construction model of its own, which would count the same stake twice.
   const gpShare = includeConstruction && !manco ? await gpShareOf(ctx, vehicle.name) : null
   if (gpShare) warnings.push(...gpShare.warnings)
 
-  const links = rules.some(r => r.rule.method === 'linked_fee') ? (await loadFeeLinks(ctx.admin, ctx.fundId, vehicle.id)).filter(l => l.active) : []
+  const links = rules.some(r => r.rule.method === 'linked_fee' || r.rule.method === 'management_fee') ? (await loadFeeLinks(ctx.admin, ctx.fundId, vehicle.id)).filter(l => l.active) : []
   const names = new Map<string, string>()
   if (links.length) {
     const ids = [...new Set(links.flatMap(l => [l.mancoVehicleId, l.fundVehicleId]))]
@@ -212,6 +234,20 @@ export async function loadLinkedDrivers(
   }
 
   for (const r of rules) {
+    // The plan's own management fee (plans/plan-unified-plan.md §1.3): its terms on this fund's
+    // commitments and deployment; paid on the fee link's billing cycle when the fund has one.
+    if (r.rule.method === 'management_fee') {
+      if (manco) { linked.set(r.id, []); continue }
+      const inputs = await feeInputsFor(ctx, vehicle.name, planId ?? null, false)
+      const link = links.find(l => l.fundVehicleId === vehicle.id)
+      linked.set(r.id, [{
+        amounts: managementFeeByMonth(r.rule.params as ManagementFeeParams, inputs),
+        ...(link ? { timing: linkTiming(link) } : {}),
+        basis: `Management fee on ${(r.rule.params as ManagementFeeParams).basis} capital${inputs.feePayingShare < 1 ? ` (${(inputs.feePayingShare * 100).toFixed(1)}% fee-paying — the GP's stake exempt)` : ''}${link ? `, paid to ${names.get(link.mancoVehicleId) ?? 'the management company'} ${cycleLabel(link)}` : ''}`,
+        warnings: [],
+      }])
+      continue
+    }
     if (r.rule.method === 'linked_construction') {
       const p = r.rule.params as LinkedConstructionParams
       if (manco) { linked.set(r.id, []); continue }
@@ -255,8 +291,14 @@ export async function loadLinkedDrivers(
       const fundName = names.get(l.fundVehicleId)
       if (!fundName) continue
       const visible = seesFund(ctx.access, l.fundVehicleId)
-      const s = await fundSchedule(ctx, fundName, true)
       const label = visible ? fundName : 'a managed fund (details restricted)'
+      // The fund's own fee, from its primary plan's management-fee rule — one schedule, both sides.
+      const planFee = await primaryPlanFee(ctx, fundName, l.fundVehicleId)
+      if (planFee) {
+        drivers.push({ amounts: planFee, timing: linkTiming(l), basis: `Fees from ${label}'s forecast, received ${cycleLabel(l)}`, warnings: [] })
+        continue
+      }
+      const s = await fundSchedule(ctx, fundName, true)
       if (!s.monthly) {
         drivers.push({ amounts: new Map(), timing: linkTiming(l), basis: `Fees from ${label}`, warnings: visible ? s.warnings.map(w => `${fundName}: ${w}`) : ['A linked fund has no construction schedule'] })
         continue
@@ -278,4 +320,73 @@ export function cycleLabel(l: Pick<FeeLinkRow, 'everyMonths' | 'direction' | 'ca
   const every = l.everyMonths === 1 ? 'monthly' : l.everyMonths === 3 ? 'quarterly' : l.everyMonths === 6 ? 'semiannually' : 'annually'
   const lag = l.cashLagMonths ? `, ${l.cashLagMonths} month${l.cashLagMonths === 1 ? '' : 's'} later` : ''
   return `${every} in ${l.direction}${lag}`
+}
+
+/**
+ * What a fund's management fee is charged on: its commitments, deployment and NAV, the fee-paying
+ * share (the GP's own stake exempt), and the last year it operates — from the plan's construction.
+ */
+export async function feeInputsFor(
+  ctx: { admin: SupabaseClient; fundId: string; access: AccessContext },
+  fundName: string, planId: string | null, open: boolean,
+): Promise<FeeInputs> {
+  const access = open ? { ...ctx.access, vehicles: { all: true, ids: [] } } : ctx.access
+  const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access }, { vehicle: fundName, planId })
+  const a = model.actuals
+  const deals = (model.grossTimeline ?? model.timeline)?.deals ?? []
+  const exits = deals.filter(d => d.proceeds != null && d.exitAt > 0).map(d => Math.ceil(d.exitAt - 1e-9))
+  return {
+    asOfMonth: model.asOf.slice(0, 7) as MonthKey,
+    committed: a.committedCapital,
+    deployedTotal: (a.deployedInitial ?? 0) + (a.deployedFollowOn ?? 0),
+    nav: a.nav ?? 0,
+    feePayingShare: a.feePayingShare ?? 1,
+    lastOperatingYear: exits.length ? Math.max(...exits) : null,
+  }
+}
+
+/** A fund's management fee by month from its primary plan's rule; null when it has none yet. */
+async function primaryPlanFee(
+  ctx: { admin: SupabaseClient; fundId: string; access: AccessContext },
+  fundName: string, fundVehicleId: string,
+): Promise<Map<MonthKey, number> | null> {
+  const primary = await primaryPlanRow(ctx.admin, ctx.fundId, fundVehicleId)
+  if (!primary) return null
+  const { data } = await (ctx.admin as any).from('forecast_rules').select('params')
+    .eq('fund_id', ctx.fundId).eq('plan_id', primary.id).eq('method', 'management_fee').limit(1)
+  const rule = ((data as any[]) ?? [])[0]
+  if (!rule) return null
+  return managementFeeByMonth(rule.params as ManagementFeeParams, await feeInputsFor(ctx, fundName, primary.id, true))
+}
+
+/**
+ * A fund's calls, distributions (to partners) and carry by month, from its primary plan's compiled
+ * draft — null when it has no primary plan, or its draft books none of them yet.
+ */
+async function fundPlanCapital(
+  ctx: { admin: SupabaseClient; fundId: string },
+  fundVehicleId: string,
+): Promise<Map<MonthKey, { called: number; distributed: number; carry: number }> | null> {
+  const primary = await primaryPlanRow(ctx.admin, ctx.fundId, fundVehicleId)
+  if (!primary) return null
+  const { data } = await (ctx.admin as any).from('forecast_entries')
+    .select('entry_date, kind, memo, forecast_postings(amount)')
+    .eq('fund_id', ctx.fundId).eq('plan_id', primary.id).is('version_id', null)
+    .in('kind', ['capital_call', 'distribution', 'carry_distribution'])
+  const rows = (data as any[]) ?? []
+  if (!rows.length) return null
+  const out = new Map<MonthKey, { called: number; distributed: number; carry: number }>()
+  for (const e of rows) {
+    const m = String(e.entry_date).slice(0, 7) as MonthKey
+    // Each entry is one positive and one negative leg of the same amount.
+    const amount = roundCents(((e.forecast_postings as any[]) ?? []).filter(p => Number(p.amount) > 0).reduce((s, p) => s + Number(p.amount), 0))
+    const r = out.get(m) ?? { called: 0, distributed: 0, carry: 0 }
+    // Carry is stored as a distribution whose memo says so (service.ts storedKind).
+    const isCarry = e.kind === 'carry_distribution' || (e.kind === 'distribution' && /^Carried interest/.test(String(e.memo ?? '')))
+    if (e.kind === 'capital_call') r.called = roundCents(r.called + amount)
+    else if (isCarry) r.carry = roundCents(r.carry + amount)
+    else r.distributed = roundCents(r.distributed + amount)
+    out.set(m, r)
+  }
+  return out
 }

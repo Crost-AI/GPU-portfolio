@@ -75,7 +75,6 @@ describe('mobileTabsFor', () => {
   it('hides admin-only entries from a member', () => {
     const hrefs = mobileTabsFor(false, allowAll).map(t => t.href)
     expect(hrefs).not.toContain('/usage')
-    expect(hrefs).not.toContain('/pending-actions')
   })
 })
 
@@ -114,7 +113,7 @@ describe('navSectionsFor', () => {
     // unreachable on a handset — and in a standalone window there is no address bar to
     // fall back on. A section in BOTH is the old drawer's mistake: the first thing the
     // menu showed was the tab you had just chosen not to tap.
-    const badges = { review: 3, pendingActions: 2 }
+    const badges = { review: 3 }
     const tabs = mobileTabsFor(true, allowAll).map(t => t.href)
     const more = moreSectionsFor(true, allowAll, tabs, badges).map(s => s.href)
 
@@ -132,14 +131,16 @@ describe('navSectionsFor', () => {
     expect(reachable).toContain('/support')
   })
 
-  it('drops the two entries that are noise when nothing is waiting', () => {
+  it('drops Review, which is noise when nothing is waiting', () => {
     const idle = navSectionsFor(true, allowAll).map(s => s.href)
     expect(idle).not.toContain('/review')
-    expect(idle).not.toContain('/pending-actions')
 
-    const busy = navSectionsFor(true, allowAll, { review: 1, pendingActions: 4 }).map(s => s.href)
+    const busy = navSectionsFor(true, allowAll, { review: 1 }).map(s => s.href)
     expect(busy).toContain('/review')
-    expect(busy).toContain('/pending-actions')
+  })
+
+  it('has no Pending Actions section — drafts are approved in the Analyst panel', () => {
+    expect(navSectionsFor(true, allowAll, { review: 1 }).map(s => s.href)).not.toContain('/pending-actions')
   })
 
   it('applies the same access rules as the sidebar and the bar', () => {
@@ -147,15 +148,14 @@ describe('navSectionsFor', () => {
     expect(hrefs).toContain('/dashboard')
     expect(hrefs).not.toContain('/lps')
     expect(hrefs).not.toContain('/funds')
-    // adminOnly, so hidden from a member even with something waiting.
-    expect(hrefs).not.toContain('/pending-actions')
+    // adminOnly, so hidden from a member.
     expect(hrefs).not.toContain('/usage')
   })
 })
 
 describe('visibleChildrenFor', () => {
   const section = (href: string) => {
-    const found = navSectionsFor(true, allowAll, { review: 1, pendingActions: 1 }).find(s => s.href === href)
+    const found = navSectionsFor(true, allowAll, { review: 1 }).find(s => s.href === href)
     if (!found) throw new Error(`no section ${href}`)
     return found
   }

@@ -83,7 +83,7 @@ export interface ConstructionPositionForecast {
   /** How this deal's proceeds are forecast. */
   returnMethod?: ReturnForecastMethod
   // ── Timing, stated per company. Absent = the fund-wide pacing (construction-forecast.ts). ──
-  /** Years from today to the exit. */
+  /** Hold period: years from the first investment to the exit (from today when the investment date is unknown). */
   exitInYears?: number | null
   /** Years from today the planned follow-on is drawn. */
   followOnInYears?: number | null
@@ -201,6 +201,12 @@ export interface ConstructionActuals {
    * fee, so a fund whose GP commits 1% charges fees on 99% of its commitments. Omitted = all.
    */
   feePayingShare?: number
+  /**
+   * Fees and expenses from the plan's rules, by forward year (index = year; 0 unused). When present
+   * they replace the projection from construction's own fee and expense inputs — the plan owns them
+   * (plans/plan-unified-plan.md §1.3).
+   */
+  planCosts?: PlanCosts
   /** From capital accounts. Optional for backwards-compatible pure-model callers. */
   calledCapital?: number
   /** Complete resolved capital figures, independent of whether journal entries exist. */
@@ -510,8 +516,13 @@ function projectFeesFromFundYear(
   return r(fees)
 }
 
+/** A plan's fees and expenses by forward year (index = year; 0 unused). */
+export interface PlanCosts { feesByYear: number[]; expensesByYear: number[] }
+
 export interface CapitalBlock {
   committedCapital: number
+  /** The plan's fees and expenses, when the plan supplies them (see ConstructionActuals.planCosts). */
+  planCosts?: PlanCosts
   /** Share of commitments charged management fees (the GP's own stake is exempt). */
   feePayingShare?: number
   calledCapital: number
@@ -673,12 +684,17 @@ export function constructionModel(
   // regardless of whether historical actuals come from the ledger or the portfolio tracker.
   // Only the fee-paying commitments are charged (the GP's own stake is not) — see feePayingShare.
   const feePayingShare = Math.min(1, Math.max(0, actuals.feePayingShare ?? 1))
-  const feesProjected = r(projectRemainingFees(a, actuals.committedCapital, deployedTotal, actuals.nav) * feePayingShare)
+  const planCosts = actuals.planCosts
+  const sumYears = (xs: number[]) => r(xs.slice(1).reduce((s, v) => s + (v || 0), 0))
+  const feesProjected = planCosts
+    ? sumYears(planCosts.feesByYear)
+    : r(projectRemainingFees(a, actuals.committedCapital, deployedTotal, actuals.nav) * feePayingShare)
   const lifetimeFees = r(actuals.managementFeesIncurred + feesProjected)
 
   const expenseProjectionYears = Math.max(0, a.feeTermYears)
-  const orgCostsProjected = r(a.remainingOrgCosts)
-  const expensesProjected = r(a.annualPartnershipExpense * expenseProjectionYears)
+  // The plan's expense rules include org costs; construction's own inputs keep them apart.
+  const orgCostsProjected = planCosts ? 0 : r(a.remainingOrgCosts)
+  const expensesProjected = planCosts ? sumYears(planCosts.expensesByYear) : r(a.annualPartnershipExpense * expenseProjectionYears)
   const lifetimeExpenses = r(
     actuals.orgCostsIncurred + orgCostsProjected + actuals.partnershipExpensesIncurred + expensesProjected,
   )
@@ -937,6 +953,7 @@ export function constructionModel(
     capital: {
       committedCapital: r(actuals.committedCapital),
       feePayingShare,
+      ...(planCosts ? { planCosts } : {}),
       calledCapital: r(actuals.calledCapital ?? 0),
       uncalledCapital: r(actuals.uncalledCapital ?? Math.max(0, actuals.committedCapital - (actuals.calledCapital ?? 0))),
       feesIncurred: r(actuals.managementFeesIncurred),

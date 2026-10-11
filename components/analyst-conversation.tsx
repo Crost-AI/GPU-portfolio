@@ -132,6 +132,9 @@ export function AnalystConversation({
   // applicable against books that have moved on since.
   const [proposals, setProposals] = useState<Record<number, Proposal[]>>({})
   const [stagedActions, setStagedActions] = useState<Record<number, StagedAction[]>>({})
+  // Drafts still waiting from earlier conversations. A staged change's card lives only in the turn
+  // that made it, so once the panel is closed this is the one place left to approve or reject it.
+  const [waiting, setWaiting] = useState<StagedAction[]>([])
   // An attached source document — in accounting scope a capital-call notice or invoice the Analyst
   // drafts an entry from, anywhere else plain source material for the question. It stays attached
   // until removed, so follow-ups ("now attribute it to Cranmore") still see it; the server
@@ -148,6 +151,15 @@ export function AnalystConversation({
   }, [autoFocus])
 
   useEffect(() => () => requestControllerRef.current?.abort(), [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/pending-actions')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && Array.isArray(d?.actions)) setWaiting(d.actions.map((a: StagedAction) => ({ id: a.id, actionType: a.actionType, preview: a.preview }))) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // The picker can't offer models it never asked for. The panel used to be the only thing that
   // triggered the fetch, which left /start with no picker at all.
@@ -397,7 +409,9 @@ export function AnalystConversation({
     setShowSuggestions(false)
     setEditingMessageIndex(null)
     setInput('')
+    setDoc(null)
     startNewConversation()
+    setTimeout(() => inputRef.current?.focus(), 0)
   }
 
   function formatDate(dateStr: string) {
@@ -524,7 +538,7 @@ export function AnalystConversation({
           <Clock className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
-          onClick={startNewConversation}
+          onClick={handleStartNewConversation}
           title="New conversation"
           className="p-1 rounded hover:bg-muted"
         >
@@ -593,6 +607,11 @@ export function AnalystConversation({
         {messages.length === 0 && !loading && !isPage && (
           <p className="text-xs text-muted-foreground">{emptyState(scope)}</p>
         )}
+        {(() => {
+          const here = new Set(Object.values(stagedActions).flat().map(a => a.id))
+          const earlier = waiting.filter(a => !here.has(a.id))
+          return earlier.length > 0 && <AnalystPendingActions actions={earlier} title="Waiting for approval, from earlier conversations" />
+        })()}
         {threadMeta}
         {messages.map((msg, i) =>
           msg.role === 'user' ? (

@@ -1,5 +1,5 @@
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
-import { getPlan, getSeries, getVariance, listFeeLinks, listPlans, saveFeeLink, suggestRules, type ForecastServiceContext } from '@/lib/forecast/service'
+import { getPlan, getPlanReturns, getSeries, getVariance, listFeeLinks, listPlans, saveFeeLink, suggestRules, type ForecastServiceContext } from '@/lib/forecast/service'
 import { applyCreate, applyPublish, applyUpdate } from '@/lib/forecast/actions'
 
 const svc = ({ admin, fundId, userId, access }: AgentToolContext): ForecastServiceContext => ({
@@ -33,7 +33,9 @@ export const FORECAST_HANDLERS: Record<string, AgentToolHandler> = {
     void _accounts
     return {
       ...rest,
-      editableEntries: entries.filter(e => e.key).map(e => ({
+      // Investments and exits are changed on the Investments tab (update_portfolio_construction), so
+      // their entries are not offered here.
+      editableEntries: entries.filter(e => e.key && e.kind !== 'investment' && e.kind !== 'proceeds').map(e => ({
         key: e.key, date: e.date, memo: e.memo, source: e.source,
         lines: e.postings.map(p => ({ account: code.get(p.accountId) ?? p.accountId, amount: p.amount })),
       })),
@@ -53,6 +55,8 @@ export const FORECAST_HANDLERS: Record<string, AgentToolHandler> = {
       interval: input.interval,
     })
   },
+  forecast_returns: async (ctx, input) =>
+    getPlanReturns(svc(ctx), { vehicle: vehicleOf(input), planId: typeof input.planId === 'string' && input.planId ? input.planId : null, simulate: input.simulate === true }),
   forecast_create_plan: async (ctx, input) => applyCreate(svc(ctx), { ...input, vehicle: vehicleOf(input) }),
   forecast_update_plan: async (ctx, input) => applyUpdate(svc(ctx), { ...input, vehicle: vehicleOf(input) }),
   forecast_publish: async (ctx, input) => applyPublish(svc(ctx), { ...input, vehicle: vehicleOf(input) }),

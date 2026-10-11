@@ -39,6 +39,14 @@ export interface SimulationResult {
   horizonYears: number
   years: SimulationYear[]
   final: { tvpi: Percentiles; dpi: Percentiles; netIrr: Percentiles | null }
+  /**
+   * The range on totals — how much and when, together — for the forecast years. A single exit's
+   * per-year range is mostly "did it land this year", which says little about either.
+   *   distributed   what the forecast years return in all (net of carry when a waterfall applies)
+   *   carry         the carry they pay
+   *   halfBackYear  the calendar year the run has returned half its total — when the money comes
+   */
+  totals: { distributed: Percentiles; carry: Percentiles; halfBackYear: Percentiles | null; nothingBack: number }
   /** Final TVPI, binned. */
   histogram: { from: number; to: number; count: number }[]
   probabilities: {
@@ -127,9 +135,12 @@ export function simulateFund(
   const rng = makeRng(sim.seed)
   const deals = dealTimelines(model, pacing, baseline.asOf)
   // Each deal varies by its own settings where stated, the fund-wide ones otherwise.
-  const settingsFor = (d: { lossRate?: number; dispersion?: number; exitSpreadYears?: number }): SimulationAssumptions => ({
+  // The write-off rate is a base rate for deals not yet made. A company already held has its own
+  // mark and exit forecast: it varies in multiple and timing, and is written off only on its own
+  // stated rate — otherwise a one-company SPV loses everything in half the runs.
+  const settingsFor = (d: { kind: string; lossRate?: number; dispersion?: number; exitSpreadYears?: number }): SimulationAssumptions => ({
     ...sim,
-    lossRate: d.lossRate ?? sim.lossRate,
+    lossRate: d.lossRate ?? (d.kind === 'planned' ? sim.lossRate : 0),
     dispersion: d.dispersion ?? sim.dispersion,
     holdSpreadYears: d.exitSpreadYears ?? sim.holdSpreadYears,
   })
@@ -150,6 +161,9 @@ export function simulateFund(
   const finalTvpi: number[] = []
   const finalDpi: number[] = []
   const finalIrr: number[] = []
+  const totalDistributed: number[] = []
+  const totalCarry: number[] = []
+  const halfBackYears: number[] = []
   let fundReturners = 0
 
   for (let run = 0; run < runs; run++) {
@@ -173,6 +187,16 @@ export function simulateFund(
       dpiByYear[y.year].push(y.dpi ?? 0)
       distributedByYear[y.year].push(y.distributed)
       carriedInterestByYear[y.year].push(y.carriedInterest ?? 0)
+    }
+    // Totals over the forecast years (year 0 is today's baseline).
+    const forward = s.years.filter(y => y.year >= 1)
+    const total = forward.reduce((t, y) => t + y.distributed, 0)
+    totalDistributed.push(total)
+    totalCarry.push(forward.reduce((t, y) => t + (y.carriedInterest ?? 0), 0))
+    if (total > 0) {
+      let running = 0
+      const half = forward.find(y => (running += y.distributed) >= total / 2)
+      if (half) halfBackYears.push(half.calendarYear)
     }
     const last = s.years[s.years.length - 1]
     finalTvpi.push(last.tvpi ?? 0)
@@ -222,6 +246,13 @@ export function simulateFund(
       netIrr: finalIrr.length > 0 ? percentiles(finalIrr) : null,
     },
     histogram,
+    totals: {
+      distributed: percentiles(totalDistributed),
+      carry: percentiles(totalCarry),
+      halfBackYear: halfBackYears.length > 0 ? percentiles(halfBackYears) : null,
+      // Runs where every forecast exit failed — they have no "when", so they are counted here.
+      nothingBack: totalDistributed.filter(v => v <= 0).length / runs,
+    },
     probabilities: {
       atOrAboveTarget: target > 0 ? finalTvpi.filter(v => v >= target).length / runs : null,
       belowCost: finalTvpi.filter(v => v < 1).length / runs,
@@ -229,4 +260,47 @@ export function simulateFund(
     },
     stated,
   }
+}
+
+/**
+ * Each run's sampled exits — value and timing per deal — and the horizon wide enough to hold them,
+ * drawn exactly as simulateFund draws them (same seed, same order). The fund forecast reruns its
+ * capital management and waterfall on each (lib/forecast/plan-returns.ts), so a simulated range and
+ * the point forecast go through the same steps.
+ */
+export function sampleRuns(
+  model: ConstructionResult,
+  a: ConstructionAssumptions,
+  pacing: PacingAssumptions,
+  sim: SimulationAssumptions,
+  baseline: ForecastBaseline,
+  maxRuns = 500,
+): { runs: Map<string, { proceeds: number; exitAt: number }>[]; pacing: PacingAssumptions } {
+  const runs = Math.max(1, Math.min(maxRuns, Math.floor(sim.runs) || 1))
+  const rng = makeRng(sim.seed)
+  const deals = dealTimelines(model, pacing, baseline.asOf)
+  const settingsFor = (d: { kind: string; lossRate?: number; dispersion?: number; exitSpreadYears?: number }): SimulationAssumptions => ({
+    ...sim,
+    lossRate: d.lossRate ?? (d.kind === 'planned' ? sim.lossRate : 0),
+    dispersion: d.dispersion ?? sim.dispersion,
+    holdSpreadYears: d.exitSpreadYears ?? sim.holdSpreadYears,
+  })
+  const base = forecastSchedule(model, a, pacing, baseline, undefined, 'none')
+  const horizonYears = Math.max(base.horizonYears, Math.ceil(deals.reduce((m, d) => Math.max(m, d.exitAt + Math.max(0, settingsFor(d).holdSpreadYears)), 0)))
+  const out: Map<string, { proceeds: number; exitAt: number }>[] = []
+  for (let run = 0; run < runs; run++) {
+    const override = new Map<string, { proceeds: number; exitAt: number }>()
+    for (const d of deals) {
+      if (d.proceeds == null) continue
+      const cost = d.currentValue + d.initialCheck + d.followOn
+      const own = settingsFor(d)
+      const proceeds = sampleOutcome(rng, d.proceeds, cost, own)
+      const spread = Math.max(0, own.holdSpreadYears)
+      const earliest = d.kind === 'planned' ? d.initialAt + 0.25 : 0.25
+      const exitAt = spread > 0 ? Math.max(earliest, d.exitAt + (rng() * 2 - 1) * spread) : d.exitAt
+      override.set(d.key, { proceeds, exitAt })
+    }
+    out.push(override)
+  }
+  return { runs: out, pacing: { ...pacing, horizonYears } }
 }

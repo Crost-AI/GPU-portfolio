@@ -35,7 +35,7 @@ type Access = (domain: Domain, feature?: FeatureKey) => AccessLevel
 
 export const GROUP_LABELS: Record<PaletteGroup, string> = {
   pages: 'Pages',
-  entities: 'Entities',
+  entities: 'Financials',
   companies: 'Companies',
   lps: 'LPs',
   deals: 'Deals',
@@ -58,8 +58,8 @@ function vehicleSeg(v: PaletteVehicle): string {
  * management company never gets a "Capital accounts" entry. The entity itself is an entry too,
  * in its own group, pointing at its overview.
  *
- * The badges are passed through so the palette agrees with the sidebar about Review and Pending
- * Actions, which exist only while something is waiting.
+ * The badges are passed through so the palette agrees with the sidebar about Review, which exists
+ * only while something is waiting.
  */
 export function pageEntries(
   isAdmin: boolean,
@@ -67,7 +67,7 @@ export function pageEntries(
   opts: {
     fofActive?: boolean
     vehicles?: PaletteVehicle[]
-    badges?: { review?: number; pendingActions?: number }
+    badges?: { review?: number }
   } = {},
 ): PaletteEntry[] {
   const out: PaletteEntry[] = []

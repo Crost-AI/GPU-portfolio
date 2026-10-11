@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,7 +12,7 @@ import type { Adjustments, ManualEntry } from '@/lib/forecast/adjustments'
 type Entry = PlanDetail['entries'][number]
 
 const SOURCE_LABEL: Record<string, string> = {
-  rule: 'Rule', override: 'Your amount', opening: 'Opening balance', construction: 'Construction', manual: 'Added by you',
+  actual: 'Posted (actual)', rule: 'Rule', override: 'Your amount', opening: 'Opening balance', construction: 'Construction', manual: 'Added by you',
 }
 
 const selectCls = 'h-8 rounded-md border border-input bg-background px-2 text-sm'
@@ -23,8 +23,12 @@ const selectCls = 'h-8 rounded-md border border-input bg-background px-2 text-sm
  * rule's month takes an override; anything else can be added by hand. All of it is kept on the plan
  * (lib/forecast/adjustments.ts), so a refresh recompiles around the edits instead of erasing them.
  */
-export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, save, onEditRule }: {
+export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, save, onEditRule, onOpenInvestments, vehicle, range }: {
   detail: PlanDetail
+  /** For the posted actuals shown before the forecast's own entries. */
+  vehicle: string
+  /** The page's date range; actuals are shown through the plan's cutoff. */
+  range: { start: string; end: string }
   fmt: (n: number) => string
   /** The working draft, by a writer: published versions never change. */
   editable: boolean
@@ -33,6 +37,8 @@ export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, 
   onClearMonths: () => void
   save: (body: Record<string, unknown>) => Promise<boolean>
   onEditRule: (accountId: string) => void
+  /** Investments and exits are changed there; absent for an entity with no portfolio. */
+  onOpenInvestments?: () => void
 }) {
   const [query, setQuery] = useState('')
   const [source, setSource] = useState('')
@@ -40,7 +46,33 @@ export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, 
   const accounts = useMemo(() => new Map(detail.allAccounts.map(a => [a.id, a])), [detail.allAccounts])
   const adj: Adjustments = detail.plan.adjustments ?? { entries: [], removed: [] }
 
-  const shown = detail.entries.filter(e =>
+  // The books' posted entries for the actual months in range, read-only, ahead of the forecast's —
+  // so the journal reads straight through from what happened into what is planned.
+  const [actuals, setActuals] = useState<Entry[]>([])
+  useEffect(() => {
+    const through = detail.cutoff < range.end ? detail.cutoff : range.end
+    if (range.start > through) { setActuals([]); return }
+    let cancelled = false
+    const out: Entry[] = []
+    const load = async (offset: number): Promise<void> => {
+      const q = new URLSearchParams({ group: vehicle, preset: 'custom', start: `${range.start}-01`, end: `${through}-${lastDayOf(through)}`, status: 'posted', limit: '200', offset: String(offset) })
+      const r = await fetch(`/api/accounting/journal?${q}`)
+      if (!r.ok) return
+      const d = await r.json()
+      for (const je of (d.entries ?? []) as any[]) {
+        out.push({
+          date: je.entry_date, kind: 'actual', memo: je.memo ?? je.reference ?? '', source: 'actual', key: null, accountId: '', ruleId: null,
+          postings: ((je.journal_postings ?? []) as any[]).map(p => ({ accountId: p.account_id, amount: Number(p.amount) })),
+        })
+      }
+      if ((d.entries ?? []).length === 200 && offset < 1800) return load(offset + 200)
+    }
+    load(0).then(() => { if (!cancelled) setActuals(out.sort((a, b) => a.date.localeCompare(b.date))) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [vehicle, range.start, range.end, detail.cutoff])
+
+  const all = useMemo(() => [...actuals, ...detail.entries], [actuals, detail.entries])
+  const shown = all.filter(e =>
     (!months || months.includes(e.date.slice(0, 7)))
     && (!source || e.source === source)
     && (!query.trim() || `${e.memo} ${e.postings.map(p => accounts.get(p.accountId)?.name ?? '').join(' ')}`.toLowerCase().includes(query.trim().toLowerCase())))
@@ -87,7 +119,7 @@ export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, 
             {months.length === 1 ? months[0] : `${months[0]} – ${months[months.length - 1]}`} ✕
           </button>
         )}
-        <span className="text-xs text-muted-foreground">{shown.length} of {detail.entries.length} entries</span>
+        <span className="text-xs text-muted-foreground">{shown.length} of {all.length} entries</span>
         {editable && (
           <Button size="sm" variant="outline" className="ml-auto gap-1.5"
             onClick={() => setEditing({ entry: { id: newId(), date: `${months?.[0] ?? detail.window.first}-${lastDayOf(months?.[0] ?? detail.window.first)}`, memo: '', postings: [{ accountId: '', amount: 0 }, { accountId: '', amount: 0 }], replaces: null }, title: 'Add an entry' })}>
@@ -132,7 +164,14 @@ export function ForecastEntries({ detail, fmt, editable, months, onClearMonths, 
                 <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">{SOURCE_LABEL[e.source] ?? e.source}</td>
                 {editable && (
                   <td className="whitespace-nowrap px-3 py-2 text-right text-xs">
-                    {(e.source === 'construction' || e.source === 'opening' || e.source === 'manual') ? (
+                    {e.source === 'actual' ? (
+                      <span className="text-muted-foreground">On the books</span>
+                    ) : e.source === 'construction' && (e.kind === 'investment' || e.kind === 'proceeds') ? (
+                      // Investments and exits are entered on the Investments tab, where the deal lives.
+                      onOpenInvestments
+                        ? <button type="button" className="text-muted-foreground hover:text-foreground" onClick={onOpenInvestments}>Change on Investments</button>
+                        : <span className="text-muted-foreground">From Investments</span>
+                    ) : (e.source === 'construction' || e.source === 'opening' || e.source === 'manual') ? (
                       <span className="flex justify-end gap-3">
                         <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => editEntry(e)}>Edit</button>
                         <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => removeEntry(e)}>Remove</button>

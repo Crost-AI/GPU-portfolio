@@ -25,9 +25,9 @@ describe('getting-started catalog', () => {
     expect(areasFor().length).toBe(AREAS.length)
   })
 
-  it('keeps forecast prompts behind the Forecast switch, not just accounting', () => {
-    const accountingOnly: CanRead = (d, f) => d === 'accounting' && f !== 'budgeting'
-    expect(promptsFor(accountingOnly).map(p => p.name)).not.toContain('draft_forecast')
+  it('offers the forecast prompts to anyone who can read the books — Forecast has no switch of its own', () => {
+    const accountingOnly: CanRead = d => d === 'accounting'
+    expect(promptsFor(accountingOnly).map(p => p.name)).toContain('draft_forecast')
   })
 
   it('renders a template with its arguments, and refuses a missing required one', () => {
