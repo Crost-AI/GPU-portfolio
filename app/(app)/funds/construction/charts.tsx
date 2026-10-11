@@ -9,6 +9,7 @@ import {
   INVEST_NEW, INVEST_FOLLOW,
 } from '@/components/fund-chart-kit'
 import { valueSources, type ConstructionResult } from '@/lib/accounting/construction'
+import { capitalUsage } from './capital-usage'
 
 /**
  * Three pictures of the plan the tables state in numbers.
@@ -41,6 +42,10 @@ const USAGE_SERIES = [
   { key: 'expensesActual', name: 'Fund expenses paid', color: HUE.chart5, forecast: false },
   { key: 'expensesForecast', name: 'Fund expenses to come', color: tintOf(HUE.chart5), forecast: true },
   { key: 'unallocated', name: 'Unallocated', color: HUE.muted, forecast: false },
+  // Left over, split by whether the partners have paid it in: called-but-unallocated is cash the
+  // fund holds (muted ink, solid), uncalled is still a promise (a tint of the same ink).
+  { key: 'calledUnallocated', name: 'Called, not yet allocated', color: HUE.muted, forecast: false },
+  { key: 'uncalledUnallocated', name: 'Uncalled, not yet allocated', color: 'hsl(var(--muted-foreground) / 0.35)', forecast: true },
 ] as const
 
 /**
@@ -48,24 +53,13 @@ const USAGE_SERIES = [
  * forecast a lighter tint of the same slot — with the legend under it carrying the dollars and the
  * share, line for line with the Capital planning table.
  */
-export function CapitalUsageChart({ model, fmt, fmtFull }: { model: ConstructionResult; fmt: Fmt; fmtFull: Fmt }) {
+export function CapitalUsageChart({ model, calledKnown, fmt, fmtFull }: { model: ConstructionResult; calledKnown: boolean; fmt: Fmt; fmtFull: Fmt }) {
   const { capital } = model
   const committed = capital.committedCapital
 
-  const row = useMemo(() => {
-    const feesActual = capital.feesIncurred
-    const feesForecast = capital.feesProjected
-    const expensesActual = capital.orgCostsIncurred + capital.expensesIncurred
-    const expensesForecast = capital.orgCostsProjected + capital.expensesProjected
-    return {
-      deployed: capital.deployedTotal,
-      planned: capital.plannedCost,
-      feesActual, feesForecast, expensesActual, expensesForecast,
-      // A plan that overruns has nothing left over — the shortfall is already shown as a warning
-      // above, and a negative area here would break the "these sum to committed" reading.
-      unallocated: Math.max(0, committed - capital.deployedTotal - capital.plannedCost - feesActual - feesForecast - expensesActual - expensesForecast),
-    }
-  }, [capital, committed])
+  // Sums to committed capital (lib in ./capital-usage.ts): the leftover is split into what has been
+  // called and what has not, when the vehicle knows its calls.
+  const row = useMemo(() => capitalUsage(capital, { calledKnown }), [capital, calledKnown])
 
   const series = USAGE_SERIES.filter(s => row[s.key] > 0.5)
   const pctOf = (v: number) => (committed > 0 ? `${Math.round((v / committed) * 100)}%` : '—')
@@ -93,6 +87,11 @@ export function CapitalUsageChart({ model, fmt, fmtFull }: { model: Construction
               </li>
             ))}
           </ul>
+          {calledKnown && (
+            <p className="text-xs text-muted-foreground">
+              Called to date <span className="tabular-nums">{fmt(row.called)}</span> ({pctOf(row.called)}) · uncalled <span className="tabular-nums">{fmt(row.uncalled)}</span> ({pctOf(row.uncalled)}){row.uncalled - row.uncalledUnallocated > 0.5 && <>, of which the forecast already uses <span className="tabular-nums">{fmt(row.uncalled - row.uncalledUnallocated)}</span></>}.
+            </p>
+          )}
         </div>
       )}
     </ChartCard>
