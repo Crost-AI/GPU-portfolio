@@ -106,7 +106,8 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
       'A download link to one LP\'s capital account statement as a PDF — the same document the app produces: ' +
       'the roll-forward for the period and since inception, ownership, and the contributions and distributions. ' +
       'Use when the user asks for the statement as a file, to send, or to download. The link works for an hour; ' +
-      'give it to the user as a link. A statement is per LP entity and per vehicle.',
+      'give it to the user as a link. Call this again every time the document is asked for — never re-share a link ' +
+      'from earlier in the conversation, which has likely expired. A statement is per LP entity and per vehicle.',
     scope: 'read',
     domain: 'lp',
     inputSchema: {
@@ -127,7 +128,8 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
       'A download link to an investor\'s LP report card as a PDF: their positions across every vehicle aggregated — ' +
       'commitment, paid-in, distributions, NAV, DPI, TVPI and IRR per vehicle and in total — on current figures. ' +
       'Use when the user asks for an investor\'s report, report card or summary as a file. The link works for an hour; ' +
-      'give it to the user as a link.',
+      'give it to the user as a link. Call this again every time the document is asked for — never re-share a link ' +
+      'from earlier in the conversation, which has likely expired.',
     scope: 'read',
     domain: 'lp',
     inputSchema: {
