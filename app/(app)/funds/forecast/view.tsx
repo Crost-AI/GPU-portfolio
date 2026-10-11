@@ -618,6 +618,7 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
             { label: 'Return assumptions', onSelect: () => setReturnAssumptionsOpen(true), hidden: !hasPortfolio || !!versionId },
             { label: 'Calls and distributions', onSelect: () => setCapitalOpen(true), hidden: !detail || !!versionId || detail.vehicleKind === 'manco', disabled: busy },
             { label: 'Entity links', onSelect: () => setLinking(true) },
+            { label: 'Download Excel', href: `${exportHref}&format=xlsx` },
             { label: 'Download CSV', href: exportHref },
           ]} />
           <NewPlanMenu onManual={() => setCreating(true)} onDraftWithAi={hasAIKey ? draftWithAi : undefined} onCopy={detail && !versionId ? copyAsScenario : undefined} onSave={detail && !versionId ? () => setPublishing(true) : undefined} />

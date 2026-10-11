@@ -1121,7 +1121,25 @@ async function approvedVersionId(ctx: ForecastServiceContext, planId: string): P
   return data?.id ?? null
 }
 
+/**
+ * A series with the rules it was built from — what the Excel export needs to write each forecast
+ * cell as a formula over its assumption, not a pasted number.
+ */
+export async function getSeriesWithRules(ctx: ForecastServiceContext, input: SeriesInput): Promise<{
+  series: SeriesResult
+  rules: RuleView[]
+  accounts: { id: string; code: string; name: string }[]
+}> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  const detail = await seriesDetail(ctx, v, input)
+  return { ...detail, accounts: v.accounts.map(a => ({ id: a.id, code: a.code, name: a.name })) }
+}
+
 async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: SeriesInput): Promise<SeriesResult> {
+  return (await seriesDetail(ctx, v, input)).series
+}
+
+async function seriesDetail(ctx: ForecastServiceContext, v: VehicleCtx, input: SeriesInput): Promise<{ series: SeriesResult; rules: RuleView[] }> {
   if (!isMonthKey(input.start) || !isMonthKey(input.end)) throw new ForecastError('start and end must be YYYY-MM')
   if (input.start > input.end) throw new ForecastError('start is after end')
   if (monthRange(input.start, input.end).length > MAX_MONTHS) throw new ForecastError(`A range is at most ${MAX_MONTHS} months`)
@@ -1138,6 +1156,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
   let view: ReportView = input.view ?? (input.planId ? 'combined' : 'actual')
   const sources: SeriesResult['sources'] = {}
   const overridden: Record<string, MonthKey[]> = {}
+  let rules: RuleView[] = []
 
   if (input.planId) {
     const row = await loadPlanRow(ctx, v, input.planId)
@@ -1176,6 +1195,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
       inputs = await loadInputs(ctx, row.id)
     }
     planEntries = await loadEntries(ctx, row.id, version?.id ?? null)
+    rules = inputs.rules
     for (const r of inputs.rules) sources[r.accountId] = { method: r.method, basis: describeRule(r), warnings: [] }
     for (const o of inputs.overrides) {
       if (o.month < input.start || o.month > input.end) continue
@@ -1202,7 +1222,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
     gpEntityIds: await gpPartnerIds(ctx),
   })
 
-  return {
+  const series: SeriesResult = {
     ...report,
     vehicle: v.name,
     currency: v.currency,
@@ -1215,6 +1235,7 @@ async function seriesFor(ctx: ForecastServiceContext, v: VehicleCtx, input: Seri
     planWindow: planFirst && planLast ? { first: planFirst, last: planLast } : null,
     warnings,
   }
+  return { series, rules }
 }
 
 // ---------------------------------------------------------------------------------------------
