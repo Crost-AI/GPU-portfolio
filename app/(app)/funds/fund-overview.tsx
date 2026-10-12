@@ -13,7 +13,9 @@ import { CapitalCharts } from '@/components/capital-charts'
 import { useVehicleGroups, GroupHeadingRow } from '@/components/vehicle-groups'
 import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 
-// The fund overview: performance per vehicle, DERIVED FROM THE LEDGER.
+// The fund overview: performance per vehicle, DERIVED FROM THE LEDGER. Rendered on the Fund
+// performance landing (/funds/performance); the Financials landing is the firm-wide overview in
+// firm-overview.tsx, which links here for the full table.
 //
 // This is what used to be the Funds page, where the numbers were typed in — commitments,
 // called capital and distributions were hand-entered `fund_cash_flows` rows, cash-on-hand was
@@ -53,7 +55,11 @@ const irrPct = (v: number | null) => {
   return `${(Object.is(p, -0) ? 0 : p).toFixed(1)}%`
 }
 
-export function FundOverview() {
+/**
+ * `section` is the subpage a vehicle opens on. Unset, it is the vehicle's lead page; the Fund
+ * performance landing, which is where this table lives now, opens each vehicle's own report.
+ */
+export function FundOverview({ section = null }: { section?: string | null } = {}) {
   const currency = useCurrency()
   const fmt = (v: number) => formatCurrency(v, currency)
   const fmtFull = (v: number) => formatCurrencyFull(v, currency)
@@ -68,7 +74,7 @@ export function FundOverview() {
   // its name, which the detail page resolves the same way.
   const openVehicle = (v: Vehicle) => {
     setVehicle(v.vehicle, v.id)
-    router.push(`/funds/${v.id ?? encodeURIComponent(v.vehicle)}`)
+    router.push(`/funds/${v.id ?? encodeURIComponent(v.vehicle)}${section ? `/${section}` : ''}`)
   }
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
@@ -319,7 +325,7 @@ function SubtotalRow({ label, m, fmt }: { label: string; m: Metrics; fmt: (v: nu
  * Links are to the selected entity's pages when there is one, otherwise to the firm-wide landing
  * for that section (/funds/<section>), which asks which entity you mean.
  */
-function OnboardingEmptyState({ onCreated }: { onCreated: () => void }) {
+export function OnboardingEmptyState({ onCreated }: { onCreated: () => void }) {
   const fundSeg = useFundSeg()
   const base = fundSeg ? `/funds/${fundSeg}` : '/funds'
   const linkCls = 'text-foreground underline underline-offset-4 hover:text-muted-foreground'

@@ -36,7 +36,7 @@ import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 
 interface Row {
   id: string | null; name: string; kind: string | null
-  closedThrough: string | null; lastEntryDate: string | null
+  closedThrough: string | null; lastEntryDate: string | null; firstEntryDate: string | null
   postedEntries: number; draftEntries: number; openBankRows: number
   trialBalanced: boolean; totalDebits: number; empty: boolean; cash: number
   investmentsAtCost: number; investmentsAtValue: number
@@ -143,7 +143,6 @@ const COLUMNS: Record<string, Col[]> = {
   statements: [CLOSED, TOTAL_DEBITS, TIES],
   'capital-accounts': [CLOSED, LAST_ENTRY, POSTED],
   'schedule-of-investments': [AT_COST, AT_VALUE, LAST_ENTRY],
-  performance: [CLOSED, LAST_ENTRY, TIES],
   construction: [AT_VALUE, AT_COST, CLOSED],
   tax: [CLOSED, LAST_ENTRY, TIES],
   // Actuals run through the last close; cash is what a forecast is mostly about.
@@ -276,7 +275,7 @@ export function FirmVehiclesTable({
     if (listed.has(m.id)) continue
     rows.push({
       id: m.id, name: m.name, kind: 'manco',
-      closedThrough: null, lastEntryDate: null, postedEntries: 0, draftEntries: 0, openBankRows: 0,
+      closedThrough: null, lastEntryDate: null, firstEntryDate: null, postedEntries: 0, draftEntries: 0, openBankRows: 0,
       trialBalanced: true, totalDebits: 0, empty: true, cash: 0,
       investmentsAtCost: 0, investmentsAtValue: 0, underivedTransactions: 0,
     })
