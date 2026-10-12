@@ -58,4 +58,14 @@ describe('parseCategorizations', () => {
   it('throws when there is no array', () => {
     expect(() => parseCategorizations('nope')).toThrow()
   })
+
+  it('passes the payee and activity columns inside the untrusted block, and only when present', () => {
+    const { content } = buildCategorizePrompt(accounts, [
+      { id: 't5', date: '2026-01-01', amount: -20, description: 'ACH DEBIT 1234', counterparty: 'Acme Software', activity: 'ACH Debit' },
+      { id: 't6', date: '2026-01-01', amount: -20, description: 'mystery' },
+    ])
+    const body = JSON.parse(content.split('\n')[1])
+    expect(body[0]).toMatchObject({ counterparty: 'Acme Software', activity: 'ACH Debit' })
+    expect(body[1]).not.toHaveProperty('counterparty')
+  })
 })

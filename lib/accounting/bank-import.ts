@@ -6,7 +6,9 @@ import { ensureVehicleAccounts } from './provision-accounts'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { accountIdByCode, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
-import { parseTransactionsCsv, dedupHash, legacyDedupHash, suggestCategory, bankEntryPostings } from './bank'
+import { parseTransactionsCsv, dedupHash, legacyDedupHash, bankEntryPostings } from './bank'
+import { categorizeBankRow, categorizationRecord, type CategorizeContext } from './bank-categorize'
+import { loadCategorizeContext } from './bank-categorize-context'
 import type { JournalEntry } from './types'
 import { vendorResolver } from './vendors'
 import { loadOwnedCashEntries, ownedCandidates, type OwnedCashEntry } from './investment-bank-match'
@@ -53,11 +55,16 @@ export async function importBankTransactions(
   let existing: any[]
   let qbEntries: Awaited<ReturnType<typeof loadQuickBooksCashEntries>>
   let owned: OwnedCashEntry[]
+  let categorize: CategorizeContext
   try {
     existing = await readAll<any>((from, to) => admin.from('bank_transactions' as any)
-      .select('dedup_hash, journal_entry_id, raw').eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('id').range(from, to))
+      .select('dedup_hash, journal_entry_id, raw, amount, description, counterparty, status').eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('id').range(from, to))
     qbEntries = await loadQuickBooksCashEntries(admin, fundId, vehicleId, cashId, rows.map(r => r.date))
     owned = await loadOwnedCashEntries(admin, fundId, vehicleId, cashId, rows.map(r => r.date))
+    // The entity's own chart, its sibling vehicles and how its earlier rows were booked — so a
+    // management company's rows land on a management company's accounts, and a payee booked
+    // by hand once is booked the same way next time.
+    categorize = await loadCategorizeContext(admin, fundId, group, existing)
   } catch (e) { return { error: `Could not check for existing transactions: ${(e as Error).message}` } }
   const seen = new Set(existing.flatMap(r => [r.dedup_hash, r.raw?.bankImportHash].filter(Boolean)))
   const claimed = new Set<string>()
@@ -149,8 +156,13 @@ export async function importBankTransactions(
       continue
     }
 
-    const cat = suggestCategory(row)
-    const otherId = codes.get(cat.accountCode) ?? cashId
+    const cat = categorizeBankRow(row, categorize)
+    // Never fall back to cash: a draft that debits and credits cash nets to zero and looks fine.
+    const otherId = cat.accountCode ? codes.get(cat.accountCode) : undefined
+    if (!otherId) {
+      errors.push(`${row.date} ${row.description}: no account in this entity's chart fits — add an income or expense account under Admin → Chart of accounts, then import again`)
+      continue
+    }
     const entry: JournalEntry = {
       fundId,
       entryDate: row.date,
@@ -178,7 +190,7 @@ export async function importBankTransactions(
       journal_entry_id: result.entryId,
       suggested_account_code: cat.accountCode,
       imported_by: userId,
-      raw: { ...row, importDifferences: differencesFor(row.date) },
+      raw: { ...row, importDifferences: differencesFor(row.date), categorization: categorizationRecord(cat) },
     })
     if (insErr) {
       // The entry exists but its bank transaction doesn't — most often because a concurrent

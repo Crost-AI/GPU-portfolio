@@ -15,6 +15,7 @@ import { postExistingEntryWithAllocation } from './continuous-allocation'
 import { underReview } from './bank-review'
 import { entryCarriesInvestments, BANK_ROW_IS_AN_INVESTMENT } from './ownership'
 import { NEEDS_INVESTMENTS_WRITE } from './investment-access'
+import { categorizationRecord } from './bank-categorize'
 
 export type BankActionError = { error: string; status: number }
 
@@ -100,6 +101,8 @@ async function loadActionableTxn(
  */
 export async function setBankTransactionAccount(
   admin: SupabaseClient, fundId: string, group: string, id: string, accountCode: unknown,
+  /** Who is choosing: a person on the bank page, or an agent. Only a person's choice is learned from as a draft. */
+  chosenBy: 'user' | 'ai' = 'user',
 ): Promise<{ ok: true; suggested_account_code: string } | BankActionError> {
   const loaded = await loadActionableTxn(admin, fundId, group, id)
   if ('error' in loaded) return loaded
@@ -155,7 +158,13 @@ export async function setBankTransactionAccount(
   await admin.from('journal_postings' as any)
     .update({ account_id: newAccountId, lp_entity_id: newLpEntityId })
     .eq('id', counter.id)
-  await admin.from('bank_transactions' as any).update({ suggested_account_code: code }).eq('id', id).eq('fund_id', fundId)
+  // Recorded as a choice: the AI pass leaves a person's alone, and the next import learns from it.
+  const categorization = categorizationRecord(chosenBy === 'user'
+    ? { by: 'user', confidence: 'high', reason: 'Chosen by hand' }
+    : { by: 'ai', confidence: 'high', reason: 'Re-pointed by an agent' })
+  await admin.from('bank_transactions' as any)
+    .update({ suggested_account_code: code, raw: { ...(txn.raw ?? {}), categorization } })
+    .eq('id', id).eq('fund_id', fundId)
   return { ok: true, suggested_account_code: code }
 }
 

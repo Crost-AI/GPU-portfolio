@@ -22,7 +22,14 @@ const qb = (overrides = {}) => ({ id: 'qb1', fund_id: 'tenant', vehicle_id: 'veh
 
 beforeEach(() => {
   serial = 0; readError = false
-  tables = { journal_entries: [qb()], bank_transactions: [] }
+  tables = {
+    journal_entries: [qb()], bank_transactions: [],
+    chart_of_accounts: [
+      { id: 'cash', fund_id: 'tenant', vehicle_id: 'vehicle-2', code: '1000', name: 'Cash', type: 'asset', subtype: 'cash' },
+      { id: 'lp', fund_id: 'tenant', vehicle_id: 'vehicle-2', code: '3100', name: "Partners' capital — LP (unallocated)", type: 'equity', subtype: 'lp_capital' },
+      { id: 'expense', fund_id: 'tenant', vehicle_id: 'vehicle-2', code: '5100', name: 'Partnership expenses', type: 'expense', subtype: 'partnership_expense' },
+    ],
+  }
   persistEntry.mockReset().mockImplementation(async (_a, fundId, _g, _u, entry) => {
     const id = `draft-${++serial}`
     tables.journal_entries.push({ id, fund_id: fundId, status: 'draft', ...entry })

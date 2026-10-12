@@ -136,6 +136,8 @@ export async function GET(req: NextRequest) {
       entry_is_split: split,
       settled_lp_entity_id: lpEntityId,
       settled_lp_name: lpEntityId ? names.get(lpEntityId) ?? null : null,
+      // Who chose the account and why — so a weak guess can be told apart from a firm one.
+      categorization: r.raw?.categorization ?? null,
     }
   }))
 }

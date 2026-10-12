@@ -15,7 +15,7 @@ import { InvestmentMatchQueue } from './investment-matches'
 import { bankActionMessages } from '@/lib/accounting/release-notice'
 
 interface DuplicateCandidate { id: string; date: string; amount: number; memo: string; status: string; claimed: boolean }
-interface Txn { import_differences?: import('@/lib/accounting/import-review').ImportDifference[]; duplicate_review?: boolean; quickbooks_linked?: boolean; review_kind?: 'quickbooks' | 'investment' | null; investment_linked?: boolean; duplicate_candidates?: DuplicateCandidate[]; id: string; txn_date: string; amount: number; description: string; counterparty: string | null; status: string; suggested_account_code: string | null; journal_entry_id: string | null; entry_account_code: string | null; entry_account_name: string | null; entry_is_split: boolean; settled_lp_entity_id: string | null; settled_lp_name: string | null }
+interface Txn { import_differences?: import('@/lib/accounting/import-review').ImportDifference[]; duplicate_review?: boolean; quickbooks_linked?: boolean; review_kind?: 'quickbooks' | 'investment' | null; investment_linked?: boolean; duplicate_candidates?: DuplicateCandidate[]; id: string; txn_date: string; amount: number; description: string; counterparty: string | null; status: string; suggested_account_code: string | null; journal_entry_id: string | null; entry_account_code: string | null; entry_account_name: string | null; entry_is_split: boolean; settled_lp_entity_id: string | null; settled_lp_name: string | null; categorization?: { by: string; confidence: 'high' | 'low'; reason: string } | null }
 interface Rec { bankEndingBalance: number; ledgerCashBalance: number; difference: number; matchedCount: number; unmatchedCount: number; unmatchedTotal: number; tiesOut: boolean }
 
 const actionBtn = 'text-xs border border-input rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors'
@@ -199,7 +199,7 @@ export function BankView() {
     // `entry_account_code` first, so patching `suggested_account_code` alone left the dropdown
     // showing the old account until the next reload even though the save had gone through.
     const name = accounts.find(a => a.code === code)?.name ?? null
-    setTxns(prev => prev.map(t => (t.id === id ? { ...t, suggested_account_code: code, entry_account_code: code, entry_account_name: name } : t)))
+    setTxns(prev => prev.map(t => (t.id === id ? { ...t, suggested_account_code: code, entry_account_code: code, entry_account_name: name, categorization: { by: 'user', confidence: 'high', reason: 'Chosen by hand' } } : t)))
     const res = await lf('/api/accounting/bank', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'setAccount', id, accountCode: code }) })
     if (!res.ok) {
       // SAY why. Re-pointing is refused when the draft has a custom allocation (more than one
@@ -384,6 +384,13 @@ export function BankView() {
                           {accounts.filter(a => a.is_active !== false || a.code === (t.entry_account_code ?? t.suggested_account_code))
                             .map(a => <option key={a.code} value={a.code}>{a.name} ({a.code})</option>)}
                         </select>
+                        {/* A guess the categorizer itself wasn't sure of: nothing matched, or it read
+                            as a transfer without saying with whom. The reason is on hover. */}
+                        {t.categorization?.confidence === 'low' && (
+                          <span className="ml-1.5 shrink-0 text-warning" title={t.categorization.reason}>
+                            Check
+                          </span>
+                        )}
                         {/* Only where the account can't say it: a settled row posts to 1300 / 2300,
                             which names an obligation, not a person. */}
                         {t.settled_lp_name && (

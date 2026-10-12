@@ -212,7 +212,7 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   set_bank_transaction_account: async ({ admin, fundId, portfolioGroup }, input) => {
-    const result = await setBankTransactionAccount(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), input?.accountCode)
+    const result = await setBankTransactionAccount(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), input?.accountCode, 'ai')
     if ('error' in result) throw new Error(result.error)
     return result
   },
