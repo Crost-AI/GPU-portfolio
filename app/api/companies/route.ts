@@ -3,12 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
-import { logActivity } from '@/lib/activity'
-import { seedCompanyFromDefaults } from '@/lib/metrics/seed-default-metrics'
-import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
+import { createCompany } from '@/lib/companies/create'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
-import { scopeCompanyRows, scopeGroups, scopeTransactions, newCompanyGroupsProblem } from '@/lib/access/scope'
+import { scopeCompanyRows, scopeGroups, scopeTransactions } from '@/lib/access/scope'
 
 export async function GET() {
   const supabase = await createClient()
@@ -121,47 +119,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No fund found for this user' }, { status: 403 })
   }
 
-  // A member creates a company only in their own entities, and must name one (an unlinked company is
-  // admin-only). Checked before ensureVehiclesByName, which would create an entity they cannot see.
   const createScope = await loadEntityScopeForUser(admin, user.id)
-  const groupProblem = newCompanyGroupsProblem(createScope ? createScope.vehicleNames : [], portfolio_group)
-  if (groupProblem) return NextResponse.json({ error: groupProblem }, { status: 403 })
+  const created = await createCompany(admin, {
+    fundId: membership.fund_id,
+    userId: user.id,
+    vehicleNames: createScope ? createScope.vehicleNames : [],
+    fields: { name, aliases, tags, stage, industry, notes, overview, founders, why_invested, current_update, contact_email, portfolio_group },
+    holdingType: holdingType as 'company' | 'crypto',
+    defaultMetricIds,
+  })
+  if (!created.ok) {
+    return created.dbError ? dbError(created.dbError as any, 'companies') : NextResponse.json({ error: created.error }, { status: created.status })
+  }
+  const data = created.company
 
-  // Every stored portfolio_group name must be backed by a real fund_vehicles row — never a
-  // disconnected string. Resolve/create before the write, not after.
-  await ensureVehiclesByName(admin, membership.fund_id, portfolio_group ?? [])
-
-  const { data, error } = await admin
-    .from('companies')
-    .insert({
-      fund_id: membership.fund_id,
-      name: name.trim(),
-      aliases: aliases ?? null,
-      tags: tags ?? [],
-      stage: stage?.trim() || null,
-      industry: industry ?? null,
-      notes: notes?.trim() || null,
-      overview: overview?.trim() || null,
-      founders: founders?.trim() || null,
-      why_invested: why_invested?.trim() || null,
-      current_update: current_update?.trim() || null,
-      contact_email: contact_email ?? null,
-      portfolio_group: portfolio_group ?? null,
-      status: 'active',
-      holding_type: holdingType,
-    })
-    .select()
-    .single()
-
-  if (error) return dbError(error, 'companies')
-
-  // Seed the fund's default metric profile into the new company (deduped by slug; no-op if
-  // the fund has no defaults configured). If the modal sent an explicit selection, seed only
-  // those and record the rest as exclusions, so a later fund-wide apply doesn't re-add them.
-  // Company metrics (MRR, cash, burn) describe an operating company. A token or a fund has none,
-  // and seeding them would put empty charts on its page.
+  // The modal's explicit selection: record the rest as exclusions, so a later fund-wide apply
+  // doesn't re-add them. Custom metrics are the modal's own additions.
   if (holdingType === 'company') {
-    await seedCompanyFromDefaults(admin, membership.fund_id, data.id, defaultMetricIds)
     if (defaultMetricIds) {
       await recordDefaultMetricExclusions(admin, membership.fund_id, data.id, defaultMetricIds)
     }
@@ -169,8 +143,6 @@ export async function POST(req: NextRequest) {
       await insertCustomMetrics(admin, membership.fund_id, data.id, customMetrics)
     }
   }
-
-  logActivity(admin, membership.fund_id, user.id, 'company.create', { companyName: name.trim() })
 
   return NextResponse.json(data, { status: 201 })
 }

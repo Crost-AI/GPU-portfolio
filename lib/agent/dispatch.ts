@@ -227,9 +227,11 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     ...(approveUrl ? { approveUrl } : {}),
     next: adminOnlyToolLabel(tool.name, input) && auth.role !== 'admin'
       ? `Nothing has changed yet. ${adminOnlyMessage(adminOnlyToolLabel(tool.name, input)!)} ` +
-        `Tell the user it is waiting for an admin to approve, ${inApp} or in their own chat.`
+        'Tell the user it is waiting for an admin, who can approve it from their own chat ' +
+        '(list_pending_actions, then approve_action) or through the API, without opening the app.'
       : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
       `Only after they confirm, call approve_action with id "${id}"; if they decline, call reject_action. ` +
-      `If you have no approve_action tool, tell the user to approve it ${inApp}.`,
+      'Approving here is the normal path; the app is not needed. ' +
+      `Only if you have no approve_action tool (a stale tool list), tell the user to reconnect, or approve it ${inApp}.`,
   }
 }

@@ -4,6 +4,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveBrowserPrincipal } from '@/lib/pending-actions/browser-principal'
 import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-actions/service'
 
+// Approving a staged company update runs the extraction pipeline (submit_company_update).
+export const maxDuration = 120
+
 /**
  * Approve a staged action from the browser.
  *

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { dbError } from '@/lib/api-error'
+import { finalizeMemo } from '@/lib/diligence/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 /**
  * Finalize a memo draft. Admin-only. Sets is_draft=false, finalized_at, and
@@ -28,43 +29,8 @@ export async function POST(
 
   const fundId = (membership as any).fund_id as string
 
-  // Verify the draft has a recommendation paragraph filled in. Per hard rule:
-  // recommendation is partner_only — if the prose is still the placeholder,
-  // block finalize and prompt the partner to fill it in.
-  const { data: row } = await admin
-    .from('diligence_memo_drafts')
-    .select('id, memo_draft_output, is_draft')
-    .eq('id', params.draftId)
-    .eq('deal_id', params.id)
-    .eq('fund_id', fundId)
-    .maybeSingle()
-  if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!(row as any).is_draft) return NextResponse.json({ error: 'Already finalized' }, { status: 409 })
-
-  const memo = (row as any).memo_draft_output as { paragraphs?: Array<{ section_id: string; prose: string; origin: string }> } | null
-  const recommendation = memo?.paragraphs?.find(p => p.section_id === 'recommendation')
-  if (!recommendation || recommendation.prose.trim() === '[Partner to complete]' || recommendation.origin === 'partner_only_placeholder') {
-    return NextResponse.json({
-      error: 'Recommendation section is empty. The partner must complete this before finalizing.',
-    }, { status: 422 })
-  }
-
-  const { error } = await admin
-    .from('diligence_memo_drafts')
-    .update({
-      is_draft: false,
-      finalized_at: new Date().toISOString(),
-      finalized_by: user.id,
-    } as any)
-    .eq('id', params.draftId)
-    .eq('fund_id', fundId)
-  if (error) return dbError(error, 'diligence-draft-finalize')
-
-  await admin
-    .from('diligence_deals')
-    .update({ current_memo_stage: 'finalized' })
-    .eq('id', params.id)
-    .eq('fund_id', fundId)
-
-  return NextResponse.json({ ok: true })
+  // The recommendation is partner_only: lib/diligence/service.ts refuses a draft whose
+  // recommendation is still the placeholder.
+  const result = await finalizeMemo(admin, { fundId, userId: user.id }, params.id, params.draftId)
+  return outcomeResponse(result, () => ({ ok: true }))
 }

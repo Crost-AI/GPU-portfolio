@@ -17,6 +17,9 @@ import { issuerFor, wwwAuthenticate } from '@/lib/oauth/metadata'
 import { iconUrl, type IconSize } from '@/lib/pwa'
 
 export const runtime = 'nodejs'
+// A submitted company update runs the extraction pipeline in the call (submit_company_update), as
+// an emailed one does in /api/inbound-email.
+export const maxDuration = 120
 export const dynamic = 'force-dynamic'
 
 // Minimal MCP server over Streamable HTTP (stateless JSON mode). Exposes the
@@ -65,7 +68,9 @@ const SERVER_INSTRUCTIONS =
   'nothing has changed yet. Tell the user what the change is and ask them to confirm; only after they do, ' +
   'call approve_action with that id (or reject_action if they decline). ' +
   'When an admin asks to set up the fund (or the fund is new), call setup_status, ask only for what is missing, ' +
-  'confirm the plan, and apply it with one setup_fund call.'
+  'confirm the plan, and apply it with one setup_fund call. ' +
+  "When the user shares a portfolio company's update (a letter, deck or KPI sheet), pass it to submit_company_update " +
+  'with the company named, rather than recording each figure yourself.'
 
 interface RpcRequest { jsonrpc: string; id?: string | number | null; method: string; params?: any }
 
