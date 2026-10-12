@@ -6,6 +6,7 @@ import { dbError } from '@/lib/api-error'
 import { rateLimit } from '@/lib/rate-limit'
 import { scanFile } from '@/lib/security/scan-file'
 import { logLpAccessEvent } from '@/lib/lp-access-log'
+import { loadOnboardingEntities, portalOnboarding } from '@/lib/portal/service'
 import { logOnboardingEvent, attachItemDocument, loadItemDocuments } from '@/lib/lp-onboarding-audit'
 import { notifyFundOfUpload, notifyFundOfWireChange } from '@/lib/lp-onboarding-notify'
 import { DEFAULT_CONSENT_DISCLOSURE } from '@/lib/tax/delivery'
@@ -46,70 +47,10 @@ async function ctx(): Promise<LpCtx> {
   return { admin: admin as any, user, ...access }
 }
 
-/** The LP's entities in funds whose portal is on, with the fund's requirement set. */
-async function loadEntities(admin: any, investorIds: string[]) {
-  if (investorIds.length === 0) return { entities: [] as any[], kindsByFund: new Map<string, string[]>() }
-  const { data: ents } = await admin
-    .from('lp_entities').select('id, fund_id, entity_name, investor_id, onboarding_excluded, lp_investors(name)')
-    .in('investor_id', investorIds).eq('onboarding_excluded', false).order('entity_name')
-  const fundIds = Array.from(new Set(((ents ?? []) as any[]).map(e => e.fund_id as string)))
-  if (fundIds.length === 0) return { entities: [] as any[], kindsByFund: new Map<string, string[]>() }
-  const { data: settings } = await admin.from('fund_settings').select('fund_id, lp_portal_enabled, lp_onboarding_kinds').in('fund_id', fundIds)
-  const kindsByFund = new Map<string, string[]>()
-  for (const s of (settings ?? []) as any[]) {
-    if (!s.lp_portal_enabled) continue
-    kindsByFund.set(s.fund_id, s.lp_onboarding_kinds == null ? DEFAULT_ONBOARDING_KINDS : normalizeKinds(s.lp_onboarding_kinds))
-  }
-  return { entities: ((ents ?? []) as any[]).filter(e => kindsByFund.has(e.fund_id)), kindsByFund }
-}
-
 export async function GET(): Promise<NextResponse> {
   const c = await ctx()
   if (c.error) return c.error
-  const { admin, investorIds, lpAccountId } = c
-
-  const { entities, kindsByFund } = await loadEntities(admin, investorIds)
-  if (entities.length === 0) return NextResponse.json({ entities: [] })
-
-  const { data: items } = await admin
-    .from('lp_onboarding_items')
-    .select('id, lp_entity_id, kind, status, document_id, submitted_at, reviewed_at, expires_on, note')
-    .in('lp_entity_id', entities.map(e => e.id))
-  const docsByItem = await loadItemDocuments(admin, ((items ?? []) as any[]).map(i => i.id))
-
-  const closings = await loadClosingsByEntity(admin, entities.map(e => e.id))
-  // Electronic K-1 consent is the investor's own election: the principal account gives it.
-  const { data: me } = await admin.from('lp_accounts').select('kind').eq('id', lpAccountId).maybeSingle()
-  const canConsent = (me as { kind?: string } | null)?.kind === 'lp'
-
-  // Fund names, for an LP in more than one.
-  const fundIds = Array.from(new Set(entities.map(e => e.fund_id as string)))
-  const { data: funds } = await admin.from('funds').select('id, name').in('id', fundIds)
-  const fundName = new Map<string, string>(((funds ?? []) as any[]).map(f => [f.id, f.name]))
-
-  // One matrix per fund, since each fund has its own requirement set.
-  const out: any[] = []
-  for (const fundId of fundIds) {
-    const list: OnboardingEntity[] = entities.filter(e => e.fund_id === fundId).map(e => ({
-      id: e.id, name: e.entity_name, investorId: e.investor_id, investorName: e.lp_investors?.name ?? '',
-      closing: closings.get(e.id) ?? null,
-    }))
-    const rows = buildOnboardingMatrix(list, kindsByFund.get(fundId) as any, (items ?? []) as OnboardingItemRow[])
-    for (const r of rows) {
-      out.push({
-        id: r.id, name: r.name, fundName: fundName.get(fundId) ?? '', outstanding: r.outstanding, complete: r.complete,
-        closing: r.closing ? { name: r.closing.name, closeDate: r.closing.closeDate, phrase: closingPhrase(r.closing, r.daysToClose), daysToClose: r.daysToClose } : null,
-        items: r.items.map(i => ({
-          kind: i.kind, label: i.label, help: ONBOARDING_KIND_HELP[i.kind], status: i.status, expired: i.expired,
-          documentId: i.documentId, submittedAt: i.submittedAt, reviewedAt: i.reviewedAt, expiresOn: i.expiresOn,
-          documents: (i.itemId ? docsByItem.get(i.itemId) ?? [] : []).map(d => ({ id: d.id, fileName: d.file_name, addedAt: d.added_at, mine: d.added_by_account === lpAccountId })),
-          // The fund's note is for the LP only when the item was sent back or waived.
-          note: i.status === 'rejected' || i.status === 'waived' ? i.note : null,
-        })),
-      })
-    }
-  }
-  return NextResponse.json({ entities: out, maxBytes: ONBOARDING_MAX_UPLOAD_BYTES, canConsent, disclosure: DEFAULT_CONSENT_DISCLOSURE })
+  return NextResponse.json(await portalOnboarding(c.admin, { userId: c.user.id, email: c.user.email ?? null, lpAccountId: c.lpAccountId, investorIds: c.investorIds }))
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -135,7 +76,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (sizeBytes != null && sizeBytes > ONBOARDING_MAX_UPLOAD_BYTES) return NextResponse.json({ error: 'That file is too large (25 MB max).' }, { status: 400 })
 
   // The entity must be one of the LP's own, in a fund whose portal is on.
-  const { entities, kindsByFund } = await loadEntities(admin, investorIds)
+  const { entities, kindsByFund } = await loadOnboardingEntities(admin, investorIds)
   const entity = entities.find(e => e.id === entityId)
   if (!entity) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const fundId = entity.fund_id as string
@@ -223,7 +164,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   if (!entityId) return NextResponse.json({ error: 'lp_entity_id is required' }, { status: 400 })
   if (name.length < 2) return NextResponse.json({ error: 'Enter the entity\'s legal name' }, { status: 400 })
 
-  const { entities } = await loadEntities(admin, investorIds)
+  const { entities } = await loadOnboardingEntities(admin, investorIds)
   const entity = entities.find(e => e.id === entityId)
   if (!entity) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (entity.entity_name === name) return NextResponse.json({ ok: true, entity_name: name })

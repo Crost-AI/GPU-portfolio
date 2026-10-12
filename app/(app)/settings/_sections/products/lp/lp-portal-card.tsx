@@ -57,3 +57,59 @@ export function LpPortalRow({ enabled, onSaved }: { enabled: boolean; onSaved: (
     </div>
   )
 }
+
+/**
+ * The investor connector's switch (app/api/portal/mcp): whether investors may connect Claude,
+ * ChatGPT or another assistant to their own portal. Off by default, and inert while the portal is
+ * off. Each investor still signs in and consents, and only ever reaches their own investment in
+ * this fund; turning it off cuts every connected assistant off on its next call.
+ */
+export function LpConnectorRow({ enabled, portalOn, onSaved }: { enabled: boolean; portalOn: boolean; onSaved: () => void }) {
+  const [on, setOn] = useState(enabled)
+  const [saving, setSaving] = useState(false)
+  const url = typeof window === 'undefined' ? '/api/portal/mcp' : `${window.location.origin}/api/portal/mcp`
+
+  const setValue = async (next: boolean) => {
+    setOn(next)
+    setSaving(true)
+    const res = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lpAgentEnabled: next }),
+    })
+    setSaving(false)
+    if (res.ok) onSaved()
+    else setOn(!next)
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">Investor connector</div>
+        <div className="text-xs text-muted-foreground">
+          Lets investors connect Claude, ChatGPT or another assistant to their own portal: their statement, letters,
+          documents, capital calls and messages. They can also acknowledge a wire and message you through it.
+          {!portalOn && ' Needs the LP portal on.'}
+        </div>
+        {on && portalOn && (
+          <div className="mt-1 text-xs text-muted-foreground">
+            Investors add <span className="font-mono text-foreground">{url}</span> as a connector.
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        {saving && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+        {[{ value: true, label: 'On' }, { value: false, label: 'Off' }].map(opt => (
+          <button
+            key={opt.label}
+            onClick={() => setValue(opt.value)}
+            disabled={saving}
+            className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${ on === opt.value ? 'border-foreground/30 bg-accent font-medium' : 'hover:bg-accent/30' }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}

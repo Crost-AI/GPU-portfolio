@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Loader2, LogIn, Eye, ArrowDownCircle, Search, Upload } from 'lucide-react'
+import { Loader2, LogIn, Eye, ArrowDownCircle, Search, Upload, BadgeCheck, MessageSquare } from 'lucide-react'
 import { AnalystToggleButton } from '@/components/analyst-button'
 import { AnalystPanel } from '@/components/analyst-panel'
 
@@ -19,6 +19,8 @@ interface ActivityEvent {
   personEmail: string | null
   personKind: string | null
   investorName: string | null
+  /** Which way they came in: the web portal ('web'), or the investor connector ('mcp'). */
+  source: string | null
 }
 
 interface Person {
@@ -71,6 +73,8 @@ const EVENT_META: Record<string, { label: string; icon: typeof Eye; className: s
   view: { label: 'View', icon: Eye, className: 'text-muted-foreground' },
   download: { label: 'Download', icon: ArrowDownCircle, className: 'text-muted-foreground' },
   upload: { label: 'Upload', icon: Upload, className: 'text-info' },
+  acknowledge: { label: 'Wire acknowledged', icon: BadgeCheck, className: 'text-muted-foreground' },
+  message: { label: 'Message', icon: MessageSquare, className: 'text-muted-foreground' },
 }
 
 const TARGET_LABELS: Record<string, string> = {
@@ -78,6 +82,7 @@ const TARGET_LABELS: Record<string, string> = {
   snapshot: 'Statement',
   letter: 'Letter',
   document: 'Document',
+  capital_call: 'Capital call',
 }
 
 function formatDateTime(iso: string) {
@@ -271,6 +276,7 @@ export function LpActivityDashboard() {
                         <span className={`inline-flex items-center gap-1.5 ${meta?.className ?? ''}`}>
                           <Icon className="h-3.5 w-3.5" /> {meta?.label ?? e.eventType}
                         </span>
+                        {e.source === 'mcp' && <div className="text-xs text-muted-foreground">Through Claude or ChatGPT</div>}
                       </td>
                       <td className="px-4 py-2.5">
                         {e.eventType === 'login' ? (

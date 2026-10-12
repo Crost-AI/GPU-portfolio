@@ -473,6 +473,27 @@ The headless path covers the other direction too. Beyond the built-in integratio
 - **Safe to repeat.** Each entry is keyed by a hash of its content, so re-sending an overlapping window matches what was already imported instead of duplicating it.
 - **Review holds stop the run.** If the import's comparison with investment and LP records finds a difference, nothing is written until a person re-runs the import with the review token.
 
+### Investors connecting their own assistant
+
+Investors can connect Claude, ChatGPT or another assistant to their own portal and ask about their investment in plain language. It is a separate connector from the fund's, at `https://<your-domain>/api/portal/mcp`.
+
+**Turning it on.** An admin switches on **Investor connector**, just under **LP portal** in Settings → Feature visibility. It is off by default for every fund, and needs the LP portal on as well. Switching either off cuts every connected assistant off on its next call. It is independent of **Agent access**, which is the fund's own connector.
+
+**Connecting.** The investor finds the address under **Settings → Connect an assistant** in their portal and adds it as a custom connector in their assistant. The assistant then sends them to sign in with their portal account. The consent screen names the fund (an investor in more than one fund on this deployment picks one) and says what the assistant may do. The same card lists the assistants they have connected, with a **Disconnect** button for each.
+
+**What it can do.** It covers the investor's own investment in the one fund they chose and nothing else, the same as their web portal:
+- their position and capital account statement (as a one-hour PDF link);
+- letters and documents shared with them;
+- capital calls and distributions;
+- their messages with the fund;
+- the status of their onboarding paperwork.
+
+If they allowed it to act for them, it can also record that they have wired a capital call, and send the fund a message. Uploading onboarding documents stays on the web.
+
+**The same checks and the same record.** The connector and the web portal call the same functions (`lib/portal/service.ts`), so an investor reaches the same data under the same checks either way. Every check is re-made on every call: the investor's account is still active and still invested in the fund, and both switches are still on. Views, downloads, wire acknowledgments and messages all go to the **LP activity** log, marked "Through Claude or ChatGPT" when they came through the connector.
+
+**Kept apart from the fund's connector.** Investors are not fund members, so the connector has its own sign-in audience. An investor's token is refused at `/api/mcp` and `/api/v1`, and a fund member's token is refused at `/api/portal/mcp`. Each connection is bound to one fund when it is made. Requests are limited per investor account to 120 reads or 20 writes a minute.
+
 ### Dashboards in Claude and ChatGPT
 
 Members can open the fund's dashboards inside a Claude or ChatGPT conversation, ask questions about what they are looking at, and save a dashboard to reopen later. There are four: the portfolio overview, a company with its KPIs, a vehicle's financial statements, and LP capital.

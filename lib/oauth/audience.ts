@@ -13,11 +13,15 @@
  * comparison. What identifies the boundary is the path.
  */
 
-export type OAuthAudience = 'mcp' | 'v1'
+export type OAuthAudience = 'mcp' | 'v1' | 'portal'
 
 const PATH_PREFIXES: Record<OAuthAudience, string> = {
   mcp: '/api/mcp',
   v1: '/api/v1',
+  // The investor connector: an LP's own portal, over MCP (app/api/portal/mcp). A different
+  // identity model from the fund's (lp_accounts, not fund_members), so its tokens must never open
+  // the fund's boundaries, nor theirs this one.
+  portal: '/api/portal/mcp',
 }
 
 /**
@@ -53,7 +57,9 @@ export function audienceOf(resource: string | null | undefined): OAuthAudience |
  * one. Tighten this to require a resource once no null-resource tokens remain in `oauth_tokens`.
  */
 export function tokenAllowedAt(resource: string | null | undefined, boundary: OAuthAudience): boolean {
-  if (!resource) return true
+  // The investor connector is newer than every null-resource token, so it never needs the
+  // transitional allowance: its tokens always name it, and nothing else is accepted there.
+  if (!resource) return boundary !== 'portal'
   const audience = audienceOf(resource)
   // An unrecognised resource is refused everywhere: something was claimed, and it was not this.
   if (audience === null) return false

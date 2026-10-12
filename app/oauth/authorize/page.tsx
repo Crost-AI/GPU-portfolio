@@ -9,6 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuthShell } from '@/components/auth-shell'
 import { ConsentForm } from './consent-form'
 import { fundCreationRefusal } from '@/lib/onboarding/create-fund'
+import { audienceOf } from '@/lib/oauth/audience'
+import { lpFundsFor, lpGrantableScope } from '@/lib/portal/principal'
+import { InvestorConsentForm } from './investor-consent-form'
 
 /**
  * The OAuth consent screen — where a human decides whether an agent may act on
@@ -82,6 +85,43 @@ export default async function AuthorizePage(props: Props) {
     .select('fund_id, role')
     .eq('user_id', user!.id)
     .maybeSingle()
+
+  // The investor connector (app/api/portal/mcp): the assistant asked for it by resource, or it
+  // named none and this person is an investor with no fund membership, so the investor connector is
+  // the only thing they could be connecting. Never falls through to the fund branches below, so an
+  // investor can't be offered a new fund, and a fund member can't hand over the fund here.
+  const lpFunds = audienceOf(resource) === 'portal' || (!resource && !membership)
+    ? await lpFundsFor(admin, user!.id)
+    : null
+  if (audienceOf(resource) === 'portal' || (!resource && !membership && lpFunds)) {
+    if (!lpFunds) {
+      return <Problem title="No investor account" detail="This connector is for investors. Your sign-in has no active investor account here." />
+    }
+    const available = lpFunds.funds.filter(f => f.connectorOn)
+    if (available.length === 0) {
+      return (
+        <Problem
+          title="Not available yet"
+          detail="Your fund hasn't turned on connecting an assistant to the investor portal. You can still use the portal on the web, or ask the fund to turn this on."
+        />
+      )
+    }
+    return (
+      <InvestorConsentForm
+        clientName={client.client_name ?? 'An external application'}
+        funds={available.map(f => ({ id: f.fundId, name: f.name }))}
+        willWrite={lpGrantableScope(scope).includes('write')}
+        params={{
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          code_challenge: codeChallenge,
+          scope: lpGrantableScope(scope),
+          state,
+          resource,
+        }}
+      />
+    )
+  }
 
   if (!membership) {
     // No fund yet: name one here and the assistant sets the rest up (setup_status, setup_fund).

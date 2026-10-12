@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { MfaSettings } from '@/components/account/mfa-settings'
 import { useTheme } from 'next-themes'
-import { Loader2, Check, UserCheck, Trash2, Monitor, Sun, Moon } from 'lucide-react'
+import { Loader2, Check, UserCheck, Trash2, Monitor, Sun, Moon, Copy, Plug } from 'lucide-react'
 
 function SettingsCard({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
@@ -69,6 +69,29 @@ export default function PortalSettingsPage() {
     if (res.ok) setRows(prev => prev.filter(r => r.id !== id))
   }
 
+  // ── Assistant connector (app/api/portal/mcp) ──
+  const [conn, setConn] = useState<{ funds: { fundId: string; name: string; connectorOn: boolean }[]; connections: any[] } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [disconnecting, setDisconnecting] = useState<string | null>(null)
+  const connectorUrl = mounted ? `${window.location.origin}/api/portal/mcp` : '/api/portal/mcp'
+
+  useEffect(() => {
+    fetch('/api/portal/connections')
+      .then(r => (r.ok ? r.json() : null))
+      .then(b => setConn(b))
+      .catch(() => setConn(null))
+  }, [])
+
+  async function disconnect(c: { clientId: string; fundId: string }) {
+    const key = `${c.clientId}:${c.fundId}`
+    setDisconnecting(key)
+    const res = await fetch(`/api/portal/connections?client_id=${encodeURIComponent(c.clientId)}&fund_id=${encodeURIComponent(c.fundId)}`, { method: 'DELETE' })
+    setDisconnecting(null)
+    if (res.ok) setConn(prev => prev && { ...prev, connections: prev.connections.filter(x => `${x.clientId}:${x.fundId}` !== key) })
+  }
+
+  const connectorOn = !!conn?.funds.some(f => f.connectorOn)
+
   return (
     <div className="space-y-4">
       <div>
@@ -90,6 +113,52 @@ export default function PortalSettingsPage() {
           ))}
         </div>
       </SettingsCard>
+
+      {conn && (connectorOn || conn.connections.length > 0) && (
+        <SettingsCard title="Connect an assistant" description="Ask Claude, ChatGPT or another assistant about your investment: your statement, letters, documents, capital calls and messages.">
+          <div className="space-y-3">
+            {connectorOn && (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  Add this address as a custom connector in your assistant&apos;s settings, then sign in with your portal account when it asks.
+                  It only sees your own investment, and only in the fund you choose.
+                </p>
+                <div className="flex items-center gap-2 max-w-lg">
+                  <Input readOnly value={connectorUrl} className="font-mono text-xs" onFocus={e => e.currentTarget.select()} />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { navigator.clipboard?.writeText(connectorUrl); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              </>
+            )}
+            {conn.connections.length > 0 && (
+              <div className="rounded-md border divide-y">
+                {conn.connections.map(c => {
+                  const key = `${c.clientId}:${c.fundId}`
+                  return (
+                    <div key={key} className="flex items-center gap-3 px-3 py-2 text-sm">
+                      <Plug className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">{c.clientName}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {c.fundName} · {c.canAct ? 'can acknowledge wires and message the fund' : 'read-only'}
+                        </div>
+                      </div>
+                      <button onClick={() => disconnect(c)} disabled={disconnecting === key} className="text-sm text-muted-foreground hover:text-destructive inline-flex items-center gap-1 shrink-0">
+                        {disconnecting === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Disconnect
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </SettingsCard>
+      )}
 
       <SettingsCard title="Change password">
         <div className="space-y-3 max-w-sm">

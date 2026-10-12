@@ -133,6 +133,7 @@ export async function GET() {
     // Both ship in later migrations; absent, they read as off — see the star select above.
     affinityMcpEnabled: !!settings?.affinity_mcp_enabled,
     agentApiEnabled: !!settings?.agent_api_enabled,
+    lpAgentEnabled: !!settings?.lp_agent_enabled,
     displayName: membership.display_name ?? '',
     isAdmin: membership.role === 'admin',
     userId: user.id,
@@ -161,7 +162,7 @@ export async function PATCH(req: NextRequest) {
   if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 404 })
 
   const body = await req.json()
-  const { fundName, fundLogo, fundAddress, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled } = body
+  const { fundName, fundLogo, fundAddress, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled, lpAgentEnabled } = body
 
   // Update display name on fund_members (any user can do this)
   if (displayName !== undefined) {
@@ -186,7 +187,7 @@ export async function PATCH(req: NextRequest) {
     disableUserTracking !== undefined || featureVisibility !== undefined ||
     dealThesis !== undefined || dealScreeningPrompt !== undefined ||
     dealIntakeEnabled !== undefined || dealsDefaultVehicleId !== undefined || lpPortalEnabled !== undefined || affinityMcpEnabled !== undefined ||
-    agentApiEnabled !== undefined
+    agentApiEnabled !== undefined || lpAgentEnabled !== undefined
 
   if (hasAdminFields && membership.role !== 'admin') {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
@@ -583,6 +584,12 @@ export async function PATCH(req: NextRequest) {
   // back exactly as it was if the admin changes their mind.
   if (agentApiEnabled !== undefined) {
     settingsUpdates.agent_api_enabled = !!agentApiEnabled
+  }
+  // The investor connector (app/api/portal/mcp): whether investors may connect an assistant to
+  // their own portal. Separate from the agent API above, which is the fund's own. Off by default,
+  // and inert unless the LP portal is on too; checked live on every call, like the switch above.
+  if (lpAgentEnabled !== undefined) {
+    settingsUpdates.lp_agent_enabled = !!lpAgentEnabled
   }
 
   // Update feature visibility
