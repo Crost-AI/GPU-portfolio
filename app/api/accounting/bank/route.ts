@@ -9,8 +9,6 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { accountIdByCode } from '@/lib/accounting/persist'
 import { RECEIVABLE_CODE, DISTRIBUTION_PAYABLE_CODE } from '@/lib/accounting/chart'
-import { ESCROW_VIA_HOLDING } from '@/lib/accounting/bank'
-import { ESCROW_CODE } from '@/lib/accounting/adopt'
 import { loadEntityNames } from '@/lib/accounting/load'
 import { closedPeriodRanges, dateInAnyClosedPeriod } from '@/lib/accounting/periods'
 import { dbError } from '@/lib/api-error'
@@ -19,9 +17,9 @@ import { postExistingEntryWithAllocation, setGeneratedAllocationStatus } from '@
 import { underReview, reviewKind } from '@/lib/accounting/bank-review'
 import { loadOwnedCashEntries, ownedCandidates } from '@/lib/accounting/investment-bank-match'
 import { entryCarriesInvestments, BANK_ROW_IS_AN_INVESTMENT } from '@/lib/accounting/ownership'
+import { bankEscrowPostings, guardBankEntries, postBankTransaction, setBankTransactionAccount } from '@/lib/accounting/bank-actions'
 import { loadMayTouchInvestments, NEEDS_INVESTMENTS_WRITE } from '@/lib/accounting/investment-access'
 import { loadQuickBooksCashEntries, quickBooksCandidates, quickBooksAlreadyClaimed, readAll } from '@/lib/accounting/bank-quickbooks-match'
-import { categorizationRecord } from '@/lib/accounting/bank-categorize'
 
 // GET — list a vehicle's staged bank transactions.
 export async function GET(req: NextRequest) {
@@ -161,59 +159,10 @@ export async function POST(req: NextRequest) {
   if (group instanceof NextResponse) return group
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
-  /**
-   * The entry-state guard the bank routes used to be missing.
-   *
-   * `unpost` and `restore` checked the closed period; `post`, `postMany` and `ignore` did
-   * not, and none of them checked the entry's STATUS. So bank-posting a draft dated inside a
-   * closed month injected P&L into locked books, and posting a transaction whose entry had
-   * been voided (by `ignore`) resurrected that entry straight to `posted` — a transition the
-   * journal route explicitly forbids.
-   *
-   * Returns an error string, or null when the transition is allowed.
-   */
-  /**
-   * An escrow release clears the receivable the exit recognized — and the escrow receipt
-   * recorded on the holding posts exactly that (lib/accounting/from-portfolio.ts). A bank entry
-   * crediting 1350 as well would clear it twice, so the bank row is LINKED to the receipt's
-   * entry instead ("Investments with no bank transaction"), never posted to 1350 itself.
-   */
-  const escrowPostings = async (entryIds: string[]): Promise<string | null> => {
-    if (entryIds.length === 0) return null
-    const codes = await accountIdByCode(admin, gate.fundId, group as string)
-    const escrowId = codes.get(ESCROW_CODE)
-    if (!escrowId) return null
-    const { data, error } = await admin.from('journal_postings' as any).select('journal_entry_id')
-      .eq('book', ACTUAL_BOOK).eq('fund_id', gate.fundId).in('journal_entry_id', entryIds).eq('account_id', escrowId).limit(1)
-    if (error) return `The entry could not be checked: ${error.message}`
-    return ((data as any[]) ?? []).length > 0 ? ESCROW_VIA_HOLDING : null
-  }
-
-  const guardEntry = async (
-    entryIds: string[],
-    allowed: ('draft' | 'posted')[]
-  ): Promise<string | null> => {
-    if (entryIds.length === 0) return null
-    const { data: entries } = await admin
-      .from('journal_entries' as any)
-      .select('id, status, entry_date')
-      .eq('book', ACTUAL_BOOK)
-      .eq('fund_id', gate.fundId)
-      .in('id', entryIds)
-
-    const closed = await closedPeriodRanges(admin, gate.fundId, group as string)
-    for (const e of ((entries as any[]) ?? [])) {
-      if (!allowed.includes(e.status)) {
-        return e.status === 'void'
-          ? 'That entry was voided. Restore the transaction to draft it again.'
-          : `That entry is already ${e.status}.`
-      }
-      if (e.entry_date && dateInAnyClosedPeriod(closed, e.entry_date)) {
-        return `That entry is dated ${e.entry_date}, inside a closed period — reopen it first.`
-      }
-    }
-    return null
-  }
+  // The entry-state and escrow guards live in lib/accounting/bank-actions.ts, shared with the
+  // agent's bank tools.
+  const escrowPostings = (entryIds: string[]) => bankEscrowPostings(admin, gate.fundId, group as string, entryIds)
+  const guardEntry = (entryIds: string[], allowed: ('draft' | 'posted')[]) => guardBankEntries(admin, gate.fundId, group as string, entryIds, allowed)
 
   // Bulk post: flip a set of drafted transactions (and their draft entries) to
   // posted in one call.
@@ -256,6 +205,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'action (post|ignore|setAccount|unpost|restore) and id are required' }, { status: 400 })
   }
 
+  // Re-pointing and posting one row: lib/accounting/bank-actions.ts, shared with the agent's
+  // set_bank_transaction_account and post_bank_transaction tools.
+  if (action === 'setAccount') {
+    const result = await setBankTransactionAccount(admin, gate.fundId, group, id, accountCode)
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json(result)
+  }
+  if (action === 'post') {
+    const investments = await loadMayTouchInvestments(admin, gate, user.id)
+    const result = await postBankTransaction(admin, gate.fundId, group, user.id, id, { investments })
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status as number })
+    return NextResponse.json(result)
+  }
+
   const { data: txn } = await admin
     .from('bank_transactions' as any)
     .select('id, journal_entry_id, status, raw')
@@ -274,7 +237,7 @@ export async function POST(req: NextRequest) {
   // deleting the transaction. Read once, only for the actions that would touch the entry.
   // Fails closed — a read that cannot tell is a refusal, not "not owned".
   let investment = false
-  if (entryId && ['unpost', 'ignore', 'restore', 'setAccount'].includes(action)) {
+  if (entryId && ['unpost', 'ignore', 'restore'].includes(action)) {
     try {
       const { data: e, error: eErr } = await admin.from('journal_entries' as any).select('id, status, reversed_by, source_ref')
         .eq('book', ACTUAL_BOOK).eq('fund_id', gate.fundId).eq('id', entryId).maybeSingle()
@@ -285,73 +248,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Could not check whether this row is an investment payment, so nothing was changed. Try again.' }, { status: 500 })
     }
     if (investment && action !== 'ignore') return NextResponse.json({ error: BANK_ROW_IS_AN_INVESTMENT }, { status: 400 })
-  }
-
-  // Override the suggested account before posting: re-point the draft entry's
-  // single non-cash posting to the chosen chart account.
-  if (action === 'setAccount') {
-    if ((txn as any).status !== 'drafted') return NextResponse.json({ error: 'Only a drafted transaction can be re-categorized' }, { status: 400 })
-    const code = String(accountCode ?? '').trim()
-    if (!code) return NextResponse.json({ error: 'accountCode is required' }, { status: 400 })
-    if (code === ESCROW_CODE) return NextResponse.json({ error: ESCROW_VIA_HOLDING }, { status: 400 })
-    const codes = await accountIdByCode(admin, gate.fundId, group)
-    const newAccountId = codes.get(code)
-    if (!newAccountId) return NextResponse.json({ error: 'Unknown account for this vehicle' }, { status: 400 })
-    if (!entryId) return NextResponse.json({ error: 'No draft entry to update' }, { status: 400 })
-
-    // The account CARRIES the partner: a per-LP capital account has its own lp_entity_id, and
-    // the capital roll-forward only counts a posting when the posting AND the account both
-    // have one (load.ts:107-126). Re-pointing account_id alone put the money on the partner's
-    // account with a null tag — visible in the trial balance, invisible in that partner's
-    // capital account, statement and the LP portal. Carry the tag across, and clear it when
-    // moving to a general account so a stale partner can't linger on a re-categorized row.
-    const { data: acct } = await admin
-      .from('chart_of_accounts' as any)
-      .select('lp_entity_id')
-      .eq('id', newAccountId)
-      .maybeSingle()
-    const newLpEntityId = (acct as any)?.lp_entity_id ?? null
-
-    const cashId = codes.get('1000')
-    const { data: postings } = await admin
-      .from('journal_postings' as any)
-      .select('id, account_id')
-      .eq('book', ACTUAL_BOOK)
-      .eq('journal_entry_id', entryId)
-    const nonCash = ((postings as any[]) ?? []).filter(p => p.account_id !== cashId)
-    if (nonCash.length !== 1) return NextResponse.json({ error: 'This entry has a custom allocation — edit it in the Journal.' }, { status: 400 })
-
-    await admin.from('journal_postings' as any)
-      .update({ account_id: newAccountId, lp_entity_id: newLpEntityId })
-      .eq('id', nonCash[0].id)
-    // Marked as a person's choice: the AI pass leaves it alone, and the next import learns from it.
-    await admin.from('bank_transactions' as any)
-      .update({ suggested_account_code: code, raw: { ...((txn as any).raw ?? {}), categorization: categorizationRecord({ by: 'user', confidence: 'high', reason: 'Chosen by hand' }) } })
-      .eq('id', id).eq('fund_id', gate.fundId)
-    return NextResponse.json({ ok: true, suggested_account_code: code })
-  }
-
-  if (action === 'post') {
-    if ((txn as any).status !== 'drafted') {
-      return NextResponse.json({ error: 'Only a drafted transaction can be posted.' }, { status: 400 })
-    }
-    if (entryId) {
-      const problem = await guardEntry([entryId], ['draft']) ?? await escrowPostings([entryId])
-      if (problem) return NextResponse.json({ error: problem }, { status: 400 })
-
-      const investments = await loadMayTouchInvestments(admin, gate, user.id)
-      const result = await postExistingEntryWithAllocation(admin, gate.fundId, group, user.id, entryId, { investments })
-      if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.error === NEEDS_INVESTMENTS_WRITE ? 403 : 400 })
-      await admin.from('bank_transactions' as any).update({ status: 'reconciled' }).eq('id', id).eq('fund_id', gate.fundId)
-      await recordAudit(admin, { fundId: gate.fundId, vehicleId: await vehicleIdByName(admin, gate.fundId, group), actorId: user.id, action: 'entry.post', subjectType: 'journal_entry', subjectId: entryId, details: { bankTransactionId: id } })
-      return NextResponse.json({
-        ok: true, status: 'reconciled',
-        removedTransactions: result.removedTransactions ?? [], unlinkedRegisterRows: result.unlinkedRegisterRows ?? [],
-        ...(result.warning ? { warning: result.warning } : {}),
-      })
-    }
-    await admin.from('bank_transactions' as any).update({ status: 'reconciled' }).eq('id', id).eq('fund_id', gate.fundId)
-    return NextResponse.json({ ok: true, status: 'reconciled' })
   }
 
   // Unpost: revert a posted transaction to draft so it can be edited, then

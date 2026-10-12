@@ -95,6 +95,37 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'add_account',
+    description: "Add one account to the vehicle's chart of accounts (code, name, type). Refuses a code the vehicle already has.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['code', 'name', 'type'],
+      properties: {
+        code: { type: 'string', description: '1-20 characters: letters, digits, dot, dash or underscore' },
+        name: { type: 'string' },
+        type: { type: 'string', enum: ['asset', 'liability', 'equity', 'income', 'expense'] },
+        subtype: { type: 'string', description: 'optional subtype, e.g. interest_income' },
+      },
+    },
+  },
+  {
+    name: 'add_partner',
+    description: "Add a partner (LP, GP or GP-entity member) to the vehicle with a commitment, and open their capital account. Reuses an existing investor/entity with the exact same name, and sets that entity's partner class.",
+    scope: 'write',
+    // Creates partners and commitments — LP capital, not just accounting.
+    accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: { type: 'string', description: 'entity name; an exact match reuses the existing entity' },
+        partnerClass: { type: 'string', enum: ['lp', 'gp'], description: 'default lp' },
+        commitment: { type: 'number', description: 'commitment to this vehicle (default 0)' },
+      },
+    },
+  },
+  {
     name: 'allocation',
     description: 'Compute and post a period allocation or period close: management_fee, expense, gain, distribution, carry, or close_period.',
     scope: 'write',
@@ -197,6 +228,26 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     scope: 'write',
     // Allocates per LP by commitment — LP capital, not just a bank entry.
     accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId'],
+      properties: { bankTransactionId: { type: 'string' } },
+    },
+  },
+  {
+    name: 'set_bank_transaction_account',
+    description: "Re-point one drafted bank transaction's draft entry to a chart account by code (the bank page's account picker). A per-partner capital account (3100-<partner>) carries that partner onto the posting.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId', 'accountCode'],
+      properties: { bankTransactionId: { type: 'string' }, accountCode: { type: 'string' } },
+    },
+  },
+  {
+    name: 'post_bank_transaction',
+    description: "Post one drafted bank transaction's entry and mark the row reconciled (the bank page's Post). Refuses a voided entry or one dated in a closed period.",
+    scope: 'write',
     inputSchema: {
       type: 'object',
       required: ['bankTransactionId'],
