@@ -18,6 +18,8 @@ import { reconcileCapital, type AdminCapitalAccount } from './reconcile'
 import { runWaterfall } from './waterfall'
 import { buildAllocationEntry, type AllocationBody } from './allocation-actions'
 import { importBankTransactions } from './bank-import'
+import { addChartAccount } from './chart-add'
+import { addPartner, parseAddPartnerInput } from './add-partner'
 import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerText, postLedgerText } from './text-ledger-run'
@@ -125,6 +127,21 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const result = await persistEntry(admin, fundId, portfolioGroup, userId, entry, input.status === 'draft' ? 'draft' : 'posted')
     if ('error' in result) throw new Error(result.error)
     return { entryId: result.entryId }
+  },
+
+  add_account: async ({ admin, fundId, portfolioGroup }, input) => {
+    const result = await addChartAccount(admin, fundId, portfolioGroup, input ?? {})
+    if ('error' in result) throw new Error(result.error)
+    return result.account
+  },
+
+  add_partner: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    // No closingId: admission to a closing stays a decision for the UI.
+    const parsed = parseAddPartnerInput({ name: input?.name, partnerClass: input?.partnerClass, commitment: input?.commitment })
+    if ('error' in parsed) throw new Error(parsed.error)
+    const result = await addPartner(admin, fundId, portfolioGroup, userId, parsed)
+    if ('error' in result) throw new Error(result.error)
+    return result
   },
 
   allocation: async ({ admin, fundId, portfolioGroup, userId }, input) => {

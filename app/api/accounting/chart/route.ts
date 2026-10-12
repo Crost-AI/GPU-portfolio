@@ -9,9 +9,8 @@ import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { dbError } from '@/lib/api-error'
 import { chartForVehicleKind } from '@/lib/accounting/chart'
 import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
+import { addChartAccount } from '@/lib/accounting/chart-add'
 
-/** The `type` check constraint on chart_of_accounts. */
-const ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'income', 'expense'] as const
 
 // GET — list the vehicle's chart of accounts.
 export async function GET(req: NextRequest) {
@@ -61,29 +60,11 @@ export async function POST(req: NextRequest) {
   if (group instanceof NextResponse) return group
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
-  // Add ONE account. Distinct from the seeder below, which is the bulk/idempotent path.
+  // Add ONE account (lib/accounting/chart-add.ts, shared with the agent's add_account tool).
   if (body?.action === 'add') {
-    const code = String(body?.code ?? '').trim()
-    const name = String(body?.name ?? '').trim()
-    const type = String(body?.type ?? '').trim()
-    if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,19}$/.test(code)) {
-      return NextResponse.json({ error: 'Code must be 1-20 characters: letters, digits, dot, dash or underscore.' }, { status: 400 })
-    }
-    if (!name) return NextResponse.json({ error: 'A name is required' }, { status: 400 })
-    if (!ACCOUNT_TYPES.includes(type as any)) {
-      return NextResponse.json({ error: `Type must be one of ${ACCOUNT_TYPES.join(', ')}` }, { status: 400 })
-    }
-    const { data: clash } = await admin
-      .from('chart_of_accounts' as any)
-      .select('id').eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('code', code).maybeSingle()
-    if (clash) return NextResponse.json({ error: `Account ${code} already exists on this vehicle.` }, { status: 400 })
-
-    const { data, error } = await admin.from('chart_of_accounts' as any).insert({
-      fund_id: gate.fundId, portfolio_group: group, vehicle_id: vehicleId,
-      code, name, type, subtype: body?.subtype ? String(body.subtype).trim() : null,
-    }).select('*').single()
-    if (error) return dbError(error, 'accounting-chart-add')
-    return NextResponse.json(data)
+    const result = await addChartAccount(admin, gate.fundId, group, body)
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json(result.account)
   }
 
   // The chart follows the vehicle's kind: a GP/associate entity keeps its own books (Investment in
