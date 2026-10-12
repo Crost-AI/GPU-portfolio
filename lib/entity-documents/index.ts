@@ -68,7 +68,7 @@ export async function ingestDocument(
     kind: DocumentKind
     title: string
     effectiveDate: string | null
-    uploadedBy: string
+    uploadedBy: string | null
   },
 ): Promise<{ document: EntityDocument } | { error: string; status: number }> {
   const { data: blob, error: dlError } = await (admin as any).storage.from(ENTITY_DOCUMENT_BUCKET).download(input.storagePath)
