@@ -12,6 +12,9 @@ import {
 } from '@/lib/api-v1/idempotency'
 import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-actions/service'
 
+// Approving a staged company update runs the extraction pipeline (submit_company_update).
+export const maxDuration = 120
+
 const ENDPOINT = 'POST /api/v1/pending-actions/:id/approve'
 
 async function postHandler(req: Request, props: { params: Promise<{ id: string }> }) {

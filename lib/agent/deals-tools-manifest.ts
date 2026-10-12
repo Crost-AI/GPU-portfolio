@@ -13,6 +13,9 @@
 // and is waiting on a pass/advance call. `diligence_deals` is the deal room: documents,
 // checklist, memo. A tool that blurred them would answer the wrong question silently, so
 // the tool names carry the stage and the descriptions say which is which.
+//
+// The writes do what the Deals page does (lib/deals/service.ts), under the same entity rules. From
+// a connected chat each is staged, and applied when the person approves it in the chat.
 
 import type { AgentToolMeta } from '@/lib/accounting/agent-tools-manifest'
 
@@ -46,6 +49,81 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: {
       type: 'object',
       properties: { deal: { type: 'string', description: 'Inbound deal id, or the company name (matched case-insensitively).' } },
+      required: ['deal'],
+    },
+  },
+  {
+    name: 'deals_create_inbound',
+    description:
+      'Add a deal to INBOUND deal flow by hand: a pitch the user heard about outside the fund\'s inbox. It runs through the same ' +
+      'analyzer as an emailed pitch, so it lands on the Deals page scored against the thesis. Attach the deck as files if the user ' +
+      'has it. Confirm the company, founder and pitch with the user first.',
+    scope: 'write',
+    domain: 'deals',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company_name: { type: 'string' },
+        founder_name: { type: 'string' },
+        founder_email: { type: 'string' },
+        pitch: { type: 'string', description: 'What the company does and why it is interesting, in the user\'s words.' },
+        company_url: { type: 'string' },
+        intro_source: { type: 'string', description: 'referral | cold | warm_intro | accelerator | demo_day | event | other' },
+        referrer_name: { type: 'string' },
+        referrer_email: { type: 'string' },
+        vehicle: { type: 'string', description: 'The entity the deal is for (name or id). Required unless the user sees every entity.' },
+        files: {
+          type: 'array',
+          description: 'Optional: up to 5 files (a deck, a one-pager), each up to 3 MB, as { filename, content_base64 }.',
+          items: { type: 'object', properties: { filename: { type: 'string' }, content_base64: { type: 'string' } }, required: ['filename', 'content_base64'] },
+        },
+      },
+      required: ['company_name', 'founder_name', 'founder_email', 'pitch'],
+    },
+  },
+  {
+    name: 'deals_update_inbound',
+    description:
+      'Move an INBOUND deal: change its pipeline status (new, reviewing, advancing, met, diligence, invested, passed), ' +
+      'the entity it belongs to, or who it is assigned to. To open a deal room for it, use deals_promote_to_diligence instead.',
+    scope: 'write',
+    domain: 'deals',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deal: { type: 'string', description: 'Inbound deal id, or the company name.' },
+        status: { type: 'string', description: 'new | reviewing | advancing | met | diligence | invested | passed' },
+        vehicle: { type: 'string', description: 'Move it to this entity (name or id).' },
+        assigned_to: { type: 'string', description: 'A team member\'s email or name. An empty string unassigns it.' },
+      },
+      required: ['deal'],
+    },
+  },
+  {
+    name: 'deals_research_inbound',
+    description:
+      'Queue external web research on an INBOUND deal (the company, its founders, its market), even one under the fund\'s usual ' +
+      'interest bar. It costs model spend and runs in the background; read the result later with deals_inbound_detail.',
+    scope: 'write',
+    domain: 'deals',
+    inputSchema: {
+      type: 'object',
+      properties: { deal: { type: 'string', description: 'Inbound deal id, or the company name.' } },
+      required: ['deal'],
+    },
+  },
+  {
+    name: 'deals_promote_to_diligence',
+    description:
+      'Open a deal room for an INBOUND deal: creates the diligence deal pre-filled from it (with the fund\'s checklist) and moves ' +
+      'the inbound deal to diligence. Returns the diligence deal id for the diligence_* tools.',
+    scope: 'write',
+    domain: 'deals',
+    // The same gate as the web route: it creates a diligence record.
+    accessDomain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: { deal: { type: 'string', description: 'Inbound deal id, or the company name.' } },
       required: ['deal'],
     },
   },

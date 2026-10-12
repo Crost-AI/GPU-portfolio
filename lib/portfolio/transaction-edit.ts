@@ -11,6 +11,7 @@ import { normalizeSecurityType, SECURITY_TYPES } from '@/lib/accounting/soi'
 import { TRANSACTION_TYPES, transactionRowError } from '@/lib/portfolio/transaction-checks'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
 import { groupWriteDenial } from '@/lib/access/scope'
+import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 
 /** Who is making the change: their fund, their id (null for a credential with no user) and their entities. */
 export interface TxnEditor {
@@ -19,14 +20,6 @@ export interface TxnEditor {
   /** The caller's entity names; null = every entity. */
   vehicleNames: string[] | null
 }
-
-/**
- * A refusal carries the HTTP status the route answers with. `dbError` is set when the database
- * itself failed, so the route can log it and answer with its generic 500.
- */
-export type TxnEditResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; status: number; error: string; dbError?: { message: string } }
 
 /** Fields an edit may change. Anything else in the body is ignored. */
 export const EDITABLE_TXN_FIELDS = [
@@ -118,23 +111,23 @@ export async function updateInvestmentTransaction(
   companyId: string,
   txnId: string,
   body: Record<string, any>,
-): Promise<TxnEditResult<{ transaction: any; ledger: any }>> {
+): Promise<Outcome<{ transaction: any; ledger: any }>> {
   const existing = await loadTransaction(admin, who.fundId, companyId, txnId)
-  if (!existing) return { ok: false, status: 404, error: 'Transaction not found' }
+  if (!existing) return fail(404, 'Transaction not found')
 
   // Only the caller's entities' rows, and only into one of their entities.
   const deniedHere = groupWriteDenial(who.vehicleNames, existing.portfolio_group)
     ?? ('portfolio_group' in body ? groupWriteDenial(who.vehicleNames, body.portfolio_group) : null)
-  if (deniedHere) return { ok: false, status: 403, error: deniedHere }
+  if (deniedHere) return fail(403, deniedHere)
 
   const owned = await fundRegisterOwner(admin, who.fundId, txnId)
-  if (owned) return { ok: false, status: 409, error: owned }
+  if (owned) return fail(409, owned)
 
   // A mis-typed row can be reclassified on edit (e.g. a "Round" that should be a "Valuation
   // Update"). Only the DB types are valid; the UI's "conversion" is already translated to
   // 'investment' + converts_from before it reaches here.
   if ('transaction_type' in body && !TRANSACTION_TYPES.includes(body.transaction_type)) {
-    return { ok: false, status: 400, error: 'Invalid transaction_type' }
+    return fail(400, 'Invalid transaction_type')
   }
   const nextType: string = ('transaction_type' in body ? body.transaction_type : existing.transaction_type)
 
@@ -143,18 +136,14 @@ export async function updateInvestmentTransaction(
   // sources). Block it rather than let the numbers shrink with no warning.
   const dependentCount = await dependentConversions(admin, txnId)
   if (dependentCount > 0 && nextType !== 'investment') {
-    return {
-      ok: false,
-      status: 400,
-      error: `Can't change this to a ${nextType}: ${dependentCount} conversion${dependentCount > 1 ? 's' : ''} on this company convert${dependentCount > 1 ? '' : 's'} from it. Re-point or remove those conversions first.`,
-    }
+    return fail(400, `Can't change this to a ${nextType}: ${dependentCount} conversion${dependentCount > 1 ? 's' : ''} on this company convert${dependentCount > 1 ? '' : 's'} from it. Re-point or remove those conversions first.`)
   }
 
   // #2 — Validate the conversion link the same way create does (dangling / cross-company / self /
   // non-investment). Without this, an edit could set a link the create path would have rejected.
   if (body.converts_from_txn_id) {
     const linkError = await validateConversionLink(admin, companyId, body.converts_from_txn_id, nextType, who.vehicleNames, txnId)
-    if (linkError) return { ok: false, status: 400, error: linkError }
+    if (linkError) return fail(400, linkError)
   }
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -167,11 +156,7 @@ export async function updateInvestmentTransaction(
   if (body.security_type != null && body.security_type !== '') {
     const security_type = normalizeSecurityType(body.security_type)
     if (!security_type) {
-      return {
-        ok: false,
-        status: 400,
-        error: `Invalid security_type "${body.security_type}". Must be one of: ${SECURITY_TYPES.join(', ')}`,
-      }
+      return fail(400, `Invalid security_type "${body.security_type}". Must be one of: ${SECURITY_TYPES.join(', ')}`)
     }
     updates.security_type = security_type
   } else if ('security_type' in body) {
@@ -181,7 +166,7 @@ export async function updateInvestmentTransaction(
   // The edited row as the database will see it, checked against its constraints BEFORE anything is
   // retracted: a deterministic refusal must leave the transaction and its journal entry as they were.
   const rowProblem = transactionRowError({ ...existing, ...updates })
-  if (rowProblem) return { ok: false, status: 400, error: rowProblem }
+  if (rowProblem) return fail(400, rowProblem)
 
   if ('portfolio_group' in updates) {
     // Every stored portfolio_group name must be backed by a real fund_vehicles row — never a
@@ -194,7 +179,7 @@ export async function updateInvestmentTransaction(
   // Editing the row first used to leave the tracker on the new figures and the ledger on the old.
   const retracted = await retractEntriesForTransaction(admin, existing.fund_id, txnId, { userId: who.userId, original: existing })
   if (retracted.reason) {
-    return { ok: false, status: 409, error: `Can't change this transaction. ${retracted.reason}` }
+    return fail(409, `Can't change this transaction. ${retracted.reason}`)
   }
 
   const { data: company } = await (admin as any)
@@ -218,15 +203,11 @@ export async function updateInvestmentTransaction(
       const restored = await draftEntryForTransaction(admin, existing.fund_id, who.userId, existing, companyName)
       if (!restored.drafted) {
         console.error('[investment-transaction-update] update failed:', error.message, '; re-derive failed:', restored.reason)
-        return {
-          ok: false,
-          status: 500,
-          error: `The transaction's journal entry was removed and could not be re-derived: ${(restored.reason ?? 'unknown reason').replace(/\.\s*$/, '')}. `
-            + 'Re-save the transaction to post it again.',
-        }
+        return fail(500, `The transaction's journal entry was removed and could not be re-derived: ${(restored.reason ?? 'unknown reason').replace(/\.\s*$/, '')}. `
+            + 'Re-save the transaction to post it again.')
       }
     }
-    return { ok: false, status: 500, error: error.message, dbError: error }
+    return dbFail(error, 'investment-transaction-update')
   }
 
   if (who.userId) {
@@ -237,7 +218,7 @@ export async function updateInvestmentTransaction(
   const derived = await draftEntryForTransaction(admin, existing.fund_id, who.userId, txn, companyName)
   const ledger = retracted.warning ? { ...derived, warning: retracted.warning } : derived
 
-  return { ok: true, value: { transaction: txn, ledger } }
+  return done({ transaction: txn, ledger })
 }
 
 /** Delete a recorded transaction, retracting its journal entry first. */
@@ -246,26 +227,22 @@ export async function deleteInvestmentTransaction(
   who: TxnEditor,
   companyId: string,
   txnId: string,
-): Promise<TxnEditResult<{ ledger: any }>> {
+): Promise<Outcome<{ ledger: any }>> {
   const existing = await loadTransaction(admin, who.fundId, companyId, txnId)
-  if (!existing) return { ok: false, status: 404, error: 'Transaction not found' }
+  if (!existing) return fail(404, 'Transaction not found')
 
   const deniedDelete = groupWriteDenial(who.vehicleNames, existing.portfolio_group)
-  if (deniedDelete) return { ok: false, status: 403, error: deniedDelete }
+  if (deniedDelete) return fail(403, deniedDelete)
 
   const owned = await fundRegisterOwner(admin, who.fundId, txnId)
-  if (owned) return { ok: false, status: 409, error: owned }
+  if (owned) return fail(409, owned)
 
   // #3 — Refuse to delete an instrument that a conversion depends on. The FK is ON DELETE SET
   // NULL, so deleting it would silently orphan the conversion into a $0-cost investment (its basis
   // gone, its shares now valued at nothing). Make the dependency explicit instead of destroying it.
   const n = await dependentConversions(admin, txnId)
   if (n > 0) {
-    return {
-      ok: false,
-      status: 400,
-      error: `Can't delete this: ${n} conversion${n > 1 ? 's' : ''} on this company convert${n > 1 ? '' : 's'} from it. Delete or re-point ${n > 1 ? 'those' : 'that'} first.`,
-    }
+    return fail(400, `Can't delete this: ${n} conversion${n > 1 ? 's' : ''} on this company convert${n > 1 ? '' : 's'} from it. Delete or re-point ${n > 1 ? 'those' : 'that'} first.`)
   }
 
   // Retract the ledger side FIRST. If its journal entry sits in a closed period we refuse the
@@ -274,7 +251,7 @@ export async function deleteInvestmentTransaction(
   // then failing here would leave exactly that mess.
   const ledger = await retractEntriesForTransaction(admin, existing.fund_id, txnId, { userId: who.userId })
   if (ledger.reason) {
-    return { ok: false, status: 400, error: `Can't delete this transaction. ${ledger.reason}` }
+    return fail(400, `Can't delete this transaction. ${ledger.reason}`)
   }
 
   const { error } = await (admin as any)
@@ -282,11 +259,11 @@ export async function deleteInvestmentTransaction(
     .delete()
     .eq('id', txnId)
 
-  if (error) return { ok: false, status: 500, error: error.message, dbError: error }
+  if (error) return dbFail(error, 'investment-transaction-delete')
 
   if (who.userId) {
     logActivity(admin, existing.fund_id, who.userId, 'investment.delete', { companyId, transactionId: txnId })
   }
 
-  return { ok: true, value: { ledger } }
+  return done({ ledger })
 }

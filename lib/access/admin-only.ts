@@ -78,6 +78,9 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
   { route: 'api/accounting/gp-economics', method: 'PUT', label: 'change GP economics' },
   { route: 'api/accounting/gp-economics', method: 'POST', label: 'change GP economics' },
   { route: 'api/accounting/gp-economics', method: 'DELETE', label: 'change GP economics' },
+
+  // ── Lock what the firm decided ─────────────────────────────────────────────
+  { route: 'api/diligence/[id]/drafts/[draftId]/finalize', method: 'POST', label: 'finalize a memo' },
 ]
 
 /** Rules a handler checks itself, because the database decides them. Named so a test can see them. */
@@ -88,6 +91,7 @@ export const HANDLER_CHECKED = {
 /** Agent tools that are admin-only: the same operations as the routes above, reached from chat. */
 export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: any) => boolean }> = {
   add_partner: { label: 'add a partner and commitment' },
+  diligence_finalize_memo: { label: 'finalize a memo' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

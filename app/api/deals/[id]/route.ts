@@ -3,10 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { dealEntityProblem } from '@/lib/access/scope'
-
-const VALID_STATUSES = ['new', 'reviewing', 'advancing', 'met', 'diligence', 'invested', 'passed'] as const
-type DealStatus = typeof VALID_STATUSES[number]
+import { updateInboundDeal } from '@/lib/deals/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -83,46 +81,16 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     .maybeSingle()
   if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 403 })
 
+  const scope = await loadEntityScopeForUser(admin, user.id)
+  if (!scope) return NextResponse.json({ error: 'No fund found' }, { status: 403 })
+
   const body = await req.json().catch(() => ({}))
-  const updates: Record<string, unknown> = {}
-
-  if (typeof body.status === 'string') {
-    if (!VALID_STATUSES.includes(body.status as DealStatus)) {
-      return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
-    }
-    updates.status = body.status
-  }
-
-  // The owning entity. The gate already confirmed the caller can see this deal; the new entity must
-  // be theirs too, and must belong to this fund.
-  if (typeof body.vehicle_id === 'string' || body.vehicle_id === null) {
-    const scope = await loadEntityScopeForUser(admin, user.id)
-    const problem = scope ? dealEntityProblem(scope.access, body.vehicle_id) : 'No fund found'
-    if (problem) return NextResponse.json({ error: problem }, { status: 403 })
-    if (body.vehicle_id) {
-      const { data: v } = await admin.from('fund_vehicles' as any).select('id')
-        .eq('fund_id', (membership as any).fund_id).eq('id', body.vehicle_id).maybeSingle()
-      if (!v) return NextResponse.json({ error: 'Entity not found' }, { status: 404 })
-    }
-    updates.vehicle_id = body.vehicle_id
-  }
-
-  if (typeof body.assigned_to === 'string' || body.assigned_to === null) {
-    updates.assigned_to = body.assigned_to
-  }
-
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
-  }
-
-  updates.updated_at = new Date().toISOString()
-
-  const { error } = await admin
-    .from('inbound_deals')
-    .update(updates)
-    .eq('id', params.id)
-    .eq('fund_id', membership.fund_id)
-
-  if (error) return dbError(error, 'deals-id')
-  return NextResponse.json({ ok: true })
+  // The owning entity: the gate already confirmed the caller can see this deal, and
+  // lib/deals/service.ts checks the new entity is theirs too and belongs to this fund.
+  const result = await updateInboundDeal(admin, scope.access, params.id, {
+    status: body.status,
+    vehicleId: typeof body.vehicle_id === 'string' || body.vehicle_id === null ? body.vehicle_id : undefined,
+    assignedTo: typeof body.assigned_to === 'string' || body.assigned_to === null ? body.assigned_to : undefined,
+  })
+  return outcomeResponse(result, () => ({ ok: true }))
 }

@@ -26,6 +26,7 @@ const ALLOWLIST = new Map<string, string>([
   ['app/api/companies/[id]/investments/route.ts', 'scoped to one holding by id; fund calls post here too'],
   ['app/api/companies/[id]/metrics/route.ts', 'scoped to one holding by id'],
   ['app/api/companies/[id]/notes/route.ts', 'scoped to one holding by id'],
+  ['lib/notes/create.ts', 'the @mention list for a note: names any holding the writer may tag, as the notes route always did'],
   ['app/api/companies/[id]/summary/route.ts', 'scoped to one holding by id'],
   ['app/api/companies/[id]/default-metrics/route.ts', 'scoped to one holding by id'],
   ['app/api/companies/[id]/default-metrics/[defaultId]/route.ts', 'scoped to one holding by id'],

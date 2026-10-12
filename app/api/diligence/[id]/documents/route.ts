@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { classifyDocumentHeuristic } from '@/lib/memo-agent/heuristic-classify'
 import { dbError } from '@/lib/api-error'
-import { scanFileAsync } from '@/lib/security/scan-file'
+import { recordDiligenceDocument } from '@/lib/diligence/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 const MAX_BYTES = 100 * 1024 * 1024  // 100 MB to match bucket cap
 
@@ -57,7 +57,6 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const contentType = req.headers.get('content-type') ?? ''
 
   let safeName: string
-  let ext: string
   let storagePath: string
   let fileSize: number
   let mime: string
@@ -78,7 +77,6 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     }
     safeName = (typeof body.file_name === 'string' ? body.file_name : storagePath.split('/').pop() ?? '')
       .replace(/[\/\\:*?"<>|]/g, '_').replace(/\.\./g, '_').slice(0, 200)
-    ext = (safeName.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'bin').toLowerCase()
     mime = typeof body.content_type === 'string' ? body.content_type : 'application/octet-stream'
 
     // Verify the object actually exists in storage and read its size. This
@@ -120,7 +118,6 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     }
 
     safeName = file.name.replace(/[\/\\:*?"<>|]/g, '_').replace(/\.\./g, '_').slice(0, 200)
-    ext = (safeName.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'bin').toLowerCase()
     storagePath = `${params.id}/${Date.now()}_${safeName}`
     fileSize = file.size
     mime = file.type || 'application/octet-stream'
@@ -151,63 +148,11 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     }
     scanBuffer = Buffer.from(await blob.arrayBuffer())
   }
-  const scan = await scanFileAsync(scanBuffer, safeName, mime)
-  if (!scan.safe) {
-    await admin.storage.from('diligence-documents').remove([storagePath]).catch(() => {})
-    return NextResponse.json({ error: 'That file could not be accepted.' }, { status: 400 })
-  }
-
-  const { detected_type, confidence } = classifyDocumentHeuristic(safeName, mime)
-
-  const { data: row, error: insertErr } = await admin
-    .from('diligence_documents')
-    .insert({
-      deal_id: params.id,
-      fund_id: fundId,
-      storage_path: storagePath,
-      file_name: safeName,
-      file_format: ext,
-      file_size_bytes: fileSize,
-      detected_type,
-      type_confidence: confidence,
-      parse_status: 'pending',
-      uploaded_by: userId,
-    } as any)
-    .select('id, deal_id, file_name, file_format, file_size_bytes, detected_type, type_confidence, parse_status, uploaded_at')
-    .single()
-
-  if (insertErr || !row) {
-    // Clean up the storage object on row-insert failure.
-    await admin.storage.from('diligence-documents').remove([storagePath]).catch(() => {})
-    return dbError(insertErr ?? { message: 'Insert failed' }, 'diligence-documents-insert')
-  }
-
-  // Audio/video recordings need transcription before they can be ingested
-  // into the memo draft. Enqueue a transcribe job unless another job is
-  // already active on this deal.
-  if (detected_type === 'call_recording') {
-    const { data: activeJob } = await admin
-      .from('memo_agent_jobs')
-      .select('id')
-      .eq('deal_id', params.id)
-      .eq('fund_id', fundId)
-      .in('status', ['pending', 'running'])
-      .limit(1)
-      .maybeSingle()
-    if (!activeJob) {
-      await admin
-        .from('memo_agent_jobs')
-        .insert({
-          fund_id: fundId,
-          deal_id: params.id,
-          kind: 'transcribe',
-          payload: { document_id: (row as any).id },
-          enqueued_by: userId,
-        } as any)
-    }
-  }
-
-  return NextResponse.json(row)
+  // Scan, classify, record, and queue a recording for transcription: lib/diligence/service.ts,
+  // the same step a document added from chat goes through.
+  return outcomeResponse(await recordDiligenceDocument(admin, { fundId, userId }, params.id, {
+    storagePath, name: safeName, mime, size: fileSize, bytes: scanBuffer,
+  }))
 }
 
 // ---------------------------------------------------------------------------

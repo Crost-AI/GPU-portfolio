@@ -1,4 +1,7 @@
-// Handlers for the INBOUND DEALS agent tools (top-of-funnel screening). Read-only.
+// Handlers for the INBOUND DEALS agent tools (top-of-funnel screening).
+//
+// The writes call lib/deals/service.ts, the functions behind the Deals page's own routes, so a deal
+// created or moved from chat is checked and stored exactly like one made there.
 //
 // See deals-tools-manifest.ts for why these are named `deals_*_inbound` and kept
 // distinct from the `diligence_*` tools: they are different tables at different stages of
@@ -8,12 +11,16 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import type { AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, visibleVehicleIds } from '@/lib/access/scope'
+import { parseUpdateFiles } from '@/lib/company-updates/submit'
+import { createManualDeal, promoteInboundDeal, queueDealResearch, updateInboundDeal } from '@/lib/deals/service'
+import { unwrap } from '@/lib/service-outcome'
+import { fundMemberId, visibleVehicleId } from './refs'
 
 const LIST_COLUMNS =
   'id, company_name, company_url, company_domain, founder_name, founder_email, intro_source, referrer_name, ' +
   'thesis_fit_score, stage, industry, raise_amount, status, promoted_diligence_id, created_at'
 
-async function resolveInboundDeal(admin: SupabaseClient, fundId: string, ref: string, access: AccessContext): Promise<any> {
+export async function resolveInboundDeal(admin: SupabaseClient, fundId: string, ref: string, access: AccessContext): Promise<any> {
   if (!ref) throw new Error('An inbound deal id or company name is required')
   // Only deals owned by one of the caller's entities (unassigned ones: unscoped callers only).
   const mine = (d: any) => canSeeVehicle(access, d.vehicle_id ?? null)
@@ -136,4 +143,65 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
       created_at: deal.created_at,
     }
   },
+
+  deals_create_inbound: async ({ admin, fundId, access, userId, origin }: AgentToolContext, input: any) => {
+    const actor = requireUser(userId)
+    const vehicleRef = str(input?.vehicle)
+    const vehicleId = vehicleRef ? await visibleVehicleId(admin, access, vehicleRef) : null
+    const { data: u } = await (admin as any).auth.admin.getUserById(actor)
+    const out = unwrap(await createManualDeal(admin, { fundId, userId: actor, userEmail: u?.user?.email ?? null, access }, {
+      companyName: str(input?.company_name),
+      founderName: str(input?.founder_name),
+      founderEmail: str(input?.founder_email),
+      pitch: str(input?.pitch),
+      companyUrl: str(input?.company_url),
+      introSource: str(input?.intro_source),
+      referrerName: str(input?.referrer_name),
+      referrerEmail: str(input?.referrer_email),
+      vehicleId,
+      files: parseUpdateFiles(input?.files),
+    }))
+    const { data: deal } = out.dealId
+      ? await (admin as any).from('inbound_deals').select('company_name, thesis_fit_score, status').eq('id', out.dealId).eq('fund_id', fundId).maybeSingle()
+      : { data: null }
+    return {
+      dealId: out.dealId,
+      company: deal?.company_name ?? str(input?.company_name),
+      thesis_fit: deal?.thesis_fit_score ?? null,
+      status: deal?.status ?? null,
+      url: out.dealId ? `${(origin ?? '').replace(/\/$/, '')}/deals/${out.dealId}` : null,
+    }
+  },
+
+  deals_update_inbound: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveInboundDeal(admin, fundId, str(input?.deal), access)
+    const vehicleRef = str(input?.vehicle)
+    const assigned = typeof input?.assigned_to === 'string' ? input.assigned_to.trim() : undefined
+    const out = unwrap(await updateInboundDeal(admin, access, deal.id, {
+      status: input?.status,
+      vehicleId: vehicleRef ? await visibleVehicleId(admin, access, vehicleRef) : undefined,
+      assignedTo: assigned === undefined ? undefined : assigned === '' ? null : await fundMemberId(admin, fundId, assigned),
+    }))
+    return { dealId: deal.id, company: deal.company_name, updated: out.updated }
+  },
+
+  deals_research_inbound: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveInboundDeal(admin, fundId, str(input?.deal), access)
+    const out = unwrap(await queueDealResearch(admin, fundId, deal.id))
+    return { dealId: deal.id, company: deal.company_name, ...out, note: 'Research runs in the background. Check deals_inbound_detail later.' }
+  },
+
+  deals_promote_to_diligence: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveInboundDeal(admin, fundId, str(input?.deal), access)
+    const out = unwrap(await promoteInboundDeal(admin, { fundId, userId: requireUser(userId) }, deal.id))
+    return { inboundDealId: deal.id, diligenceDealId: out.diligenceId, company: deal.company_name }
+  },
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+
+/** A write records who made it; a credential with no person behind it cannot. */
+export function requireUser(userId: string | null): string {
+  if (!userId) throw new Error('This credential is not tied to a person, so it cannot make changes.')
+  return userId
 }

@@ -3,10 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
-import { parseMentions, parseCompanyMentions, parseGroupMentions } from '@/lib/notes/mentions'
+import { parseGroupMentions } from '@/lib/notes/mentions'
+import { createCompanyNote } from '@/lib/notes/create'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { filterByCompany } from '@/lib/access/scope'
-import { resolveNoteEntity, scopeNotesQuery } from '@/lib/notes/entity'
+import { scopeNotesQuery } from '@/lib/notes/entity'
 
 export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -129,72 +129,24 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
 
   if (!company) return NextResponse.json({ error: 'Company not found' }, { status: 404 })
 
-  // Every note is for one of the writer's entities that holds this company.
   const noteScope = await loadEntityScopeForUser(admin, user.id)
   if (!noteScope) return NextResponse.json({ error: 'No fund found' }, { status: 403 })
-  const entity = await resolveNoteEntity(admin, noteScope, params.id, requestedVehicle)
-  if ('error' in entity) return NextResponse.json({ error: entity.error, code: 'ENTITY_REQUIRED' }, { status: entity.status })
-
-  // Parse @mentions for people
-  const { data: members } = await admin
-    .from('fund_members')
-    .select('user_id, display_name')
-    .eq('fund_id', company.fund_id) as { data: { user_id: string; display_name: string | null }[] | null }
-
-  // Resolve emails for members without display names
-  const membersWithFallback = await Promise.all(
-    (members ?? []).map(async (m) => {
-      if (m.display_name?.trim()) return m
-      const { data: { user: u } } = await admin.auth.admin.getUserById(m.user_id)
-      return { ...m, email: u?.email }
-    })
-  )
-
-  const mentionedUserIds = parseMentions(content.trim(), membersWithFallback)
-
-  // Parse @mentions for companies — only the writer's can be tagged.
-  const { data: allCompanies } = await filterByCompany(admin
-    .from('companies')
-    .select('id, name')
-    .eq('fund_id', company.fund_id), noteScope.companyIds, { column: 'id' }) as { data: { id: string; name: string }[] | null }
-
-  const mentionedCompanyIds = parseCompanyMentions(content.trim(), allCompanies ?? [])
-
-  const { data: note, error } = await supabase
-    .from('company_notes')
-    .insert({
-      company_id: params.id,
-      vehicle_id: entity.vehicleId,
-      fund_id: company.fund_id,
-      user_id: user.id,
-      content: content.trim(),
-      mentioned_user_ids: mentionedUserIds,
-      mentioned_company_ids: mentionedCompanyIds,
-    } as any)
-    .select('id, content, user_id, created_at')
-    .single() as { data: { id: string; content: string; user_id: string; created_at: string } | null; error: { message: string } | null }
-
-  if (error || !note) return dbError(error ?? { message: 'Failed to create note' }, 'company-notes')
-
-  // Look up current user's display name
-  const { data: membership } = await admin
-    .from('fund_members')
-    .select('display_name')
-    .eq('fund_id', company.fund_id)
-    .eq('user_id', user.id)
-    .maybeSingle() as { data: { display_name: string | null } | null }
-
-  // Fire-and-forget notification
-  sendNoteNotificationsAsync(admin, company.fund_id, {
-    id: note.id,
-    content: note.content,
-    companyId: params.id,
-    companyName: company.name,
-    vehicleId: entity.vehicleId,
-    authorName: membership?.display_name || user.email?.split('@')[0] || 'Someone',
-    authorUserId: user.id,
-    mentionedUserIds,
+  const created = await createCompanyNote(admin, {
+    scope: noteScope,
+    userId: user.id,
+    userEmail: user.email,
+    company: { id: params.id, fund_id: company.fund_id, name: company.name },
+    content,
+    vehicleId: requestedVehicle,
+    insertWith: supabase as any,
   })
+  if (!created.ok) {
+    if (created.dbError) return dbError(created.dbError as any, 'company-notes')
+    return NextResponse.json({ error: created.error, ...(created.code ? { code: created.code } : {}) }, { status: created.status })
+  }
+  const { note, mentionedUserIds } = created
+  const entity = { vehicleId: created.vehicleId }
+  const membership = { display_name: created.authorName }
 
   return NextResponse.json({
     id: note.id,
@@ -208,14 +160,4 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     createdAt: note.created_at,
     edited: false,
   })
-}
-
-// Fire-and-forget wrapper to avoid blocking the response
-async function sendNoteNotificationsAsync(...args: Parameters<typeof import('@/lib/notes/notify').sendNoteNotifications>) {
-  try {
-    const { sendNoteNotifications } = await import('@/lib/notes/notify')
-    await sendNoteNotifications(...args)
-  } catch (err) {
-    console.error('[notes] Failed to send notifications:', err)
-  }
 }

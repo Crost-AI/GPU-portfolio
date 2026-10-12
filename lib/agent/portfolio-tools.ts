@@ -17,7 +17,13 @@ import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
+import { submitCompanyUpdate } from '@/lib/company-updates/submit'
+import { writeMetricValue } from '@/lib/pending-actions/metric-value'
+import { parseMetricPeriod } from '@/lib/metrics/period'
+import { createCompany } from '@/lib/companies/create'
+import { createCompanyNote } from '@/lib/notes/create'
 import { EDITABLE_TXN_FIELDS, deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
+import { unwrap } from '@/lib/service-outcome'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -308,6 +314,82 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   record_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) =>
     executeRecordInvestment({ admin, fundId, userId, access }, input),
 
+  submit_company_update: async ({ admin, fundId, userId, access, origin }: AgentToolContext, input: any) =>
+    submitCompanyUpdate(
+      { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access) },
+      input,
+    ),
+
+  record_metric_value: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const metric = await resolveMetric(admin, fundId, company.id, String(input?.metric ?? ''))
+    const period = parseMetricPeriod(input?.period)
+    if (!period) throw new Error(`Couldn't read the period "${input?.period ?? ''}". Use "Q3 2026", "Sep 2026" or "FY2025".`)
+    const value = input?.value
+    if (value === undefined || value === null || value === '') throw new Error('A value is required.')
+    if (metric.value_type !== 'text' && !Number.isFinite(typeof value === 'number' ? value : parseFloat(String(value).replace(/[,$\s]/g, '')))) {
+      throw new Error(`${metric.name} takes a number.`)
+    }
+    const deps = { admin, fundId, userId: userId ?? '', access }
+    const result = await writeMetricValue(deps, {
+      companyId: company.id,
+      metricId: metric.id,
+      period_label: period.label,
+      period_year: period.year,
+      period_quarter: period.quarter,
+      period_month: period.month,
+      value: metric.value_type === 'text' ? String(value) : (typeof value === 'number' ? value : parseFloat(String(value).replace(/[,$\s]/g, ''))),
+      notes: typeof input?.notes === 'string' ? input.notes : undefined,
+    })
+    return { company: company.name, metric: metric.name, period: period.label, value, ...result }
+  },
+
+  create_company: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    if (!userId) throw new Error('Creating a company needs a person behind the credential.')
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x.trim()).map(x => x.trim()) : undefined)
+    const scope = await entityScopeFor(admin, access)
+    const created = await createCompany(admin, {
+      fundId,
+      userId,
+      vehicleNames: scope.vehicleNames,
+      fields: {
+        name: String(input?.name ?? ''),
+        portfolio_group: list(input?.vehicles) ?? null,
+        stage: input?.stage ?? null,
+        industry: list(input?.industry) ?? null,
+        overview: input?.overview ?? null,
+        founders: input?.founders ?? null,
+        why_invested: input?.why_invested ?? null,
+        contact_email: list(input?.contact_emails)?.map(e => e.toLowerCase()) ?? null,
+        aliases: list(input?.aliases) ?? null,
+        tags: list(input?.tags) ?? [],
+      },
+    })
+    if (!created.ok) throw new Error(created.error)
+    const c = created.company
+    return { id: c.id, name: c.name, vehicles: c.portfolio_group ?? [] }
+  },
+
+  add_company_note: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    if (!userId) throw new Error('A note needs a person behind the credential.')
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    let vehicleId: string | null = null
+    if (typeof input?.vehicle === 'string' && input.vehicle.trim()) {
+      const { data: v } = await (admin as any).from('fund_vehicles').select('id').eq('fund_id', fundId).ilike('name', input.vehicle.trim()).maybeSingle()
+      if (!v) throw new Error(`No entity named "${input.vehicle}".`)
+      vehicleId = v.id
+    }
+    const created = await createCompanyNote(admin, {
+      scope: await entityScopeFor(admin, access),
+      userId,
+      company: { id: company.id, fund_id: fundId, name: company.name },
+      content: String(input?.content ?? ''),
+      vehicleId,
+    })
+    if (!created.ok) throw new Error(created.error)
+    return { id: created.note.id, company: company.name, mentioned: created.mentionedUserIds.length }
+  },
+
   update_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     const { company, transaction_id, vehicle: _vehicle, ...changes } = input ?? {}
     if (!transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
@@ -323,19 +405,28 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       changes.fx_value_change = null
     }
     const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
-    const result = await updateInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, transaction_id, changes)
-    if (!result.ok) throw new Error(result.error)
-    return result.value
+    return unwrap(await updateInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, transaction_id, changes))
   },
 
   delete_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     if (!input?.transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
     const c = await resolveCompany(admin, fundId, input.company, access)
     const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
-    const result = await deleteInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, input.transaction_id)
-    if (!result.ok) throw new Error(result.error)
-    return { deleted: input.transaction_id, ledger: result.value.ledger }
+    const { ledger } = unwrap(await deleteInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, input.transaction_id))
+    return { deleted: input.transaction_id, ledger }
   },
+}
+
+/** A company's metric by id, name or slug. */
+async function resolveMetric(admin: SupabaseClient, fundId: string, companyId: string, ref: string): Promise<{ id: string; name: string; value_type: string }> {
+  if (!ref.trim()) throw new Error('A metric name is required.')
+  const { data } = await (admin as any).from('metrics').select('id, name, slug, value_type').eq('fund_id', fundId).eq('company_id', companyId)
+  const rows = (data ?? []) as { id: string; name: string; slug: string | null; value_type: string }[]
+  const key = ref.trim().toLowerCase()
+  const hit = rows.find(m => m.id === ref) ?? rows.find(m => m.name.toLowerCase() === key) ?? rows.find(m => (m.slug ?? '').toLowerCase() === key)
+  if (hit) return hit
+  const names = rows.map(m => m.name)
+  throw new Error(names.length ? `No metric "${ref}" on this company. It tracks: ${names.join(', ')}.` : 'This company has no metrics set up yet.')
 }
 
 export interface RecordInvestmentInput {

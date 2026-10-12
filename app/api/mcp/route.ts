@@ -15,4 +15,7 @@
 export { POST, GET } from '@/app/api/accounting/mcp/route'
 
 export const runtime = 'nodejs'
+// A submitted company update runs the extraction pipeline in the call (submit_company_update), as
+// an emailed one does in /api/inbound-email.
+export const maxDuration = 120
 export const dynamic = 'force-dynamic'

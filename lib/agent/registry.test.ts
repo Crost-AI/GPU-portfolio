@@ -59,11 +59,24 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('the new domains are read-only — no agent can mutate a deal or an LP record', () => {
-    const writable = AGENT_TOOLS
-      .filter(t => ['diligence', 'deals', 'lp'].includes(t.domain ?? ''))
-      .filter(t => t.scope === 'write')
+  it('LP records stay read-only from an agent', () => {
+    const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
     expect(writable.map(t => t.name)).toEqual([])
+  })
+
+  it('deal and diligence writes are named for their stage, and gated like their web routes', () => {
+    const writes = AGENT_TOOLS.filter(t => ['diligence', 'deals'].includes(t.domain ?? '') && t.scope === 'write')
+    expect(writes.length).toBeGreaterThan(0)
+    for (const t of writes) {
+      expect(t.name, t.name).toMatch(t.domain === 'deals' ? /^deals_/ : /^diligence_/)
+      // Each takes the deal it changes by name or id, except the two that create one.
+      if (!['deals_create_inbound', 'diligence_create_deal'].includes(t.name)) {
+        expect(t.inputSchema.required, t.name).toContain('deal')
+      }
+    }
+    expect(getTool('deals_update_inbound')!.accessDomain).toBeUndefined()
+    // Promoting creates a deal room, so it answers to diligence, as api/deals/[id]/promote-to-diligence does.
+    expect(getTool('deals_promote_to_diligence')!.accessDomain).toBe('diligence')
   })
 
   it('the two kinds of "deal" are named apart', () => {

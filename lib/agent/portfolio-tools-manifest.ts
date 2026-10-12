@@ -240,4 +240,91 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
       required: ['company', 'transaction_id'],
     },
   },
+  {
+    name: 'submit_company_update',
+    description:
+      "Hand the fund a portfolio company's update: a quarterly letter, board deck or KPI sheet. Pass the text you have, " +
+      'and/or small files (up to 5, 3 MB each: PDF, Word, Excel, PowerPoint, CSV, text, images) as base64. It runs the same ' +
+      'pipeline as an emailed update: matched to the company (name it if you know it), kept on the company\'s Updates, ' +
+      'its KPIs recorded as metric values, and anything uncertain sent to the review queue. Returns what was recorded and what needs review.',
+    scope: 'write',
+    domain: 'portfolio',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: { ...COMPANY, description: 'Company id or name. Omit to let the app identify it from the content.' },
+        subject: { type: 'string', description: 'A title, e.g. "Acme Q3 2026 investor update".' },
+        text: { type: 'string', description: 'The update\'s text (up to 100,000 characters).' },
+        files: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { filename: { type: 'string' }, content_base64: { type: 'string' } },
+            required: ['filename', 'content_base64'],
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'record_metric_value',
+    description:
+      "Set one KPI value for a portfolio company for a period, e.g. MRR for Q3 2026. Use company_metrics to see the company's metrics. " +
+      'Replaces any value already recorded for that metric and period.',
+    scope: 'write',
+    domain: 'portfolio',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: COMPANY,
+        metric: { type: 'string', description: 'The metric\'s name or slug (e.g. "MRR"), or its id.' },
+        period: { type: 'string', description: '"Q3 2026", "Sep 2026", "2026-09" or "FY2025".' },
+        value: { type: ['number', 'string'], description: 'A number, or text for a text metric.' },
+        notes: { type: 'string' },
+      },
+      required: ['company', 'metric', 'period', 'value'],
+    },
+  },
+  {
+    name: 'create_company',
+    description:
+      'Add a portfolio company, seeded with the fund\'s default metrics. A member must name at least one of their entities (vehicles).',
+    scope: 'write',
+    domain: 'portfolio',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        vehicles: { type: 'array', items: { type: 'string' }, description: 'The entities (portfolio groups) that hold it.' },
+        stage: { type: 'string' },
+        industry: { type: 'array', items: { type: 'string' } },
+        overview: { type: 'string' },
+        founders: { type: 'string' },
+        why_invested: { type: 'string' },
+        contact_emails: { type: 'array', items: { type: 'string' }, description: 'Addresses its updates come from, so emailed updates match it.' },
+        aliases: { type: 'array', items: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'add_company_note',
+    description:
+      'Add an internal note on a portfolio company, as the person connected. @mentions of team members notify them. ' +
+      'If the company is held by more than one of their entities, name the entity.',
+    scope: 'write',
+    domain: 'portfolio',
+    accessDomain: 'relationships',
+    accessFeature: 'notes',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: COMPANY,
+        content: { type: 'string' },
+        vehicle: { type: 'string', description: 'The entity the note is for, by name, when more than one holds the company.' },
+      },
+      required: ['company', 'content'],
+    },
+  },
 ]
