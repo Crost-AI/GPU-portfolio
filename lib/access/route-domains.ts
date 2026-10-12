@@ -79,6 +79,10 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/forecast/variance': { domain: 'accounting' },
   'api/accounting/forecast/fee-links': { domain: 'accounting' },
   'api/accounting/fund-economics': { domain: 'accounting' },
+  // One vehicle's LP-only performance (fund-level totals, no partner names) — the same figures
+  // as fund-economics, laid out as the quarterly report. The PDF is that report serialized.
+  'api/accounting/fund-performance': { domain: 'accounting' },
+  'api/accounting/fund-performance/pdf': { domain: 'accounting' },
   // QuickBooks migration. `mapping/discover` is its own route file and therefore needs its
   // own entry — route-domains.test.ts matches on the route path, not on a prefix.
   'api/accounting/quickbooks/parse': { domain: 'accounting' },

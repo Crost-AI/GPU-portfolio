@@ -66,6 +66,43 @@ export interface VehicleEconomics {
   gp: FundMetrics
   /** Carried interest accrued to the GP so far. A mark, not a debt — it reverses if NAV falls. */
   carryAccrued: number
+  /** The LP-class partners' dated cash movements, one per entry date. Only when asked for
+   *  (`{ lpFlows: true }`) — the fund performance report lists them; the overview does not. */
+  lpFlows?: LpDatedFlow[]
+}
+
+/**
+ * One date's capital movements across the LP-class partners, from the fund's side of the table:
+ * `contributions` is capital paid in (a refund of an over-call nets it down), `distributions` is
+ * capital paid back out. Both are the same postings `rollUp` sums, so they total to `lp.paidIn`
+ * and `lp.distributions`.
+ */
+export interface LpDatedFlow {
+  date: string
+  contributions: number
+  distributions: number
+}
+
+/** Sum capital postings into one row per date, oldest first. Pure. */
+export function datedCapitalFlows(
+  postings: { lpEntityId: string; amount: number; sourceType?: string | null; entryDate?: string | null }[],
+  ids: Set<string>,
+): LpDatedFlow[] {
+  const byDate = new Map<string, LpDatedFlow>()
+  for (const p of postings) {
+    if (!p.entryDate || !ids.has(p.lpEntityId)) continue
+    const bucket = bucketForSourceType(p.sourceType)
+    if (bucket !== 'contributions' && bucket !== 'distributions') continue
+    // A capital account is a credit balance: a contribution posts negative, a distribution positive.
+    const row = byDate.get(p.entryDate) ?? { date: p.entryDate, contributions: 0, distributions: 0 }
+    if (bucket === 'contributions') row.contributions += -p.amount
+    else row.distributions += p.amount
+    byDate.set(p.entryDate, row)
+  }
+  return Array.from(byDate.values())
+    .map(r => ({ date: r.date, contributions: roundCents(r.contributions), distributions: roundCents(r.distributions) }))
+    .filter(r => r.contributions !== 0 || r.distributions !== 0)
+    .sort((a, b) => a.date.localeCompare(b.date))
 }
 
 
@@ -133,6 +170,7 @@ export async function vehicleEconomics(
   group: string,
   asOf?: string,
   preload?: FundPreload,
+  opts: { lpFlows?: boolean } = {},
 ): Promise<VehicleEconomics> {
   // With a preload, ownership, entity names/classes, capital source and vintage come from the
   // one fund-wide read; without it (direct callers) each still loads per-vehicle as before.
@@ -230,6 +268,7 @@ export async function vehicleEconomics(
     lp: metricsFor(lpIds),
     gp: metricsFor(gpIds),
     carryAccrued,
+    ...(opts.lpFlows ? { lpFlows: datedCapitalFlows(postings, lpIds) } : {}),
   }
 }
 

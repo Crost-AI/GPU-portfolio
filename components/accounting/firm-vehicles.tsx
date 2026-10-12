@@ -143,6 +143,7 @@ const COLUMNS: Record<string, Col[]> = {
   statements: [CLOSED, TOTAL_DEBITS, TIES],
   'capital-accounts': [CLOSED, LAST_ENTRY, POSTED],
   'schedule-of-investments': [AT_COST, AT_VALUE, LAST_ENTRY],
+  performance: [CLOSED, LAST_ENTRY, TIES],
   construction: [AT_VALUE, AT_COST, CLOSED],
   tax: [CLOSED, LAST_ENTRY, TIES],
   // Actuals run through the last close; cash is what a forecast is mostly about.
