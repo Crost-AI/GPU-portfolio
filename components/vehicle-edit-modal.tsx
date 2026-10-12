@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ImagePlus, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { VEHICLE_KIND_OPTIONS } from '@/lib/vehicle-kinds'
 
@@ -18,7 +19,7 @@ export interface EditableVehicle {
   aliases: string[]
 }
 
-/** Edit a single investment vehicle in place (name, type, vintage, logo, active). Renaming cascades the
+/** Edit a single investment vehicle in place (name, type, vintage, letterhead, active). Renaming cascades the
  *  string across all data server-side and keeps the old name as an alias. GP/carry links live on the
  *  fund pages, not here. */
 export function VehicleEditModal({ vehicle, onClose, onSaved }: {
@@ -44,21 +45,26 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeErr, setMergeErr] = useState<string | null>(null)
 
-  // The vehicle's own logo, for its LP statements, notices and receipts (lib/vehicle-logo.ts).
-  // Fetched on its own because logos are too heavy for the list; saved as soon as it's picked,
-  // like the fund logo in settings. `undefined` while loading, and the section stays hidden when
-  // the column isn't migrated yet.
+  // The vehicle's own letterhead (logo, name, address) for its LP statements, notices, receipts
+  // and letters (lib/vehicle-letterhead.ts). Fetched on its own because logos are too heavy for
+  // the list. The logo saves as soon as it's picked, like the fund logo in settings; the name and
+  // address save with the rest of the form. `undefined` while loading, and the section stays
+  // hidden when the columns aren't migrated yet.
   const [logo, setLogo] = useState<string | null | undefined>(undefined)
   const [logoAvailable, setLogoAvailable] = useState(false)
+  const [letterheadName, setLetterheadName] = useState('')
+  const [letterheadAddress, setLetterheadAddress] = useState('')
   const [logoBusy, setLogoBusy] = useState(false)
   const [logoErr, setLogoErr] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/vehicles?logo=${encodeURIComponent(vehicle.id)}`).then(r => r.ok ? r.json() : null).then(data => {
+    fetch(`/api/vehicles?letterhead=${encodeURIComponent(vehicle.id)}`).then(r => r.ok ? r.json() : null).then(data => {
       if (cancelled) return
       setLogoAvailable(!!data?.available)
       setLogo(data?.logo ?? null)
+      setLetterheadName(data?.name ?? '')
+      setLetterheadAddress(data?.address ?? '')
     }).catch(() => { if (!cancelled) setLogo(null) })
     return () => { cancelled = true }
   }, [vehicle.id])
@@ -126,6 +132,8 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
         vintageYear: vintage.trim() === '' ? null : Number(vintage),
         active,
         aliases,
+        // Only once loaded, so a slow fetch can't save blanks over a letterhead that exists.
+        ...(logoAvailable ? { letterheadName, letterheadAddress } : {}),
       }),
     })
     setBusy(false)
@@ -177,9 +185,10 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
           </div>
           {logoAvailable && (
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Logo</label>
+              <label className="text-xs text-muted-foreground">Letterhead</label>
               <p className="text-[11px] text-muted-foreground">
-                Replaces the fund logo on this vehicle&rsquo;s capital account statements, notices and receipts. Max 200KB.
+                Replaces the fund&rsquo;s logo, name and address on this vehicle&rsquo;s capital account statements, notices,
+                receipts and letters. Leave a part blank to keep the fund&rsquo;s. Logo max 200KB.
               </p>
               <div className="flex items-center gap-3">
                 {logo ? (
@@ -210,6 +219,8 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
                 {logoBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               </div>
               {logoErr && <p className="text-sm text-destructive">{logoErr}</p>}
+              <Input value={letterheadName} onChange={e => setLetterheadName(e.target.value)} placeholder="Name, e.g. 3SE Holdings" className="h-8" />
+              <Textarea value={letterheadAddress} onChange={e => setLetterheadAddress(e.target.value)} placeholder="Address" rows={3} />
             </div>
           )}
           <label className="flex items-center gap-2 text-sm">

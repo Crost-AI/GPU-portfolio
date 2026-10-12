@@ -25,7 +25,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadFofRaw, computeFofFromRaw } from '@/lib/portfolio/fof-load'
 import { commitmentSchedule, performanceTable } from '@/lib/portfolio/fof-exhibits'
 import { valuationBasisNote } from '@/lib/portfolio/fof-valuation'
-import { documentLogo } from '@/lib/vehicle-logo'
+import { documentLetterhead } from '@/lib/vehicle-letterhead'
 
 function esc(s: string): string {
   return String(s ?? '')
@@ -334,9 +334,9 @@ export async function generateLpStatementPdf(
   if ('error' in statement) return null
 
   const fund = (fundRes as any).data
-  // The vehicle's own logo when it has one (a separately branded vehicle's LPs know it by that
-  // brand), else the fund's. Data URIs only: a remote URL silently fails in headless Chrome.
-  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
+  // The vehicle's own letterhead where it has one (a separately branded vehicle's LPs know it by
+  // that brand), else the fund's. Logos are data URIs only: a remote URL fails in headless Chrome.
+  const letterhead = await documentLetterhead(admin, fundId, fund, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
 
   // Ownership by commitment, which is the basis the close allocates on. The total MUST use the
@@ -366,9 +366,9 @@ export async function generateLpStatementPdf(
 
   const html = buildStatementHtml({
     displayFont: displayFontOf(settingsRes.data?.theme),
-    fundName: fund?.name || '',
-    fundLogo,
-    fundAddress: fund?.address || null,
+    fundName: letterhead.name,
+    fundLogo: letterhead.logo,
+    fundAddress: letterhead.address,
     currency,
     vehicle: group,
     partnerName: statement.row.name,

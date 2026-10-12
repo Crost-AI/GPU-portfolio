@@ -6,7 +6,7 @@ import JSZip from 'jszip'
 import { getChromeConfig, buildReportHtml, computeRow, computeTotals, runPool, type InvestmentRow } from '@/lib/lp-report-pdf'
 import { displayFontOf } from '@/lib/theme'
 import { generateLiveReport } from '@/lib/accounting/live-report'
-import { loadVehicleLogos, pickDocumentLogo } from '@/lib/vehicle-logo'
+import { loadVehicleLetterheads, pickLetterhead, fundLetterhead } from '@/lib/vehicle-letterhead'
 
 export const maxDuration = 300
 
@@ -156,10 +156,9 @@ export async function POST(req: NextRequest) {
 
   const fund = fundResult.data as any
   const settings = settingsResult.data as any
-  const fundName = fund?.name || ''
-  // Per investor below: a shared vehicle logo when every vehicle on their report has the same one.
-  const vehicleLogos = await loadVehicleLogos(admin as any, fundId)
-  const fundAddress = fund?.address || null
+  // Per investor below: a vehicle's letterhead when every vehicle on their report shares it.
+  const vehicleLetterheads = await loadVehicleLetterheads(admin as any, fundId)
+  const fundHead = fundLetterhead(fund)
   const currency = settings?.currency || 'USD'
   const displayFont = displayFontOf(settings?.theme)
 
@@ -207,16 +206,16 @@ export async function POST(req: NextRequest) {
 
     const rows = investments.map(computeRow)
     const totals = computeTotals(rows)
-    const fundLogo = pickDocumentLogo(fund?.logo_url, investments.map(inv => inv.portfolio_group), vehicleLogos)
+    const letterhead = pickLetterhead(fundHead, investments.map(inv => inv.portfolio_group), vehicleLetterheads)
 
     const html = buildReportHtml({
       investorName,
       rows,
       totals,
       excludedGroupNames,
-      fundName,
-      fundLogo,
-      fundAddress,
+      fundName: letterhead.name,
+      fundLogo: letterhead.logo,
+      fundAddress: letterhead.address,
       description,
       footerNote,
       asOfFormatted,

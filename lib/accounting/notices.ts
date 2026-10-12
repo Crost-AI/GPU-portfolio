@@ -25,7 +25,7 @@ import { getOutboundConfig, sendOutboundEmail, type EmailAttachment } from '@/li
 import { buildLpEmailHtml, siteUrl } from '@/lib/lp-email'
 import { logDelivery, listDeliveries, lastSentByItem, type DeliveryKind } from '@/lib/lp-deliveries'
 import { roundCents } from './ledger'
-import { documentLogo } from '@/lib/vehicle-logo'
+import { documentLetterhead } from '@/lib/vehicle-letterhead'
 
 export interface NoticeLine {
   id: string
@@ -182,9 +182,9 @@ export async function publishNotices(
     admin.from('lp_entities' as any).select('id, investor_id').eq('fund_id', fundId).in('id', targets.map(t => t.lpEntityId)),
   ])
   const fund = (fundRes as any).data
-  // The vehicle's own logo when it has one, else the fund's (lib/vehicle-logo.ts). Data URIs
-  // only: a remote URL silently fails to render inside headless Chrome.
-  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
+  // The vehicle's own letterhead where it has one, else the fund's (lib/vehicle-letterhead.ts).
+  // Logos are data URIs only: a remote URL silently fails to render inside headless Chrome.
+  const letterhead = await documentLetterhead(admin, fundId, fund, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
   const wireInstructions = (vehSettingsRes as any).data?.wire_instructions ?? null
   const summaryByLp = new Map(summary.map(r => [r.lpEntityId, r]))
@@ -260,9 +260,9 @@ export async function publishNotices(
       const pdf = await generateNoticePdf({
         kind: reg.kind,
         displayFont: displayFontOf((settingsRes as any).data?.theme),
-        fundName: fund?.name || '',
-        fundLogo,
-        fundAddress: fund?.address || null,
+        fundName: letterhead.name,
+        fundLogo: letterhead.logo,
+        fundAddress: letterhead.address,
         currency,
         vehicle: group,
         partnerName,
@@ -381,7 +381,8 @@ export async function previewNoticeRecipients(
       skipped: !investorId ? 'No linked LP investor' : !g ? 'No portal account yet — invite them from LP Portal → Access' : null,
     }
   })
-  const fundName = ((fundRes as any).data?.name as string | undefined) || 'Your fund'
+  // The vehicle's letterhead name where it has one, so the email matches the notice it carries.
+  const fundName = (await documentLetterhead(admin, fundId, (fundRes as any).data, [group])).name || 'Your fund'
   const subject = `${fundName}: ${noticeTitle(reg)}`
   const html = buildLpEmailHtml({
     fundName,
@@ -436,7 +437,7 @@ export async function emailDocuments(
   }
   if (!config) return { error: 'No outbound email provider is configured for this fund.' }
 
-  const fundName = ((fundRes as any).data?.name as string | undefined) || 'Your fund'
+  const fundName = (await documentLetterhead(admin, fundId, (fundRes as any).data, [ctx.group])).name || 'Your fund'
   const subject = opts.subject?.trim() || `${fundName}: ${opts.title}`
   const message = opts.message ?? ''
   const link = opts.delivery === 'attachment' ? null : `${siteUrl()}${opts.linkPath}`
@@ -596,7 +597,7 @@ export async function sendReceipts(
     lpCapitalSummary(admin, fundId, group),
   ])
   const fund = (fundRes as any).data
-  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
+  const letterhead = await documentLetterhead(admin, fundId, fund, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
   const summaryByLp = new Map(summary.map(r => [r.lpEntityId, r]))
   const title = `Receipt — Capital Call${found.call.number ? ` No. ${found.call.number}` : ''} — ${found.call.date}`
@@ -611,7 +612,7 @@ export async function sendReceipts(
       const row = summaryByLp.get(c.lpEntityId)
       const pdf = await generateReceiptPdf({
         displayFont: displayFontOf((settingsRes as any).data?.theme),
-        fundName: fund?.name || '', fundLogo, fundAddress: fund?.address || null, currency,
+        fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address, currency,
         vehicle: group, partnerName: c.name,
         amountReceived: c.received, receivedOn: c.receivedOn ?? found.call.date,
         call: { date: found.call.date, number: found.call.number, description: found.call.description, amount: roundCents(c.received + c.outstanding), outstanding: c.outstanding },
