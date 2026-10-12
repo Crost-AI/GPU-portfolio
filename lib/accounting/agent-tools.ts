@@ -171,6 +171,9 @@ const HANDLERS: Record<string, AgentToolHandler> = {
 
   import_bank_transactions: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
     const result = await importBankTransactions(admin, fundId, portfolioGroup, userId, String(input.csv ?? ''), String(input.source ?? 'csv'), input.reviewToken, hasAccess(access, 'lp_capital', 'read'))
+    // A review hold is not a failure: return the differences and their token, as post_ledger_text
+    // does. Throwing here dropped both, so an agent could never present them or supply the token.
+    if ('error' in result && result.importReview) return { imported: 0, reviewRequired: true, error: result.error, importReview: result.importReview }
     if ('error' in result) throw new Error(result.error)
     return result
   },
