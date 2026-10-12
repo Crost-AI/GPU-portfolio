@@ -163,36 +163,34 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/distributions': { domain: 'lp_capital' },
   'api/accounting/commitments': { domain: 'lp_capital' },
   'api/accounting/closings': { domain: 'lp_capital' },
-  // Book-to-tax adjustments. `accounting` rather than `lp_capital`: the payload is fund-level
-  // difference amounts and the entries they produce, not per-partner figures — the per-partner
-  // split arrives with the K-1 allocation. Gated on `tax_reporting` so a fund keeping books but
-  // not issuing K-1s never sees it.
-  'api/accounting/tax-adjustments': { domain: 'accounting', feature: 'tax_reporting' },
-  // Tax forms, unlike the adjustments above, are PER PARTNER — the payload is partner names,
-  // legal names, countries and TIN last-fours. That is lp_capital data, and gating it as
-  // `accounting` would let someone reconcile the bank read the partner register.
-  'api/accounting/tax-forms': { domain: 'lp_capital', feature: 'tax_reporting' },
-  // Per-partner K-1 lines and capital accounts — lp_capital for the same reason as tax-forms.
-  // AND gp_economics, checked in-handler (lib/tax/access.ts): one of the partners is the GP, whose
-  // K-1 is the carry by another name, and box 20AH is the carry recipient's recharacterised gain.
-  // The same figure capital-accounts withholds from an lp_capital-only caller. The registry maps
-  // one domain; the payload straddles two; the handler gates the second. Applies to k1-packages,
-  // its export and pdf, and state-worklist, which reports per-partner allocated income.
-  'api/accounting/k1-packages': { domain: 'lp_capital', feature: 'tax_reporting' },
+  // ── Tax: its own area, so a preparer can do the tax work without changing the books ──
+  // `tax` requires reading the books (DOMAIN_META.tax.requires), and reading the books confers LP
+  // capital, so the per-partner payloads below (tax forms, K-1 lines, state allocations) are
+  // covered by the same grant. Every route is gated on the `tax_reporting` switch, so a fund
+  // keeping books but not issuing K-1s never sees any of it.
+  //
+  // Book-to-tax adjustments: fund-level difference amounts and the entries they post.
+  'api/accounting/tax-adjustments': { domain: 'tax', feature: 'tax_reporting' },
+  // Tax forms: per partner (names, countries, TIN last-fours).
+  'api/accounting/tax-forms': { domain: 'tax', feature: 'tax_reporting' },
+  // Per-partner K-1 lines AND gp_economics, checked in-handler (lib/tax/access.ts): one of the
+  // partners is the GP, whose K-1 is the carry by another name, and box 20AH is the carry
+  // recipient's recharacterised gain. The registry maps one domain; the payload straddles two; the
+  // handler gates the second. Applies to k1-packages, its export and pdf, and state-worklist.
+  // Finalizing and amending are admin-only (lib/access/admin-only.ts).
+  'api/accounting/k1-packages': { domain: 'tax', feature: 'tax_reporting' },
   // Read-level: exporting reports what the package already holds, it does not generate.
-  'api/accounting/k1-packages/export': { domain: 'lp_capital', feature: 'tax_reporting', level: 'read' },
-  // One partner's figures as a PDF — the same per-partner data, read-level.
-  'api/accounting/k1-packages/pdf': { domain: 'lp_capital', feature: 'tax_reporting', level: 'read' },
-  // Furnishing, and the consent that makes electronic furnishing valid. Per partner.
-  'api/accounting/k1-deliveries': { domain: 'lp_capital', feature: 'tax_reporting' },
-  // Which states have partners, and how much was allocated to each. Per-partner residence and
-  // income, so lp_capital.
-  'api/accounting/state-worklist': { domain: 'lp_capital', feature: 'tax_reporting', level: 'read' },
-  // The tax book's lock. `accounting` rather than `lp_capital`: closing a year is a books
-  // operation and its payload is state and blockers, not per-partner figures.
-  'api/accounting/tax-year': { domain: 'accounting', feature: 'tax_reporting' },
-  // Which underlying funds still owe us a K-1. Portfolio-level holdings, not partner data.
-  'api/accounting/received-k1s': { domain: 'accounting', feature: 'tax_reporting' },
+  'api/accounting/k1-packages/export': { domain: 'tax', feature: 'tax_reporting', level: 'read' },
+  // One partner's figures as a PDF, read-level.
+  'api/accounting/k1-packages/pdf': { domain: 'tax', feature: 'tax_reporting', level: 'read' },
+  // Furnishing, and the consent that makes electronic furnishing valid. Delivering is admin-only.
+  'api/accounting/k1-deliveries': { domain: 'tax', feature: 'tax_reporting' },
+  // Which states have partners, and how much was allocated to each.
+  'api/accounting/state-worklist': { domain: 'tax', feature: 'tax_reporting', level: 'read' },
+  // The tax book's lock. Reopening is admin-only.
+  'api/accounting/tax-year': { domain: 'tax', feature: 'tax_reporting' },
+  // Which underlying funds still owe us a K-1.
+  'api/accounting/received-k1s': { domain: 'tax', feature: 'tax_reporting' },
   'api/accounting/entities': { domain: 'lp_capital' },
   'api/accounting/lp-events': { domain: 'lp_capital' },
   'api/accounting/lp-events/import': { domain: 'lp_capital' },
@@ -574,6 +572,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/cron/entity-documents-ocr': 'Cron: CRON_SECRET.',
   'api/cron/company-updates-backfill': 'Cron: CRON_SECRET.',
   'api/cron/ops-reminders': 'Cron: CRON_SECRET.',
+  'api/cron/access-expiry': 'Cron: CRON_SECRET.',
 
   // Inbound from third parties, authenticated by a token in the path or a provider signature.
   'api/webhooks/transcription/[token]': 'Inbound webhook: per-job single-use callback token in the path (SEC-010).',

@@ -18,7 +18,7 @@ describe('approving a close', () => {
 
 describe('reading the audit trail', () => {
   const ctx = (grants: Record<string, string>) => ({
-    fundId: 'f', userId: 'u', role: 'member', features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps: 'everyone', lp_tracking: 'everyone', gp_economics: 'everyone' }, grants, defaults: {}, vehicles: { all: true, ids: [] },
+    fundId: 'f', userId: 'u', role: 'member', features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps: 'everyone', lp_tracking: 'everyone', gp_economics: 'everyone', tax_reporting: 'everyone' }, grants, defaults: {}, vehicles: { all: true, ids: [] },
   }) as any
 
   it('keeps K-1 events from a caller without the carry; partner events follow the books', () => {
@@ -30,12 +30,23 @@ describe('reading the audit trail', () => {
     expect(visibleTo(ctx({ accounting: 'read', gp_economics: 'read' }))('k1.finalize')).toBe(true)
   })
 
+  it('shows tax and K-1 events only to the Tax area', () => {
+    // Tax falls back to the accounting grant until the fund has a tax default (defaultFrom).
+    expect(visibleTo(ctx({ accounting: 'read' }))('tax.adjustments')).toBe(true)
+    // An explicit "none" for Tax hides both, even with the books and the carry.
+    const noTax = visibleTo(ctx({ accounting: 'read', gp_economics: 'read', tax: 'none' }))
+    expect(noTax('tax.adjustments')).toBe(false)
+    expect(noTax('k1.finalize')).toBe(false)
+    expect(noTax('entry.void')).toBe(true)
+  })
+
   it('writes a CSV an auditor can open, quoting what needs quoting', () => {
     const csv = auditCsv([{
       id: '1', createdAt: '2026-10-10T12:00:00Z', action: 'entry.void', subjectType: 'journal_entry', subjectId: 'e1',
       vehicleId: 'v1', actorId: 'u1', actorName: 'Alex', reason: 'Duplicate, see #12', details: { memo: 'Legal, Q3' },
+      source: 'mcp',
     }], new Map([['v1', 'Fund I']]))
-    expect(csv.split('\n')[1]).toBe('2026-10-10T12:00:00Z,Fund I,Alex,entry.void,journal_entry,e1,"Duplicate, see #12","{""memo"":""Legal, Q3""}"')
+    expect(csv.split('\n')[1]).toBe('2026-10-10T12:00:00Z,Fund I,Alex,mcp,entry.void,journal_entry,e1,"Duplicate, see #12","{""memo"":""Legal, Q3""}"')
   })
 
   it('takes a typed reason, and treats a blank one as none', () => {

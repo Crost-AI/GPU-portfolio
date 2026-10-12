@@ -1,3 +1,5 @@
+import { currentChangeSource } from '@/lib/audit/source'
+
 type SupabaseAdmin = { from: (table: string) => any }
 
 export async function logActivity(
@@ -21,7 +23,9 @@ export async function logActivity(
       fund_id: fundId,
       user_id: userId,
       action,
-      metadata,
+      // Which door the action came through (web, api, mcp). Its own key: some callers already
+      // record a `source` of their own (what produced a summary, say), which means something else.
+      metadata: { ...metadata, changeSource: currentChangeSource() },
     })
   } catch (err) {
     console.error('[activity] Failed to log activity:', err)

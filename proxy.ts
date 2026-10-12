@@ -4,6 +4,7 @@ import { matchRoute } from '@/lib/access/match-route'
 import { ROUTE_DOMAINS, UNGATED_ROUTES, requiredLevel } from '@/lib/access/route-domains'
 import { hasAccess, resolveAccessContext } from '@/lib/access/effective'
 import { DOMAIN_META } from '@/lib/access/domains'
+import { adminOnlyMessage, adminOnlyRule, adminRuleNeedsBody, UNREADABLE } from '@/lib/access/admin-only'
 import { buildReportOnlyCsp, generateNonce, NONCE_HEADER, REPORT_ONLY_HEADER } from '@/lib/security/csp'
 import { companyEntityDenial, dealEntityDenial, rlsRowDenial, rowCompanyDenial } from '@/lib/access/entity-gate'
 
@@ -278,6 +279,15 @@ async function gateApiRequest(
   // Domains say WHAT; entities say WHOSE. A route about one company also needs that company to be
   // linked to one of the caller's entities (lib/access/entity-gate.ts).
   if (hasAccess(access, entry.domain, level, entry.feature)) {
+    // The tier above write (lib/access/admin-only.ts): deletes, undoing the books, moving money,
+    // telling LPs, and the fund's structure. Read from a clone, so the handler still gets its body.
+    if (access.role !== 'admin') {
+      const body = adminRuleNeedsBody(key, request.method)
+        ? await request.clone().json().catch(() => UNREADABLE)
+        : undefined
+      const rule = adminOnlyRule(key, request.method, body)
+      if (rule) return NextResponse.json({ error: adminOnlyMessage(rule.label) }, { status: 403 })
+    }
     return (await companyEntityDenial(supabase as never, key, request.nextUrl.pathname, access))
       ?? (await dealEntityDenial(supabase as never, key, request.nextUrl.pathname, access))
       ?? (await rlsRowDenial(supabase as never, key, request.nextUrl.pathname, access))

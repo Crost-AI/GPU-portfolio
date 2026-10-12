@@ -1,10 +1,11 @@
+import { withChangeSource } from '@/lib/audit/source'
 import { expireTag } from '@/lib/cache/tags'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requireV1Write, resolveV1Principal, V1PrincipalError } from '@/lib/api-v1/principal'
 import { requestId, v1Error, v1Json } from '@/lib/api-v1/response'
 import { PendingActionServiceError, rejectPendingAction } from '@/lib/pending-actions/service'
 
-export async function POST(req: Request, props: { params: Promise<{ id: string }> }) {
+async function postHandler(req: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const requestID = requestId()
   const admin = createAdminClient()
@@ -23,3 +24,6 @@ export async function POST(req: Request, props: { params: Promise<{ id: string }
   }
 }
 
+
+/** Changes made through /api/v1 are attributed to the API (lib/audit/source.ts). */
+export const POST = (...args: Parameters<typeof postHandler>) => withChangeSource('api', () => postHandler(...args))

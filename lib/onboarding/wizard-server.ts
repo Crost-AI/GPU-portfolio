@@ -140,3 +140,16 @@ export async function createFirstEntity(
   }
   return { ok: true, id: res.data.id as string, created: true }
 }
+
+/** True while the fund is still in the first-run wizard: not finished, and no products answer on a fund that already has data. */
+export async function stillOnboarding(admin: any, fundId: string, settings: Record<string, any>): Promise<boolean> {
+  const rec = parseOnboardingRecord(settings.onboarding)
+  if (rec?.completed_at) return false
+  if (rec?.products) return true
+  const [{ count: vehicles }, { count: companies }, { count: senders }] = await Promise.all([
+    admin.from('fund_vehicles').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
+    admin.from('companies').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
+    admin.from('authorized_senders').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
+  ])
+  return !vehicles && !companies && !senders
+}

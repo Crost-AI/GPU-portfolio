@@ -91,15 +91,18 @@ import { POST as approve } from '@/app/api/pending-actions/[id]/approve/route'
 import { POST as reject } from '@/app/api/pending-actions/[id]/reject/route'
 import { GET as list } from '@/app/api/pending-actions/route'
 
-function principal(level: 'read' | 'write' | 'none') {
+// Issuing a capital call is admin-only to approve (lib/access/admin-only.ts), so the approver here
+// is an admin unless a test says otherwise. Admins hold write wherever the switch is on, so `level`
+// only bites for a member.
+function principal(level: 'read' | 'write' | 'none', role: 'admin' | 'member' = level === 'write' ? 'admin' : 'member') {
   return {
     userId: 'user-1',
     fundId: 'fund-1',
-    role: 'member',
+    role,
     access: {
       fundId: 'fund-1',
       userId: 'user-1',
-      role: 'member',
+      role,
       features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone' } as FeatureVisibilityMap,
       grants: level === 'none' ? {} : { accounting: level },
       defaults: {},
@@ -173,6 +176,15 @@ describe('POST /api/pending-actions/:id/approve', () => {
     mocks.principal = principal('none')
     expect((await approve(post(), params)).status).toBe(403)
     expect(mocks.execute).not.toHaveBeenCalled()
+  })
+
+  it('refuses a member with write: issuing a capital call needs an admin to approve it', async () => {
+    mocks.principal = principal('write', 'member')
+    const response = await approve(post(), params)
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ error: 'Only an admin can issue a capital call.' })
+    expect(mocks.execute).not.toHaveBeenCalled()
+    expect(table[0].status).toBe('pending')
   })
 
   it('marks the row failed rather than claiming a partial success', async () => {

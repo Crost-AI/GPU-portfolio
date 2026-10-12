@@ -1,3 +1,4 @@
+import { withChangeSource } from '@/lib/audit/source'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { deleteConversation, getConversation } from '@/lib/api-v1/conversations'
 import { resolveV1Principal, V1PrincipalError } from '@/lib/api-v1/principal'
@@ -23,7 +24,7 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
   }
 }
 
-export async function DELETE(req: Request, props: { params: Promise<{ id: string }> }) {
+async function deleteHandler(req: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const requestID = requestId()
   const admin = createAdminClient()
@@ -39,3 +40,6 @@ export async function DELETE(req: Request, props: { params: Promise<{ id: string
   }
 }
 
+
+/** Changes made through /api/v1 are attributed to the API (lib/audit/source.ts). */
+export const DELETE = (...args: Parameters<typeof deleteHandler>) => withChangeSource('api', () => deleteHandler(...args))

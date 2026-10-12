@@ -8,6 +8,7 @@ import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuthShell } from '@/components/auth-shell'
 import { ConsentForm } from './consent-form'
+import { fundCreationRefusal } from '@/lib/onboarding/create-fund'
 
 /**
  * The OAuth consent screen — where a human decides whether an agent may act on
@@ -83,7 +84,27 @@ export default async function AuthorizePage(props: Props) {
     .maybeSingle()
 
   if (!membership) {
-    return <Problem title="No fund" detail="Your account isn't a member of a fund, so there is nothing to grant access to." />
+    // No fund yet: name one here and the assistant sets the rest up (setup_status, setup_fund).
+    // The consent route creates it on Allow, as its admin, with agent access on.
+    const refusal = await fundCreationRefusal(admin, user!.id)
+    if (refusal) return <Problem title="No fund" detail={refusal} />
+    return (
+      <ConsentForm
+        clientName={client.client_name ?? 'An external application'}
+        fundName=""
+        newFund
+        willWrite
+        downgraded={false}
+        params={{
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          code_challenge: codeChallenge,
+          scope: grantableScope(scope, 'admin', true),
+          state,
+          resource,
+        }}
+      />
+    )
   }
   const { fund_id: fundId, role } = membership as { fund_id: string; role: string }
 

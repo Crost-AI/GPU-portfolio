@@ -17,13 +17,17 @@ import {
   type AgentTool,
 } from '@/lib/accounting/agent-tools'
 import { DASHBOARD_TOOLS, type DashboardTool } from '@/lib/agent/dashboard-tools'
+import { PENDING_TOOLS, type PendingTool } from '@/lib/agent/pending-tools'
 import { DASHBOARD_HTML, DASHBOARD_HTML_HASH } from './dashboard-html.generated'
 import { isDashboardPayload } from './payload'
 
-export type McpTool = AgentTool | DashboardTool
+export type McpTool = AgentTool | DashboardTool | PendingTool
 
-/** Everything the MCP endpoint serves: the shared registry, then the dashboard tools. */
-export const MCP_TOOLS: McpTool[] = [...AGENT_TOOLS, ...DASHBOARD_TOOLS]
+/**
+ * Everything the MCP endpoint serves: the shared registry, the dashboard tools, and the approval
+ * tools a staged write is confirmed with (lib/agent/pending-tools.ts).
+ */
+export const MCP_TOOLS: McpTool[] = [...AGENT_TOOLS, ...DASHBOARD_TOOLS, ...PENDING_TOOLS]
 
 export function getMcpTool(name: unknown): McpTool | undefined {
   return typeof name === 'string' ? MCP_TOOLS.find(t => t.name === name) : undefined
@@ -36,6 +40,7 @@ export function canReadFor(access: AccessContext) {
 
 const isUi = (tool: McpTool) => (tool as DashboardTool).ui === true
 const isPersonal = (tool: McpTool) => (tool as DashboardTool).personal === true
+export const isPendingTool = (tool: McpTool): tool is PendingTool => (tool as PendingTool).pendingDecision === true
 
 // ---------------------------------------------------------------------------------------------
 // Protocol version
@@ -118,7 +123,11 @@ export function readResource(uri: unknown) {
 // ---------------------------------------------------------------------------------------------
 
 /** Dashboard writes touch only the caller's own saved list; say which of them removes something. */
-const DESTRUCTIVE: Record<string, boolean> = { save_dashboard: false, delete_dashboard: true }
+const DESTRUCTIVE: Record<string, boolean> = {
+  save_dashboard: false, delete_dashboard: true,
+  // Approving applies a change to the fund's records; hosts should ask before running it.
+  approve_action: true, reject_action: false,
+}
 
 /**
  * A tool as `tools/list` describes it.
@@ -158,6 +167,9 @@ export function describeTool(tool: McpTool) {
  */
 export function listableTools(access: AccessContext): McpTool[] {
   return MCP_TOOLS.filter(tool => {
+    // The approval tools are offered to anyone who could have something waiting; which actions
+    // they may see or decide is the service's question, per action.
+    if (isPendingTool(tool)) return tool.scope === 'read' || access.role !== 'viewer'
     // A member's own saved dashboards: every member lists and opens them; changing them needs a
     // role that may change things, which the read-only demo (`viewer`) is not.
     if (isPersonal(tool)) return tool.scope === 'read' || access.role !== 'viewer'
@@ -171,6 +183,15 @@ export function listableTools(access: AccessContext): McpTool[] {
 
 /** Null when the call may run; otherwise the refusal. The one authorization path for MCP. */
 export function authorizeMcpTool(tool: McpTool, auth: ResolvedKey, access: AccessContext, args: unknown): string | null {
+  if (isPendingTool(tool)) {
+    // The credential's ceiling holds here too: a read-only connection approves nothing. The
+    // approver's write access to each action's own domain is checked by the service.
+    if (tool.scope === 'write') {
+      if (!auth.scopes.includes('write')) return 'This credential is read-only.'
+      if (access.role === 'viewer') return 'The read-only demo cannot approve or reject changes.'
+    }
+    return null
+  }
   if (isPersonal(tool)) {
     if (tool.scope === 'write') {
       // The credential's own ceiling still holds: a read-only connection was told it "cannot

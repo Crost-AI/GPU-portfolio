@@ -3,10 +3,12 @@ import { describePrompt, promptsFor, PromptArgumentError, renderPrompt } from '@
 import { canReadFor } from '@/lib/mcp-apps/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveAgentAuth, loadCredentialAccess, type ResolvedKey } from '@/lib/accounting/api-keys'
-import { resolveVehicleForTool, type AgentToolContext } from '@/lib/accounting/agent-tools'
+import { getTool, resolveVehicleForTool, type AgentToolContext } from '@/lib/accounting/agent-tools'
+import { idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
+import { withChangeSource } from '@/lib/audit/source'
 import type { AccessContext } from '@/lib/access/effective'
 import {
-  authorizeMcpTool, describeTool, getMcpTool, listableTools, listResources, negotiateProtocolVersion,
+  authorizeMcpTool, describeTool, getMcpTool, isPendingTool, listableTools, listResources, negotiateProtocolVersion,
   readResource, toolResult,
 } from '@/lib/mcp-apps/server'
 import { rateLimit } from '@/lib/rate-limit'
@@ -58,7 +60,12 @@ const SERVER_INSTRUCTIONS =
   'When the user asks for help, asks what you can do or what they can ask, says "hi", "start", ' +
   '"get started", "home" or "menu", or seems unsure what to ask, call show_home and present its ' +
   'overview. Do not describe these tools from memory: show_home lists only what this member may ' +
-  'open, filtered to their own entities and access.'
+  'open, filtered to their own entities and access. ' +
+  'Changes you make for the user may come back staged ({ staged: true, pendingActionId }) instead of applied: ' +
+  'nothing has changed yet. Tell the user what the change is and ask them to confirm; only after they do, ' +
+  'call approve_action with that id (or reject_action if they decline). ' +
+  'When an admin asks to set up the fund (or the fund is new), call setup_status, ask only for what is missing, ' +
+  'confirm the plan, and apply it with one setup_fund call.'
 
 interface RpcRequest { jsonrpc: string; id?: string | number | null; method: string; params?: any }
 
@@ -99,6 +106,18 @@ async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: 
       const denied = authorizeMcpTool(tool, auth, access, args)
       if (denied) return ok(rpc.id, { content: [{ type: 'text', text: denied }], isError: true })
       try {
+        // Approval tools: authorized per action by the pending-actions service.
+        if (isPendingTool(tool)) return ok(rpc.id, toolResult(tool, await tool.run({ admin: ctx.admin, auth, access }, args)))
+        // The shared registry goes through the one dispatcher, which stages, audits and dedupes
+        // writes (lib/agent/dispatch.ts). A retry may name its call with _meta.idempotencyKey.
+        const agentTool = getTool(tool.name)
+        if (agentTool) {
+          const result = await runAgentTool({
+            admin: ctx.admin, tool: agentTool, input: args, auth, access, channel: 'mcp', origin: ctx.origin,
+            idempotencyKey: idempotencyKeyOf(rpc.params?._meta?.idempotencyKey),
+          })
+          return ok(rpc.id, toolResult(tool, result))
+        }
         const portfolioGroup = await resolveVehicleForTool(tool, ctx.admin, ctx.fundId, args.vehicle, access)
         const result = await tool.handler({ ...ctx, portfolioGroup }, args)
         return ok(rpc.id, toolResult(tool, result))
@@ -140,7 +159,15 @@ async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: 
 /** A JSON-RPC batch may not be used to amplify past the rate limit. */
 const MAX_BATCH = 20
 
+/**
+ * Every change recorded while serving this request is attributed to MCP (lib/audit/source.ts),
+ * including those recorded deep in shared code the web pages also call.
+ */
 export async function POST(req: NextRequest) {
+  return withChangeSource('mcp', () => handlePost(req))
+}
+
+async function handlePost(req: NextRequest) {
   const admin = createAdminClient()
   const auth = await resolveAgentAuth(admin, req)
   if (!auth) {

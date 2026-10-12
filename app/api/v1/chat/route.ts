@@ -1,3 +1,4 @@
+import { withChangeSource } from '@/lib/audit/source'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runAnalyst } from '@/lib/ai/analyst/orchestrator'
 import { AnalystRequestError } from '@/lib/ai/analyst/types'
@@ -12,7 +13,7 @@ import { requestId, v1Error, v1Json } from '@/lib/api-v1/response'
  * Everything before the run is `prepareChatRequest`, shared with the streaming route so there is
  * one definition of a valid chat request rather than two that drift.
  */
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   const id = requestId()
   const admin = createAdminClient()
   try {
@@ -45,3 +46,6 @@ export async function POST(req: Request) {
     return v1Error('INTERNAL_ERROR', 'The request could not be completed.', 500, id)
   }
 }
+
+/** Changes made through /api/v1 are attributed to the API (lib/audit/source.ts). */
+export const POST = (...args: Parameters<typeof postHandler>) => withChangeSource('api', () => postHandler(...args))

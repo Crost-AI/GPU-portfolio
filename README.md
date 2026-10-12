@@ -23,13 +23,15 @@ Fund operations run on real double-entry books that keep themselves: every entit
 - **LP Reporting** — Track commitments, paid-in capital, distributions, and NAV across vehicles as dated positions; generate statements and quarterly letters; and deliver reports and documents through a secure, fund-branded LP portal with engagement tracking.
 - **Fund Operations** — Double-entry books for every entity, kept as you record investments and capital calls; import bank activity, run monthly closes, maintain partner capital accounts, model management fees and carried interest, budget and forecast each entity, and track compliance obligations.
 - **Your AI, your data** — Connect Claude or ChatGPT to your own deployment over MCP with a plugin built for your address. Ask "what can you do?" for a home dashboard of what you can open and what to ask; open live portfolio, company, statement, LP capital and capital-call dashboards inside the conversation (who has paid, who says they wired, who still owes) and save them; pick ready-made prompts like *Quarter-end review* from the prompt menu; and get an LP's capital account statement or report card as a PDF link — every answer scoped to the access of the person signed in.
+- **Headless by design** — Chat and scripts are first-class ways in and out, not an add-on to the web app. Set up a fund, add the team, record investments, post entries and close periods from Claude, ChatGPT or your own agent (MCP and a REST API); read anything back the same way. The web app is a view of the same data, and the preformatted PDFs and reports stay. Every change, whichever way it comes in, passes the same access rules and is recorded in the audit trail with its source (web, API or MCP); a change from a connected assistant waits for a person to approve it.
 - **AI Analyst and CRM** — Ask questions grounded in your fund's actual data, compare companies, surface trends, share Notes with your team, and log conversations and introductions through your inbound address.
-- **Access by entity and by area** — Grant each team member the funds, SPVs and entities they work on, and the areas (portfolio, accounting, LP capital, carry…) they may read or edit. Enforced at the API, on every page and in the database.
+- **Access by entity and by area** — Grant each team member the funds, SPVs and entities they work on, and the areas (portfolio, accounting, LP capital, carry, tax…) they may read or edit, in one step with presets for a CFO, fund administrator, tax preparer, auditor, investment team or investor relations, and with an end date for anyone here for one engagement. Deletes, moving money, anything sent to LPs and finalizing K-1s need an admin. Enforced the same way in the app, over the API and over MCP, with entity scoping also enforced in the database.
 - **Modular and self-hosted** — Enable only the workflows you use, add all of your funds, SPVs, and team members without per-seat fees, and install the fund-branded app on a phone.
 
 > Detailed feature descriptions at [FEATURES](./FEATURES.md)  
 > Fund accounting, forecasting and the double-entry reference at [ACCOUNTING](./ACCOUNTING.md)  
-> Connecting Claude and ChatGPT at [DOCS](./DOCS.md#dashboards-in-claude-and-chatgpt)
+> Connecting Claude and ChatGPT at [DOCS](./DOCS.md#connecting-claude-chatgpt-and-other-agents)  
+> Setting up a fund from chat or a script, with no web app at [DOCS](./DOCS.md#setting-up-a-fund-with-claude-chatgpt-or-a-script)
 
 ![LP Portal](public/screenshots/lp-portal.png)
 
@@ -67,6 +69,8 @@ See [LICENSE](./LICENSE.md) for full terms.
 - **Configure auth and add your first user** — Set Supabase redirect URLs and whitelist your email
 - **Add an AI key and forward your first email** — Anthropic, OpenAI, Gemini, or run your LLM locally
 - **Set up your fund** — entity, LPs, investments, then open the books, with CSV templates: [Setting up a new fund](./DOCS.md#setting-up-a-new-fund)
+
+Or set it up headless. After the database and deploy steps, `npm run bootstrap -- --email you@yourfund.com --fund "Your Fund"` creates your account, the fund and an API key without opening the web app, or add your email to `allowed_signups`, connect Claude or ChatGPT to `https://<your-domain>/api/mcp` and name your fund on the consent screen. Then run the **Set up this fund** prompt: [Setting up a fund with Claude, ChatGPT or a script](./DOCS.md#setting-up-a-fund-with-claude-chatgpt-or-a-script)
 
 Full deployment guide with detailed steps, optional services, and local development setup: [DOCS](./DOCS.md)
 

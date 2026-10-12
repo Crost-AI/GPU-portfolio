@@ -21,7 +21,8 @@ import type { FeatureVisibilityMap } from '@/lib/types/features'
 type Level = 'none' | 'read' | 'write'
 
 interface DomainInfo { key: Domain; label: string; description: string }
-interface MemberAccess { userId: string; email: string; role: string; grants: Record<string, Level>; entities?: string[]; allEntities?: boolean }
+interface MemberAccess { userId: string; email: string; role: string; grants: Record<string, Level>; entities?: string[]; allEntities?: boolean; accessExpiresAt?: string | null }
+interface PresetInfo { key: string; label: string; description: string }
 interface EntityInfo { id: string; name: string; kind: string; active: boolean }
 
 /**
@@ -57,6 +58,7 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
   const [members, setMembers] = useState<MemberAccess[]>([])
   const [defaults, setDefaults] = useState<Record<string, Level>>({})
   const [entities, setEntities] = useState<EntityInfo[]>([])
+  const [presets, setPresets] = useState<PresetInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState<number | null>(null)
@@ -86,6 +88,7 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
       setMembers(data.members)
       setDefaults(data.defaults ?? {})
       setEntities(data.entities ?? [])
+      setPresets(data.presets ?? [])
     } else {
       setError('Could not load access settings.')
     }
@@ -94,7 +97,7 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
 
   useEffect(() => { load() }, [load])
 
-  async function save(payload: Record<string, unknown>, busyKey: string) {
+  async function save(payload: Record<string, unknown>, busyKey: string): Promise<boolean> {
     setSaving(busyKey)
     setError(null)
     // Optimistic: the grid is a lot of small edits, and a round-trip per click makes it feel
@@ -108,9 +111,10 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
     if (!res.ok) {
       setError((await res.json().catch(() => ({}))).error ?? 'Could not save.')
       load()
-      return
+      return false
     }
     setSavedAt(Date.now())
+    return true
   }
 
   function setGrant(userId: string, domain: string, level: Level) {
@@ -135,6 +139,17 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
   function setAllEntities(userId: string, allEntities: boolean) {
     setMembers(prev => prev.map(m => (m.userId === userId ? { ...m, allEntities } : m)))
     save({ userId, allEntities }, `${userId}:all-entities`)
+  }
+
+  // A preset writes one grant per area, so the row is re-read rather than guessed at.
+  async function applyPreset(userId: string, preset: string) {
+    if (await save({ userId, preset }, `${userId}:preset`)) load()
+  }
+
+  function setExpiry(userId: string, date: string) {
+    const accessExpiresAt = date ? date : null
+    setMembers(prev => prev.map(m => (m.userId === userId ? { ...m, accessExpiresAt } : m)))
+    save({ userId, accessExpiresAt }, `${userId}:expiry`)
   }
 
   function setRole(userId: string, role: string) {
@@ -237,6 +252,12 @@ export function AccessGrid({ featureVisibility }: { featureVisibility: FeatureVi
                     <span className="text-[10px] text-muted-foreground">Demo account</span>
                   ) : (
                     <RolePicker role={m.role} onChange={role => setRole(m.userId, role)} busy={saving === `${m.userId}:role`} />
+                  )}
+                  {m.role === 'member' && (
+                    <>
+                      <PresetPicker presets={presets} onApply={key => applyPreset(m.userId, key)} busy={saving === `${m.userId}:preset`} />
+                      <ExpiryPicker value={m.accessExpiresAt ?? null} onChange={d => setExpiry(m.userId, d)} busy={saving === `${m.userId}:expiry`} />
+                    </>
                   )}
                 </td>
                 <td className="px-2 py-2 align-top">
@@ -397,6 +418,54 @@ function LevelPicker({
       {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
       {inherited && !busy && <span className="text-[9px] text-muted-foreground" title="Following the default for new members">default</span>}
     </div>
+  )
+}
+
+/**
+ * A starting set of grants for a kind of person (lib/access/presets.ts). Applying one sets every
+ * area in the row; each cell can still be changed afterwards. Resets to the prompt after each use,
+ * because a preset is an action, not a state the member stays "on".
+ */
+function PresetPicker({ presets, onApply, busy }: { presets: PresetInfo[]; onApply: (key: string) => void; busy?: boolean }) {
+  if (presets.length === 0) return null
+  return (
+    <div className="mt-1 flex items-center gap-1">
+      <select
+        value=""
+        onChange={e => { if (e.target.value) onApply(e.target.value) }}
+        disabled={busy}
+        aria-label="Apply a preset"
+        className="rounded border bg-transparent px-1.5 py-0.5 text-[10px] text-muted-foreground"
+      >
+        <option value="">Apply a preset…</option>
+        {presets.map(p => <option key={p.key} value={p.key} title={p.description}>{p.label}</option>)}
+      </select>
+      {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+    </div>
+  )
+}
+
+/**
+ * When this member's access ends: for an auditor or tax preparer let in for one engagement. Empty
+ * means no end date. After it passes they can no longer sign in to the fund, and the membership is
+ * removed (lib/access/expiry.ts).
+ */
+function ExpiryPicker({ value, onChange, busy }: { value: string | null; onChange: (date: string) => void; busy?: boolean }) {
+  const date = value ? value.slice(0, 10) : ''
+  const today = new Date().toISOString().slice(0, 10)
+  return (
+    <label className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+      <span className="whitespace-nowrap">Access ends</span>
+      <input
+        type="date"
+        value={date}
+        min={today}
+        onChange={e => onChange(e.target.value)}
+        disabled={busy}
+        className="rounded border bg-transparent px-1 py-0.5 text-[10px] tabular-nums"
+      />
+      {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+    </label>
   )
 }
 

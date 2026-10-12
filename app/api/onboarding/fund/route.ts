@@ -24,8 +24,10 @@ import {
   parseFirstEntity,
   patchOnboardingRecord,
   readWebhookToken,
+  stillOnboarding,
 } from '@/lib/onboarding/wizard-server'
 import type { FeatureVisibilityMap } from '@/lib/types/features'
+import { createFund, newSettingsRow } from '@/lib/onboarding/create-fund'
 
 // This route is UNGATED in lib/access/route-domains.ts — the caller of POST has no fund yet, so
 // there is no grant to check. Every branch that touches an existing fund therefore checks the
@@ -106,35 +108,6 @@ function readAIKey(body: Record<string, unknown>): { provider: WizardAIProvider;
     : body.aiProvider
   if (!isWizardAIProvider(provider)) return { error: 'Invalid AI provider' }
   return { provider, key }
-}
-
-/**
- * A new fund's settings row. Envelope encryption:
- *   1. Generate a random per-fund DEK (data encryption key)
- *   2. Encrypt the DEK with the master KEK from ENCRYPTION_KEY env var
- *   3. Encrypt each credential with the DEK
- */
-function newSettingsRow(
-  fundId: string,
-  kek: string,
-  ai: { provider: WizardAIProvider; key: string } | null,
-): { row: Record<string, unknown>; webhookToken: string } {
-  const dek = randomBytes(32).toString('hex')
-  // A random webhook token for Postmark URL validation. Stored encrypted only.
-  const webhookToken = randomBytes(32).toString('hex')
-  const row: Record<string, unknown> = {
-    fund_id: fundId,
-    encryption_key_encrypted: encrypt(dek, kek),
-    postmark_webhook_token_encrypted: encrypt(webhookToken, dek),
-    // An explicit, complete map so the stale column DEFAULT never applies. Portfolio tracking only
-    // until the products step answers; that step overwrites it.
-    feature_visibility: buildFeatureVisibility(['portfolio_reporting']),
-  }
-  if (ai) {
-    row[AI_PROVIDER_COLUMN[ai.provider]] = encrypt(ai.key, dek)
-    row.default_ai_provider = ai.provider
-  }
-  return { row, webhookToken }
 }
 
 // POST — step 1: create the fund (idempotent: an admin who already has one updates it instead)
@@ -234,36 +207,9 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  if (!kek) {
-    return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
-  }
-
-  // The creator's email domain, for "Request to join" matching — never a consumer mailbox domain.
-  const emailDomain = claimableEmailDomain(user.email)
-
-  // Create the fund — the trigger auto-adds the creator to fund_members
-  const { data: fund, error: fundError } = await admin
-    .from('funds')
-    .insert({ name: fundName, created_by: user.id, email_domain: emailDomain })
-    .select('id')
-    .single()
-
-  if (fundError || !fund) {
-    console.error('[onboarding/fund] Failed to create fund:', fundError)
-    return NextResponse.json({ error: 'Failed to create fund' }, { status: 500 })
-  }
-
-  const { row: settingsRow, webhookToken } = newSettingsRow(fund.id, kek, ai)
-
-  const { error: settingsError } = await (admin as any).from('fund_settings').insert(settingsRow)
-
-  if (settingsError) {
-    console.error('[onboarding/fund] Failed to create fund_settings:', settingsError)
-    await admin.from('funds').delete().eq('id', fund.id)
-    return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 })
-  }
-
-  return NextResponse.json({ fundId: fund.id, webhookToken })
+  const created = await createFund(admin as any, { userId: user.id, email: user.email, fundName, ai })
+  if (!created.ok) return NextResponse.json({ error: created.error }, { status: created.status })
+  return NextResponse.json({ fundId: created.fundId, webhookToken: created.webhookToken })
 }
 
 // PATCH — the later wizard steps that have no settings route of their own:
@@ -359,17 +305,4 @@ export async function PATCH(req: NextRequest) {
   }
 
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
-}
-
-/** True while the fund is still in the first-run wizard: not finished, and no products answer on a fund that already has data. */
-async function stillOnboarding(admin: any, fundId: string, settings: Record<string, any>): Promise<boolean> {
-  const rec = parseOnboardingRecord(settings.onboarding)
-  if (rec?.completed_at) return false
-  if (rec?.products) return true
-  const [{ count: vehicles }, { count: companies }, { count: senders }] = await Promise.all([
-    admin.from('fund_vehicles').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
-    admin.from('companies').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
-    admin.from('authorized_senders').select('id', { count: 'exact', head: true }).eq('fund_id', fundId),
-  ])
-  return !vehicles && !companies && !senders
 }

@@ -100,9 +100,10 @@ export const PAGE_DOMAINS: Record<string, PageDomain> = {
   'funds/[id]/capital-accounts/[lpEntityId]': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/journal': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/ledger': { domain: 'accounting', gate: 'requireVehicleAccess' },
-  // Gated in the page itself on the domain AND the tax_reporting feature: every route behind it
-  // is feature-gated, so the page must not render when the feature is off.
-  'funds/[id]/tax': { domain: 'accounting', feature: 'tax_reporting', gate: 'requireVehicleAccess' },
+  // The Tax area, and the tax_reporting feature: every route behind it is gated on both, so the
+  // page must not render without them. `tax` requires reading the books, so the entity gate's
+  // accounting check is implied, not extra.
+  'funds/[id]/tax': { domain: 'tax', feature: 'tax_reporting', gate: 'requireVehicleAccess' },
   'funds/[id]/migrate': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/opening-balances': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/performance': { domain: 'accounting', gate: 'requireVehicleAccess' },
