@@ -307,6 +307,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // is a holding, and confirming a register row posts through the same investments path.
   'api/portfolio/sheet': { domain: 'portfolio' },
   'api/entities': { domain: 'portfolio', level: 'any' },
+  // The sections every entity list renders in. Labels, not figures, read by lists in four domains;
+  // the handler filters the entity assignments (and a scoped caller's groups) by canSeeVehicle.
+  'api/vehicle-groups': { domain: 'portfolio', level: 'any' },
   // An entity's governing documents: anyone who can see the entity, whatever their domain grants —
   // the handlers check the entity (lib/entity-documents/http.ts). Level 'any' only keeps non-members
   // and switched-off funds out at the gate.
@@ -476,6 +479,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/settings/notifications': { domain: 'portfolio', level: 'any' },
   'api/settings/reminders': { domain: 'admin' },
   'api/settings/dashboard-entities': { domain: 'admin' },
+  // Entity groups: managing them is administration (and admins only in the handler).
+  'api/settings/vehicle-groups': { domain: 'admin' },
   'api/settings/reminders/test': { domain: 'admin' },
   'api/auth/activity': { domain: 'portfolio', level: 'any' },
   // Affinity issues ONE KEY PER USER, scoped to that user's own permissions, so each member

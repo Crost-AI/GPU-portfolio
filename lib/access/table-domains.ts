@@ -292,6 +292,7 @@ export const TABLE_RULES: Record<string, TableRule> = {
   allowed_signups: { scope: 'service', note: 'The signup allowlist decides who may exist at all.' },
   rate_limit_entries: { scope: 'service', note: 'Counters; readable rows would make the limiter forgeable.' },
   demo_sessions: { scope: 'service', note: 'Anonymous demo telemetry, written server-side.' },
+  vehicle_groups: { scope: 'service', note: 'Admin-defined sections for the entity lists. Read by api/vehicle-groups and api/settings/vehicle-groups with the service role, which filter the entity assignments by canSeeVehicle.' },
   saved_dashboards: { scope: 'service', note: 'A member\'s saved dashboard recipes (name, view, arguments; no figures). Read and written only by the MCP dashboard tools, which scope to the credential\'s fund and member and re-check the view\'s domain on open (lib/agent/dashboard-tools.ts).' },
   memo_agent_jobs: { scope: 'service', note: 'Already locked down by 20260509000002_memo_agent_jobs_lockdown.sql.' },
   api_idempotency_keys: { scope: 'service', note: 'Stored response bodies for /api/v1 financial approvals, replayed on retry.' },
