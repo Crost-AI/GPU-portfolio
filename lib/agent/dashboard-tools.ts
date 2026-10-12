@@ -298,6 +298,7 @@ async function statementsView(ctx: AgentToolContext, input: any): Promise<Statem
         liabilities: section(p.balanceSheet.liabilities),
         equityLabel: p.balanceSheet.equity.label,
         equityTotal: p.balanceSheet.equity.total,
+        equityRows: section(p.balanceSheet.equity).rows,
         check: p.balanceSheet.check,
         unallocatedEarnings: p.balanceSheet.partnersCapital.unallocatedEarnings,
       },

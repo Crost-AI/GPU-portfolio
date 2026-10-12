@@ -493,7 +493,9 @@ function statements(payload: StatementsPayload, ctx: ViewContext): Node[] {
     out.push(statementTable(`Balance sheet as of ${shortDate(d.period.end)}`, [
       ...sectionLines(fmt, d.balanceSheet.assets),
       ...sectionLines(fmt, d.balanceSheet.liabilities),
-      { label: d.balanceSheet.equityLabel, amount: fmt.money(d.balanceSheet.equityTotal), kind: 'total' },
+      ...(d.balanceSheet.equityRows?.length
+        ? sectionLines(fmt, { label: d.balanceSheet.equityLabel, rows: d.balanceSheet.equityRows, total: d.balanceSheet.equityTotal })
+        : [{ label: d.balanceSheet.equityLabel, amount: fmt.money(d.balanceSheet.equityTotal), kind: 'total' as const }]),
       { label: `Total liabilities and ${d.balanceSheet.equityLabel.toLowerCase()}`, amount: fmt.money(d.balanceSheet.liabilities.total + d.balanceSheet.equityTotal), kind: 'grand' },
     ]))
     if (Math.abs(d.balanceSheet.unallocatedEarnings) >= 0.005) {

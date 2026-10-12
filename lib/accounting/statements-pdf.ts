@@ -107,7 +107,10 @@ export function buildStatementsHtml(pkg: StatementPackage, meta: StatementsPdfMe
     `<table><thead>${periodHead('asOf')}</thead><tbody>
       ${section(p => p.balanceSheet.assets)}
       ${section(p => p.balanceSheet.liabilities, { hideEmpty: true })}
-      ${totalRow(equityLabel, p => p.balanceSheet.equity.total)}
+      ${payloads.some(p => p.balanceSheet.equity.rows.length > 0)
+        // Books that keep retained earnings list equity account by account, with net income apart.
+        ? section(p => p.balanceSheet.equity)
+        : totalRow(equityLabel, p => p.balanceSheet.equity.total)}
     </tbody></table>
     ${primary.balanceSheet.partnersCapital.unallocatedEarnings !== 0
       ? `<p style="font-size:10px;color:#a2600e;margin-top:8px;">${m(primary.balanceSheet.partnersCapital.unallocatedEarnings)} of net income is not yet allocated to partners; the period has not been closed.</p>` : ''}
