@@ -178,6 +178,9 @@ export interface StatementsData {
     liabilities: StatementSectionData
     equityLabel: string
     equityTotal: number
+    /** Equity account by account, net income last — only for books that keep retained earnings.
+     *  Empty otherwise, where equity is the one total line. */
+    equityRows?: StatementLine[]
     /** assets - liabilities - equity. Zero when the ledger balances. */
     check: number
     unallocatedEarnings: number

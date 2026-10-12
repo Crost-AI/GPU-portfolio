@@ -426,3 +426,63 @@ describe('statement of cash flows', () => {
     expect(scf.nonCash[0].amount).toBe(130_000)
   })
 })
+
+describe('balance sheet for books that keep retained earnings', () => {
+  // QuickBooks-style management company books: each member has their own equity account and
+  // net income is never closed into capital. Prior years roll into retained earnings.
+  const accounts: Account[] = [
+    { id: 'cash', fundId: 'f', code: '1000', name: 'Cash', type: 'asset', subtype: 'cash' },
+    { id: 'david', fundId: 'f', code: '3010', name: 'David Contribution', type: 'equity', subtype: 'member_contributions' },
+    { id: 'jeff', fundId: 'f', code: '3020', name: 'Jeff Contribution', type: 'equity', subtype: 'member_contributions' },
+    { id: 're', fundId: 'f', code: '3300', name: 'Retained Earnings', type: 'equity', subtype: 'retained_earnings' },
+    { id: 'fees', fundId: 'f', code: '4010', name: 'Fees', type: 'income', subtype: 'management_fee_income' },
+    { id: 'rent', fundId: 'f', code: '5100', name: 'Rent', type: 'expense', subtype: 'occupancy' },
+  ]
+  const postings: Posting[] = [
+    // 2024: 100k of fees, 30k of rent, 20k distributed to David and 10k to Jeff.
+    { accountId: 'cash', amount: 100_000, currency: 'USD', entryDate: '2024-03-01' },
+    { accountId: 'fees', amount: -100_000, currency: 'USD', entryDate: '2024-03-01' },
+    { accountId: 'rent', amount: 30_000, currency: 'USD', entryDate: '2024-06-01' },
+    { accountId: 'cash', amount: -30_000, currency: 'USD', entryDate: '2024-06-01' },
+    { accountId: 'david', amount: 20_000, currency: 'USD', entryDate: '2024-12-15' },
+    { accountId: 'jeff', amount: 10_000, currency: 'USD', entryDate: '2024-12-15' },
+    { accountId: 'cash', amount: -30_000, currency: 'USD', entryDate: '2024-12-15' },
+    // A journal entry straight to retained earnings, as QuickBooks books allow.
+    { accountId: 're', amount: 5_000, currency: 'USD', entryDate: '2024-12-31' },
+    { accountId: 'david', amount: -5_000, currency: 'USD', entryDate: '2024-12-31' },
+    // 2025: 40k of fees.
+    { accountId: 'cash', amount: 40_000, currency: 'USD', entryDate: '2025-02-01' },
+    { accountId: 'fees', amount: -40_000, currency: 'USD', entryDate: '2025-02-01' },
+  ]
+
+  it('lists each equity account, rolls prior years into retained earnings and shows this year apart', () => {
+    const bs = balanceSheet(accounts, postings, { equityLabel: "Members' capital", asOf: '2025-06-30' })
+    expect(bs.equity.rows).toEqual([
+      { code: '3010', name: 'David Contribution', amount: -15_000 },
+      { code: '3020', name: 'Jeff Contribution', amount: -10_000 },
+      { code: '3300', name: 'Retained Earnings', amount: 65_000 }, // −5k posted + 70k of 2024 net income
+      { code: '', name: 'Net income', amount: 40_000 },
+    ])
+    expect(bs.equity.total).toBe(80_000)
+    expect(bs.check).toBe(0)
+    // Nothing waits on a close: earnings belong in retained earnings.
+    expect(bs.partnersCapital.unallocatedEarnings).toBe(0)
+  })
+
+  it('takes the year from the latest posting when no date is given', () => {
+    const bs = balanceSheet(accounts, postings)
+    expect(bs.equity.rows.at(-1)).toEqual({ code: '', name: 'Net income', amount: 40_000 })
+  })
+
+  it('adds a retained earnings line when the account has no postings of its own', () => {
+    const bs = balanceSheet(accounts, postings.slice(0, 7).concat(postings.slice(9)), { asOf: '2025-06-30' })
+    expect(bs.equity.rows.find(row => row.code === '3300')).toEqual({ code: '3300', name: 'Retained Earnings', amount: 70_000 })
+    expect(bs.check).toBe(0)
+  })
+
+  it('leaves a fund without retained earnings on its one total line', () => {
+    const fund = accounts.filter(a => a.subtype !== 'retained_earnings')
+    const bs = balanceSheet(fund, postings.filter(p => p.accountId !== 're'))
+    expect(bs.equity.rows).toHaveLength(0)
+  })
+})

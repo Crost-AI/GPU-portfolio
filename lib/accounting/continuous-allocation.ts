@@ -9,6 +9,7 @@ import { ACTUAL_BOOK } from './books'
 import { closesToOwnerEquity } from '@/lib/vehicle-kinds'
 import { loadPostedLedger, loadEntityNames, loadOwnership } from './load'
 import { roundCents } from './ledger'
+import { keepsRetainedEarnings } from './statements'
 import { ensureCapitalAccounts, accountIdByCode, persistEntry } from './persist'
 import {
   allocationWeights, loadAllocationBasis, loadCommitmentEvents, loadPartnerTerms,
@@ -70,6 +71,9 @@ export async function allocatePostedEntry(
 
   const kind = await vehicleKindByName(admin, fundId, group)
   const ownerMode = closesToOwnerEquity(kind)
+  // Owner books that keep retained earnings never move net income into capital — not on posting
+  // and not at the close. It rolls into retained earnings on the balance sheet instead.
+  if (ownerMode && keepsRetainedEarnings(accounts)) return { allocationEntryIds: [] }
   const codes = await accountIdByCode(admin, fundId, group)
   const bridgeId = codes.get(BRIDGE_CODE)
   if (!bridgeId) return { error: `Missing account ${BRIDGE_CODE} (Undistributed earnings)` }

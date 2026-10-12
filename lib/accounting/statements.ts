@@ -128,7 +128,12 @@ export function balanceSheet(
   postings: Posting[],
   /** The equity label — partners' capital for a fund, members' or owner's for the kinds without
    *  partners (lib/accounting/vocab.ts). Defaults to the fund's, so every caller is unchanged. */
-  opts: { equityLabel?: string } = {},
+  opts: {
+    equityLabel?: string
+    /** The balance sheet date. Only read for books that keep retained earnings, to split the
+     *  current year's net income from prior years'; defaults to the latest posting date. */
+    asOf?: string | null
+  } = {},
 ): BalanceSheet {
   const tb = trialBalance(accounts, postings)
   const assets = section('Assets', tb, 'asset')
@@ -148,8 +153,36 @@ export function balanceSheet(
   const allocated = bridgeRow ? r(-bridgeRow.balance) : 0 // equity normal is credit; a debit balance is allocation
   const unallocatedEarnings = r(netIncome - allocated)
 
-  // One line, no per-partner detail: that belongs in the statement of changes.
   const total = r(capitalAccounts.total + netIncome)
+
+  // Books that keep retained earnings (an account with that subtype, as QuickBooks books do)
+  // never close net income into capital: prior years roll into retained earnings and the
+  // current year shows as its own line, so equity is listed account by account, the way
+  // QuickBooks lays it out. The total is the same either way.
+  if (keepsRetainedEarnings(accounts)) {
+    const yearStart = `${(opts.asOf || latestEntryDate(postings) || '').slice(0, 4)}-01-01`
+    const prior = postings.filter(p => p.entryDate && p.entryDate < yearStart)
+    const priorIs = incomeStatement(accounts, prior)
+    const priorYears = priorIs.netIncome
+    const currentYear = r(netIncome - priorYears)
+    const reAccount = accounts.find(a => a.subtype === RETAINED_EARNINGS_SUBTYPE)!
+    const rows = capitalAccounts.rows.map(row => ({ ...row }))
+    const reRow = rows.find(row => row.code === reAccount.code)
+    if (reRow) reRow.amount = r(reRow.amount + priorYears)
+    else if (priorYears !== 0) rows.push({ code: reAccount.code, name: reAccount.name, amount: priorYears })
+    rows.sort((a, b) => a.code.localeCompare(b.code))
+    rows.push({ code: '', name: 'Net income', amount: currentYear })
+    return {
+      assets,
+      liabilities,
+      equity: { label, rows, total },
+      check: r(assets.total - liabilities.total - total),
+      // Nothing is waiting on a close: earnings belong in retained earnings by design.
+      partnersCapital: { total, unallocatedEarnings: 0 },
+    }
+  }
+
+  // One line, no per-partner detail: that belongs in the statement of changes.
   const equity: StatementSection = {
     label,
     rows: [],
@@ -163,6 +196,22 @@ export function balanceSheet(
     check: r(assets.total - liabilities.total - total),
     partnersCapital: { total, unallocatedEarnings },
   }
+}
+
+/** The subtype that marks a retained-earnings account. Its presence switches a vehicle's books to
+ *  the retained-earnings model: no close into capital, prior years' net income in retained earnings. */
+export const RETAINED_EARNINGS_SUBTYPE = 'retained_earnings'
+
+/** True when the chart keeps retained earnings (QuickBooks-style books), so net income is never
+ *  closed or allocated into capital — see balanceSheet, the close and continuous allocation. */
+export function keepsRetainedEarnings(accounts: Pick<Account, 'subtype'>[]): boolean {
+  return accounts.some(a => a.subtype === RETAINED_EARNINGS_SUBTYPE)
+}
+
+function latestEntryDate(postings: Posting[]): string | null {
+  let latest: string | null = null
+  for (const p of postings) if (p.entryDate && (!latest || p.entryDate > latest)) latest = p.entryDate
+  return latest
 }
 
 export interface IncomeStatement {

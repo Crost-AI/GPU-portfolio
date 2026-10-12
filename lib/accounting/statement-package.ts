@@ -282,7 +282,7 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
     period,
     asOf: period.end,
     trialBalance: trialBalance(data.accounts, cumulative),
-    balanceSheet: balanceSheet(data.accounts, cumulative, { equityLabel: equityLabel(data.kind) }),
+    balanceSheet: balanceSheet(data.accounts, cumulative, { equityLabel: equityLabel(data.kind), asOf: period.end }),
     incomeStatement: incomeStatement(data.accounts, inPeriod),
     scheduleOfInvestments: {
       ...scheduleOfInvestments(data.accounts, cumulative, nav, positions, data.companies as SoiCompany[]),

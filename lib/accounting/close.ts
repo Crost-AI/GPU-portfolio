@@ -53,7 +53,7 @@ import {
 import { loadNotes, noteAccruals } from './note-interest'
 import { ensureInvestmentAccounts } from './investments'
 import { accountBalances } from './ledger'
-import { balanceSheet, trialBalance } from './statements'
+import { balanceSheet, keepsRetainedEarnings, trialBalance } from './statements'
 import { setGeneratedAllocationStatus } from './continuous-allocation'
 import { loadCloseEntrySuggestions, type CloseEntrySuggestion } from './close-suggestions'
 
@@ -162,6 +162,12 @@ export interface ClosePreview {
    * allocated on posting doesn't read as "no activity".
    */
   allocatedOnPosting: { entries: number; netIncome: number }
+  /**
+   * Owner-mode books that keep retained earnings (QuickBooks-style): the close posts nothing into
+   * capital. Net income stays in the P&L and rolls into retained earnings on the balance sheet at
+   * the year end, and the member accounts keep their own balances. The close only locks the period.
+   */
+  retainedEarnings: boolean
   warnings: string[]
 }
 
@@ -339,7 +345,8 @@ export async function previewClose(
     )
   }
 
-  return { periodStart, periodEnd, netIncome, categories, basis, mode: ownerMode ? 'owner' : 'partners', allocatedOnPosting, warnings }
+  const retainedEarnings = ownerMode && keepsRetainedEarnings(accounts)
+  return { periodStart, periodEnd, netIncome, categories, basis, mode: ownerMode ? 'owner' : 'partners', allocatedOnPosting, retainedEarnings, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,9 +459,13 @@ async function persistCloseReview(
   // Is every dollar of P&L through the period end in a partner's capital account? Net income less
   // what the undistributed-earnings bridge says was allocated (the balance sheet's own figure).
   // An entity with no bridge (owner-mode books) closes its P&L another way: not applicable.
+  // Books that keep retained earnings close nothing into capital: not applicable either.
+  const retained = keepsRetainedEarnings(accounts)
   const hasBridge = accounts.some(a => a.subtype === 'undistributed_earnings')
-  const unallocated = hasBridge ? balanceSheet(accounts, postings).partnersCapital.unallocatedEarnings : 0
-  const allocationCheck = !hasBridge
+  const unallocated = hasBridge && !retained ? balanceSheet(accounts, postings).partnersCapital.unallocatedEarnings : 0
+  const allocationCheck = retained
+    ? { status: 'not_applicable', detail: 'This entity keeps retained earnings: net income rolls into retained earnings at the year end rather than into capital.' }
+    : !hasBridge
     ? { status: 'not_applicable', detail: 'This entity closes its results to owner equity rather than allocating them to partners.' }
     : Math.abs(unallocated) < 0.05
       ? { status: 'passed', detail: `All net income through ${periodEnd} is allocated to partners' capital.` }
@@ -1122,7 +1133,8 @@ export async function closePeriodWithAllocation(
   // 2 (owner mode). One entry per category, net income to the single equity account — a
   // management company's members' capital or an individual's owner's capital. No partner
   // lines, no carry, no associate economics: none of those exist for these kinds.
-  if (preview.mode === 'owner') {
+  // Books that keep retained earnings post nothing here (see ClosePreview.retainedEarnings).
+  if (preview.mode === 'owner' && !preview.retainedEarnings) {
     const { data: ownerAcct } = await admin
       .from('chart_of_accounts' as any)
       .select('id')

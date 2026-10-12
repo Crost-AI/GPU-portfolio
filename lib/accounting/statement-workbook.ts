@@ -158,8 +158,10 @@ function balanceSheetSheet(payloads: StatementPayload[]): XLSX.WorkSheet {
   const rows: Row[] = [[`Statement of assets, liabilities and ${label.toLowerCase()}`], [], periodHeader(payloads)]
   rows.push(...sectionRowsMulti(p => p.balanceSheet.assets, payloads))
   rows.push(...sectionRowsMulti(p => p.balanceSheet.liabilities, payloads))
-  // Equity is a single total line — per-partner detail is its own sheet.
-  rows.push([label, '', ...payloads.map(p => money(p.balanceSheet.equity.total))], [])
+  // Equity is a single total line — per-partner detail is its own sheet. Books that keep retained
+  // earnings list it account by account instead, with the current year's net income on its own row.
+  if (payloads.some(p => p.balanceSheet.equity.rows.length > 0)) rows.push(...sectionRowsMulti(p => p.balanceSheet.equity, payloads))
+  else rows.push([label, '', ...payloads.map(p => money(p.balanceSheet.equity.total))], [])
   return sheet(rows, [10, 34, ...payloads.map(() => 16)])
 }
 
