@@ -16,6 +16,7 @@ import { FundNameSection } from './_sections/fund/fund-name-section'
 import { SignInSection } from './_sections/fund/sign-in-section'
 import { AuthEmailTemplatesSection } from './_sections/fund/auth-email-templates-section'
 import { WhitelistSection } from './_sections/fund/whitelist-section'
+import { VehicleGroupsSection } from './_sections/fund/vehicle-groups-section'
 import { TeamSection } from './_sections/fund/team-section'
 import { DangerZone } from './_sections/fund/danger-zone'
 import { AnalyticsSection } from './_sections/fund/analytics-section'
@@ -170,6 +171,8 @@ export default function SettingsPage() {
             <VersionSection appVersion={settings.appVersion} updateAvailable={settings.updateAvailable} />
             {/* Investment-vehicle management moved out of Settings: add/edit (name, type, vintage,
                 aliases, active) on /investments; GP linking on /funds/status. */}
+            {/* How the entity lists are sectioned — one group per entity, "Other" for the rest. */}
+            <VehicleGroupsSection />
             <AIProvidersSection
               hasClaudeKey={settings.hasClaudeKey}
               claudeModel={settings.claudeModel}

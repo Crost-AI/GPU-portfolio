@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Loader2, Landmark, Users, Briefcase, Building2, ArrowRight, Search, X } from 'lucide-react'
@@ -10,6 +10,8 @@ import { useVehicle, useFundSeg } from '@/components/accounting-vehicle'
 import { SortTh, nextSort, compareVals, type SortState } from '@/components/sortable-th'
 import { Metric as MetricBox } from '@/components/ui/metric'
 import { CapitalCharts } from '@/components/capital-charts'
+import { useVehicleGroups, GroupHeadingRow } from '@/components/vehicle-groups'
+import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 
 // The fund overview: performance per vehicle, DERIVED FROM THE LEDGER.
 //
@@ -58,6 +60,7 @@ export function FundOverview() {
   const router = useRouter()
   const { setVehicle } = useVehicle()
   const fundSeg = useFundSeg()
+  const vehicleGroups = useVehicleGroups()
 
   // Clicking a vehicle selects it (localStorage-backed context the whole section reads) and opens
   // its detail page — the lead page for the fund. Admin (/funds/status) is reached from there.
@@ -127,6 +130,11 @@ export function FundOverview() {
     acc.carry += v.carryAccrued ?? 0
     return acc
   }, { committed: 0, paidIn: 0, uncalled: 0, distributions: 0, nav: 0, totalValue: 0, carry: 0 })
+
+  // Admin-defined groups (Settings → Entity groups): one section per group, sorted within, each
+  // with a subtotal. With no groups the table is the flat list it always was.
+  const sections = groupBySection(sorted, vehicleGroups, v => ({ id: v.id, name: v.vehicle }))
+  const grouped = isGrouped(sections, vehicleGroups)
 
   // Ratios computed AFTER summing — never averaged across vehicles.
   const tTvpi = totals.paidIn > 0 ? totals.totalValue / totals.paidIn : null
@@ -224,28 +232,34 @@ export function FundOverview() {
             {sorted.length === 0 && (
               <tr><td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">No vehicles match your filters.</td></tr>
             )}
-            {sorted.map(v => {
-              const x = m(v)
-              return (
-                <tr key={v.vehicle} className="border-t hover:bg-muted/30">
-                  <td className="px-3 py-2 font-medium">
-                    <button onClick={() => openVehicle(v)} title={v.vehicle} className="text-left hover:underline hover:text-foreground truncate max-w-[220px] block">
-                      {v.vehicle}
-                    </button>
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground tabular-nums">{v.vintageYear ?? '—'}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.committed)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.paidIn)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtFull(x.uncalled)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.distributions)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.nav)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{moic(x.dpi)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{moic(x.rvpi)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums font-medium">{moic(x.tvpi)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{irrPct(x.irr)}</td>
-                </tr>
-              )
-            })}
+            {sections.map(section => (
+              <Fragment key={section.group?.id ?? 'other'}>
+                {grouped && <GroupHeadingRow label={section.label} count={section.items.length} colSpan={11} />}
+                {section.items.map(v => {
+                  const x = m(v)
+                  return (
+                    <tr key={v.vehicle} className="border-t hover:bg-muted/30">
+                      <td className="px-3 py-2 font-medium">
+                        <button onClick={() => openVehicle(v)} title={v.vehicle} className="text-left hover:underline hover:text-foreground truncate max-w-[220px] block">
+                          {v.vehicle}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground tabular-nums">{v.vintageYear ?? '—'}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.committed)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.paidIn)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmtFull(x.uncalled)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.distributions)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{fmtFull(x.nav)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{moic(x.dpi)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{moic(x.rvpi)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-medium">{moic(x.tvpi)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{irrPct(x.irr)}</td>
+                    </tr>
+                  )
+                })}
+                {grouped && <SubtotalRow label={`${section.label} total`} m={sumMetrics(section.items.map(m))} fmt={fmtFull} />}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       </div>
@@ -264,6 +278,33 @@ export function FundOverview() {
         unfunded.
       </p>
     </div>
+  )
+}
+
+/** Sum a group's metrics; the ratios are recomputed from the sums, never averaged. IRR does not sum. */
+function sumMetrics(rows: Metrics[]): Metrics {
+  const t = rows.reduce((a, x) => ({
+    committed: a.committed + x.committed, paidIn: a.paidIn + x.paidIn, uncalled: a.uncalled + x.uncalled,
+    distributions: a.distributions + x.distributions, nav: a.nav + x.nav, totalValue: a.totalValue + x.totalValue,
+  }), { committed: 0, paidIn: 0, uncalled: 0, distributions: 0, nav: 0, totalValue: 0 })
+  const per = (v: number) => (t.paidIn > 0 ? v / t.paidIn : null)
+  return { ...t, dpi: per(t.distributions), rvpi: per(t.nav), tvpi: per(t.totalValue), irr: null }
+}
+
+function SubtotalRow({ label, m, fmt }: { label: string; m: Metrics; fmt: (v: number) => string }) {
+  return (
+    <tr className="border-t bg-muted/30 font-medium">
+      <td className="px-3 py-2 text-muted-foreground" colSpan={2}>{label}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmt(m.committed)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmt(m.paidIn)}</td>
+      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{fmt(m.uncalled)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmt(m.distributions)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmt(m.nav)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{moic(m.dpi)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{moic(m.rvpi)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{moic(m.tvpi)}</td>
+      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">—</td>
+    </tr>
   )
 }
 

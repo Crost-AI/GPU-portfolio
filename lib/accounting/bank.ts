@@ -393,6 +393,23 @@ export function bankEntryPostings(amount: number, cashAccountId: string, otherAc
   ]
 }
 
+/**
+ * The posting a bank draft's account picker re-points, or null when the entry is not a simple
+ * two-line draft. Normally that is its one non-cash line. But an import whose suggested account
+ * is not on the vehicle's chart (a GP entity has no 3100 or 5100) drafts the other side to cash
+ * too, so both lines sit on 1000 — and there the counter-leg is the cash line signed against
+ * the bank amount, since `bankEntryPostings` puts the bank amount on the cash side.
+ */
+export function counterPosting<P extends { account_id: string; amount: number | string }>(
+  postings: P[], cashId: string | undefined, bankAmount: number,
+): P | null {
+  const nonCash = postings.filter(p => p.account_id !== cashId)
+  if (nonCash.length === 1) return nonCash[0]
+  if (nonCash.length > 0 || postings.length !== 2 || !bankAmount) return null
+  const against = postings.filter(p => Math.sign(Number(p.amount)) === -Math.sign(bankAmount))
+  return against.length === 1 ? against[0] : null
+}
+
 // ---------------------------------------------------------------------------
 // Bank reconciliation
 // ---------------------------------------------------------------------------

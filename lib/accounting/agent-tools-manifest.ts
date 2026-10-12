@@ -255,6 +255,22 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'post_drafts',
+    description: "Post DRAFT journal entries in bulk (the journal's Post all): each is balance-checked, adopted into investment transactions where it touches an investment, and refused in a closed period. Pages: repeat with afterId = the returned cursor while hasMore. allocate: false posts WITHOUT partner allocations — only for a migration whose source books never split income by partner.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'post exactly these drafts (one shot)' },
+        start: { type: 'string', description: 'ISO date; only drafts on or after it' },
+        end: { type: 'string', description: 'ISO date; only drafts on or before it' },
+        sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
+        afterId: { type: 'string', description: 'cursor from the previous call' },
+        allocate: { type: 'boolean', description: 'default true; false skips the partner allocation' },
+      },
+    },
+  },
+  {
     name: 'list_bank_transactions',
     description: 'List staged bank transactions and their status (drafted / reconciled / ignored).',
     scope: 'read',

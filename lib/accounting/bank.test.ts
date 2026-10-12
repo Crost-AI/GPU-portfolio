@@ -7,6 +7,7 @@ import {
   dedupHash,
   suggestCategory,
   bankEntryPostings,
+  counterPosting,
   summarizeBankRec,
 } from './bank'
 import { isBalanced } from './ledger'
@@ -211,6 +212,30 @@ describe('bankEntryPostings', () => {
     const outflow = bankEntryPostings(-3000, 'cash', 'exp')
     expect(isBalanced({ fundId: 'f', entryDate: 'd', postings: outflow })).toBe(true)
     expect(outflow.find(p => p.accountId === 'cash')!.amount).toBe(-3000)
+  })
+})
+
+describe('counterPosting', () => {
+  it('returns the one non-cash line of a simple draft', () => {
+    const ps = [{ id: 'a', account_id: 'cash', amount: 50 }, { id: 'b', account_id: 'income', amount: -50 }]
+    expect(counterPosting(ps, 'cash', 50)?.id).toBe('b')
+  })
+
+  it('finds the counter-leg when the import fell back to cash for both lines', () => {
+    // An inflow whose suggested account was not on the chart: cash +12.76 / cash -12.76.
+    const inflow = [{ id: 'a', account_id: 'cash', amount: 12.76 }, { id: 'b', account_id: 'cash', amount: -12.76 }]
+    expect(counterPosting(inflow, 'cash', 12.76)?.id).toBe('b')
+    const outflow = [{ id: 'a', account_id: 'cash', amount: '-1681' }, { id: 'b', account_id: 'cash', amount: '1681' }]
+    expect(counterPosting(outflow, 'cash', -1681)?.id).toBe('b')
+  })
+
+  it('refuses an allocated entry', () => {
+    const ps = [
+      { id: 'a', account_id: 'cash', amount: 100 },
+      { id: 'b', account_id: 'lp1', amount: -60 },
+      { id: 'c', account_id: 'lp2', amount: -40 },
+    ]
+    expect(counterPosting(ps, 'cash', 100)).toBeNull()
   })
 })
 

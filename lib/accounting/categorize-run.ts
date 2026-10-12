@@ -14,6 +14,7 @@ import { categorizationRecord } from './bank-categorize'
 import { categorizedBy } from './bank-categorize-context'
 import { ENTRY_SOURCE_TYPES } from './source-types'
 import { ACTUAL_BOOK } from './books'
+import { counterPosting } from './bank'
 
 /** Rows per model request: small enough that the JSON answer always fits in the output cap. */
 export const CATEGORIZE_BATCH_SIZE = 40
@@ -129,16 +130,16 @@ export async function runCategorization(
       continue
     }
 
-    // Only re-point simple two-line drafts (exactly one non-cash posting).
+    // Only re-point simple two-line drafts (see counterPosting).
     const { data: postings } = await admin
       .from('journal_postings' as any)
-      .select('id, account_id')
+      .select('id, account_id, amount')
       .eq('book', ACTUAL_BOOK)
       .eq('journal_entry_id', t.journal_entry_id)
-    const nonCash = ((postings as any[]) ?? []).filter(p => p.account_id !== cashId)
-    if (nonCash.length !== 1) continue
+    const counter = counterPosting((postings as any[]) ?? [], cashId, Number(t.amount))
+    if (!counter) continue
 
-    await admin.from('journal_postings' as any).update({ account_id: newAccountId }).eq('id', nonCash[0].id)
+    await admin.from('journal_postings' as any).update({ account_id: newAccountId }).eq('id', counter.id)
     await admin.from('journal_entries' as any).update({ source_type: cat.sourceType }).eq('id', t.journal_entry_id).eq('fund_id', fundId)
     await admin.from('bank_transactions' as any)
       .update({ suggested_account_code: cat.accountCode, raw: { ...(t.raw ?? {}), categorization: categorizationRecord({ by: 'ai', confidence: 'high', reason: 'Suggested by the AI pass' }) } })
