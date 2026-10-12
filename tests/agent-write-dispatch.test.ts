@@ -108,6 +108,13 @@ describe('a chat assistant (OAuth over MCP)', () => {
     })])
   })
 
+  it('names the app page where it can be approved, for a chat that has no approve_action tool', async () => {
+    const out = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' })
+    const url = `${new URL(out.json.approveUrl).origin}/pending-actions`
+    expect(out.json.approveUrl).toBe(url)
+    expect(out.json.next).toContain(`approve it in the app at ${url}`)
+  })
+
   it('applies the staged write when the person approves it in the chat', async () => {
     const staged = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' })
     const approved = await callTool('approve_action', { id: staged.json.pendingActionId })

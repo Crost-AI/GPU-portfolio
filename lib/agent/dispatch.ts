@@ -52,6 +52,8 @@ export interface StagedResult {
   pendingActionId: string
   summary: string
   preview: Record<string, unknown>
+  /** The app's approvals page, when the request's origin is known. */
+  approveUrl?: string
   next: string
 }
 
@@ -188,7 +190,7 @@ async function apply(call: AgentCall): Promise<unknown> {
 
 /** Stage the write as a pending action for a person to approve. Nothing else changes. */
 async function stage(call: AgentCall): Promise<StagedResult> {
-  const { admin, tool, input, auth, access, channel } = call
+  const { admin, tool, input, auth, access, channel, origin } = call
   const deps = { admin, fundId: auth.fundId, userId: auth.userId, access }
   const { args, vehicleId, preview } = await stageToolCall(deps, tool.name, input)
   const { data, error } = await (admin as any)
@@ -213,16 +215,21 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     subjectType: 'pending_action', subjectId: id, source: channel,
     details: { actionType: AGENT_TOOL_CALL, args: { tool: tool.name, input: auditInput(args.input) }, credentialId: auth.keyId },
   })
+  // A chat whose tool list predates the approval tools (hosts cache it per conversation) is told to
+  // call one it does not have, so the result also carries the page where a person can approve.
+  const approveUrl = origin ? `${origin}/pending-actions` : undefined
+  const inApp = approveUrl ? `in the app at ${approveUrl}` : 'in the app, under Approvals'
   return {
     staged: true,
     pendingActionId: id,
     summary: preview.summary,
     preview: preview.details,
+    ...(approveUrl ? { approveUrl } : {}),
     next: adminOnlyToolLabel(tool.name, input) && auth.role !== 'admin'
       ? `Nothing has changed yet. ${adminOnlyMessage(adminOnlyToolLabel(tool.name, input)!)} ` +
-        'Tell the user it is waiting for an admin to approve, in the app or in their own chat.'
+        `Tell the user it is waiting for an admin to approve, ${inApp} or in their own chat.`
       : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
       `Only after they confirm, call approve_action with id "${id}"; if they decline, call reject_action. ` +
-      'They can also approve it in the app.',
+      `If you have no approve_action tool, tell the user to approve it ${inApp}.`,
   }
 }

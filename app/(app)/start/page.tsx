@@ -10,6 +10,7 @@ import { createActions, suggestedPrompts, isSetupStage } from '@/lib/start/quick
 import { useCompanyCount } from './setup-stage'
 import { QuickActionButtons } from '@/components/quick-action-buttons'
 import { GettingStartedBanner } from '@/components/getting-started-banner'
+import { PendingApprovalsNotice } from '@/components/pending-approvals'
 
 /**
  * Where a signed-in member lands.
@@ -55,6 +56,9 @@ export default function StartPage() {
     <div className="space-y-1">
       {/* Admins of a fund still setting up: how far along, and a way back to the checklist. */}
       <GettingStartedBanner isAdmin={isAdmin} className="mb-4" />
+      {/* Changes staged from a connected chat. Shown with or without an AI key: without one, this
+          and /pending-actions are the only places they can be approved. */}
+      <PendingApprovalsNotice className="mb-4" />
       <h1 className="text-left text-2xl font-semibold tracking-tight">
         What would you like to do?
       </h1>
