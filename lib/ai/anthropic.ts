@@ -109,10 +109,14 @@ export class AnthropicProvider implements AIProvider {
   }
 
   async createChat(params: CreateChatParams): Promise<AIResult> {
-    const messages = params.messages.map(m => ({
+    const history: Anthropic.MessageParam[] = params.messages.map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
     }))
+    // A real conversation resends its whole history every turn, so cache up to the newest
+    // message and the next turn reads it back. A one-message call has nothing to reuse, and
+    // marking it would only pay the cache-write premium.
+    const messages = history.length > 1 ? withCachedTail(history) : history
 
     const systemBlocks = cacheableSystem(params.system)
 
@@ -198,6 +202,14 @@ export class AnthropicProvider implements AIProvider {
           content: typeof params.content === 'string' ? params.content : toAnthropicContent(params.content ?? []),
         }]
 
+    // Each round resends everything before it — the history, every earlier tool_use and its
+    // result — so without a breakpoint on the conversation only the system prompt is ever read
+    // from cache, and a 10-round run re-bills the growing transcript at full price each round.
+    // Marking the tail lets round N+1 read what round N wrote (and the next chat turn read this
+    // one). Skipped for a single message with no tools: that call can't loop, so there is
+    // nothing to read back.
+    const cacheTail = toolDefs.length > 0 || messages.length > 1
+
     const toolCalls: ToolCallRecord[] = []
     const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }
     let finalText = ''
@@ -213,7 +225,9 @@ export class AnthropicProvider implements AIProvider {
         ...outputConfig(params.model, params.effort),
         ...(systemBlocks ? { system: systemBlocks } : {}),
         ...(toolDefs.length > 0 ? { tools: toolDefs } : {}),
-        messages,
+        // A marked copy, not `messages` itself: markers left on earlier rounds would pile up
+        // past the API's limit of 4 breakpoints per request.
+        messages: cacheTail ? withCachedTail(messages) : messages,
       }
 
       // The MCP connector is a beta surface and needs both the flag and the
@@ -339,6 +353,42 @@ function cacheableSystem(system: string | undefined): Anthropic.TextBlockParam[]
   if (!system) return undefined
   return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
 }
+
+// Copy of `messages` with a cache breakpoint on the last block of the last message, so the
+// whole conversation so far becomes a cached prefix. Earlier messages are shared, not copied —
+// only the final message is rebuilt. Leaves the array alone when the last block can't carry a
+// marker (an empty string, a thinking block) or already has one.
+export function withCachedTail(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const last = messages[messages.length - 1]
+  if (!last) return messages
+
+  if (typeof last.content === 'string') {
+    if (!last.content) return messages
+    return [
+      ...messages.slice(0, -1),
+      { role: last.role, content: [{ type: 'text', text: last.content, cache_control: { type: 'ephemeral' } }] },
+    ]
+  }
+
+  const blocks = last.content
+  const tail = blocks[blocks.length - 1]
+  if (!tail || !CACHEABLE_BLOCK_TYPES.has(tail.type) || (tail as { cache_control?: unknown }).cache_control) {
+    return messages
+  }
+  if (tail.type === 'text' && !tail.text) return messages
+  return [
+    ...messages.slice(0, -1),
+    {
+      role: last.role,
+      content: [
+        ...blocks.slice(0, -1),
+        { ...tail, cache_control: { type: 'ephemeral' } } as Anthropic.ContentBlockParam,
+      ],
+    },
+  ]
+}
+
+const CACHEABLE_BLOCK_TYPES = new Set(['text', 'image', 'document', 'tool_use', 'tool_result'])
 
 function toAnthropicContent(blocks: ContentBlock[]): Anthropic.ContentBlockParam[] {
   return blocks.map(block => {
