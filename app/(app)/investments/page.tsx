@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Loader2, ChevronUp, ChevronDown, Lock, Pencil, Link2Off } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
@@ -15,6 +15,8 @@ import { AnalystPanel } from '@/components/analyst-panel'
 import { PortfolioNotesProvider, PortfolioNotesButton, PortfolioNotesPanel } from '@/components/portfolio-notes'
 import { useFeatureVisibility } from '@/components/feature-visibility-context'
 import { InvestmentCharts } from './charts'
+import { useVehicleGroups, GroupHeadingRow } from '@/components/vehicle-groups'
+import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 
 interface CompanySummary {
   companyId: string
@@ -86,6 +88,21 @@ function unrealizedGL(row: { totalInvested: number; totalCostBasisExited: number
 function totalGL(row: { totalInvested: number; totalRealized: number; unrealizedValue: number }) {
   return totalValue(row) - row.totalInvested
 }
+/** Sum entity rows; MOIC from the sums, never averaged. */
+function sumGroupRows(rows: GroupSummary[]) {
+  const t = { totalInvested: 0, proceedsReceived: 0, proceedsEscrow: 0, totalRealized: 0, unrealizedValue: 0, totalCostBasisExited: 0 }
+  for (const g of rows) {
+    t.totalInvested += g.totalInvested
+    t.proceedsReceived += g.proceedsReceived
+    t.proceedsEscrow += g.proceedsEscrow
+    t.totalRealized += g.totalRealized
+    t.unrealizedValue += g.unrealizedValue
+    t.totalCostBasisExited += g.totalCostBasisExited
+  }
+  const moic = t.totalInvested > 0 ? (t.totalRealized + t.unrealizedValue) / t.totalInvested : null
+  return { ...t, moic }
+}
+
 function realizedMoic(row: { totalRealized: number; totalCostBasisExited: number }) {
   return row.totalCostBasisExited > 0 ? row.totalRealized / row.totalCostBasisExited : null
 }
@@ -184,6 +201,7 @@ export default function InvestmentsPage() {
   // Full vehicle registry rows, so a group row can be edited in place (name/type/vintage/active).
   const [vehicleList, setVehicleList] = useState<Array<{ id: string; name: string; aliases: string[] | null; kind: string; active: boolean; vintage_year: number | null }>>([])
   const [editingVehicle, setEditingVehicle] = useState<EditableVehicle | null>(null)
+  const vehicleGroups = useVehicleGroups()
   // A group string with no registry vehicle behind it — offer to link or register it rather than
   // silently showing a row with no vintage and no edit.
   const [linkingGroup, setLinkingGroup] = useState<string | null>(null)
@@ -330,20 +348,12 @@ export default function InvestmentsPage() {
   }, [data, groupSortKey, groupSortDir, vintages, showEmpty, selectedKinds, hiddenEntities, vehicleList])
 
   // Group totals for footer
-  const groupTotals = useMemo(() => {
-    if (sortedGroups.length === 0) return null
-    const t = { totalInvested: 0, proceedsReceived: 0, proceedsEscrow: 0, totalRealized: 0, unrealizedValue: 0, totalCostBasisExited: 0 }
-    for (const g of sortedGroups) {
-      t.totalInvested += g.totalInvested
-      t.proceedsReceived += g.proceedsReceived
-      t.proceedsEscrow += g.proceedsEscrow
-      t.totalRealized += g.totalRealized
-      t.unrealizedValue += g.unrealizedValue
-      t.totalCostBasisExited += g.totalCostBasisExited
-    }
-    const moic = t.totalInvested > 0 ? (t.totalRealized + t.unrealizedValue) / t.totalInvested : null
-    return { ...t, moic }
-  }, [sortedGroups])
+  const groupTotals = useMemo(() => (sortedGroups.length === 0 ? null : sumGroupRows(sortedGroups)), [sortedGroups])
+
+  // Admin-defined sections (Settings → Entity groups), each with a subtotal. The rows key on the
+  // portfolio_group string, so the registry id resolved by name/alias is passed alongside it.
+  const groupSections = groupBySection(sortedGroups, vehicleGroups, g => ({ id: vehicleForGroup(g.group)?.id, name: g.group }))
+  const sectioned = isGrouped(groupSections, vehicleGroups)
 
   // Footer totals from filtered company data
   const totals = useMemo(() => {
@@ -573,36 +583,58 @@ export default function InvestmentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {sortedGroups.map(g => {
-                  const veh = vehicleForGroup(g.group)
-                  return (
-                    <tr key={g.group} className="group border-b last:border-b-0 hover:bg-muted/30">
-                      <td className="px-3 py-2 font-medium sticky left-0 bg-background z-10">
-                        <span className="inline-flex items-center gap-1.5">
-                          {/* The entity's own page: its books, capital accounts and LPs. */}
-                          {veh ? <Link href={`/funds/${veh.id}`} className="hover:underline underline-offset-4">{g.group}</Link> : (g.group || '(none)')}
-                          {veh ? (
-                            <button onClick={() => setEditingVehicle(veh)} title="Edit vehicle" className="text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground">
-                              <Pencil className="h-3 w-3" />
-                            </button>
-                          ) : g.group ? (
-                            <button
-                              onClick={() => setLinkingGroup(g.group)}
-                              title="No vehicle matches this group name — link or register it"
-                              className="text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
-                            >
-                              <Link2Off className="h-3 w-3" />
-                            </button>
-                          ) : null}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-center text-xs text-muted-foreground">{vintages.get(g.group.trim().toLowerCase()) ?? '-'}</td>
-                      {numericColumns.map(col => (
-                        <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtVal(col.getValue(g), col.format)}</td>
-                      ))}
-                    </tr>
-                  )
-                })}
+                {groupSections.map(sec => (
+                  <Fragment key={sec.group?.id ?? 'other'}>
+                    {sectioned && <GroupHeadingRow label={sec.label} count={sec.items.length} colSpan={numericColumns.length + 2} />}
+                    {sec.items.map(g => {
+                      const veh = vehicleForGroup(g.group)
+                      return (
+                        <tr key={g.group} className="group border-b last:border-b-0 hover:bg-muted/30">
+                          <td className="px-3 py-2 font-medium sticky left-0 bg-background z-10">
+                            <span className="inline-flex items-center gap-1.5">
+                              {/* The entity's own page: its books, capital accounts and LPs. */}
+                              {veh ? <Link href={`/funds/${veh.id}`} className="hover:underline underline-offset-4">{g.group}</Link> : (g.group || '(none)')}
+                              {veh ? (
+                                <button onClick={() => setEditingVehicle(veh)} title="Edit vehicle" className="text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground">
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              ) : g.group ? (
+                                <button
+                                  onClick={() => setLinkingGroup(g.group)}
+                                  title="No vehicle matches this group name — link or register it"
+                                  className="text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
+                                >
+                                  <Link2Off className="h-3 w-3" />
+                                </button>
+                              ) : null}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-center text-xs text-muted-foreground">{vintages.get(g.group.trim().toLowerCase()) ?? '-'}</td>
+                          {numericColumns.map(col => (
+                            <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtVal(col.getValue(g), col.format)}</td>
+                          ))}
+                        </tr>
+                      )
+                    })}
+                    {sectioned && (() => {
+                      const sub = sumGroupRows(sec.items)
+                      return (
+                        <tr className="border-b bg-muted/30 font-medium">
+                          <td className="px-3 py-2 sticky left-0 bg-muted z-10 text-muted-foreground">{sec.label} total</td>
+                          <td className="px-3 py-2" />
+                          {numericColumns.map(col => {
+                            // IRR does not add up across entities; the multiples are recomputed from the sums.
+                            if (col.format === 'irr') return <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums text-muted-foreground">—</td>
+                            if (col.sortKey === 'moic') return <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtMoic(sub.moic)}</td>
+                            if (col.sortKey === 'realizedMoic') return <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtMoic(realizedMoic(sub))}</td>
+                            if (col.sortKey === 'unrealizedMoic') return <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtMoic(unrealizedMoic(sub))}</td>
+                            return <td key={col.sortKey} className="px-3 py-2 text-right tabular-nums">{fmtVal(col.getValue(sub), col.format)}</td>
+                          })}
+                        </tr>
+                      )
+                    })()}
+                  </Fragment>
+                ))}
               </tbody>
               {sortedGroups.length > 1 && (
               <tfoot>

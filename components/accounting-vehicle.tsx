@@ -1,10 +1,12 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, Fragment, useCallback, useContext, useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAppFetch } from '@/components/app-runtime'
+import { useVehicleGroups } from '@/components/vehicle-groups'
+import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 import {
   Dialog,
   DialogContent,
@@ -163,6 +165,7 @@ export function FundSwitcher() {
   const { group, setVehicle } = useVehicle()
   const [vehicles, setVehicles] = useState<VehicleOption[]>([])
   const [open, setOpen] = useState(false)
+  const vehicleGroups = useVehicleGroups()
 
   useEffect(() => {
     fetch('/api/accounting/vehicle-index')
@@ -172,6 +175,10 @@ export function FundSwitcher() {
   }, [])
 
   if (vehicles.length <= 1) return null
+
+  // Sectioned by the admin's entity groups, like the lists; flat when there are none.
+  const sections = groupBySection(vehicles, vehicleGroups, v => ({ id: v.id, name: v.name }))
+  const grouped = isGrouped(sections, vehicleGroups)
 
   const chooseVehicle = (opt: VehicleOption) => {
     setOpen(false)
@@ -203,22 +210,27 @@ export function FundSwitcher() {
             <DialogDescription>Choose the entity you want to view.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 overflow-y-auto">
-            {vehicles.map(vehicle => {
-              const selected = vehicle.name === group
-              return (
-                <Button
-                  key={vehicle.id ?? vehicle.name}
-                  type="button"
-                  variant={selected ? 'secondary' : 'outline'}
-                  className="h-auto min-h-10 justify-between whitespace-normal px-3 py-2 text-left"
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => chooseVehicle(vehicle)}
-                >
-                  <span>{vehicle.name}</span>
-                  {selected && <Check data-icon="inline-end" />}
-                </Button>
-              )
-            })}
+            {sections.map(sec => (
+              <Fragment key={sec.group?.id ?? 'other'}>
+                {grouped && <p className="pt-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">{sec.label}</p>}
+                {sec.items.map(vehicle => {
+                  const selected = vehicle.name === group
+                  return (
+                    <Button
+                      key={vehicle.id ?? vehicle.name}
+                      type="button"
+                      variant={selected ? 'secondary' : 'outline'}
+                      className="h-auto min-h-10 justify-between whitespace-normal px-3 py-2 text-left"
+                      aria-current={selected ? 'page' : undefined}
+                      onClick={() => chooseVehicle(vehicle)}
+                    >
+                      <span>{vehicle.name}</span>
+                      {selected && <Check data-icon="inline-end" />}
+                    </Button>
+                  )
+                })}
+              </Fragment>
+            ))}
           </div>
         </DialogContent>
       </Dialog>
@@ -230,7 +242,13 @@ export function FundSwitcher() {
           aria-label="Jump to fund"
           className="h-8 max-w-[16rem] appearance-none truncate rounded-md border bg-transparent pl-3 pr-8 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          {vehicles.map(v => <option key={v.id ?? v.name} value={v.name}>{v.name}</option>)}
+          {grouped
+            ? sections.map(sec => (
+                <optgroup key={sec.group?.id ?? 'other'} label={sec.label}>
+                  {sec.items.map(v => <option key={v.id ?? v.name} value={v.name}>{v.name}</option>)}
+                </optgroup>
+              ))
+            : vehicles.map(v => <option key={v.id ?? v.name} value={v.name}>{v.name}</option>)}
         </select>
         <ChevronsUpDown className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
       </div>

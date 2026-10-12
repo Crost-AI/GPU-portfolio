@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Loader2, Check, AlertTriangle, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,8 @@ import { withCapitalAction, type CapitalAction } from '@/lib/accounting/capital-
 import { bookAllNote, type BookAllVehicle } from '@/lib/accounting/backfill-note'
 import { EmptyState } from '@/components/ui/empty-state'
 import { AddVehicleButton } from '@/components/add-vehicle-button'
+import { useVehicleGroups, GroupHeadingRow } from '@/components/vehicle-groups'
+import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
 
 // THE FIRM-WIDE TABLE: every entity the caller may see, with the state of its books.
 //
@@ -205,6 +207,7 @@ export function FirmVehiclesTable({
   const currency = useCurrency()
   const access = useAccess()
   const isAdmin = useIsAdmin()
+  const vehicleGroups = useVehicleGroups()
   const canSeeBooks = access('accounting') !== 'none'
   const canSeeManco = access('management_company') !== 'none'
 
@@ -299,6 +302,10 @@ export function FirmVehiclesTable({
   const cols = (section && COLUMNS[section]) || ALL
   const summary = data ? summaryFor(section, visible) : null
   const money = (n: number) => formatCurrencyFull(n, currency)
+  // Admin-defined sections (Settings → Entity groups). No subtotals here: these are the state of
+  // each entity's books, not amounts that add up across entities.
+  const sections = groupBySection(visible, vehicleGroups, r => ({ id: r.id, name: r.name }))
+  const grouped = isGrouped(sections, vehicleGroups)
 
   return (
     <div className="space-y-4">
@@ -336,37 +343,42 @@ export function FirmVehiclesTable({
             </tr>
           </thead>
           <tbody>
-            {visible.map(r => {
-              const base = baseFor(r)
-              const m = r.id ? mancoById.get(r.id) : undefined
-              // A management company whose chart is not the manco chart yet has nothing to open:
-              // its row offers the setup step where the link would be.
-              const target = withCapitalAction(section ? `${base}/${section}` : base, action)
-              const cell = (label: string | number, href: string, warn = false) => (
-                <Link href={`${base}${href}`} className={warn ? 'text-warning hover:underline' : 'hover:underline'}>{label}</Link>
-              )
-              return (
-                <tr key={r.id ?? r.name} className="border-t">
-                  <td className="px-3 py-2 font-medium">
-                    <Link href={target} className="hover:underline">{r.name}</Link>
-                    {m && !m.active && (
-                      <span className="ml-2 rounded-md bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground">Inactive</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground">{kindLabel(r.kind)}</td>
-                  {cols.map(c => (
-                    <td key={c.key} className={`px-3 py-2 tabular-nums ${c.align === 'right' ? 'text-right' : 'text-left'}`}>
-                      {c.cell(r, cell, money)}
-                    </td>
-                  ))}
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <Button asChild variant="outline" size="sm">
-                      <Link href={target}>Open <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link>
-                    </Button>
-                  </td>
-                </tr>
-              )
-            })}
+            {sections.map(sec => (
+              <Fragment key={sec.group?.id ?? 'other'}>
+                {grouped && <GroupHeadingRow label={sec.label} count={sec.items.length} colSpan={cols.length + 3} />}
+                {sec.items.map(r => {
+                  const base = baseFor(r)
+                  const m = r.id ? mancoById.get(r.id) : undefined
+                  // A management company whose chart is not the manco chart yet has nothing to open:
+                  // its row offers the setup step where the link would be.
+                  const target = withCapitalAction(section ? `${base}/${section}` : base, action)
+                  const cell = (label: string | number, href: string, warn = false) => (
+                    <Link href={`${base}${href}`} className={warn ? 'text-warning hover:underline' : 'hover:underline'}>{label}</Link>
+                  )
+                  return (
+                    <tr key={r.id ?? r.name} className="border-t">
+                      <td className="px-3 py-2 font-medium">
+                        <Link href={target} className="hover:underline">{r.name}</Link>
+                        {m && !m.active && (
+                          <span className="ml-2 rounded-md bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground">Inactive</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">{kindLabel(r.kind)}</td>
+                      {cols.map(c => (
+                        <td key={c.key} className={`px-3 py-2 tabular-nums ${c.align === 'right' ? 'text-right' : 'text-left'}`}>
+                          {c.cell(r, cell, money)}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <Button asChild variant="outline" size="sm">
+                          <Link href={target}>Open <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link>
+                        </Button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       </div>
