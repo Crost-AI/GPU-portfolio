@@ -14,6 +14,8 @@
 
 import { describeSetupPlan, parseSetupPlan } from '@/lib/onboarding/setup-plan'
 import { resolveCompany } from './portfolio-tools'
+import { resolveInboundDeal } from './deals-tools'
+import { resolveDeal } from './diligence-tools'
 import type { Domain } from '@/lib/access/domains'
 import { hasAccess } from '@/lib/access/effective'
 import type { FeatureKey } from '@/lib/types/features'
@@ -68,6 +70,14 @@ function requireTool(raw: unknown): { tool: AgentTool; args: ToolCallArgs } {
 async function resolveEntity(deps: ActionDeps, tool: AgentTool, input: Record<string, unknown>): Promise<string | null> {
   const requested = typeof input.vehicle === 'string' && input.vehicle.trim() ? input.vehicle : undefined
   if (isLedgerTool(tool)) return resolveVehicleForTool(tool, deps.admin, deps.fundId, requested, deps.access)
+  // A change to one deal is the caller's when they can see that deal; the resolvers throw otherwise.
+  // Checked before `vehicle`, which on these tools names where the deal MOVES to, not whose it is.
+  // Nothing is pinned: the deal is resolved again, with the approver's access, when the call runs.
+  if ((tool.domain === 'deals' || tool.domain === 'diligence') && typeof input.deal === 'string' && input.deal.trim()) {
+    await (tool.domain === 'deals' ? resolveInboundDeal : resolveDeal)(deps.admin, deps.fundId, input.deal, deps.access)
+    if (requested) await resolveVehicleWithAccess(deps.admin, deps.access, requested, 'read')
+    return null
+  }
   if (requested) return (await resolveVehicleWithAccess(deps.admin, deps.access, requested, 'read')).name
   if (deps.access.vehicles?.all) return null
   // A change about one company (a KPI value, a note, an update) is the stager's when the company is
@@ -116,16 +126,13 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
     const lines = 'error' in plan ? [plan.error] : describeSetupPlan(plan)
     return { summary: `Set up the fund: ${lines.join('; ')}`, details: { tool: tool.name, vehicle: null, plan: lines, input: args.input } }
   }
-  // An update carries its files inline; the approver needs their names and sizes, not the bytes.
+  // Files travel inline; the approver needs their names and sizes, not the bytes.
+  const described = describeFiles(args.input.files)
   if (tool.name === 'submit_company_update') {
-    const files = Array.isArray(args.input.files) ? (args.input.files as any[]) : []
-    const described = files.map(f => ({
-      filename: String(f?.filename ?? 'file'),
-      kb: Math.round((String(f?.content_base64 ?? '').length * 3) / 4 / 1024),
-    }))
+    const files = described ?? []
     const text = typeof args.input.text === 'string' ? args.input.text : ''
     const parts = [
-      described.length ? `${described.length} file${described.length === 1 ? '' : 's'} (${described.map(f => f.filename).join(', ')})` : null,
+      files.length ? `${files.length} file${files.length === 1 ? '' : 's'} (${files.map(f => f.filename).join(', ')})` : null,
       text ? `${text.length.toLocaleString('en-US')} characters of text` : null,
     ].filter(Boolean)
     const company = typeof args.input.company === 'string' && args.input.company.trim() ? args.input.company.trim() : 'a company the app will identify'
@@ -133,14 +140,24 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
       summary: `Process an update for ${company}: ${parts.join(' and ') || 'nothing attached'}. KPIs found are recorded; anything uncertain goes to review.`,
       details: {
         tool: tool.name, vehicle,
-        input: { company: args.input.company ?? null, subject: args.input.subject ?? null, text: text.slice(0, 500), files: described },
+        input: { company: args.input.company ?? null, subject: args.input.subject ?? null, text: text.slice(0, 500), files },
       },
     }
   }
+  const input = described ? { ...args.input, files: described } : args.input
+  const summary = summarizeToolCall(tool.name, input, vehicle)
   return {
-    summary: summarizeToolCall(tool.name, args.input, vehicle),
-    details: { tool: tool.name, vehicle, input: args.input },
+    summary: described ? `${summary}, with ${described.map(f => `${f.filename} (${f.kb} KB)`).join(', ')}` : summary,
+    details: { tool: tool.name, vehicle, input },
   }
+}
+
+function describeFiles(files: unknown): { filename: string; kb: number }[] | null {
+  if (!Array.isArray(files)) return null
+  return files.map((f: any) => ({
+    filename: String(f?.filename ?? 'file'),
+    kb: Math.round((String(f?.content_base64 ?? '').length * 3) / 4 / 1024),
+  }))
 }
 
 /**

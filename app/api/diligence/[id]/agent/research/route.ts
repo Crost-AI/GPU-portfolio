@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { kickWorker } from '@/lib/memo-agent/kick'
-import { enforceCapsForStage } from '@/lib/memo-agent/cost'
+import { enqueueDraftStage } from '@/lib/memo-agent/enqueue'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 export async function POST(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -27,69 +27,5 @@ export async function POST(_req: NextRequest, props: { params: Promise<{ id: str
     .maybeSingle()
   if (!deal) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Require ingestion_output to exist on the latest draft.
-  const { data: draft } = await admin
-    .from('diligence_memo_drafts')
-    .select('id, ingestion_output')
-    .eq('deal_id', params.id)
-    .eq('fund_id', fundId)
-    .eq('is_draft', true)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (!draft || !(draft as any).ingestion_output) {
-    return NextResponse.json({
-      error: 'Run Stage 1 ingest first, research depends on the ingestion output.',
-    }, { status: 409 })
-  }
-
-  // Reject if a job is already in flight.
-  const { data: existing } = await admin
-    .from('memo_agent_jobs')
-    .select('id, status, kind')
-    .eq('deal_id', params.id)
-    .eq('fund_id', fundId)
-    .in('status', ['pending', 'running'])
-    .limit(1)
-    .maybeSingle()
-  if (existing) {
-    return NextResponse.json({
-      error: `A ${(existing as any).kind} job is already ${(existing as any).status}.`,
-      job_id: (existing as any).id,
-    }, { status: 409 })
-  }
-
-  const enforced = await enforceCapsForStage({ admin, fundId, dealId: params.id, stage: 'research' })
-  if (!enforced.ok) {
-    return NextResponse.json({ error: enforced.reason, estimate: enforced.estimate, caps: enforced.caps }, { status: 422 })
-  }
-
-  const { data: created, error } = await admin
-    .from('memo_agent_jobs')
-    .insert({
-      fund_id: fundId,
-      deal_id: params.id,
-      draft_id: (draft as any).id,
-      kind: 'research',
-      enqueued_by: user.id,
-    } as any)
-    .select('id, kind, status, enqueued_at')
-    .single()
-  if (error || !created) return NextResponse.json({ error: error?.message ?? 'enqueue failed' }, { status: 500 })
-  await kickWorker() // start the worker now instead of waiting for the cron
-
-  await admin
-    .from('diligence_deals')
-    .update({ current_memo_stage: 'research' })
-    .eq('id', params.id)
-    .eq('fund_id', fundId)
-
-  return NextResponse.json({
-    job_id: (created as any).id,
-    kind: 'research',
-    status: (created as any).status,
-    estimate: enforced.estimate,
-    caps: enforced.caps,
-  })
+  return outcomeResponse(await enqueueDraftStage(admin, { fundId, userId: user.id }, params.id, 'research'))
 }

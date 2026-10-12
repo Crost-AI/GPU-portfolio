@@ -2,12 +2,14 @@
 // portfolio tools use, so one key and one endpoint reach the whole firm: what the books
 // say, what the fund owns, and what it is currently evaluating.
 //
-// Everything here is READ-ONLY, and deliberately so. The diligence pipeline has real
-// side effects — running ingest costs model spend, and the Q&A route writes into the
-// partner's chat history AND promotes the exchange into the memo's evidence base. An
-// agent asking questions must not do either, or every tool call would quietly graffiti
-// the deal. `diligence_ask` therefore reuses the shared answer path (answerDealQuestion)
-// and skips both writes.
+// The reads have no side effects, deliberately. The Q&A route writes into the partner's chat
+// history AND promotes the exchange into the memo's evidence base; an agent asking questions must
+// not do either, or every tool call would quietly graffiti the deal. `diligence_ask` therefore
+// reuses the shared answer path (answerDealQuestion) and skips both writes.
+//
+// The writes are the Diligence page's own (lib/diligence/service.ts, lib/memo-agent/enqueue.ts),
+// named for what they change. From a connected chat each is staged for the person to approve, so
+// spending on the memo agent or editing the memo is always a decision someone confirmed.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
@@ -18,13 +20,22 @@ import {
 } from '@/lib/diligence/progress'
 import type { AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, visibleVehicleIds } from '@/lib/access/scope'
+import { parseUpdateFiles } from '@/lib/company-updates/submit'
+import {
+  addChecklistItem, addDiligenceNote, createDiligenceDeal, finalizeMemo, updateAttentionItem, updateChecklistItem,
+  updateDiligenceDeal, uploadDiligenceDocument, writeMemoParagraph,
+} from '@/lib/diligence/service'
+import { enqueueMemoStage, MEMO_AGENT_STAGES, type MemoAgentStage } from '@/lib/memo-agent/enqueue'
+import { unwrap } from '@/lib/service-outcome'
+import { requireUser } from './deals-tools'
+import { fundMemberId, visibleVehicleId } from './refs'
 
 /**
  * Resolve a deal by id, name, or alias. Agents are handed names, not UUIDs — failing on a
  * name would make every tool here unusable in practice. But a name matching two deals must
  * never silently pick one, so ambiguity is an error with the candidates listed.
  */
-async function resolveDeal(admin: SupabaseClient, fundId: string, ref: string, access: AccessContext): Promise<any> {
+export async function resolveDeal(admin: SupabaseClient, fundId: string, ref: string, access: AccessContext): Promise<any> {
   if (!ref) throw new Error('A deal id or name is required')
   // Only records owned by one of the caller's entities (unassigned ones: unscoped callers only).
   const mine = (d: any) => canSeeVehicle(access, d.vehicle_id ?? null)
@@ -319,7 +330,7 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
 
     const { data: attn } = await (admin as any)
       .from('diligence_attention_items')
-      .select('kind, urgency, body, status')
+      .select('id, kind, urgency, body, status')
       .eq('deal_id', deal.id)
       .eq('fund_id', fundId)
 
@@ -332,6 +343,7 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
       paragraphs: (memo.paragraphs ?? [])
         .filter((p: any) => !p.hidden)
         .map((p: any) => ({
+          id: p.id,
           section: p.section_id,
           prose: p.prose,
           origin: p.origin,
@@ -346,7 +358,133 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
       // Open items only — a finished memo is one with none of these left.
       open_attention: ((attn as any[]) ?? [])
         .filter(a => a.status === 'open')
-        .map(a => ({ kind: a.kind, urgency: a.urgency, body: a.body })),
+        .map(a => ({ id: a.id, kind: a.kind, urgency: a.urgency, body: a.body })),
     }
   },
+
+  diligence_create_deal: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const vehicleRef = str(input?.vehicle)
+    const lead = str(input?.lead_partner)
+    const row = unwrap(await createDiligenceDeal(admin, { fundId, userId: requireUser(userId), access }, {
+      name: input?.name,
+      sector: input?.sector,
+      stageAtConsideration: input?.stage,
+      leadPartnerId: lead ? await fundMemberId(admin, fundId, lead) : undefined,
+      driveFolderUrl: input?.drive_folder_url,
+      vehicleId: vehicleRef ? await visibleVehicleId(admin, access, vehicleRef) : null,
+    }))
+    return { dealId: row.id, name: row.name, status: row.deal_status }
+  },
+
+  diligence_update_deal: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const vehicleRef = str(input?.vehicle)
+    const lead = typeof input?.lead_partner === 'string' ? input.lead_partner.trim() : undefined
+    const out = unwrap(await updateDiligenceDeal(admin, access, deal.id, {
+      name: input?.name,
+      sector: input?.sector,
+      stageAtConsideration: input?.stage,
+      dealStatus: input?.status,
+      leadPartnerId: lead === undefined ? undefined : lead === '' ? null : await fundMemberId(admin, fundId, lead),
+      vehicleId: vehicleRef ? await visibleVehicleId(admin, access, vehicleRef) : undefined,
+    }))
+    return { dealId: deal.id, deal: deal.name, updated: out.updated }
+  },
+
+  diligence_add_checklist_item: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const item = unwrap(await addChecklistItem(admin, fundId, deal.id, { label: input?.label, sectionLabel: input?.section }))
+    return { deal: deal.name, itemId: item.id, label: item.label }
+  },
+
+  diligence_update_checklist_item: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const item = await resolveChecklistItem(admin, fundId, deal.id, str(input?.item))
+    const fact = str(input?.add_fact)
+    const updated = unwrap(await updateChecklistItem(admin, fundId, deal.id, item.id, {
+      label: input?.label,
+      status: input?.status,
+      partnerNotes: input?.partner_notes,
+      // Appended to the facts already there; the shared function keeps their ids.
+      partnerFacts: fact ? [...(Array.isArray(item.partner_facts) ? item.partner_facts : []), { text: fact }] : undefined,
+    }))
+    return { deal: deal.name, itemId: updated.id, label: updated.label, status: updated.status }
+  },
+
+  diligence_add_note: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const note = unwrap(await addDiligenceNote(admin, { fundId, userId: requireUser(userId) }, deal.id, input?.body))
+    return { deal: deal.name, noteId: note.id }
+  },
+
+  diligence_add_documents: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const files = parseUpdateFiles(input?.files)
+    if (files.length === 0) throw new Error('Send at least one file.')
+    const actor = requireUser(userId)
+    const added: unknown[] = []
+    const refused: string[] = []
+    for (const f of files) {
+      const r = await uploadDiligenceDocument(admin, { fundId, userId: actor }, deal.id, { name: f.name, mime: f.type, bytes: f.bytes })
+      if (r.ok) added.push({ documentId: r.value.id, file: r.value.file_name, type: r.value.detected_type })
+      else refused.push(`${f.name}: ${r.error}`)
+    }
+    return {
+      deal: deal.name, added, refused,
+      next: added.length ? 'Run diligence_run_agent with stage "analyze" to read them into evidence.' : undefined,
+    }
+  },
+
+  diligence_resolve_attention: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const itemId = str(input?.item)
+    if (!itemId) throw new Error('item (the attention item id from diligence_memo) is required.')
+    const { data: item } = await (admin as any)
+      .from('diligence_attention_items').select('id, body').eq('id', itemId).eq('deal_id', deal.id).eq('fund_id', fundId).maybeSingle()
+    if (!item) throw new Error(`No attention item ${itemId} on ${deal.name}.`)
+    unwrap(await updateAttentionItem(admin, { fundId, userId: requireUser(userId) }, deal.id, item.id, {
+      status: input?.status,
+      resolutionNote: typeof input?.note === 'string' ? input.note : undefined,
+    }))
+    return { deal: deal.name, itemId: item.id, status: input?.status }
+  },
+
+  diligence_run_agent: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const stage = str(input?.stage) as MemoAgentStage
+    if (!MEMO_AGENT_STAGES.includes(stage)) throw new Error(`stage must be one of ${MEMO_AGENT_STAGES.join(', ')}.`)
+    const out = unwrap(await enqueueMemoStage(admin, { fundId, userId: requireUser(userId) }, deal.id, stage, { full: input?.full === true }))
+    return { deal: deal.name, stage, ...out }
+  },
+
+  diligence_write_memo: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const out = unwrap(await writeMemoParagraph(admin, fundId, deal.id, {
+      paragraphId: input?.paragraph_id, section: input?.section, prose: input?.prose,
+    }))
+    return { deal: deal.name, ...out }
+  },
+
+  diligence_finalize_memo: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const out = unwrap(await finalizeMemo(admin, { fundId, userId: requireUser(userId) }, deal.id))
+    return { deal: deal.name, finalized: true, draftId: out.draftId }
+  },
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+
+/** A checklist item by id, or by its exact label when that names one item. */
+async function resolveChecklistItem(admin: SupabaseClient, fundId: string, dealId: string, ref: string): Promise<any> {
+  if (!ref) throw new Error('item (an id or label from diligence_checklist) is required.')
+  const { data } = await (admin as any)
+    .from('diligence_checklist_items').select('id, label, partner_facts').eq('deal_id', dealId).eq('fund_id', fundId).eq('kind', 'item')
+  const rows = ((data ?? []) as any[])
+  const byId = rows.find(r => r.id === ref)
+  if (byId) return byId
+  const byLabel = rows.filter(r => String(r.label).trim().toLowerCase() === ref.toLowerCase())
+  if (byLabel.length === 1) return byLabel[0]
+  throw new Error(byLabel.length > 1
+    ? `"${ref}" matches ${byLabel.length} checklist items. Pass the item id from diligence_checklist.`
+    : `No checklist item "${ref}" on this deal. Find it with diligence_checklist.`)
 }

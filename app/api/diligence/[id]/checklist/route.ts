@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { parseChecklistText } from '@/lib/diligence/parse-checklist'
 import { dbError } from '@/lib/api-error'
+import { addChecklistItem, updateChecklistItem } from '@/lib/diligence/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 interface ChecklistRow {
   id: string
@@ -129,61 +131,10 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   }
 
   if (mode === 'add') {
-    const label = typeof body.label === 'string' ? body.label.trim() : ''
-    if (!label) return NextResponse.json({ error: 'label is required' }, { status: 400 })
-
-    const sectionLabel = typeof body.sectionLabel === 'string' ? body.sectionLabel.trim() : ''
-
-    // Find or create the section row.
-    let parentId: string | null = null
-    let maxOrder = 0
-    const { data: existing } = await (admin as any)
-      .from('diligence_checklist_items')
-      .select('id, kind, label, order_index')
-      .eq('deal_id', params.id)
-      .eq('fund_id', fundId)
-    const rows = (existing ?? []) as Array<{ id: string; kind: string; label: string; order_index: number }>
-    for (const r of rows) if (r.order_index > maxOrder) maxOrder = r.order_index
-
-    if (sectionLabel) {
-      const match = rows.find(r => r.kind === 'section' && r.label.toLowerCase() === sectionLabel.toLowerCase())
-      if (match) {
-        parentId = match.id
-      } else {
-        const { data: newSection, error: secErr } = await (admin as any)
-          .from('diligence_checklist_items')
-          .insert({
-            deal_id: params.id,
-            fund_id: fundId,
-            parent_id: null,
-            kind: 'section',
-            label: sectionLabel,
-            order_index: maxOrder + 1,
-            source: 'partner_added',
-          } as any)
-          .select('id, order_index')
-          .single()
-        if (secErr) return dbError(secErr, 'diligence-checklist-add-parent-section')
-        parentId = (newSection as any).id as string
-        maxOrder = (newSection as any).order_index as number
-      }
-    }
-
-    const { data: inserted, error: itemErr } = await (admin as any)
-      .from('diligence_checklist_items')
-      .insert({
-        deal_id: params.id,
-        fund_id: fundId,
-        parent_id: parentId,
-        kind: 'item',
-        label,
-        order_index: maxOrder + 1,
-        source: 'partner_added',
-      } as any)
-      .select('*')
-      .single()
-    if (itemErr) return dbError(itemErr, 'diligence-checklist-add-item')
-    return NextResponse.json({ item: inserted })
+    return outcomeResponse(
+      await addChecklistItem(admin, fundId, params.id, { label: body.label, sectionLabel: body.sectionLabel }),
+      item => ({ item }),
+    )
   }
 
   // mode === 'replace'
@@ -269,32 +220,14 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const itemId = typeof body.itemId === 'string' ? body.itemId : ''
   if (!itemId) return NextResponse.json({ error: 'itemId is required' }, { status: 400 })
 
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (typeof body.label === 'string') patch.label = body.label.trim()
-  if (typeof body.status === 'string') patch.status = body.status
-  if (typeof body.agent_notes === 'string') patch.agent_notes = body.agent_notes
-  if (typeof body.partner_notes === 'string') patch.partner_notes = body.partner_notes
-  if (Array.isArray(body.partner_facts)) {
-    patch.partner_facts = (body.partner_facts as unknown[])
-      .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object' && typeof (f as any).text === 'string')
-      .map((f) => ({
-        id: typeof f.id === 'string' && f.id ? (f.id as string) : `fact_${Math.random().toString(36).slice(2, 9)}`,
-        text: (f.text as string).trim().slice(0, 1000),
-      }))
-      .filter((f) => f.text.length > 0)
-      .slice(0, 50)
-  }
-
-  const { data, error } = await (admin as any)
-    .from('diligence_checklist_items')
-    .update(patch as any)
-    .eq('id', itemId)
-    .eq('deal_id', params.id)
-    .eq('fund_id', fundId)
-    .select('*')
-    .single()
-  if (error) return dbError(error, 'diligence-checklist-item-update')
-  return NextResponse.json({ item: data })
+  const result = await updateChecklistItem(admin, fundId, params.id, itemId, {
+    label: body.label,
+    status: body.status,
+    agentNotes: body.agent_notes,
+    partnerNotes: body.partner_notes,
+    partnerFacts: body.partner_facts,
+  })
+  return outcomeResponse(result, item => ({ item }))
 }
 
 export async function DELETE(req: NextRequest, props: { params: Promise<{ id: string }> }) {

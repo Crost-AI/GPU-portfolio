@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
+import { addDiligenceNote } from '@/lib/diligence/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 interface RawNote {
   id: string
@@ -57,22 +59,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   if (!deal) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const body = await req.json().catch(() => ({}))
-  const noteBody = typeof body.body === 'string' ? body.body.trim() : ''
-  if (!noteBody) return NextResponse.json({ error: 'body is required' }, { status: 400 })
-
-  const { data, error } = await admin
-    .from('diligence_notes')
-    .insert({
-      deal_id: params.id,
-      fund_id: fundId,
-      body: noteBody,
-      author_id: userId,
-    } as any)
-    .select('id, deal_id, body, author_id, created_at, updated_at')
-    .single()
-
-  if (error) return dbError(error, 'diligence-notes-create')
-  const [enriched] = await enrichAuthors([data as unknown as RawNote], fundId)
+  const result = await addDiligenceNote(admin, { fundId, userId }, params.id, body.body)
+  if (!result.ok) return outcomeResponse(result)
+  const [enriched] = await enrichAuthors([result.value as unknown as RawNote], fundId)
   return NextResponse.json(enriched)
 }
 

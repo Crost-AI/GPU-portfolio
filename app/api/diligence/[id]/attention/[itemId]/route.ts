@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { dbError } from '@/lib/api-error'
-
-const VALID_STATUSES = ['open', 'ignore', 'done'] as const
+import { updateAttentionItem } from '@/lib/diligence/service'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 export async function PATCH(
   req: NextRequest,
@@ -24,34 +23,9 @@ export async function PATCH(
   const fundId = (membership as any).fund_id as string
 
   const body = await req.json().catch(() => ({}))
-  const updates: Record<string, unknown> = {}
-  if (typeof body.status === 'string') {
-    if (!VALID_STATUSES.includes(body.status)) {
-      return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
-    }
-    updates.status = body.status
-    if (body.status !== 'open') {
-      updates.resolved_at = new Date().toISOString()
-      updates.resolved_by = user.id
-    } else {
-      updates.resolved_at = null
-      updates.resolved_by = null
-    }
-  }
-  if (typeof body.resolution_note === 'string' || body.resolution_note === null) {
-    updates.resolution_note = body.resolution_note?.trim() || null
-  }
-
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
-  }
-
-  const { error } = await admin
-    .from('diligence_attention_items')
-    .update(updates)
-    .eq('id', params.itemId)
-    .eq('deal_id', params.id)
-    .eq('fund_id', fundId)
-  if (error) return dbError(error, 'diligence-attention-update')
-  return NextResponse.json({ ok: true })
+  const result = await updateAttentionItem(admin, { fundId, userId: user.id }, params.id, params.itemId, {
+    status: body.status,
+    resolutionNote: body.resolution_note,
+  })
+  return outcomeResponse(result, () => ({ ok: true }))
 }
