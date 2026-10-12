@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).range(f, t)),
     (admin as any).from('qb_account_mappings')
       .select('qb_account, account_code, excluded')
-      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId),
+      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('source', 'quickbooks'),
   ])
 
   const inWindow = new Set(((entryRows as any[]) ?? []).map(e => e.id))

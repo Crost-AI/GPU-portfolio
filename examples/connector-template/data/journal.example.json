@@ -1,0 +1,22 @@
+[
+  {
+    "date": "2026-01-15",
+    "type": "Journal Entry",
+    "num": "JE-1001",
+    "memo": "Capital call — Q1",
+    "lines": [
+      { "account": "Bank:Operating", "debit": 250000 },
+      { "account": "Partners' Capital", "name": "Example LP", "credit": 250000 }
+    ]
+  },
+  {
+    "date": "2026-01-31",
+    "type": "Bill",
+    "num": "B-77",
+    "memo": "Audit fee",
+    "lines": [
+      { "account": "Professional Fees", "name": "Example Audit LLP", "debit": 12500 },
+      { "account": "Bank:Operating", "name": "Example Audit LLP", "credit": 12500 }
+    ]
+  }
+]

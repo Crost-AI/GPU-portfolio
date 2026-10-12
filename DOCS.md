@@ -337,6 +337,16 @@ The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answ
 
 **What it can reach.** The tool list is filtered to the areas the member can read and the entities they can see, and re-checked on every call. Requests are limited per fund to 300 reads or 60 writes a minute, in batches of up to 20 calls. The Analyst never writes directly — it stages changes for approval — and `/api/v1` (chat, streamed chat over Server-Sent Events, conversations, approving staged actions with an `Idempotency-Key`) takes only OAuth tokens issued for it.
 
+### Data connectors
+
+Beyond the built-in integrations (Affinity, Google Drive, inbound email), data comes in through **connectors**: small programs you keep in your own, usually private, repository. A connector reads an outside system and calls this deployment's MCP server with an API key, exactly as an agent does. No connector code lives here, and none is needed to add one.
+
+[`examples/connector-template`](./examples/connector-template) is the starting point. Copy it into a private repository, add your connectors, and run `npm run sync -- <connector>` on a schedule. Its README covers the contract; in short:
+
+- Give each connector its own API key (read & write) so it can be revoked on its own. It reaches only what that key's member can.
+- Outside general ledgers (QuickBooks, Carta fund admin) go through `journal_import_accounts` → `save_journal_mapping` → `import_journal`. That is the same mapping, review and draft import as **Accounting → QuickBooks**, and each source keeps its own account mapping. Entries land as **drafts**. Re-sending a window matches what was already imported instead of duplicating it.
+- If the import's comparison with investment and LP records finds a difference, nothing is written until a person confirms with the review token.
+
 ### Dashboards in Claude and ChatGPT
 
 Members can open the fund's dashboards inside a Claude or ChatGPT conversation, ask questions about what they are looking at, and save a dashboard to reopen later. There are four: the portfolio overview, a company with its KPIs, a vehicle's financial statements, and LP capital.

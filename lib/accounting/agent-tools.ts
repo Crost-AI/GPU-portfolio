@@ -18,6 +18,9 @@ import { reconcileCapital, type AdminCapitalAccount } from './reconcile'
 import { runWaterfall } from './waterfall'
 import { buildAllocationEntry, type AllocationBody } from './allocation-actions'
 import { importBankTransactions } from './bank-import'
+import { normalizeQbTransactions, parseQbJournal } from './quickbooks/parse-journal'
+import { importQbJournal, proposeQbAccounts, saveQbMappings } from './quickbooks/import-journal'
+import { journalSource } from './quickbooks/sources'
 import { addChartAccount } from './chart-add'
 import { addPartner, parseAddPartnerInput } from './add-partner'
 import { postBankTransaction, setBankTransactionAccount } from './bank-actions'
@@ -196,6 +199,35 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     // does. Throwing here dropped both, so an agent could never present them or supply the token.
     if ('error' in result && result.importReview) return { imported: 0, reviewRequired: true, error: result.error, importReview: result.importReview }
     if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  journal_import_accounts: async ({ admin, fundId, portfolioGroup }, input) => {
+    return proposeQbAccounts(admin, fundId, portfolioGroup, qbInput(input), journalSource(input?.source))
+  },
+
+  save_journal_mapping: async ({ admin, fundId, portfolioGroup }, input) => {
+    if (!Array.isArray(input?.rows)) throw new Error('rows[] is required')
+    return saveQbMappings(admin, fundId, portfolioGroup, input.rows, journalSource(input?.source))
+  },
+
+  import_journal: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
+    const source = journalSource(input?.source)
+    const { transactions, errors } = qbInput(input)
+    const result = await importQbJournal(admin, {
+      fundId,
+      group: portfolioGroup,
+      source,
+      userId,
+      transactions,
+      parseErrors: errors,
+      dryRun: !!input?.dryRun,
+      reviewToken: input?.reviewToken ?? null,
+      includeLp: hasAccess(access, 'lp_capital', 'read'),
+      sourceLabel: typeof input?.sourceLabel === 'string' ? input.sourceLabel : `agent (${source})`,
+    })
+    // A review hold is not a failure — same shape as import_bank_transactions.
+    if ('reviewRequired' in result) return { created: 0, reviewRequired: true, error: result.error, importReview: result.importReview }
     return result
   },
 
@@ -388,4 +420,11 @@ export async function resolveVehicleForTool(
   // returning. The unnamed default still never picks a manco.
   if (requested?.trim()) return (await resolveVehicleWithAccess(admin, access, requested, tool.scope)).name
   return resolveVehicle(admin, fundId, requested, { access })
+}
+
+/** Journal-import tool input: structured `transactions` from a connector, or a pasted QuickBooks Journal `text`. */
+function qbInput(input: any) {
+  if (Array.isArray(input?.transactions)) return normalizeQbTransactions(input.transactions)
+  if (typeof input?.text === 'string' && input.text.trim()) return parseQbJournal(input.text)
+  throw new Error('Pass transactions (structured) or text (a Journal report export).')
 }

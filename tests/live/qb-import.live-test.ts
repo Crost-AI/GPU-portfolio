@@ -183,7 +183,7 @@ describe('QuickBooks migration — live database', { timeout: 60_000 }, () => {
 
   it('is idempotent — a second import writes nothing new', async () => {
     const { transactions } = parseQbJournal(journalCsv)
-    const refs = transactions.map(qbSourceRef)
+    const refs = transactions.map(t => qbSourceRef(t))
     const { data: present } = await admin.from('journal_entries')
       .select('source_ref').eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('source_ref', refs)
       .eq('book', ACTUAL_BOOK)

@@ -11,6 +11,7 @@ import { readInvestmentLines } from './adopt'
 import type { ChartAccount } from './investment-accounts'
 import type { JournalEntry, Account } from './types'
 import type { ParsedTxn } from './bank'
+import { isExternalBookSource } from './quickbooks/sources'
 
 export interface ImportDifference {
   domain: 'investment' | 'lp'
@@ -65,7 +66,7 @@ export async function reviewImport(admin: SupabaseClient, fundId: string, group:
     differences.push({ domain: 'investment', name: group, date: r.date, metric: 'Investment entry', recorded: null, imported: null, difference: null, message: r.reason })
   }
   const entries = input.entries ?? []
-  const importedPostings = entries.flatMap(e => e.postings.map(p => ({ ...p, entryDate: e.entryDate, sourceType: e.sourceType === 'quickbooks' ? cashCapitalSource(e.postings, accounts) ?? e.sourceType : e.sourceType })))
+  const importedPostings = entries.flatMap(e => e.postings.map(p => ({ ...p, entryDate: e.entryDate, sourceType: isExternalBookSource(e.sourceType) ? cashCapitalSource(e.postings, accounts) ?? e.sourceType : e.sourceType })))
   const touchedAccounts = new Set(importedPostings.map(p => p.accountId))
   const investmentTouched = accounts.some(a => touchedAccounts.has(a.id) && ['investment', 'unrealized', 'fx_translation'].includes(a.subtype ?? ''))
   if (investmentTouched) {

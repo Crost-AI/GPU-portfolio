@@ -1,0 +1,27 @@
+# Rename to sync.yml in YOUR PRIVATE COPY to sync nightly. Not active in the Portfolio repo.
+#
+# State (the cursor, and OAuth refresh tokens for sources that rotate them) must survive between
+# runs. A runner's disk does not, so this example keeps .state/ in the Actions cache, which is
+# fine for a cursor but NOT a durable home for a rotating refresh token: a cache can be evicted.
+# For QuickBooks or Carta, replace FileStateStore (src/state.ts) with a store backed by something
+# durable before relying on a schedule.
+name: sync
+on:
+  schedule: [{ cron: '0 7 * * *' }]
+  workflow_dispatch: {}
+concurrency: { group: sync, cancel-in-progress: false }
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - uses: actions/cache@v4
+        with: { path: .state, key: state-${{ github.run_id }}, restore-keys: state- }
+      - run: npm run sync -- example-file
+        env:
+          PORTFOLIO_URL: ${{ secrets.PORTFOLIO_URL }}
+          PORTFOLIO_API_KEY: ${{ secrets.PORTFOLIO_API_KEY }}
+          PORTFOLIO_VEHICLE: ${{ vars.PORTFOLIO_VEHICLE }}

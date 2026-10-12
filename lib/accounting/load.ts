@@ -10,6 +10,7 @@ import type { CapitalPosting } from './capital-account'
 import { vehicleIdByName, type VehicleIdMap } from './vehicle-id'
 import { ACTUAL_BOOK, type LedgerBook } from './books'
 import { MANCO_KIND } from '@/lib/vehicle-kinds'
+import { isExternalBookSource } from './quickbooks/sources'
 
 export type SourcedPosting = Posting & { sourceType: string | null; entryId: string; memo: string | null }
 
@@ -114,13 +115,13 @@ export function assembleLoadedLedger(fundId: string, rows: LedgerRows): LoadedLe
   // receivable), which must not be mistaken for a capital movement.
   const lpCapitalAccountIds = new Set(accounts.filter(a => a.lpEntityId).map(a => a.id))
 
-  // Import provenance stays "quickbooks" on the journal. For the LP roll-forward,
+  // Import provenance stays "quickbooks" (or "carta", sources.ts) on the journal. For the LP roll-forward,
   // classify only simple cash/capital exchanges; non-cash and mixed adjustments
   // remain unclassified rather than presenting an accrual as incoming cash.
   const qbCashActivity = new Map<string, string>()
   const qbSplits = new Map<string, any[]>()
   for (const p of postingRows ?? []) {
-    if (sourceByEntry.get(p.journal_entry_id) !== 'quickbooks') continue
+    if (!isExternalBookSource(sourceByEntry.get(p.journal_entry_id))) continue
     const splits = qbSplits.get(p.journal_entry_id) ?? []
     splits.push(p)
     qbSplits.set(p.journal_entry_id, splits)

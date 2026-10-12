@@ -1,8 +1,4 @@
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
-import { reviewImport } from '@/lib/accounting/import-review'
-import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
-import { chartForVehicleKind } from '@/lib/accounting/chart'
-import { vehicleKindByName } from '@/lib/accounting/vehicle-domain'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -10,24 +6,16 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { accountIdByCode, persistEntry } from '@/lib/accounting/persist'
-import { BULK_BATCH } from '@/lib/accounting/journal-bulk'
 import { parseQbJournal } from '@/lib/accounting/quickbooks/parse-journal'
-import { buildEntries, qbVendorName } from '@/lib/accounting/quickbooks/build-entries'
-import { vendorResolver } from '@/lib/accounting/vendors'
-import { ACTUAL_BOOK } from '@/lib/accounting/books'
+import { importQbJournal, QbImportError } from '@/lib/accounting/quickbooks/import-journal'
 
 /**
- * Step 3: import the Journal export as DRAFT journal entries.
+ * Step 3: import the Journal export as DRAFT journal entries. Nothing posts.
  *
- * NOTHING POSTS. Every entry is reviewed on the journal page and posted through the existing
- * bulk-post surface — an import that posted directly would need REVERSING when a mapping turns
- * out wrong, instead of simply being re-run.
+ * The work is importQbJournal (lib/accounting/quickbooks/import-journal.ts), shared with the
+ * `import_journal` agent tool so a connector and a person land on the same path.
  *
- * Idempotent by `source_ref = qb:<hash>`: re-importing after fixing one mapping updates the
- * count of matched entries rather than duplicating the ledger.
- *
- * POST — { text, group?, dryRun?, sourceLabel? }
+ * POST — { text, group?, dryRun?, sourceLabel?, reviewToken? }
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -41,150 +29,33 @@ export async function POST(req: NextRequest) {
   if (typeof body?.text !== 'string' || !body.text.trim()) {
     return NextResponse.json({ error: 'Nothing to import.' }, { status: 400 })
   }
-  const dryRun = !!body?.dryRun
 
   const group = await resolveGroupOr400(admin, gate, body?.group ?? null)
   if (group instanceof NextResponse) return group
-  const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
   const { transactions, errors: parseErrors } = parseQbJournal(body.text)
-
-  const { data: mappingRows, error: mappingError } = await (admin as any).from('qb_account_mappings')
-    .select('qb_account, account_code, excluded')
-    .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
-
-  if (mappingError) return NextResponse.json({ error: mappingError.message }, { status: 500 })
-
-  const mapping = new Map<string, string>()
-  const excluded = new Set<string>()
-  for (const r of ((mappingRows as any[]) ?? [])) {
-    if (r.excluded) { excluded.add(r.qb_account); continue }
-    if (r.account_code) mapping.set(r.qb_account, r.account_code)
-  }
-
-  // A transaction touching an excluded account is dropped whole — importing half of a
-  // double-entry transaction would post something that does not balance.
-  const skippedForExclusion: string[] = []
-  const importable = transactions.filter(t => {
-    const hit = t.lines.find(l => excluded.has(l.account))
-    if (!hit) return true
-    skippedForExclusion.push(`${t.type ?? 'Transaction'} ${t.num ?? t.date}: touches excluded account "${hit.account}".`)
-    return false
-  })
-
-  const accountIds = await accountIdByCode(admin, gate.fundId, group)
-
-  const previewAccounts = []
-  {
-    const kind = await vehicleKindByName(admin, gate.fundId, group)
-    for (const a of chartForVehicleKind(kind)) if (!accountIds.has(a.code)) {
-      accountIds.set(a.code, `template:${a.code}`)
-      previewAccounts.push({ ...a, id: `template:${a.code}`, fundId: gate.fundId })
-    }
-  }
-
-  // Create vendors only during the confirmed import. A preview never changes records.
-  const resolveVendor = vendorResolver(admin, gate.fundId)
-  const vendorIdByName = new Map<string, string>()
-
-  // Chart accounts provide both membership and the dedicated capital destination. Never
-  // search the tenant-wide LP list: the same person can invest in several vehicles.
-  const { data: capitalRows, error: capitalError } = await admin.from('chart_of_accounts' as any)
-    .select('id, code, lp_entity_id, lp_entities(entity_name)')
-    .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
-    .eq('type', 'equity').eq('subtype', 'lp_capital').eq('is_active', true)
-  if (capitalError) return NextResponse.json({ error: capitalError.message }, { status: 500 })
-  const rows = (capitalRows ?? []) as any[]
-  const { entries, skipped, capitalWarnings } = buildEntries(importable, mapping, accountIds, gate.fundId, vendorIdByName, {
-    accountIds: new Set(rows.filter(r => !r.lp_entity_id).map(r => r.id)),
-    targets: rows.filter(r => r.lp_entity_id && r.lp_entities?.entity_name).map(r => ({
-      entityId: r.lp_entity_id, name: r.lp_entities.entity_name, accountId: r.id,
-    })),
-  })
-
-  // Which of these have we already imported? Batched: a decade of history is thousands of
-  // refs, and one .in() of that size fails.
-  const refs = entries.map(e => e.sourceRef!).filter(Boolean)
-  const present = new Set<string>()
-  for (let i = 0; i < refs.length; i += BULK_BATCH) {
-    const chunk = refs.slice(i, i + BULK_BATCH)
-    const { data, error } = await admin.from('journal_entries' as any)
-      .select('source_ref')
-      .eq('book', ACTUAL_BOOK)
-      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
-      .in('source_ref', chunk)
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    for (const r of ((data as any[]) ?? [])) present.add(r.source_ref)
-  }
-
-  const toCreate = entries.filter(e => !present.has(e.sourceRef!))
-  const writeErrors: string[] = [...parseErrors, ...skippedForExclusion, ...skipped.map(s => s.reason)]
-
   const access = await loadAccessContext(admin, gate.fundId, user.id, gate.role)
-  const importReview = await reviewImport(admin, gate.fundId, group, { entries: toCreate, previewAccounts, includeLp: hasAccess(access, 'lp_capital', 'read') })
-  if (!dryRun && importReview.differences.length && body.reviewToken !== importReview.token) {
-    return NextResponse.json({ error: 'Review the differences with investment and LP records before importing.', importReview }, { status: 409 })
-  }
 
-  if (dryRun) {
-    return NextResponse.json({
-      dryRun: true,
-      importReview,
-      transactionsParsed: transactions.length,
-      wouldCreate: toCreate.length,
-      alreadyPresent: entries.length - toCreate.length,
-      skipped: skipped.length + skippedForExclusion.length,
-      errors: writeErrors,
-      capitalWarnings,
+  try {
+    const result = await importQbJournal(admin, {
+      fundId: gate.fundId,
+      group,
+      userId: user.id,
+      transactions,
+      parseErrors,
+      dryRun: !!body?.dryRun,
+      reviewToken: body?.reviewToken ?? null,
+      includeLp: hasAccess(access, 'lp_capital', 'read'),
+      sourceLabel: body?.sourceLabel ?? null,
     })
-  }
-
-  await ensureVehicleAccounts(admin, gate.fundId, group)
-  const actualIds = await accountIdByCode(admin, gate.fundId, group)
-  for (const entry of toCreate) for (const posting of entry.postings) {
-    if (posting.accountId.startsWith('template:')) posting.accountId = actualIds.get(posting.accountId.slice(9))!
-  }
-  // Vendor creation is also a write and follows the comparison.
-  for (const name of Array.from(new Set(importable.map(qbVendorName).filter((n): n is string => !!n)))) {
-    const id = await resolveVendor(name)
-    if (id) vendorIdByName.set(name.toLowerCase(), id)
-  }
-  const withVendors = buildEntries(importable, mapping, actualIds, gate.fundId, vendorIdByName)
-  for (const entry of toCreate) entry.vendorId = withVendors.entries.find(e => e.sourceRef === entry.sourceRef)?.vendorId
-  let created = 0
-  for (const entry of toCreate) {
-    const result = await persistEntry(admin, gate.fundId, group, user.id, entry, 'draft')
-    if ('error' in result) {
-      // persistEntry refuses to write into a closed period. During a migration that is a real
-      // possibility, so surface it as a named skip rather than a failed run.
-      writeErrors.push(`${entry.entryDate} ${entry.memo ?? ''}: ${result.error}`)
-      continue
+    if ('reviewRequired' in result) {
+      return NextResponse.json({ error: result.error, importReview: result.importReview }, { status: 409 })
     }
-    created += 1
+    return NextResponse.json(result)
+  } catch (e) {
+    const status = e instanceof QbImportError ? e.status : 500
+    return NextResponse.json({ error: (e as Error).message }, { status })
   }
-
-  await (admin as any).from('qb_import_runs').insert({
-    fund_id: gate.fundId,
-    vehicle_id: vehicleId,
-    source_label: body?.sourceLabel ?? null,
-    reconciliation_review: { ...importReview, differences: importReview.differences.filter(d => d.domain !== 'lp'), lpDifferences: importReview.differences.filter(d => d.domain === 'lp').length },
-    transactions_parsed: transactions.length,
-    entries_created: created,
-    entries_matched: entries.length - toCreate.length,
-    transactions_skipped: skipped.length + skippedForExclusion.length,
-    errors: writeErrors.length ? writeErrors : null,
-    created_by: user.id,
-  })
-
-  return NextResponse.json({
-    importReview,
-    transactionsParsed: transactions.length,
-    created,
-    alreadyPresent: entries.length - toCreate.length,
-    skipped: skipped.length + skippedForExclusion.length,
-    errors: writeErrors,
-    capitalWarnings,
-  })
 }
 
 // GET — the import history for this vehicle, so a third pass can see what the second did.
@@ -201,7 +72,7 @@ export async function GET(req: NextRequest) {
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
   const { data } = await (admin as any).from('qb_import_runs')
-    .select('*').eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
+    .select('*').eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('source', 'quickbooks')
     .order('created_at', { ascending: false }).limit(20)
   return NextResponse.json({ runs: data ?? [] })
 }
