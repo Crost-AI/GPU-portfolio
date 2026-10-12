@@ -63,7 +63,9 @@ const SERVER_INSTRUCTIONS =
   'open, filtered to their own entities and access. ' +
   'Changes you make for the user may come back staged ({ staged: true, pendingActionId }) instead of applied: ' +
   'nothing has changed yet. Tell the user what the change is and ask them to confirm; only after they do, ' +
-  'call approve_action with that id (or reject_action if they decline).'
+  'call approve_action with that id (or reject_action if they decline). ' +
+  'When an admin asks to set up the fund (or the fund is new), call setup_status, ask only for what is missing, ' +
+  'confirm the plan, and apply it with one setup_fund call.'
 
 interface RpcRequest { jsonrpc: string; id?: string | number | null; method: string; params?: any }
 

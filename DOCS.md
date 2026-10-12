@@ -193,6 +193,100 @@ Once the wizard is done, this is the minimum path from an empty deployment to a 
 
 The templates are also served by the app at `/templates/<name>.csv` for signed-in users.
 
+### Setting up a fund with Claude, ChatGPT or a script
+
+You can set up a fund without clicking through the web app. The web app stays available as a view
+of the data, but every setup step below can be done from chat (MCP) or from a script (the agent API).
+
+#### 1. Get in
+
+Pick one.
+
+**From Claude or ChatGPT.** Add the connector `https://<your-domain>/api/mcp`. When it sends you to
+sign in, use your email (the address must be on the signup allow-list; the first time, add it with
+the bootstrap script below or in the `allowed_signups` table). If your account has no fund yet, the
+connect screen asks you to name one. Allow, and the fund exists with you as its admin and agent
+access on.
+
+**From a terminal, with no web sign-in at all.** On the machine with your `.env.local`:
+
+```sh
+npm run bootstrap -- --email you@firm.com --fund "Hemrock Ventures" \
+  --products portfolio_reporting,fund_operations,lp_reporting
+```
+
+This adds you to the signup allow-list, creates your account and the fund, turns agent access on,
+and prints an API key once. To store an AI provider key, put `ANTHROPIC_API_KEY` (or
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`) in the environment first; keys are never taken on the
+command line or in a chat. Re-running it reuses the account and fund and mints a new key.
+
+#### 2. Run the setup prompt
+
+In Claude or ChatGPT, pick **Set up this fund** from the connector's prompt menu, or paste this:
+
+```text
+Help me set up this fund. First call setup_status and tell me in a few lines where things stand.
+
+Then ask me, one short question at a time, only for what is missing:
+1. What we will run here: portfolio tracking, fund books, LP capital and the investor portal, deal flow and diligence, management company books.
+2. Our entities: each fund, SPV or management company, with its vintage year.
+3. The team: each person's email; whether they are an admin (admins approve deletes, capital calls, distributions, anything sent to LPs, and finalizing K-1s) or a member; which preset fits each member (CFO, fund administrator, tax preparer, auditor, investment team, investor relations); which entities they should see; and an end date for anyone here for one engagement, like an auditor or tax preparer.
+4. Who emails us company updates, so those addresses can be authorized.
+
+Then show me the whole plan as a short list. Once I confirm, apply it with one setup_fund call. Tell me what was created and any warnings, call setup_status again, and walk me through the next open steps: partners and commitments (add_partner), investments (record_investment), opening balances (post_ledger_text) and the first close (close_period).
+
+Never ask me for API keys or passwords. If a step needs one, tell me where to add it in Settings.
+```
+
+The assistant reads `setup_status`, asks only for what is missing, shows you the plan and applies
+it with one `setup_fund` call. Because a connected assistant's changes wait for approval, you
+approve the whole plan once, in the chat or in the app's pending-actions queue.
+
+#### 3. Or do it from a script
+
+The same two tools are on the agent API. An admin's API key applies changes directly.
+
+```sh
+KEY=lk_...            # from the bootstrap script, or Settings → API and MCP
+URL=https://<your-domain>
+
+# Where setup stands
+curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"tool":"setup_status","input":{}}'
+
+# Apply a plan. Safe to re-run: entities match by name, people and senders by email.
+curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: setup-1' -d '{
+  "tool": "setup_fund",
+  "input": {
+    "products": ["portfolio_reporting", "fund_operations", "lp_reporting"],
+    "entities": [{"name": "Fund I", "kind": "fund", "vintageYear": 2024}],
+    "team": [
+      {"email": "cfo@firm.com", "preset": "cfo"},
+      {"email": "partner@firm.com", "role": "admin"},
+      {"email": "audit@auditors.com", "preset": "auditor", "accessEndsOn": "2027-04-30"}
+    ],
+    "authorizedSenders": [{"email": "founder@portfolio-co.com", "label": "Portfolio Co"}],
+    "finish": true
+  }
+}'
+```
+
+#### What setup_fund does
+
+- **Products** decide which areas the fund has. While the fund is new, the list is the full choice;
+  once it is set up, products are only added, never switched off (do that in Settings).
+- **Entities** are created with a chart of accounts suited to their kind.
+- **Team members** are added to the signup allow-list, invited by email if they have no account,
+  and given their role, preset, entities and end date. A preset that includes an area the fund
+  keeps "Admins only" opens that area to members, with its default for everyone else set to none,
+  so only the people granted it gain anything. Admins approve deletes, capital calls, distributions,
+  anything sent to LPs and finalizing K-1s, whatever the presets grant.
+- **Authorized senders** may email company updates in.
+
+AI provider keys and inbound email (Postmark or Mailgun) involve secrets or third-party accounts,
+so they are set in Settings, or for the AI key, by the bootstrap script.
+
 ### Verify your setup
 
 A built-in setup checklist page helps you confirm your deployment is correctly configured. To enable it, add this environment variable:

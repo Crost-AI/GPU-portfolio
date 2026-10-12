@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AuthShell } from '@/components/auth-shell'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 /**
  * The approve/deny screen. Deliberately blunt about what is being handed over:
@@ -20,6 +22,8 @@ interface Props {
   willWrite: boolean
   /** They asked for write but aren't an admin, so we're granting read. Say so. */
   downgraded: boolean
+  /** They belong to no fund yet: Allow creates one, named here, with them as its admin. */
+  newFund?: boolean
   params: {
     client_id: string
     redirect_uri: string
@@ -30,9 +34,11 @@ interface Props {
   }
 }
 
-export function ConsentForm({ clientName, fundName, willWrite, downgraded, params }: Props) {
+export function ConsentForm({ clientName, fundName, willWrite, downgraded, newFund, params }: Props) {
   const [busy, setBusy] = useState<'approve' | 'deny' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [newFundName, setNewFundName] = useState('')
+  const shownFundName = newFund ? newFundName.trim() || 'your new fund' : fundName
 
   async function decide(approve: boolean) {
     setBusy(approve ? 'approve' : 'deny')
@@ -41,7 +47,7 @@ export function ConsentForm({ clientName, fundName, willWrite, downgraded, param
       const res = await fetch('/api/oauth/consent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...params, approve }),
+        body: JSON.stringify({ ...params, approve, ...(newFund ? { fund_name: newFundName.trim() } : {}) }),
       })
       const body = await res.json()
       if (!res.ok || !body.redirect) {
@@ -62,7 +68,7 @@ export function ConsentForm({ clientName, fundName, willWrite, downgraded, param
       wide
       footer={
         <p className="text-center text-xs text-muted-foreground">
-          It can only ever see {fundName}, never another fund. You can revoke this at any time in
+          It can only ever see {shownFundName}, never another fund. You can revoke this at any time in
           Settings, and access ends automatically if you leave the fund.
         </p>
       }
@@ -71,11 +77,19 @@ export function ConsentForm({ clientName, fundName, willWrite, downgraded, param
         <CardHeader className="pb-4">
           <CardTitle className="text-lg">Connect {clientName}?</CardTitle>
           <CardDescription>
-            It is asking to act on <span className="font-medium text-foreground">{fundName}</span> as you.
+            {newFund
+              ? <>You don&apos;t have a fund here yet. Name it, and {clientName} can set up the rest with you as its admin.</>
+              : <>It is asking to act on <span className="font-medium text-foreground">{fundName}</span> as you.</>}
           </CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-4">
+          {newFund && (
+            <div className="space-y-1.5">
+              <Label htmlFor="fund-name">Fund or firm name</Label>
+              <Input id="fund-name" value={newFundName} onChange={e => setNewFundName(e.target.value)} placeholder="e.g. Hemrock Ventures" maxLength={200} autoFocus />
+            </div>
+          )}
           {/* The permissions, split read vs write. The write block is the one that matters,
               so it gets its own visual weight rather than being a third bullet in a list —
               "post journal entries and close periods" is not a detail. */}
@@ -128,7 +142,7 @@ export function ConsentForm({ clientName, fundName, willWrite, downgraded, param
           )}
 
           <div className="flex gap-2 pt-1">
-            <Button onClick={() => decide(true)} disabled={busy !== null} className="flex-1">
+            <Button onClick={() => decide(true)} disabled={busy !== null || (!!newFund && !newFundName.trim())} className="flex-1">
               {busy === 'approve' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Allow'}
             </Button>
             <Button variant="outline" onClick={() => decide(false)} disabled={busy !== null} className="flex-1">

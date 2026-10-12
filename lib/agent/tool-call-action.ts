@@ -12,6 +12,7 @@
 // Analyst every write in the registry behind a read grant. Only lib/pending-actions/staged.ts knows
 // about this action.
 
+import { describeSetupPlan, parseSetupPlan } from '@/lib/onboarding/setup-plan'
 import type { Domain } from '@/lib/access/domains'
 import { hasAccess } from '@/lib/access/effective'
 import type { FeatureKey } from '@/lib/types/features'
@@ -94,6 +95,12 @@ export async function stageToolCall(deps: ActionDeps, toolName: string, input: R
 export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<PreviewResult> {
   const { tool, args } = requireTool(raw)
   const vehicle = await resolveEntity(deps, tool, args.input)
+  // A setup plan is many changes in one call; the person approving it should see each of them.
+  if (tool.name === 'setup_fund') {
+    const plan = parseSetupPlan(args.input)
+    const lines = 'error' in plan ? [plan.error] : describeSetupPlan(plan)
+    return { summary: `Set up the fund: ${lines.join('; ')}`, details: { tool: tool.name, vehicle: null, plan: lines, input: args.input } }
+  }
   return {
     summary: summarizeToolCall(tool.name, args.input, vehicle),
     details: { tool: tool.name, vehicle, input: args.input },

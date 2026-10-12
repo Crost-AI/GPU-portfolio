@@ -43,6 +43,8 @@ import { CONSTRUCTION_TOOL_MANIFEST } from '@/lib/agent/construction-tools-manif
 import { CONSTRUCTION_HANDLERS } from '@/lib/agent/construction-tools'
 import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
+import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
+import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -296,6 +298,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(LP_TOOL_MANIFEST, LP_HANDLERS),
   ...bind(CONSTRUCTION_TOOL_MANIFEST, CONSTRUCTION_HANDLERS),
   ...bind(FORECAST_TOOL_MANIFEST, FORECAST_HANDLERS),
+  ...bind(SETUP_TOOL_MANIFEST, SETUP_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {
