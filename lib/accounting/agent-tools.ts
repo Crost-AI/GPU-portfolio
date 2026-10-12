@@ -18,6 +18,8 @@ import { reconcileCapital, type AdminCapitalAccount } from './reconcile'
 import { runWaterfall } from './waterfall'
 import { buildAllocationEntry, type AllocationBody } from './allocation-actions'
 import { importBankTransactions } from './bank-import'
+import { addChartAccount } from './chart-add'
+import { addPartner, parseAddPartnerInput } from './add-partner'
 import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerText, postLedgerText } from './text-ledger-run'
@@ -127,6 +129,21 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return { entryId: result.entryId }
   },
 
+  add_account: async ({ admin, fundId, portfolioGroup }, input) => {
+    const result = await addChartAccount(admin, fundId, portfolioGroup, input ?? {})
+    if ('error' in result) throw new Error(result.error)
+    return result.account
+  },
+
+  add_partner: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    // No closingId: admission to a closing stays a decision for the UI.
+    const parsed = parseAddPartnerInput({ name: input?.name, partnerClass: input?.partnerClass, commitment: input?.commitment })
+    if ('error' in parsed) throw new Error(parsed.error)
+    const result = await addPartner(admin, fundId, portfolioGroup, userId, parsed)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
   allocation: async ({ admin, fundId, portfolioGroup, userId }, input) => {
     const built = await buildAllocationEntry(admin, fundId, portfolioGroup, input as AllocationBody)
     if ('error' in built) throw new Error(built.error)
@@ -171,6 +188,9 @@ const HANDLERS: Record<string, AgentToolHandler> = {
 
   import_bank_transactions: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
     const result = await importBankTransactions(admin, fundId, portfolioGroup, userId, String(input.csv ?? ''), String(input.source ?? 'csv'), input.reviewToken, hasAccess(access, 'lp_capital', 'read'))
+    // A review hold is not a failure: return the differences and their token, as post_ledger_text
+    // does. Throwing here dropped both, so an agent could never present them or supply the token.
+    if ('error' in result && result.importReview) return { imported: 0, reviewRequired: true, error: result.error, importReview: result.importReview }
     if ('error' in result) throw new Error(result.error)
     return result
   },
