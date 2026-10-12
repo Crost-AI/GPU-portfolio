@@ -44,6 +44,7 @@ import { CONSTRUCTION_HANDLERS } from '@/lib/agent/construction-tools'
 import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
 import { resolveVehicle } from './vehicle-resolver'
+import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
 
 export { resolveVehicle } from './vehicle-resolver'
@@ -244,7 +245,7 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 }
 
-const VEHICLE_PROP = { type: 'string', description: 'vehicle (portfolio_group); optional when the fund has a single vehicle' }
+const VEHICLE_PROP = { type: 'string', description: 'vehicle (portfolio_group), or a management company by name; optional when the fund has a single vehicle' }
 
 /** Bind a domain's manifest to its handlers, failing loudly if either side is missing one. */
 function bind(manifest: AgentToolMeta[], handlers: Record<string, AgentToolHandler>): AgentTool[] {
@@ -363,8 +364,14 @@ export async function resolveVehicleForTool(
   fundId: string,
   requested: string | undefined,
   /** The credential owner's access — required, so a tool can only reach their entities. */
-  access: Pick<AccessContext, 'vehicles'>,
+  access: AccessContext,
 ): Promise<string> {
   if (!isLedgerTool(tool)) return ''
+  // A NAMED entity may be a management company. Its books are gated on `management_company` as
+  // well as the `accounting` grant the caller has already cleared (the same conjunction
+  // `assertVehicleDomain` applies to /api/accounting/*), so it resolves through
+  // resolveVehicleWithAccess, which opts in and checks that grant at the tool's own level before
+  // returning. The unnamed default still never picks a manco.
+  if (requested?.trim()) return (await resolveVehicleWithAccess(admin, access, requested, tool.scope)).name
   return resolveVehicle(admin, fundId, requested, { access })
 }

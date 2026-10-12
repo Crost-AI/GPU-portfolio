@@ -24,7 +24,8 @@ export class VehicleResolutionError extends Error {
  * management company by DEFAULT, without having been changed and without having to remember. Only a
  * caller that has actually checked the `management_company` grant opts in, by passing
  * `includeManagementCompanies` — and today there are exactly two, both in http-vehicle.ts, both of
- * which run the check immediately afterwards.
+ * which run the check immediately afterwards. (The agent tools reach a manco through the second of
+ * them, resolveVehicleWithAccess, rather than opting in themselves.)
  *
  * The failure mode when a caller forgets is "unknown vehicle", not "here is the payroll".
  */
