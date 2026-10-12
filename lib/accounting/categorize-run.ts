@@ -12,6 +12,7 @@ import { vehicleIdByName } from './vehicle-id'
 import { buildCategorizePrompt, parseCategorizations, type TxnToCategorize } from './categorize-ai'
 import { ENTRY_SOURCE_TYPES } from './source-types'
 import { ACTUAL_BOOK } from './books'
+import { counterPosting } from './bank'
 
 export interface CategorizeResult {
   considered: number
@@ -100,16 +101,16 @@ export async function runCategorization(
       continue
     }
 
-    // Only re-point simple two-line drafts (exactly one non-cash posting).
+    // Only re-point simple two-line drafts (see counterPosting).
     const { data: postings } = await admin
       .from('journal_postings' as any)
-      .select('id, account_id')
+      .select('id, account_id, amount')
       .eq('book', ACTUAL_BOOK)
       .eq('journal_entry_id', t.journal_entry_id)
-    const nonCash = ((postings as any[]) ?? []).filter(p => p.account_id !== cashId)
-    if (nonCash.length !== 1) continue
+    const counter = counterPosting((postings as any[]) ?? [], cashId, Number(t.amount))
+    if (!counter) continue
 
-    await admin.from('journal_postings' as any).update({ account_id: newAccountId }).eq('id', nonCash[0].id)
+    await admin.from('journal_postings' as any).update({ account_id: newAccountId }).eq('id', counter.id)
     await admin.from('journal_entries' as any).update({ source_type: cat.sourceType }).eq('id', t.journal_entry_id).eq('fund_id', fundId)
     await admin.from('bank_transactions' as any).update({ suggested_account_code: cat.accountCode }).eq('id', t.id).eq('fund_id', fundId)
     updated++
