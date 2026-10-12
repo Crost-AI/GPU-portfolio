@@ -17,6 +17,8 @@ export interface FirmVehicleRow {
   closedThrough: string | null
   /** The most recent posted entry, or null on an empty ledger. */
   lastEntryDate: string | null
+  /** The earliest posted entry, or null on an empty ledger — which quarters the books reach. */
+  firstEntryDate: string | null
   postedEntries: number
   draftEntries: number
   /** Bank rows nobody has categorised or reconciled yet. */
@@ -71,7 +73,7 @@ export async function loadFirmOverview(
     const cash = tb.rows.filter(row => cashIds.has(row.accountId)).reduce((sum, row) => sum + row.balance, 0)
     // Per-vehicle counts read by id where the vehicle is registered; a legacy name-only vehicle
     // has nothing to count against, so its counts read zero and its ledger still loads by name.
-    const counts = v.id ? await vehicleCounts(admin, fundId, v.id) : { closedThrough: null, lastEntryDate: null, posted: 0, drafts: 0, openBank: 0 }
+    const counts = v.id ? await vehicleCounts(admin, fundId, v.id) : { closedThrough: null, lastEntryDate: null, firstEntryDate: null, posted: 0, drafts: 0, openBank: 0 }
     // One entity whose backlog cannot be counted must not fail the whole index: its count reads 0.
     let underivedTransactions = 0
     if (opts.includeBacklog && v.id && v.kind !== MANCO_KIND) {
@@ -86,6 +88,7 @@ export async function loadFirmOverview(
       id: v.id, name: v.name, kind: v.kind,
       closedThrough: counts.closedThrough,
       lastEntryDate: counts.lastEntryDate,
+      firstEntryDate: counts.firstEntryDate,
       postedEntries: counts.posted,
       draftEntries: counts.drafts,
       openBankRows: counts.openBank,
@@ -103,7 +106,7 @@ export async function loadFirmOverview(
 }
 
 async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleId: string) {
-  const [{ data: periods }, { count: posted }, { count: drafts }, { data: last }, { count: openBank }] = await Promise.all([
+  const [{ data: periods }, { count: posted }, { count: drafts }, { data: last }, { count: openBank }, { data: first }] = await Promise.all([
     admin.from('fiscal_periods' as any).select('period_end').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'closed'),
     admin.from('journal_entries' as any).select('id', { count: 'exact', head: true })
       .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted'),
@@ -114,11 +117,15 @@ async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleId: s
       .order('entry_date', { ascending: false }).limit(1),
     admin.from('bank_transactions' as any).select('id', { count: 'exact', head: true })
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('status', ['unmatched', 'drafted']),
+    admin.from('journal_entries' as any).select('entry_date')
+      .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
+      .order('entry_date', { ascending: true }).limit(1),
   ])
   const closedThrough = ((periods as any[]) ?? []).reduce<string | null>((max, p) => (max && max > p.period_end ? max : p.period_end), null)
   return {
     closedThrough,
     lastEntryDate: ((last as any[]) ?? [])[0]?.entry_date ?? null,
+    firstEntryDate: ((first as any[]) ?? [])[0]?.entry_date ?? null,
     posted: posted ?? 0,
     drafts: drafts ?? 0,
     openBank: openBank ?? 0,

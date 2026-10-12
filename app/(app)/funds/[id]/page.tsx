@@ -10,6 +10,8 @@ import { AccountingPageHeader, AccountingBody } from '@/components/accounting-ch
 import { FirmVehiclesTable } from '@/components/accounting/firm-vehicles'
 import { capitalActionFromParam, type CapitalAction } from '@/lib/accounting/capital-action'
 import { FundDetailView } from './fund-detail-view'
+import { FundOverview } from '../fund-overview'
+import { FirmBankView } from '@/components/accounting/firm-bank'
 import { MancoDetailView } from './manco-detail-view'
 
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
@@ -89,7 +91,13 @@ async function FirmSectionPage({ slug, action }: { slug: string; action: Capital
     <div className="pt-4 md:pt-8 pb-8 w-full">
       <AccountingPageHeader title={section.label}>{section.desc}</AccountingPageHeader>
       <AccountingBody>
-        <FirmVehiclesTable section={slug} showAdd={slug === 'status'} action={action} />
+        {/* Where the firm-wide answer is the section's own content rather than a list of doors:
+            every vehicle's multiples side by side, and every open bank row in one queue. */}
+        {slug === 'performance'
+          ? <FundOverview section="performance" />
+          : slug === 'bank'
+            ? <FirmBankView />
+            : <FirmVehiclesTable section={slug} showAdd={slug === 'status'} action={action} />}
       </AccountingBody>
     </div>
   )

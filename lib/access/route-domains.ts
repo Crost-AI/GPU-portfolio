@@ -56,6 +56,7 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/bank/auto-match': { domain: 'accounting' },
   'api/accounting/bank/categorize': { domain: 'accounting' },
   'api/accounting/bank/duplicates': { domain: 'accounting' },
+  'api/accounting/bank/firm': { domain: 'accounting' },
   'api/accounting/bank/import': { domain: 'accounting' },
   'api/accounting/bank/match': { domain: 'accounting' },
   'api/accounting/bank/reconcile': { domain: 'accounting' },
