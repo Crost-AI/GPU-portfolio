@@ -186,4 +186,58 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
       required: ['company', 'transaction_type', 'transaction_date'],
     },
   },
+  {
+    name: 'update_investment',
+    description:
+      'Correct a recorded portfolio transaction (list_investments gives its id): change only the fields you pass. ' +
+      'Its journal entry is retracted and re-derived from the new values, as an edit on the company page does. ' +
+      'To turn a mark into an FX revaluation, pass valuation_change_source="fx" with fx_rate/prior_fx_rate/original_position_value/original_currency. ' +
+      'Refused for a transaction in a closed period or one the fund register owns.',
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: COMPANY,
+        transaction_id: { type: 'string', description: 'The transaction id, from list_investments.' },
+        vehicle: { type: 'string', description: "The transaction's vehicle (portfolio_group)." },
+        transaction_type: { type: 'string', enum: ['investment', 'unrealized_gain_change', 'proceeds', 'round_info'] },
+        transaction_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+        round_name: { type: 'string' },
+        notes: { type: 'string' },
+        investment_cost: { type: 'number' },
+        shares_acquired: { type: 'number' },
+        share_price: { type: 'number' },
+        unrealized_value_change: { type: 'number', description: 'unrealized_gain_change: the fund-currency value change' },
+        current_share_price: { type: 'number' },
+        cost_basis_exited: { type: 'number' },
+        proceeds_received: { type: 'number' },
+        valuation_change_source: { type: 'string', enum: ['mark', 'fx', 'quote', 'nav'] },
+        original_currency: { type: 'string' },
+        fx_rate: { type: 'number' },
+        prior_fx_rate: { type: 'number' },
+        original_position_value: { type: 'number', description: 'Position value in its own currency — held constant across an FX revaluation' },
+      },
+      required: ['company', 'transaction_id'],
+    },
+  },
+  {
+    name: 'delete_investment',
+    description:
+      'Delete a recorded portfolio transaction (list_investments gives its id) and retract its journal entry, as a delete on the company page does. ' +
+      'Refused for a transaction in a closed period, one the fund register owns, or a SAFE/note a conversion depends on.',
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: COMPANY,
+        transaction_id: { type: 'string', description: 'The transaction id, from list_investments.' },
+        vehicle: { type: 'string', description: "The transaction's vehicle (portfolio_group)." },
+      },
+      required: ['company', 'transaction_id'],
+    },
+  },
 ]

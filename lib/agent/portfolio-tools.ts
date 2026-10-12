@@ -17,6 +17,7 @@ import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
+import { EDITABLE_TXN_FIELDS, deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -306,6 +307,35 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   record_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) =>
     executeRecordInvestment({ admin, fundId, userId, access }, input),
+
+  update_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    const { company, transaction_id, vehicle: _vehicle, ...changes } = input ?? {}
+    if (!transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
+    const c = await resolveCompany(admin, fundId, company, access)
+    const editable = new Set<string>(EDITABLE_TXN_FIELDS)
+    const unknown = Object.keys(changes).filter(k => !editable.has(k))
+    if (unknown.length) throw new Error(`Not an editable field: ${unknown.join(', ')}`)
+    if (Object.keys(changes).length === 0) throw new Error('Pass at least one field to change.')
+    // An FX revaluation's delta lives in fx_value_change too, as record_investment writes it.
+    if (changes.valuation_change_source === 'fx' && changes.fx_value_change == null && changes.unrealized_value_change != null) {
+      changes.fx_value_change = changes.unrealized_value_change
+    } else if (changes.valuation_change_source != null && changes.valuation_change_source !== 'fx' && !('fx_value_change' in changes)) {
+      changes.fx_value_change = null
+    }
+    const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
+    const result = await updateInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, transaction_id, changes)
+    if (!result.ok) throw new Error(result.error)
+    return result.value
+  },
+
+  delete_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    if (!input?.transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
+    const c = await resolveCompany(admin, fundId, input.company, access)
+    const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
+    const result = await deleteInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, input.transaction_id)
+    if (!result.ok) throw new Error(result.error)
+    return { deleted: input.transaction_id, ledger: result.value.ledger }
+  },
 }
 
 export interface RecordInvestmentInput {
