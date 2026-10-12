@@ -187,8 +187,10 @@ export interface PostedExisting {
 /** The canonical draft -> posted transition for entries that already exist. */
 export async function postExistingEntryWithAllocation(
   admin: SupabaseClient, fundId: string, group: string, userId: string | null, entryId: string,
-  /** What the caller may do to the tracker: adopting, or releasing a reversed entry's owners. */
-  opts: AdoptOptions = {},
+  /** What the caller may do to the tracker: adopting, or releasing a reversed entry's owners.
+   *  `allocate: false` posts without the partner allocation — for a migration whose source books
+   *  never split income by partner (a QuickBooks history that has to match line for line). */
+  opts: AdoptOptions & { allocate?: boolean } = {},
 ): Promise<PostedExisting | { error: string }> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   const [{ data: header, error: headerError }, { data: rows, error: rowsError }] = await Promise.all([
@@ -242,7 +244,9 @@ export async function postExistingEntryWithAllocation(
     sourceType: (header as any).source_type, sourceRef: (header as any).source_ref,
     postings,
   }
-  const allocated = await allocatePostedEntry(admin, fundId, group, userId, entryId, entry)
+  const allocated = opts.allocate === false
+    ? { allocationEntryIds: [] as string[] }
+    : await allocatePostedEntry(admin, fundId, group, userId, entryId, entry)
   if ('error' in allocated) {
     await rollbackGeneratedAllocations(admin, fundId, entryId)
     const removed = await removeAdopted(admin, fundId, adopted)

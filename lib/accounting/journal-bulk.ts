@@ -24,6 +24,8 @@ export interface BulkScope {
   end: string | null
   /** Keyset cursor from the previous call's `cursor`. */
   afterId: string | null
+  /** Only drafts with this source_type (e.g. 'quickbooks'); null for any. */
+  sourceType?: string | null
 }
 
 export interface BulkOutcome {
@@ -49,6 +51,7 @@ export function readBulkScope(body: unknown): BulkScope {
     start: (b.start as string) || null,
     end: (b.end as string) || null,
     afterId: typeof b.afterId === 'string' ? b.afterId : null,
+    sourceType: typeof b.sourceType === 'string' && b.sourceType ? b.sourceType : null,
   }
 }
 
@@ -73,9 +76,14 @@ export async function runBulkDraftAction(
     userId: string | null
     /** May this caller create or delete investment transactions (investment-access.ts)? */
     investments?: boolean
+    /** Post without partner allocations (see postExistingEntryWithAllocation). Default true. */
+    allocate?: boolean
+    /** Page size; defaults to BULK_BATCH. */
+    batchSize?: number
   },
 ): Promise<{ ok: true; outcome: BulkOutcome } | { ok: false; error: unknown }> {
-  const { fundId, vehicleId, group, action, scope, userId, investments } = opts
+  const { fundId, vehicleId, group, action, scope, userId, investments, allocate } = opts
+  const pageSize = Math.max(1, Math.min(opts.batchSize ?? BULK_BATCH, BULK_BATCH))
 
   // Candidate drafts — scoped to the vehicle, ordered by id for a stable keyset, with
   // postings for the balance check.
@@ -87,7 +95,7 @@ export async function runBulkDraftAction(
     .eq('vehicle_id', vehicleId)
     .eq('status', 'draft')
     .order('id', { ascending: true })
-    .limit(BULK_BATCH + 1)
+    .limit(pageSize + 1)
   if (scope.ids) {
     query = query.in('id', scope.ids)
   } else {
@@ -95,13 +103,14 @@ export async function runBulkDraftAction(
     if (scope.end) query = query.lte('entry_date', scope.end)
     if (scope.afterId) query = query.gt('id', scope.afterId)
   }
+  if (scope.sourceType) query = query.eq('source_type', scope.sourceType)
 
   const { data: drafts, error } = await query
   if (error) return { ok: false, error }
 
   const rows = (drafts as any[]) ?? []
-  const hasMore = rows.length > BULK_BATCH
-  const batch = rows.slice(0, BULK_BATCH)
+  const hasMore = rows.length > pageSize
+  const batch = rows.slice(0, pageSize)
 
   const closed = await closedPeriodRanges(admin, fundId, group)
 
@@ -152,7 +161,7 @@ export async function runBulkDraftAction(
       // Every post goes through the choke point: it adopts investment lines and allocates to
       // partners. A raw status flip here used to skip both.
       for (const id of target) {
-        const posted = await postExistingEntryWithAllocation(admin, fundId, group, userId, id, { investments })
+        const posted = await postExistingEntryWithAllocation(admin, fundId, group, userId, id, { investments, allocate })
         if ('error' in posted) { skipped.push({ id, reason: posted.error }); continue }
         removedTransactions.push(...(posted.removedTransactions ?? []))
         unlinkedRegisterRows.push(...(posted.unlinkedRegisterRows ?? []))
@@ -179,7 +188,7 @@ export async function runBulkDraftAction(
     // One record per batch, naming every entry: who posted or discarded them, in what scope.
     await recordAudit(admin as any, {
       fundId, vehicleId, actorId: userId, action: action === 'post' ? 'entries.bulk_post' : 'entries.bulk_void',
-      subjectType: 'journal_entries', details: { entryIds: changedIds, count: changedIds.length },
+      subjectType: 'journal_entries', details: { entryIds: changedIds, count: changedIds.length, ...(allocate === false ? { allocate: false } : {}) },
     })
   }
 

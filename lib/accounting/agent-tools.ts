@@ -46,6 +46,7 @@ import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
+import { readBulkScope, runBulkDraftAction } from './journal-bulk'
 
 export { resolveVehicle } from './vehicle-resolver'
 
@@ -220,6 +221,19 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const result = await postBankTransaction(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), { investments: mayTouchInvestments(access) })
     if ('error' in result) throw new Error(String(result.error))
     return result
+  },
+
+  // The journal's bulk post, one page per call (each post adopts and may allocate, so a page is
+  // kept small enough to finish inside a request).
+  post_drafts: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const result = await runBulkDraftAction(admin, {
+      fundId, vehicleId, group: portfolioGroup, action: 'post', scope: readBulkScope(input), userId,
+      investments: mayTouchInvestments(access), allocate: input?.allocate !== false, batchSize: 100,
+    })
+    if (!result.ok) throw new Error(String((result.error as any)?.message ?? result.error))
+    const { changed, skipped, warnings, hasMore, cursor } = result.outcome
+    return { posted: changed, skipped, warnings, hasMore, cursor }
   },
 
   list_bank_transactions: async ({ admin, fundId, portfolioGroup }) => {

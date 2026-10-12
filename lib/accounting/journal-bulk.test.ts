@@ -53,7 +53,7 @@ beforeEach(() => { closed.length = 0; postedIds.length = 0 })
 describe('readBulkScope', () => {
   it('reads ids, window and cursor', () => {
     expect(readBulkScope({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x' }))
-      .toEqual({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x' })
+      .toEqual({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x', sourceType: null })
   })
 
   it('treats an empty id list as "no id filter", not "act on nothing"', () => {
@@ -63,7 +63,7 @@ describe('readBulkScope', () => {
   })
 
   it('ignores a malformed body', () => {
-    expect(readBulkScope(undefined)).toEqual({ ids: null, start: null, end: null, afterId: null })
+    expect(readBulkScope(undefined)).toEqual({ ids: null, start: null, end: null, afterId: null, sourceType: null })
     expect(readBulkScope({ afterId: 42 }).afterId).toBeNull()
   })
 })
@@ -209,5 +209,35 @@ describe('bulk post passes the caller\'s investments access through', () => {
     const { admin } = fakeAdmin([balanced('a')])
     await runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action: 'post', scope: readBulkScope({}), userId: null, investments: false })
     expect(postExistingEntryWithAllocation).toHaveBeenCalledWith(admin, 'f1', 'Main', null, 'a', { investments: false })
+  })
+})
+
+describe('bulk post options for a migration', () => {
+  it('passes allocate: false through to each post', async () => {
+    const { postExistingEntryWithAllocation } = await import('./continuous-allocation')
+    vi.mocked(postExistingEntryWithAllocation).mockClear()
+    const { admin } = fakeAdmin([balanced('a')])
+    await runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action: 'post', scope: readBulkScope({}), userId: null, investments: true, allocate: false })
+    expect(postExistingEntryWithAllocation).toHaveBeenCalledWith(admin, 'f1', 'Main', null, 'a', { investments: true, allocate: false })
+  })
+
+  it('pages by batchSize, never above BULK_BATCH', async () => {
+    const rows = Array.from({ length: 4 }, (_, i) => balanced(`id-${i}`))
+    const { admin } = fakeAdmin(rows)
+    const res = await runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action: 'post', scope: readBulkScope({}), userId: null, batchSize: 3 })
+    if (!res.ok) throw new Error('expected success')
+    expect(res.outcome.changed).toBe(3)
+    expect(res.outcome.hasMore).toBe(true)
+    expect(res.outcome.cursor).toBe('id-2')
+  })
+
+  it('reads a source_type filter and applies it to the draft query', async () => {
+    expect(readBulkScope({ sourceType: 'quickbooks' }).sourceType).toBe('quickbooks')
+    const eqs: [string, unknown][] = []
+    const { admin } = fakeAdmin([])
+    const from = admin.from
+    admin.from = (t: string) => { const b = from(t); const eq = b.eq; b.eq = (c: string, v: unknown) => { eqs.push([c, v]); return eq(c, v) }; return b }
+    await runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action: 'post', scope: readBulkScope({ sourceType: 'quickbooks' }), userId: null })
+    expect(eqs).toContainEqual(['source_type', 'quickbooks'])
   })
 })
