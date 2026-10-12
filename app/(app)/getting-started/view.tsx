@@ -121,7 +121,7 @@ export function GettingStartedView({
                 <li key={t.href} className="flex items-start gap-2">
                   <Download className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                   <div className="min-w-0">
-                    <a href={t.href} download className="text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+                    <a href={t.href} download className="text-sm font-medium text-foreground hover:underline">
                       {t.label}
                     </a>
                     <p className="text-xs text-muted-foreground">{t.hint}</p>
