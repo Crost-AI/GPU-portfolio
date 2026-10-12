@@ -10,6 +10,7 @@ import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
+import { safeLogo } from '@/lib/vehicle-letterhead'
 
 // Fund-wide investment-vehicle registry (fund_vehicles). Vehicles are used across
 // LP snapshots, portfolio, compliance, and accounting — so management lives here,
@@ -17,8 +18,10 @@ import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 
 const KINDS: readonly string[] = VEHICLE_KINDS
 
-// GET — all of the fund's vehicles (for the management UI).
-export async function GET() {
+// GET — all of the fund's vehicles (for the management UI). `?letterhead=<id>` returns that one
+// vehicle's letterhead (logo, name, address) instead: logos are data URIs up to 200KB, too heavy
+// to ride on every list.
+export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -26,6 +29,24 @@ export async function GET() {
   // Listing vehicles reads. (Using the write helper here would newly refuse the read-only demo.)
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
+
+  const letterheadFor = req.nextUrl.searchParams.get('letterhead')
+  if (letterheadFor) {
+    const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+    if (!canSeeVehicle(access, letterheadFor)) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    const { data, error } = await (admin as any)
+      .from('fund_vehicles').select('logo_url, letterhead_name, letterhead_address')
+      .eq('id', letterheadFor).eq('fund_id', gate.fundId).maybeSingle()
+    // Columns not migrated yet (20261012120000_vehicle_letterhead.sql): no vehicle has a letterhead.
+    if (error) return NextResponse.json({ logo: null, name: null, address: null, available: false })
+    if (!data) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    return NextResponse.json({
+      logo: safeLogo((data as any).logo_url),
+      name: (data as any).letterhead_name ?? null,
+      address: (data as any).letterhead_address ?? null,
+      available: true,
+    })
+  }
 
   // serves_vehicle_id / lp_entity_id may not exist until their migrations are pushed — fall back.
   let rows = await (admin as any)
@@ -93,7 +114,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data)
 }
 
-// PATCH — update a vehicle. { id, name?, kind?, active? }
+// PATCH — update a vehicle. { id, name?, kind?, active?, logo?, letterheadName?, letterheadAddress? }
 // Renaming cascades the string across every vehicle-scoped table (pre-Phase-2);
 // the old name is kept as an alias so stray legacy rows still map back.
 export async function PATCH(req: NextRequest) {
@@ -191,6 +212,30 @@ export async function PATCH(req: NextRequest) {
   if (identityDenied) return NextResponse.json({ error: identityDenied }, { status: 403 })
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  // The vehicle's own letterhead for its LP documents (lib/vehicle-letterhead.ts); null or blank
+  // clears a part, and the documents fall back to the fund's. The logo has the same rules as the
+  // fund logo in api/settings.
+  if (body.logo !== undefined) {
+    if (body.logo !== null) {
+      if (typeof body.logo !== 'string' || !body.logo.startsWith('data:image/')) {
+        return NextResponse.json({ error: 'Logo must be a data:image/ URL' }, { status: 400 })
+      }
+      if (body.logo.length > 200 * 1024) {
+        return NextResponse.json({ error: 'Logo must be under 200KB' }, { status: 400 })
+      }
+    }
+    update.logo_url = body.logo
+  }
+  if (body.letterheadName !== undefined) {
+    const v = typeof body.letterheadName === 'string' ? body.letterheadName.trim() : ''
+    if (v.length > 200) return NextResponse.json({ error: 'Letterhead name must be under 200 characters' }, { status: 400 })
+    update.letterhead_name = v || null
+  }
+  if (body.letterheadAddress !== undefined) {
+    const v = typeof body.letterheadAddress === 'string' ? body.letterheadAddress.trim() : ''
+    if (v.length > 1000) return NextResponse.json({ error: 'Letterhead address must be under 1,000 characters' }, { status: 400 })
+    update.letterhead_address = v || null
+  }
   if (body.kind !== undefined) {
     if (!KINDS.includes(body.kind)) return NextResponse.json({ error: 'invalid kind' }, { status: 400 })
     update.kind = body.kind

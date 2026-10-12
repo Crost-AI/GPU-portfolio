@@ -5,6 +5,7 @@ import { sanitizeLetterHtml } from '@/lib/sanitize'
 import { lpRatios } from '@/lib/lp-metrics'
 import { generateLiveReport } from '@/lib/accounting/live-report'
 import { lastDataDates } from '@/lib/accounting/lp-positions'
+import { documentLetterhead } from '@/lib/vehicle-letterhead'
 
 // Shared LP investor-report rendering: HTML template + PDF rendering, used by the
 // GP batch export (zip of PDFs), the LP portal (single download), and the admin
@@ -437,7 +438,8 @@ export async function generateInvestorReportPdf(
   const investorName = names.length === 1 ? names[0] : (names[0] ?? 'Investor Report')
 
   const fund = fundRes.data
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/')) ? fund.logo_url : null
+  // A vehicle's letterhead when every vehicle on the report shares it (lib/vehicle-letterhead.ts).
+  const letterhead = await documentLetterhead(admin, fundId, fund, filtered.map(inv => inv.portfolio_group))
   const currency = settingsRes.data?.currency || 'USD'
   const asOfFormatted = snapshot.as_of_date
     ? new Date(snapshot.as_of_date + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -445,7 +447,7 @@ export async function generateInvestorReportPdf(
 
   const html = buildReportHtml({
     investorName, rows, totals, excludedGroupNames,
-    fundName: fund?.name || '', fundLogo, fundAddress: fund?.address || null,
+    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address,
     description: snapshot.description, footerNote: snapshot.footer_note, asOfFormatted, currency,
     displayFont: displayFontOf(settingsRes.data?.theme),
   })
@@ -509,7 +511,7 @@ export async function generateLiveInvestorReportPdf(
   const investorName = investorsList[0]?.name ?? 'Investor Report'
 
   const fund = fundRes.data
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/')) ? fund.logo_url : null
+  const letterhead = await documentLetterhead(admin, fundId, fund, mine.map((r: any) => r.portfolio_group as string))
   const currency = settingsRes.data?.currency || 'USD'
 
   // "As of" = most recent data date across this investor's vehicles.
@@ -520,7 +522,7 @@ export async function generateLiveInvestorReportPdf(
 
   const html = buildReportHtml({
     investorName, rows, totals, excludedGroupNames: [],
-    fundName: fund?.name || '', fundLogo, fundAddress: fund?.address || null,
+    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address,
     description: settingsRes.data?.lp_report_description ?? null, footerNote: settingsRes.data?.lp_report_footer ?? null,
     asOfFormatted, currency,
     displayFont: displayFontOf(settingsRes.data?.theme),
@@ -613,7 +615,7 @@ export async function generateLetterPdf(
   const { fundId, letterId } = opts
 
   const [letterRes, fundRes, settingsRes] = await Promise.all([
-    admin.from('lp_letters').select('id, period_label, status, full_draft, portfolio_table_html').eq('id', letterId).eq('fund_id', fundId).maybeSingle(),
+    admin.from('lp_letters').select('id, period_label, status, full_draft, portfolio_table_html, portfolio_group').eq('id', letterId).eq('fund_id', fundId).maybeSingle(),
     admin.from('funds').select('name, logo_url, address').eq('id', fundId).maybeSingle(),
     admin.from('fund_settings').select('theme').eq('fund_id', fundId).maybeSingle(),
   ])
@@ -622,15 +624,16 @@ export async function generateLetterPdf(
   if (!letter || letter.status === 'generating') return null
 
   const fund = fundRes.data
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/')) ? fund.logo_url : null
+  // A letter written for one vehicle carries that vehicle's letterhead where it has one.
+  const letterhead = await documentLetterhead(admin, fundId, fund, letter.portfolio_group ? [letter.portfolio_group] : [])
 
   const html = buildLetterHtml({
     periodLabel: letter.period_label || 'Letter',
     fullDraft: letter.full_draft,
     portfolioTableHtml: letter.portfolio_table_html,
-    fundName: fund?.name || '',
-    fundLogo,
-    fundAddress: fund?.address || null,
+    fundName: letterhead.name,
+    fundLogo: letterhead.logo,
+    fundAddress: letterhead.address,
     asOfFormatted: null,
     displayFont: displayFontOf(settingsRes.data?.theme),
   })
