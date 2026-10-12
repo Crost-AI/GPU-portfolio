@@ -3,7 +3,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveFundFromApiKey, authorizeToolUse, loadCredentialAccess } from '@/lib/accounting/api-keys'
 import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { issuerFor } from '@/lib/oauth/metadata'
-import { AGENT_TOOLS, getTool, resolveVehicleForTool, accessDomainFor, accessDomainForCall, accessFeatureFor } from '@/lib/accounting/agent-tools'
+import { AGENT_TOOLS, getTool, accessDomainFor, accessDomainForCall, accessFeatureFor } from '@/lib/accounting/agent-tools'
+import { idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
+import { withChangeSource } from '@/lib/audit/source'
 import { hasAccess } from '@/lib/access/effective'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -46,7 +48,12 @@ export async function GET(req: NextRequest) {
   })
 }
 
+/** Every change recorded while serving this request is attributed to the API (lib/audit/source.ts). */
 export async function POST(req: NextRequest) {
+  return withChangeSource('api', () => handlePost(req))
+}
+
+async function handlePost(req: NextRequest) {
   const admin = createAdminClient()
   const auth = await resolveFundFromApiKey(admin, req)
   if (!auth) return NextResponse.json({ error: 'Unauthorized — provide a fund API key as a Bearer token' }, { status: 401 })
@@ -85,8 +92,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const input = body?.input ?? {}
-    const portfolioGroup = await resolveVehicleForTool(tool, admin, auth.fundId, input.vehicle, access)
-    const result = await tool.handler({ admin, fundId: auth.fundId, portfolioGroup, userId: auth.userId, access, origin: issuerFor(req) }, input)
+    // The one dispatcher: audits every write with this key as its credential, and replays a retry
+    // that repeats its Idempotency-Key (lib/agent/dispatch.ts). API keys are not staged.
+    const result = await runAgentTool({
+      admin, tool, input, auth, access, channel: 'api', origin: issuerFor(req),
+      idempotencyKey: idempotencyKeyOf(req.headers.get('idempotency-key')),
+    })
     return NextResponse.json({ ok: true, result })
   } catch (e) {
     // Don't leak internals to an API-key caller — log the detail, return the message only.

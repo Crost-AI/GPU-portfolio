@@ -34,8 +34,9 @@ describe('reading the audit trail', () => {
     const csv = auditCsv([{
       id: '1', createdAt: '2026-10-10T12:00:00Z', action: 'entry.void', subjectType: 'journal_entry', subjectId: 'e1',
       vehicleId: 'v1', actorId: 'u1', actorName: 'Alex', reason: 'Duplicate, see #12', details: { memo: 'Legal, Q3' },
+      source: 'mcp',
     }], new Map([['v1', 'Fund I']]))
-    expect(csv.split('\n')[1]).toBe('2026-10-10T12:00:00Z,Fund I,Alex,entry.void,journal_entry,e1,"Duplicate, see #12","{""memo"":""Legal, Q3""}"')
+    expect(csv.split('\n')[1]).toBe('2026-10-10T12:00:00Z,Fund I,Alex,mcp,entry.void,journal_entry,e1,"Duplicate, see #12","{""memo"":""Legal, Q3""}"')
   })
 
   it('takes a typed reason, and treats a blank one as none', () => {

@@ -4,7 +4,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import { hasAccess } from '@/lib/access/effective'
 import { fetchAllRows } from '@/lib/accounting/load'
-import { getWriteAction } from '@/lib/pending-actions/registry'
+import { stagedAction } from '@/lib/pending-actions/staged'
+import { toolCallGate } from '@/lib/agent/tool-call-action'
 import { csvField } from '@/lib/csv/escape'
 
 export interface AuditRow {
@@ -18,6 +19,8 @@ export interface AuditRow {
   actorName: string | null
   reason: string | null
   details: Record<string, unknown>
+  /** web, api or mcp; null for events recorded before the source was tracked. */
+  source: string | null
 }
 
 /**
@@ -30,7 +33,10 @@ export interface AuditRow {
  *   - `pending_action.*` events carry the approved action's full `args`, and an action may belong
  *     to ANY domain (a portfolio metric, an investment, a forecast). They follow that action's own
  *     gate — `getWriteAction(actionType).domain` + `accessFeature` — and an action type the
- *     registry no longer knows is hidden, since nothing says who may see its args.
+ *     registry no longer knows is hidden, since nothing says who may see its args. A staged tool
+ *     call (`agent_tool_call`) follows its TOOL's gate, read from the args the event carries.
+ *   - `agent.*` events are a connected assistant's direct writes and carry the call's input; they
+ *     follow the tool's gate the same way, and an unknown tool is hidden.
  */
 export function visibleTo(access: AccessContext) {
   const partners = hasAccess(access, 'lp_capital', 'read')
@@ -42,8 +48,12 @@ export function visibleTo(access: AccessContext) {
     if (action.startsWith('tax.')) return tax
     if (action.startsWith('pending_action.')) {
       const type = details?.actionType
-      const wa = typeof type === 'string' ? getWriteAction(type) : undefined
+      const wa = typeof type === 'string' ? stagedAction(type, details?.args) : undefined
       return !!wa && hasAccess(access, wa.domain, 'read', wa.accessFeature)
+    }
+    if (action.startsWith('agent.')) {
+      const gate = toolCallGate({ tool: details?.tool, input: details?.input })
+      return !!gate && hasAccess(access, gate.domain, 'read', gate.accessFeature)
     }
     return true
   }
@@ -78,6 +88,8 @@ export async function loadAuditTrail(
     id: r.id, createdAt: r.created_at, action: r.action, subjectType: r.subject_type, subjectId: r.subject_id ?? null,
     vehicleId: r.vehicle_id ?? null, actorId: r.actor_id ?? null, actorName: r.actor_id ? names.get(r.actor_id) ?? null : null,
     reason: r.reason ?? null, details: r.details ?? {},
+    // The column, or `details.source` when it was written before the column existed (events.ts).
+    source: r.source ?? (typeof r.details?.source === 'string' ? r.details.source : null),
   }))
 }
 
@@ -85,10 +97,10 @@ export async function loadAuditTrail(
 const csvCell = (v: unknown) => csvField(v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v))
 
 export function auditCsv(rows: AuditRow[], vehicleNames: Map<string, string>): string {
-  const header = ['When (UTC)', 'Entity', 'Who', 'Action', 'Subject', 'Subject id', 'Reason', 'Details']
+  const header = ['When (UTC)', 'Entity', 'Who', 'Source', 'Action', 'Subject', 'Subject id', 'Reason', 'Details']
   const lines = rows.map(r => [
     r.createdAt, r.vehicleId ? vehicleNames.get(r.vehicleId) ?? r.vehicleId : '', r.actorName ?? r.actorId ?? '',
-    r.action, r.subjectType, r.subjectId ?? '', r.reason ?? '', r.details,
+    r.source ?? '', r.action, r.subjectType, r.subjectId ?? '', r.reason ?? '', r.details,
   ].map(csvCell).join(','))
   return [header.join(','), ...lines].join('\n')
 }

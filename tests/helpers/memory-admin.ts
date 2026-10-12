@@ -41,7 +41,7 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
   const like = (v: unknown, pattern: string) => new RegExp(
     '^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$',
   ).test(String(v ?? ''))
-  const UNIQUE = { message: 'duplicate key value violates unique constraint' }
+  const UNIQUE = { code: '23505', message: 'duplicate key value violates unique constraint' }
 
   function from(table: string) {
     const filters: ((r: Row) => boolean)[] = []

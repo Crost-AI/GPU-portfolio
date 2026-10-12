@@ -23,6 +23,12 @@ import type { V1Principal } from './principal'
 
 export const IDEMPOTENCY_MAX_KEY_LENGTH = 200
 
+/**
+ * Whose key it is. A v1 principal is one; so is an agent credential (lib/agent/dispatch.ts), whose
+ * `clientId` is the credential id — an API key's row id, or `oauth:<client>`.
+ */
+export type IdempotencyScope = Pick<V1Principal, 'fundId' | 'clientId' | 'userId'>
+
 export type IdempotencyOutcome =
   | { kind: 'proceed' }
   | { kind: 'replay'; status: number; body: Record<string, unknown> }
@@ -48,7 +54,7 @@ export function idempotencyKeyFrom(req: Request): string | null {
 
 export async function claimIdempotentRequest(
   admin: SupabaseClient,
-  principal: V1Principal,
+  principal: IdempotencyScope,
   args: { endpoint: string; key: string; fingerprint: string },
 ): Promise<IdempotencyOutcome> {
   const identity = {
@@ -108,7 +114,7 @@ export async function claimIdempotentRequest(
  */
 export async function completeIdempotentRequest(
   admin: SupabaseClient,
-  principal: V1Principal,
+  principal: IdempotencyScope,
   args: { endpoint: string; key: string; status: number; body: Record<string, unknown> },
 ): Promise<void> {
   const identity = {
@@ -137,7 +143,7 @@ export async function completeIdempotentRequest(
 /** Release a claim whose work never ran or threw. */
 export async function releaseIdempotentRequest(
   admin: SupabaseClient,
-  principal: V1Principal,
+  principal: IdempotencyScope,
   args: { endpoint: string; key: string },
 ): Promise<void> {
   await admin.from('api_idempotency_keys').delete().match({

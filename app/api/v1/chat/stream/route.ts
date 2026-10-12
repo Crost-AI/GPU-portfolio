@@ -1,3 +1,4 @@
+import { withChangeSource } from '@/lib/audit/source'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runAnalyst } from '@/lib/ai/analyst/orchestrator'
 import { AnalystRequestError, type AnalystProgressEvent } from '@/lib/ai/analyst/types'
@@ -27,7 +28,7 @@ import { createEventStream, sseHeaders } from '@/lib/api-v1/stream'
  */
 export const dynamic = 'force-dynamic'
 
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   const id = requestId()
   const admin = createAdminClient()
 
@@ -132,3 +133,6 @@ export async function POST(req: Request) {
 
   return new Response(body, { status: 200, headers: sseHeaders(id) })
 }
+
+/** Changes made through /api/v1 are attributed to the API (lib/audit/source.ts). */
+export const POST = (...args: Parameters<typeof postHandler>) => withChangeSource('api', () => postHandler(...args))

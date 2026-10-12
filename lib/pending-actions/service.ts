@@ -2,7 +2,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordAudit } from '@/lib/audit/events'
 import { hasAccess } from '@/lib/access/effective'
 import { isRestrictedCredential, type AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { getWriteAction } from './registry'
+import { stagedAction } from './staged'
+import { AGENT_TOOL_CALL } from '@/lib/agent/tool-call-action'
 import { canSeeVehicle } from '@/lib/access/scope'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -92,7 +93,7 @@ export async function listPendingActions(
   // short (or empty) page with a next cursor is preferable to skipping accessible rows later.
   const consumed = rows.slice(0, options.limit)
   const permitted = consumed.filter(row => {
-    const action = getWriteAction(row.action_type)
+    const action = stagedAction(row.action_type, row.args)
     return !!action && hasAccess(principal.access, action.domain, 'read', action.accessFeature)
   })
   // ...and about the caller's entities: a preview names LPs, amounts and companies.
@@ -122,7 +123,7 @@ async function loadAction(admin: SupabaseClient, fundId: string, id: string): Pr
  */
 async function visibleToCaller(admin: SupabaseClient, principal: AnalystPrincipal, row: PendingActionRow): Promise<boolean> {
   if (principal.access.vehicles.all) return true
-  const action = getWriteAction(row.action_type)
+  const action = stagedAction(row.action_type, row.args)
   if (!action) return false
   // The entity it was staged for decides first. Re-running a preview alone is not enough: an action
   // staged with no entity named would resolve to the VIEWER's own entity and pass.
@@ -143,7 +144,7 @@ function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow) {
   if (isRestrictedCredential(principal)) {
     throw new PendingActionServiceError('This credential cannot decide pending actions.', 403, 'RESTRICTED_CREDENTIAL')
   }
-  const action = getWriteAction(row.action_type)
+  const action = stagedAction(row.action_type, row.args)
   if (!action) throw new PendingActionServiceError('Unknown pending-action type.', 400, 'UNKNOWN_ACTION_TYPE')
   if (!hasAccess(principal.access, action.domain, 'write', action.accessFeature)) {
     throw new PendingActionServiceError('You do not have current write access for this action.', 403, 'FORBIDDEN')
@@ -258,7 +259,12 @@ export async function rejectPendingAction(
   if (!data) throw new PendingActionServiceError('Pending action was already decided.', 409, 'ACTION_NOT_PENDING')
   await recordAudit(admin, {
     fundId: principal.fundId, vehicleId: existing.vehicle_id ?? null, actorId: principal.userId, action: 'pending_action.reject',
-    subjectType: 'pending_action', subjectId: id, details: { actionType: existing.action_type, stagedBy: existing.created_by },
+    subjectType: 'pending_action', subjectId: id,
+    details: {
+      actionType: existing.action_type, stagedBy: existing.created_by,
+      // A staged tool call's gate is its tool's, read back from its args (lib/audit/read.ts).
+      ...(existing.action_type === AGENT_TOOL_CALL ? { args: existing.args } : {}),
+    },
   })
   return { ok: true, replayed: false, action: actionDto(data as PendingActionRow) }
 }
