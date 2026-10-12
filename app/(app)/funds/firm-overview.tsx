@@ -59,7 +59,12 @@ const hasCapital = (m: Metrics | undefined) => !!m && (m.committed !== 0 || m.pa
 const baseFor = (e: { id: string | null; name: string }) => `/funds/${e.id ?? encodeURIComponent(e.name)}`
 const dash = <span className="text-muted-foreground">&mdash;</span>
 
-export function FirmOverview() {
+/**
+ * `only` narrows the page to those entity ids — the family page (/funds/group/<id>) is this
+ * overview scoped to one entity group. Unset, it is the whole firm, and each group heading links
+ * to its family page.
+ */
+export function FirmOverview({ only }: { only?: string[] } = {}) {
   const currency = useCurrency()
   const fmt = (v: number) => formatCurrency(v, currency)
   const money = (v: number) => formatCurrencyFull(v, currency)
@@ -105,8 +110,11 @@ export function FirmOverview() {
       if (used.has(e) || !hasCapital(e.fund)) continue
       out.push({ key: e.id ?? e.vehicle, id: e.id, name: e.vehicle, kind: null, books: null, econ: e, attention: [] })
     }
-    return out.sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || a.name.localeCompare(b.name))
-  }, [books, econ, today])
+    const keep = only ? new Set(only) : null
+    return out
+      .filter(e => !keep || (e.id != null && keep.has(e.id)))
+      .sort((a, b) => kindRank(a.kind) - kindRank(b.kind) || a.name.localeCompare(b.name))
+  }, [books, econ, today, only])
 
   if (loading) {
     return (
@@ -116,7 +124,11 @@ export function FirmOverview() {
     )
   }
 
-  if (entities.length === 0) return <OnboardingEmptyState onCreated={() => window.location.reload()} />
+  if (entities.length === 0) {
+    return only
+      ? <p className="text-sm text-muted-foreground">No entity in this group has books you can see yet.</p>
+      : <OnboardingEmptyState onCreated={() => window.location.reload()} />
+  }
 
   // Net to LP where there is a GP class to carve out, as the performance table does; otherwise
   // the two are the same numbers and whole fund is the honest label.
@@ -246,6 +258,11 @@ export function FirmOverview() {
                             {sec.label}
                             <span className="ml-1 font-normal normal-case tracking-normal tabular-nums">· {sec.items.length}</span>
                           </button>
+                          {!only && sec.group && (
+                            <Link href={`/funds/group/${sec.group.id}`} className="ml-3 text-xs text-muted-foreground hover:text-foreground hover:underline">
+                              Family page
+                            </Link>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{t.paidIn !== 0 || t.nav !== 0 ? money(t.nav) : ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{t.tvpi != null ? moic(t.tvpi) : ''}</td>

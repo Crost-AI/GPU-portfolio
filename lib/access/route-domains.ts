@@ -80,6 +80,10 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/forecast/variance': { domain: 'accounting' },
   'api/accounting/forecast/fee-links': { domain: 'accounting' },
   'api/accounting/fund-economics': { domain: 'accounting' },
+  'api/accounting/firm/periods': { domain: 'accounting' },
+  'api/accounting/firm/drafts': { domain: 'accounting' },
+  'api/accounting/firm/holdings': { domain: 'accounting' },
+  'api/accounting/firm/family': { domain: 'accounting' },
   // One vehicle's LP-only performance (fund-level totals, no partner names) — the same figures
   // as fund-economics, laid out as the quarterly report. The PDF is that report serialized.
   'api/accounting/fund-performance': { domain: 'accounting' },

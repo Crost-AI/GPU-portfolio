@@ -94,6 +94,7 @@ export const PAGE_DOMAINS: Record<string, PageDomain> = {
   // The registry maps one domain per page; the second half of a page that straddles two is gated
   // in the page's own path, which for every entity page is app/(app)/funds/guard.ts.
   'funds/[id]': { domain: 'accounting', gate: 'requireVehicleAccess' },
+  'funds/group/[groupId]': { domain: 'accounting', gate: 'requireAccountingAccess' },
   'funds/[id]/bank': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/capital-accounts': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/forecast': { domain: 'accounting', gate: 'requireVehicleAccess' },

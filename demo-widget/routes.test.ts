@@ -16,6 +16,7 @@ const patterns = ROUTES.map(r => r.pattern)
 /** Pages the demo deliberately leaves out: admin-only, redirects, or flows that need a signed-in user. */
 const NOT_IN_DEMO: Record<string, string> = {
   'accounting/[[...rest]]': 'redirect to /funds',
+  'funds/group/[groupId]': 'entity groups are a per-fund setting the demo dataset does not define',
   'companies': 'redirect to /dashboard',
   'lps/live': 'redirect to /lps',
   'lps/preview': 'admin only',
