@@ -452,6 +452,14 @@ The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answ
 
 **Every change is recorded with its source.** Each change made through MCP or the API is written to the audit trail (the entity's Admin page, and its CSV) with the person, the credential, and the source it came through: `web`, `api` or `mcp`. Changes made in the app are recorded as `web`, and activity-log entries carry the same source as `changeSource`. A write may carry an idempotency key, `_meta.idempotencyKey` on an MCP `tools/call` or an `Idempotency-Key` header on `/api/agent`, and a retry under the same key returns the first result instead of writing twice.
 
+**Putting data in from chat.** Four tools cover the everyday inputs. From Claude or ChatGPT each one is staged for approval like any other change:
+- `submit_company_update` takes a portfolio company's update as text, or as up to five files of 3 MB each (PDF, Word, Excel, PowerPoint, CSV, text or images). It runs the same pipeline as an emailed update. The update is matched to the company (or to the one named), kept on the company's Updates and its KPIs recorded. Anything uncertain, such as a low-confidence figure, an ambiguous period or an unknown company, goes to the review queue. The submission also shows on the Emails page, where it can be reprocessed or rerouted. Larger files still go by email or the web upload.
+- `record_metric_value` sets one KPI for a period ("MRR for Q3 2026"), replacing any value already there.
+- `create_company` adds a company, seeded with the fund's default metrics. A member must name one of their entities.
+- `add_company_note` adds an internal note as the person connected, with @mentions notifying team members as they do in the app.
+
+They call the same code as the app's own pages, under the same access checks.
+
 **What it can reach.** The tool list is filtered to the areas the member can read and the entities they can see, and re-checked on every call. Requests are limited per fund to 300 reads or 60 writes a minute, in batches of up to 20 calls. The Analyst never writes directly — it stages changes for approval — and `/api/v1` (chat, streamed chat over Server-Sent Events, conversations, approving staged actions with an `Idempotency-Key`) takes only OAuth tokens issued for it.
 
 ### Data connectors

@@ -13,6 +13,7 @@
 // about this action.
 
 import { describeSetupPlan, parseSetupPlan } from '@/lib/onboarding/setup-plan'
+import { resolveCompany } from './portfolio-tools'
 import type { Domain } from '@/lib/access/domains'
 import { hasAccess } from '@/lib/access/effective'
 import type { FeatureKey } from '@/lib/types/features'
@@ -68,8 +69,22 @@ async function resolveEntity(deps: ActionDeps, tool: AgentTool, input: Record<st
   const requested = typeof input.vehicle === 'string' && input.vehicle.trim() ? input.vehicle : undefined
   if (isLedgerTool(tool)) return resolveVehicleForTool(tool, deps.admin, deps.fundId, requested, deps.access)
   if (requested) return (await resolveVehicleWithAccess(deps.admin, deps.access, requested, 'read')).name
-  if (!deps.access.vehicles?.all) throw new Error('This staged change is not about one of your entities.')
-  return null
+  if (deps.access.vehicles?.all) return null
+  // A change about one company (a KPI value, a note, an update) is the stager's when the company is
+  // linked to one of their entities; resolveCompany throws otherwise. The approver's access is
+  // checked again when the call runs.
+  if (typeof input.company === 'string' && input.company.trim()) {
+    await resolveCompany(deps.admin, deps.fundId, input.company, deps.access)
+    return null
+  }
+  // A new company names the entities that will hold it; each must be the stager's.
+  if (tool.name === 'create_company' && Array.isArray(input.vehicles) && input.vehicles.length > 0) {
+    for (const v of input.vehicles) await resolveVehicleWithAccess(deps.admin, deps.access, String(v), 'read')
+    return null
+  }
+  throw new Error(tool.name === 'submit_company_update'
+    ? 'Name the company this update is for.'
+    : 'This staged change is not about one of your entities.')
 }
 
 /** A short, readable line for the approver: the tool, the entity, and the inputs that matter. */
@@ -100,6 +115,27 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
     const plan = parseSetupPlan(args.input)
     const lines = 'error' in plan ? [plan.error] : describeSetupPlan(plan)
     return { summary: `Set up the fund: ${lines.join('; ')}`, details: { tool: tool.name, vehicle: null, plan: lines, input: args.input } }
+  }
+  // An update carries its files inline; the approver needs their names and sizes, not the bytes.
+  if (tool.name === 'submit_company_update') {
+    const files = Array.isArray(args.input.files) ? (args.input.files as any[]) : []
+    const described = files.map(f => ({
+      filename: String(f?.filename ?? 'file'),
+      kb: Math.round((String(f?.content_base64 ?? '').length * 3) / 4 / 1024),
+    }))
+    const text = typeof args.input.text === 'string' ? args.input.text : ''
+    const parts = [
+      described.length ? `${described.length} file${described.length === 1 ? '' : 's'} (${described.map(f => f.filename).join(', ')})` : null,
+      text ? `${text.length.toLocaleString('en-US')} characters of text` : null,
+    ].filter(Boolean)
+    const company = typeof args.input.company === 'string' && args.input.company.trim() ? args.input.company.trim() : 'a company the app will identify'
+    return {
+      summary: `Process an update for ${company}: ${parts.join(' and ') || 'nothing attached'}. KPIs found are recorded; anything uncertain goes to review.`,
+      details: {
+        tool: tool.name, vehicle,
+        input: { company: args.input.company ?? null, subject: args.input.subject ?? null, text: text.slice(0, 500), files: described },
+      },
+    }
   }
   return {
     summary: summarizeToolCall(tool.name, args.input, vehicle),
