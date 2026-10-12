@@ -6,6 +6,7 @@ import JSZip from 'jszip'
 import { getChromeConfig, buildReportHtml, computeRow, computeTotals, runPool, type InvestmentRow } from '@/lib/lp-report-pdf'
 import { displayFontOf } from '@/lib/theme'
 import { generateLiveReport } from '@/lib/accounting/live-report'
+import { loadVehicleLogos, pickDocumentLogo } from '@/lib/vehicle-logo'
 
 export const maxDuration = 300
 
@@ -156,7 +157,8 @@ export async function POST(req: NextRequest) {
   const fund = fundResult.data as any
   const settings = settingsResult.data as any
   const fundName = fund?.name || ''
-  const fundLogo = fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/') ? fund.logo_url : null
+  // Per investor below: a shared vehicle logo when every vehicle on their report has the same one.
+  const vehicleLogos = await loadVehicleLogos(admin as any, fundId)
   const fundAddress = fund?.address || null
   const currency = settings?.currency || 'USD'
   const displayFont = displayFontOf(settings?.theme)
@@ -205,6 +207,7 @@ export async function POST(req: NextRequest) {
 
     const rows = investments.map(computeRow)
     const totals = computeTotals(rows)
+    const fundLogo = pickDocumentLogo(fund?.logo_url, investments.map(inv => inv.portfolio_group), vehicleLogos)
 
     const html = buildReportHtml({
       investorName,

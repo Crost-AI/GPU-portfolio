@@ -25,6 +25,7 @@ import { getOutboundConfig, sendOutboundEmail, type EmailAttachment } from '@/li
 import { buildLpEmailHtml, siteUrl } from '@/lib/lp-email'
 import { logDelivery, listDeliveries, lastSentByItem, type DeliveryKind } from '@/lib/lp-deliveries'
 import { roundCents } from './ledger'
+import { documentLogo } from '@/lib/vehicle-logo'
 
 export interface NoticeLine {
   id: string
@@ -181,10 +182,9 @@ export async function publishNotices(
     admin.from('lp_entities' as any).select('id, investor_id').eq('fund_id', fundId).in('id', targets.map(t => t.lpEntityId)),
   ])
   const fund = (fundRes as any).data
-  // A remote logo URL silently fails to render inside headless Chrome — only a data URI is
-  // safe, the same constraint every other PDF generator here carries.
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/'))
-    ? fund.logo_url : null
+  // The vehicle's own logo when it has one, else the fund's (lib/vehicle-logo.ts). Data URIs
+  // only: a remote URL silently fails to render inside headless Chrome.
+  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
   const wireInstructions = (vehSettingsRes as any).data?.wire_instructions ?? null
   const summaryByLp = new Map(summary.map(r => [r.lpEntityId, r]))
@@ -596,7 +596,7 @@ export async function sendReceipts(
     lpCapitalSummary(admin, fundId, group),
   ])
   const fund = (fundRes as any).data
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/')) ? fund.logo_url : null
+  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
   const summaryByLp = new Map(summary.map(r => [r.lpEntityId, r]))
   const title = `Receipt — Capital Call${found.call.number ? ` No. ${found.call.number}` : ''} — ${found.call.date}`

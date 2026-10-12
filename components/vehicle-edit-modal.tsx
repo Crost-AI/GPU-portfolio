@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { ImagePlus, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -18,7 +18,7 @@ export interface EditableVehicle {
   aliases: string[]
 }
 
-/** Edit a single investment vehicle in place (name, type, vintage, active). Renaming cascades the
+/** Edit a single investment vehicle in place (name, type, vintage, logo, active). Renaming cascades the
  *  string across all data server-side and keeps the old name as an alias. GP/carry links live on the
  *  fund pages, not here. */
 export function VehicleEditModal({ vehicle, onClose, onSaved }: {
@@ -43,6 +43,49 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
   const [mergeConfirming, setMergeConfirming] = useState(false)
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeErr, setMergeErr] = useState<string | null>(null)
+
+  // The vehicle's own logo, for its LP statements, notices and receipts (lib/vehicle-logo.ts).
+  // Fetched on its own because logos are too heavy for the list; saved as soon as it's picked,
+  // like the fund logo in settings. `undefined` while loading, and the section stays hidden when
+  // the column isn't migrated yet.
+  const [logo, setLogo] = useState<string | null | undefined>(undefined)
+  const [logoAvailable, setLogoAvailable] = useState(false)
+  const [logoBusy, setLogoBusy] = useState(false)
+  const [logoErr, setLogoErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/vehicles?logo=${encodeURIComponent(vehicle.id)}`).then(r => r.ok ? r.json() : null).then(data => {
+      if (cancelled) return
+      setLogoAvailable(!!data?.available)
+      setLogo(data?.logo ?? null)
+    }).catch(() => { if (!cancelled) setLogo(null) })
+    return () => { cancelled = true }
+  }, [vehicle.id])
+
+  async function saveLogo(next: string | null) {
+    const previous = logo ?? null
+    setLogo(next); setLogoBusy(true); setLogoErr(null)
+    const res = await fetch('/api/vehicles', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: vehicle.id, logo: next }),
+    })
+    setLogoBusy(false)
+    if (!res.ok) {
+      setLogo(previous)
+      setLogoErr((await res.json().catch(() => ({}))).error ?? 'Could not save logo')
+    }
+  }
+
+  function pickLogo(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (file.size > 200 * 1024) { setLogoErr('File must be under 200KB'); return }
+    const reader = new FileReader()
+    reader.onload = () => { void saveLogo(reader.result as string) }
+    reader.readAsDataURL(file)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -132,6 +175,43 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
               <Button variant="outline" size="sm" onClick={addAlias} disabled={!aliasInput.trim()}>Add</Button>
             </div>
           </div>
+          {logoAvailable && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Logo</label>
+              <p className="text-[11px] text-muted-foreground">
+                Replaces the fund logo on this vehicle&rsquo;s capital account statements, notices and receipts. Max 200KB.
+              </p>
+              <div className="flex items-center gap-3">
+                {logo ? (
+                  <div className="relative">
+                    <img src={logo} alt={`${vehicle.name} logo`} className="h-12 w-auto max-w-[160px] rounded-sm border bg-background object-contain p-1" />
+                    <button
+                      onClick={() => saveLogo(null)}
+                      disabled={logoBusy}
+                      aria-label="Remove logo"
+                      className="absolute -top-1.5 -right-1.5 rounded-full bg-destructive p-0.5 text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent">
+                    <ImagePlus className="h-4 w-4" />
+                    {logo === undefined ? 'Loading…' : 'Choose file'}
+                    <input type="file" accept="image/*" onChange={pickLogo} className="hidden" disabled={logo === undefined || logoBusy} />
+                  </label>
+                )}
+                {logo && (
+                  <label className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
+                    Replace
+                    <input type="file" accept="image/*" onChange={pickLogo} className="hidden" disabled={logoBusy} />
+                  </label>
+                )}
+                {logoBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              </div>
+              {logoErr && <p className="text-sm text-destructive">{logoErr}</p>}
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} className="h-3.5 w-3.5" />
             Active

@@ -25,6 +25,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadFofRaw, computeFofFromRaw } from '@/lib/portfolio/fof-load'
 import { commitmentSchedule, performanceTable } from '@/lib/portfolio/fof-exhibits'
 import { valuationBasisNote } from '@/lib/portfolio/fof-valuation'
+import { documentLogo } from '@/lib/vehicle-logo'
 
 function esc(s: string): string {
   return String(s ?? '')
@@ -44,6 +45,15 @@ function money(v: number | null, currency: string): string {
 }
 
 const pct = (v: number) => `${(v * 100).toFixed(3)}%`
+
+/** The roll-forward lines that make up the partner's profit and loss, in statement order. Carried
+ *  interest stays outside: it reallocates profit between partners rather than earning it. */
+export const PNL_FIELDS: (keyof CapitalAccount)[] = [
+  'managementFees', 'expenses', 'operatingIncome', 'realizedGains', 'unrealizedGains', 'fxTranslation',
+]
+/** Capital movements printed above the profit and loss block. */
+const PRE_PNL_FIELDS: (keyof CapitalAccount)[] = ['contributions', 'distributions']
+export const NET_PNL_LABEL = 'Net profit / (loss)'
 
 /** Contributions and distributions are the movements an LP actually cares to see listed. */
 const TXN_LABELS: Record<string, string> = {
@@ -176,17 +186,27 @@ export function buildStatementHtml(d: StatementPdfData): string {
     f => Math.abs(d.periodRollForward[f]) > 0.004 || Math.abs(d.rollForward[f]) > 0.004
   )
 
-  const row = (label: string, period: number, itd: number, bold = false) => `
-    <tr${bold ? ' style="font-weight:600;background:#fafafa;"' : ''}>
-      <td style="padding:6px 8px;border-top:1px solid #e5e5e5;">${esc(label)}</td>
+  const row = (label: string, period: number, itd: number, style: 'plain' | 'total' | 'subtotal' | 'component' = 'plain') => `
+    <tr${style === 'total' ? ' style="font-weight:600;background:#fafafa;"' : style === 'subtotal' ? ' style="font-weight:600;"' : ''}>
+      <td style="padding:6px 8px${style === 'component' ? ' 6px 22px' : ''};border-top:1px solid #e5e5e5;${style === 'component' ? 'color:#555;' : ''}">${esc(label)}</td>
       <td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(period)}</td>
       <td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(itd)}</td>
     </tr>`
 
+  // The partner's share of the fund's profit and loss — management fees, expenses, income and
+  // gains — indented under one subtotal, so an LP reads a single profit-or-loss figure the way a
+  // hand-built statement shows it. The rows that are not indented still sum to ending capital.
+  const pnlShown = lines.filter(f => PNL_FIELDS.includes(f))
+  const sumPnl = (a: CapitalAccount) => PNL_FIELDS.reduce((s, f) => s + a[f], 0)
   const rollForwardRows = [
     row(CAPITAL_ACCOUNT_LABELS.beginning, d.periodRollForward.beginning, d.rollForward.beginning),
-    ...lines.map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f])),
-    row(CAPITAL_ACCOUNT_LABELS.ending, d.periodRollForward.ending, d.rollForward.ending, true),
+    ...lines.filter(f => !PNL_FIELDS.includes(f) && PRE_PNL_FIELDS.includes(f))
+      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f])),
+    ...pnlShown.map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f], 'component')),
+    ...(pnlShown.length > 0 ? [row(NET_PNL_LABEL, sumPnl(d.periodRollForward), sumPnl(d.rollForward), 'subtotal')] : []),
+    ...lines.filter(f => !PNL_FIELDS.includes(f) && !PRE_PNL_FIELDS.includes(f))
+      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f])),
+    row(CAPITAL_ACCOUNT_LABELS.ending, d.periodRollForward.ending, d.rollForward.ending, 'total'),
   ].join('')
 
   const txns = d.transactions.filter(t => {
@@ -314,11 +334,9 @@ export async function generateLpStatementPdf(
   if ('error' in statement) return null
 
   const fund = (fundRes as any).data
-  // A remote logo URL silently fails to render inside headless Chrome — only a data
-  // URI is safe, which is what the other two PDF generators require too.
-  const fundLogo = (fund?.logo_url && typeof fund.logo_url === 'string' && fund.logo_url.startsWith('data:image/'))
-    ? fund.logo_url
-    : null
+  // The vehicle's own logo when it has one (a separately branded vehicle's LPs know it by that
+  // brand), else the fund's. Data URIs only: a remote URL silently fails in headless Chrome.
+  const fundLogo = await documentLogo(admin, fundId, fund?.logo_url, [group])
   const currency = (settingsRes as any).data?.currency || 'USD'
 
   // Ownership by commitment, which is the basis the close allocates on. The total MUST use the

@@ -10,6 +10,7 @@ import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
+import { safeLogo } from '@/lib/vehicle-logo'
 
 // Fund-wide investment-vehicle registry (fund_vehicles). Vehicles are used across
 // LP snapshots, portfolio, compliance, and accounting — so management lives here,
@@ -17,8 +18,9 @@ import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 
 const KINDS: readonly string[] = VEHICLE_KINDS
 
-// GET — all of the fund's vehicles (for the management UI).
-export async function GET() {
+// GET — all of the fund's vehicles (for the management UI). `?logo=<id>` returns that one
+// vehicle's logo instead: logos are data URIs up to 200KB, too heavy to ride on every list.
+export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -26,6 +28,18 @@ export async function GET() {
   // Listing vehicles reads. (Using the write helper here would newly refuse the read-only demo.)
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
+
+  const logoFor = req.nextUrl.searchParams.get('logo')
+  if (logoFor) {
+    const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+    if (!canSeeVehicle(access, logoFor)) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    const { data, error } = await (admin as any)
+      .from('fund_vehicles').select('logo_url').eq('id', logoFor).eq('fund_id', gate.fundId).maybeSingle()
+    // Column not migrated yet (20261012120000_vehicle_logo.sql): no vehicle has a logo.
+    if (error) return NextResponse.json({ logo: null, available: false })
+    if (!data) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    return NextResponse.json({ logo: safeLogo((data as any).logo_url), available: true })
+  }
 
   // serves_vehicle_id / lp_entity_id may not exist until their migrations are pushed — fall back.
   let rows = await (admin as any)
@@ -93,7 +107,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data)
 }
 
-// PATCH — update a vehicle. { id, name?, kind?, active? }
+// PATCH — update a vehicle. { id, name?, kind?, active?, logo? }
 // Renaming cascades the string across every vehicle-scoped table (pre-Phase-2);
 // the old name is kept as an alias so stray legacy rows still map back.
 export async function PATCH(req: NextRequest) {
@@ -191,6 +205,19 @@ export async function PATCH(req: NextRequest) {
   if (identityDenied) return NextResponse.json({ error: identityDenied }, { status: 403 })
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  // The vehicle's own logo for its LP documents (lib/vehicle-logo.ts); null clears it, and the
+  // documents fall back to the fund logo. Same rules as the fund logo in api/settings.
+  if (body.logo !== undefined) {
+    if (body.logo !== null) {
+      if (typeof body.logo !== 'string' || !body.logo.startsWith('data:image/')) {
+        return NextResponse.json({ error: 'Logo must be a data:image/ URL' }, { status: 400 })
+      }
+      if (body.logo.length > 200 * 1024) {
+        return NextResponse.json({ error: 'Logo must be under 200KB' }, { status: 400 })
+      }
+    }
+    update.logo_url = body.logo
+  }
   if (body.kind !== undefined) {
     if (!KINDS.includes(body.kind)) return NextResponse.json({ error: 'invalid kind' }, { status: 400 })
     update.kind = body.kind
