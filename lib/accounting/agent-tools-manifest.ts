@@ -307,4 +307,43 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
       },
     },
   },
+  // An entity's governing documents (LPA, operating agreement, side letters). Same files and
+  // indexing as the entity's Documents page; see lib/entity-documents/agent.ts.
+  {
+    name: 'list_entity_documents',
+    description: "List the entity's governing documents (LPA, operating agreement, side letters, amendments) with kind, title, effective date and text-extraction status.",
+    scope: 'read',
+    inputSchema: EMPTY_SCHEMA,
+  },
+  {
+    name: 'entity_document_upload_url',
+    description: 'Start uploading a governing document of any size up to 25 MB: returns a signed URL to PUT the file bytes to, and the storagePath to pass to add_entity_document afterwards.',
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['fileName'],
+      properties: {
+        fileName: { type: 'string', description: 'e.g. "3SE Holdings LP - LPA.pdf"' },
+        sizeBytes: { type: 'number', description: 'file size, checked against the 25 MB limit' },
+      },
+    },
+  },
+  {
+    name: 'add_entity_document',
+    description: "Store a governing document on the entity's Documents page and index its text so it can be searched and quoted. Pass storagePath from entity_document_upload_url, or contentBase64 for a file under 3 MB.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['fileName'],
+      properties: {
+        fileName: { type: 'string' },
+        storagePath: { type: 'string', description: 'from entity_document_upload_url, after the file was PUT there' },
+        contentBase64: { type: 'string', description: 'the file itself, base64; under 3 MB only' },
+        contentType: { type: 'string', description: 'e.g. application/pdf' },
+        kind: { type: 'string', enum: ['lpa', 'operating_agreement', 'side_letter', 'amendment', 'other'], description: 'default other' },
+        title: { type: 'string', description: 'default the file name' },
+        effectiveDate: { type: 'string', description: 'ISO date YYYY-MM-DD the document is dated or effective' },
+      },
+    },
+  },
 ]
