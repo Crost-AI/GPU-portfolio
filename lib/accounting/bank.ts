@@ -5,6 +5,8 @@
 
 import { roundCents } from './ledger'
 import type { Posting } from './types'
+import { DEFAULT_CHART } from './chart'
+import { categorizeBankRow } from './bank-categorize'
 
 export interface ParsedTxn {
   date: string        // ISO YYYY-MM-DD
@@ -368,49 +370,15 @@ export interface Category {
   confidence: 'high' | 'low'
 }
 
-const RULES: { re: RegExp; accountCode: string; sourceType: string; label: string }[] = [
-  { re: /capital call|drawdown|contribution|subscription/i, accountCode: '3100', sourceType: 'capital_call', label: 'Capital call' },
-  { re: /distribution|redemption/i, accountCode: '3100', sourceType: 'distribution', label: 'Distribution' },
-  // An escrow release CLEARS the receivable booked at exit — it is not new income. The escrow
-  // receipt recorded on the holding posts that (Dr cash, Cr 1350), so this row is flagged as an
-  // escrow release and LINKED to the receipt's entry; posting it to 1350 itself is refused
-  // (ESCROW_VIA_HOLDING), or the receivable would clear twice.
-  { re: /escrow|holdback/i, accountCode: '1350', sourceType: 'realized_gain', label: 'Escrow release — link it to the receipt on the holding' },
-  { re: /management fee|mgmt fee/i, accountCode: '5000', sourceType: 'management_fee', label: 'Management fee' },
-  { re: /audit|legal|tax|accounting|admin|filing|fund expense|organization/i, accountCode: '5100', sourceType: 'partnership_expense', label: 'Partnership expense' },
-  // Interest/dividend is handled before this list (direction-aware: income on an
-  // inflow, expense on an outflow).
-]
-
 /**
- * Suggest the non-cash account + source type for a transaction. Keyword rules
- * first; otherwise fall back by direction (inflow → unallocated LP capital as a
- * likely call; outflow → partnership expense), flagged low-confidence for review.
+ * The fund-chart suggestion, for callers that have no entity chart to hand. Anything that books
+ * a real entity should call `categorizeBankRow` (bank-categorize.ts) with THAT entity's chart:
+ * the codes below mean other things on a management company's or a GP entity's chart.
  */
 export function suggestCategory(t: ParsedTxn): Category {
-  // Match against the description AND the activity/type column — brokerage feeds
-  // put the meaningful keyword (e.g. "Interest Income") in a separate Activity
-  // column while the description is just the counterparty name.
-  const text = `${t.description || ''} ${t.activity || ''}`
-  // Interest/dividend: income when received (inflow), expense when paid (outflow,
-  // e.g. brokerage margin interest → the dedicated 5300 Interest expense account).
-  if (/interest|dividend/i.test(text)) {
-    return t.amount >= 0
-      ? (/dividend/i.test(text)
-          // Two K-1 boxes, so two accounts. The word in the bank line is the only signal there
-          // is at this point, and it is a better one than lumping both into interest.
-          ? { accountCode: '4130', sourceType: 'income', label: 'Dividend income', confidence: 'high' }
-          : { accountCode: '4100', sourceType: 'income', label: 'Interest income', confidence: 'high' })
-      : { accountCode: '5300', sourceType: 'partnership_expense', label: 'Interest expense', confidence: 'high' }
-  }
-  for (const r of RULES) {
-    if (r.re.test(text)) {
-      return { accountCode: r.accountCode, sourceType: r.sourceType, label: r.label, confidence: 'high' }
-    }
-  }
-  return t.amount >= 0
-    ? { accountCode: '3100', sourceType: 'capital_call', label: 'Unclassified inflow', confidence: 'low' }
-    : { accountCode: '5100', sourceType: 'partnership_expense', label: 'Unclassified expense', confidence: 'low' }
+  const c = categorizeBankRow(t, { chart: DEFAULT_CHART })
+  // The fund chart has an account for every rule and both fallbacks, so this is never null.
+  return { accountCode: c.accountCode ?? (t.amount >= 0 ? '3100' : '5100'), sourceType: c.sourceType, label: c.label, confidence: c.confidence }
 }
 
 /**

@@ -5,7 +5,9 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { accountIdByCode, persistEntry } from '@/lib/accounting/persist'
-import { bankEntryPostings, suggestCategory } from '@/lib/accounting/bank'
+import { bankEntryPostings } from '@/lib/accounting/bank'
+import { categorizeBankRow, categorizationRecord, type CategorizationRecord } from '@/lib/accounting/bank-categorize'
+import { loadCategorizeContext } from '@/lib/accounting/bank-categorize-context'
 import { loadQuickBooksCashEntries, quickBooksCandidates, quickBooksClaimHash, quickBooksAlreadyClaimed } from '@/lib/accounting/bank-quickbooks-match'
 import { vendorResolver } from '@/lib/accounting/vendors'
 import { reviewKind } from '@/lib/accounting/bank-review'
@@ -38,10 +40,11 @@ export async function POST(req: NextRequest) {
   const codes = await accountIdByCode(admin, gate.fundId, group)
   const cashId = codes.get('1000')
   if (!cashId) return NextResponse.json({ error: 'Cash account is missing' }, { status: 400 })
-  const row = { date: t.txn_date, amount: Number(t.amount), description: t.description ?? '', counterparty: t.counterparty }
+  const row = { date: t.txn_date, amount: Number(t.amount), description: t.description ?? '', counterparty: t.counterparty, activity: t.raw?.activity }
   let entryId: string
   let draft = false
   let category: string | null = null
+  let categorization: CategorizationRecord | null = null
   if (body.action === 'link') {
     if (kind === 'investment') {
       let owned
@@ -65,12 +68,18 @@ export async function POST(req: NextRequest) {
       entryId = target.id
     }
   } else {
-    const cat = suggestCategory(row)
+    let cat
+    try { cat = categorizeBankRow(row, await loadCategorizeContext(admin, gate.fundId, group)) }
+    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 500 }) }
+    // Never draft against cash on both sides — that entry nets to zero and looks fine.
+    const otherId = cat.accountCode ? codes.get(cat.accountCode) : undefined
+    if (!otherId) return NextResponse.json({ error: "No account in this entity's chart fits this transaction. Add an income or expense account under Admin → Chart of accounts." }, { status: 400 })
     category = cat.accountCode
+    categorization = categorizationRecord(cat)
     const result = await persistEntry(admin, gate.fundId, group, user.id, {
       fundId: gate.fundId, entryDate: row.date, memo: row.description || cat.label,
       sourceType: cat.sourceType, vendorId: await vendorResolver(admin, gate.fundId)(row.counterparty),
-      postings: bankEntryPostings(row.amount, cashId, codes.get(cat.accountCode) ?? cashId),
+      postings: bankEntryPostings(row.amount, cashId, otherId),
     }, 'draft')
     if ('error' in result) return NextResponse.json(result, { status: 400 })
     entryId = result.entryId
@@ -85,6 +94,7 @@ export async function POST(req: NextRequest) {
       quickbooksReview: kind === 'quickbooks' && !draft,
       investmentReview: kind === 'investment' && !draft,
       quickbooksCashAmount: kind === 'quickbooks' && !draft ? row.amount : null,
+      ...(categorization ? { categorization } : {}),
     },
   }).eq('id', t.id).eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
     .eq('status', 'unmatched').is('journal_entry_id', null).select('id')

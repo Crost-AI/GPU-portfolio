@@ -34,6 +34,11 @@ function seed(entries: any[], extra: Record<string, any[]> = {}, before?: any) {
     journal_entries: entries.map(({ _cash, ...e }) => e),
     journal_postings: entries.map(e => ({ journal_entry_id: e.id, book: 'actual', fund_id: 'f', account_id: 'cash', amount: e._cash })),
     bank_transactions: [],
+    chart_of_accounts: [
+      { id: 'cash', fund_id: 'f', vehicle_id: 'v', code: '1000', name: 'Cash', type: 'asset', subtype: 'cash' },
+      { id: 'lp', fund_id: 'f', vehicle_id: 'v', code: '3100', name: "Partners' capital — LP (unallocated)", type: 'equity', subtype: 'lp_capital' },
+      { id: 'expense', fund_id: 'f', vehicle_id: 'v', code: '5100', name: 'Partnership expenses', type: 'expense', subtype: 'partnership_expense' },
+    ],
     investment_transactions: entries.filter(e => String(e.source_ref).startsWith('txn:')).map(e => ({ id: e.id, fund_id: 'f' })),
     ...extra,
   }, {

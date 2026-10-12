@@ -21,6 +21,7 @@ import { loadOwnedCashEntries, ownedCandidates } from '@/lib/accounting/investme
 import { entryCarriesInvestments, BANK_ROW_IS_AN_INVESTMENT } from '@/lib/accounting/ownership'
 import { loadMayTouchInvestments, NEEDS_INVESTMENTS_WRITE } from '@/lib/accounting/investment-access'
 import { loadQuickBooksCashEntries, quickBooksCandidates, quickBooksAlreadyClaimed, readAll } from '@/lib/accounting/bank-quickbooks-match'
+import { categorizationRecord } from '@/lib/accounting/bank-categorize'
 
 // GET — list a vehicle's staged bank transactions.
 export async function GET(req: NextRequest) {
@@ -137,6 +138,8 @@ export async function GET(req: NextRequest) {
       entry_is_split: split,
       settled_lp_entity_id: lpEntityId,
       settled_lp_name: lpEntityId ? names.get(lpEntityId) ?? null : null,
+      // Who chose the account and why — so a weak guess can be told apart from a firm one.
+      categorization: r.raw?.categorization ?? null,
     }
   }))
 }
@@ -321,7 +324,10 @@ export async function POST(req: NextRequest) {
     await admin.from('journal_postings' as any)
       .update({ account_id: newAccountId, lp_entity_id: newLpEntityId })
       .eq('id', nonCash[0].id)
-    await admin.from('bank_transactions' as any).update({ suggested_account_code: code }).eq('id', id).eq('fund_id', gate.fundId)
+    // Marked as a person's choice: the AI pass leaves it alone, and the next import learns from it.
+    await admin.from('bank_transactions' as any)
+      .update({ suggested_account_code: code, raw: { ...((txn as any).raw ?? {}), categorization: categorizationRecord({ by: 'user', confidence: 'high', reason: 'Chosen by hand' }) } })
+      .eq('id', id).eq('fund_id', gate.fundId)
     return NextResponse.json({ ok: true, suggested_account_code: code })
   }
 
