@@ -17,6 +17,7 @@ interface AccessEvent {
   target_type: string
   target_id: string | null
   target_title: string | null
+  metadata?: Record<string, unknown> | null
   lp_account_id: string | null
   auth_user_id: string | null
   lp_investor_id: string | null
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
 
   const { data: rawEvents, error } = await (admin as any)
     .from('lp_access_events')
-    .select('id, created_at, event_type, target_type, target_id, target_title, lp_account_id, auth_user_id, lp_investor_id')
+    .select('id, created_at, event_type, target_type, target_id, target_title, lp_account_id, auth_user_id, lp_investor_id, metadata')
     .eq('fund_id', fundId)
     .gte('created_at', cutoff)
     .order('created_at', { ascending: false })
@@ -128,6 +129,7 @@ export async function GET(req: NextRequest) {
       personEmail: acct?.email ?? null,
       personKind: acct?.kind ?? null,
       investorName: e.lp_investor_id ? investorMap.get(e.lp_investor_id) ?? null : null,
+      source: typeof e.metadata?.source === 'string' ? e.metadata.source : null,
     }
   })
 

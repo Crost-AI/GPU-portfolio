@@ -552,7 +552,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/pending-actions/[id]/reject': 'Domain resolved from the row; write enforced in-handler.',
 
   'api/mcp': 'MCP: authenticates by API key/OAuth token; gated per tool by domain.',
-  'api/agent/reports/[token]': 'Signed, one-hour link an agent tool issued (lib/agent/report-links.ts); re-checks the member\'s live membership, lp_capital grant and entities in-handler.',
+  'api/agent/reports/[token]': 'Signed, one-hour link an agent tool issued (lib/agent/report-links.ts); re-checks the member\'s live membership, lp_capital grant and entities in-handler; an investor connector link (portal_statement) re-checks the LP account and the fund\'s portal and connector switches instead.',
   'api/accounting/mcp': 'MCP (legacy path): as api/mcp.',
   'api/agent': 'Agent REST: as api/mcp.',
 
@@ -587,6 +587,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/portal/activate': 'LP portal: invite activation.',
   'api/portal/analyst': 'LP portal: resolveLpAccess.',
   'api/portal/authorized-users': 'LP portal: resolveLpAccess.',
+  'api/portal/connections': 'LP portal: resolveLpAccess; only the signed-in person\'s own investor-connector tokens.',
   'api/portal/contact': 'LP portal: resolveLpAccess.',
   'api/portal/documents': 'LP portal: resolveLpAccess.',
   'api/portal/documents/[id]': 'LP portal: resolveLpAccess.',
@@ -594,6 +595,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/portal/letters/[id]': 'LP portal: resolveLpAccess.',
   'api/portal/letters/[id]/pdf': 'LP portal: resolveLpAccess.',
   'api/portal/me': 'LP portal: resolveLpAccess.',
+  'api/portal/mcp': 'Investor connector: authenticates by an OAuth token bound to the portal audience and one fund; re-checks the LP account and the fund\'s portal and connector switches on every call (lib/portal/principal.ts).',
   'api/portal/messages': 'LP portal: resolveLpAccess.',
   'api/portal/notices': 'LP portal: resolveLpAccess.',
   'api/portal/notices/ack': 'LP portal: resolveLpAccess.',

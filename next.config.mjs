@@ -52,7 +52,8 @@ const nextConfig = {
       },
       {
         source: '/.well-known/oauth-protected-resource/:path*',
-        destination: '/api/oauth/metadata/protected-resource',
+        // The probed path says WHICH resource: /api/mcp (the fund) or /api/portal/mcp (investors).
+        destination: '/api/oauth/metadata/protected-resource?path=:path*',
       },
     ]
   },

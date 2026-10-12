@@ -12,6 +12,10 @@ import { isExpiredReportLink, verifyReportLink } from '@/lib/agent/report-links'
 import { carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { listVehicles } from '@/lib/accounting/load'
 import { rateLimit } from '@/lib/rate-limit'
+import { withChangeSource } from '@/lib/audit/source'
+import { logLpAccessEvent } from '@/lib/lp-access-log'
+import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
+import { PortalError, portalStatementInvestors } from '@/lib/portal/service'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -35,6 +39,10 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
   if (limited) return limited
 
   const admin = createAdminClient()
+  // The investor connector's link: an LP's own statement. Re-checked as an investor, never as a
+  // fund member, and recorded in the LP access log as a download through MCP.
+  if (claims.kind === 'portal_statement') return withChangeSource('mcp', () => portalStatement(admin, claims.fundId, claims.userId))
+
   const { data: membership } = await admin
     .from('fund_members')
     .select('role')
@@ -91,6 +99,39 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
       'Content-Type': 'application/pdf',
       'Content-Disposition': `inline; filename="${result.fileName.replace(/"/g, '')}"`,
       // A bearer URL: keep it out of shared caches and out of the Referer of anything it links to.
+      'Cache-Control': 'private, no-store',
+      'Referrer-Policy': 'no-referrer',
+    },
+  })
+}
+
+async function portalStatement(admin: ReturnType<typeof createAdminClient>, fundId: string, userId: string) {
+  if (!(await lpConnectorEnabled(admin, fundId))) return notFound()
+  const principal = await connectorPrincipal(admin, userId, fundId)
+  if (!principal) return notFound()
+  let investorIds: string[]
+  try {
+    investorIds = await portalStatementInvestors(admin, principal, fundId)
+  } catch (e) {
+    if (e instanceof PortalError) return notFound()
+    throw e
+  }
+  let result: { pdf: Buffer; fileName: string } | null
+  try {
+    result = await generateLiveInvestorReportPdf(admin, { fundId, investorIds })
+  } catch (e) {
+    console.error('[agent/reports] portal_statement', e)
+    return NextResponse.json({ error: 'This document could not be generated. Try again, or ask for a new link.' }, { status: 500 })
+  }
+  if (!result) return notFound()
+  await logLpAccessEvent(admin, {
+    fundId, lpAccountId: principal.lpAccountId, authUserId: userId, lpInvestorId: investorIds[0] ?? null,
+    eventType: 'download', targetType: 'snapshot', targetTitle: result.fileName, metadata: { investor_ids: investorIds, format: 'pdf', live: true },
+  })
+  return new NextResponse(new Uint8Array(result.pdf), {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${result.fileName.replace(/"/g, '')}"`,
       'Cache-Control': 'private, no-store',
       'Referrer-Policy': 'no-referrer',
     },

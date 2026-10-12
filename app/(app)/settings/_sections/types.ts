@@ -63,6 +63,7 @@ export interface SettingsData {
   dealsDefaultVehicleId: string | null
   hasSubmissionToken: boolean
   lpPortalEnabled: boolean
+  lpAgentEnabled?: boolean
 }
 
 export type Saved = () => void

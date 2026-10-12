@@ -114,3 +114,21 @@ describe('a token that claimed no resource', () => {
     expect(await resolveAgentAuth(admin, bearer('mcp_at_legacy'))).not.toBeNull()
   })
 })
+
+describe('the investor connector boundary', () => {
+  it('refuses an investor token at the fund MCP and at /api/v1', async () => {
+    issue('mcp_at_investor', 'https://reporting.test/api/portal/mcp')
+    expect(await resolveAgentAuth(admin, bearer('mcp_at_investor'))).toBeNull()
+    await expect(resolveV1Principal(admin, bearer('mcp_at_investor'))).rejects.toThrow(V1PrincipalError)
+  })
+
+  it('accepts only an investor token there: never a fund token, never one that claimed no resource', async () => {
+    const { resolveAccessToken } = await import('@/lib/oauth/store')
+    issue('mcp_at_investor', 'https://reporting.test/api/portal/mcp')
+    issue('mcp_at_agent', 'https://reporting.test/api/mcp')
+    issue('mcp_at_legacy', null)
+    expect((await resolveAccessToken(admin, 'mcp_at_investor', 'portal'))?.fundId).toBe('fund-1')
+    expect(await resolveAccessToken(admin, 'mcp_at_agent', 'portal')).toBeNull()
+    expect(await resolveAccessToken(admin, 'mcp_at_legacy', 'portal')).toBeNull()
+  })
+})

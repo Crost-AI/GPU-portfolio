@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { currentChangeSource } from '@/lib/audit/source'
 
-export type LpEventType = 'login' | 'view' | 'download' | 'upload'
-export type LpTargetType = 'portal' | 'snapshot' | 'letter' | 'document'
+export type LpEventType = 'login' | 'view' | 'download' | 'upload' | 'acknowledge' | 'message'
+export type LpTargetType = 'portal' | 'snapshot' | 'letter' | 'document' | 'capital_call'
 
 export interface LpAccessEventInput {
   fundId: string
@@ -36,7 +37,8 @@ export async function logLpAccessEvent(
       target_type: input.targetType,
       target_id: input.targetId ?? null,
       target_title: input.targetTitle ?? null,
-      metadata: input.metadata ?? {},
+      // Which way the LP came in: the web portal, or the investor connector (lib/audit/source.ts).
+      metadata: { source: currentChangeSource(), ...(input.metadata ?? {}) },
     })
   } catch (e) {
     console.error('[logLpAccessEvent] failed:', (e as Error)?.message ?? e)

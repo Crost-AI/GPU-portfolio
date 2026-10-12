@@ -4,7 +4,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { getClient, redirectUriAllowed, issueAuthorizationCode, grantableScope } from '@/lib/oauth/store'
 import { canWriteAnywhere, loadAccessContext } from '@/lib/access/effective'
 import { agentApiEnabled } from '@/lib/oauth/enabled'
-import { issuerFor } from '@/lib/oauth/metadata'
+import { issuerFor, resourceFor, PORTAL_MCP_PATH } from '@/lib/oauth/metadata'
+import { audienceOf } from '@/lib/oauth/audience'
+import { connectorPrincipal, lpConnectorEnabled, lpGrantableScope } from '@/lib/portal/principal'
 import { createFund, fundCreationRefusal } from '@/lib/onboarding/create-fund'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -58,6 +60,31 @@ export async function POST(req: NextRequest) {
 
   if (!codeChallenge) {
     return NextResponse.json({ error: 'code_challenge is required (PKCE S256)' }, { status: 400 })
+  }
+
+  // The investor connector. Decided on investor grounds alone: the code is for the signed-in
+  // person's own portal in one fund they invest in, so a `investor: true` flag from the form opens
+  // nothing they couldn't already see on the web. The resource is forced to the investor endpoint,
+  // so the token can never open the fund's boundaries (lib/oauth/audience.ts).
+  if (audienceOf(resource) === 'portal' || body.investor === true) {
+    const fundId = str(body.fund_id)
+    if (!fundId) return NextResponse.json({ error: 'Choose a fund to connect.' }, { status: 400 })
+    if (!(await lpConnectorEnabled(admin, fundId))) {
+      return NextResponse.json({ error: "This fund hasn't turned on connecting an assistant to the investor portal." }, { status: 403 })
+    }
+    if (!(await connectorPrincipal(admin, user.id, fundId, user.email))) {
+      return NextResponse.json({ error: 'You have no active investment in this fund.' }, { status: 403 })
+    }
+    const code = await issueAuthorizationCode(admin, {
+      clientId,
+      userId: user.id,
+      fundId,
+      redirectUri,
+      scope: lpGrantableScope(requestedScope),
+      codeChallenge,
+      resource: resourceFor(req, PORTAL_MCP_PATH),
+    })
+    return NextResponse.json({ redirect: withParams(redirectUri, { code, state, iss: issuerFor(req) }) })
   }
 
   let { data: membership } = await admin

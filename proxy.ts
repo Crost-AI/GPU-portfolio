@@ -203,7 +203,12 @@ export async function proxy(request: NextRequest) {
   // page are the same bytes for every caller, so there is no LP/GP question to ask —
   // and asking it would redirect an LP-only user's /sw.js to /portal/overview, which
   // the worker rejects on MIME type. It also saves two queries per shell fetch.
-  if (user && !isApiRoute && !isAuthRoute && !isPublicTokenRoute && !isSetupRoute && !isOAuthDiscovery && !isPwaShell) {
+  //
+  // The OAuth consent screen is outside it too: an investor connecting an assistant to their portal
+  // (app/api/portal/mcp) is an LP-only user on /oauth/authorize, and must not be sent to the portal
+  // midway. The page decides which consent applies, and refuses anyone it doesn't fit.
+  const isOAuthConsent = pathname.startsWith('/oauth/')
+  if (user && !isApiRoute && !isAuthRoute && !isPublicTokenRoute && !isSetupRoute && !isOAuthDiscovery && !isPwaShell && !isOAuthConsent) {
     const [{ data: membership }, { data: lpAccount }] = await Promise.all([
       supabase.from('fund_members').select('fund_id').eq('user_id', user.id).maybeSingle(),
       supabase.from('lp_accounts').select('status').eq('auth_user_id', user.id).maybeSingle(),

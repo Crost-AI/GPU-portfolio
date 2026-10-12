@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { protectedResourceMetadata } from '@/lib/oauth/metadata'
+import { protectedResourceMetadata, resourcePathFor } from '@/lib/oauth/metadata'
 
 /**
  * RFC 9728 Protected Resource Metadata.
@@ -15,7 +15,8 @@ import { protectedResourceMetadata } from '@/lib/oauth/metadata'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-  return NextResponse.json(protectedResourceMetadata(req), {
+  // /.well-known/oauth-protected-resource/api/portal/mcp describes the investor connector.
+  return NextResponse.json(protectedResourceMetadata(req, resourcePathFor(req.nextUrl.searchParams.get('path'))), {
     headers: {
       'Cache-Control': 'public, max-age=300',
       'Access-Control-Allow-Origin': '*',

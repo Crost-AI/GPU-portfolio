@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { tokenAllowedAt, type OAuthAudience } from './audience'
+import { audienceOf, tokenAllowedAt, type OAuthAudience } from './audience'
 
 /**
  * OAuth 2.1 authorization-server primitives for the MCP endpoint.
@@ -387,6 +387,24 @@ export async function rotateRefreshToken(
   }
 
   if (new Date(row.expires_at).getTime() < Date.now()) return null
+
+  // An investor connector token: the holder is an LP, not a fund member, so the check is theirs —
+  // still an active LP investing in this fund, and the fund's connector still on. The scope is the
+  // investor's own (read, or read and act), carried forward as it was granted.
+  if (audienceOf(row.resource) === 'portal') {
+    const { connectorPrincipal, lpConnectorEnabled } = await import('@/lib/portal/principal')
+    const stillAllowed = (await lpConnectorEnabled(admin, row.fund_id)) && !!(await connectorPrincipal(admin, row.user_id, row.fund_id))
+    if (!stillAllowed) {
+      await revokeAllForClient(admin, row.client_id, row.user_id)
+      return null
+    }
+    const issued = await issueTokens(admin, { clientId: row.client_id, userId: row.user_id, fundId: row.fund_id, scope: row.scope, resource: row.resource })
+    await (admin as any)
+      .from('oauth_tokens')
+      .update({ revoked_at: new Date().toISOString(), last_used_at: new Date().toISOString() })
+      .eq('id', row.id)
+    return issued
+  }
 
   // The user may have been demoted or removed from the fund since the token was
   // issued. Re-derive the scope ceiling from their CURRENT role rather than

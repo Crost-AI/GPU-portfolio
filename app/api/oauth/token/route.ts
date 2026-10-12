@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { audienceOf } from '@/lib/oauth/audience'
 import {
   getClient,
   clientSecretValid,
@@ -86,7 +87,14 @@ export async function POST(req: NextRequest) {
 
     // Last gate: the fund may have switched the agent surface off between consent
     // and exchange.
-    if (!(await agentApiEnabled(admin, consumed.fundId))) {
+    if (audienceOf(consumed.resource) === 'portal') {
+      // The investor connector has its own switch, and its own identity: still an active investor
+      // in this fund, with the fund's portal and connector both on.
+      const { connectorPrincipal, lpConnectorEnabled } = await import('@/lib/portal/principal')
+      if (!(await lpConnectorEnabled(admin, consumed.fundId)) || !(await connectorPrincipal(admin, consumed.userId, consumed.fundId))) {
+        return err('invalid_grant', 'The investor connector is not available for this fund', 403)
+      }
+    } else if (!(await agentApiEnabled(admin, consumed.fundId))) {
       return err('invalid_grant', 'Agent access is disabled for this fund', 403)
     }
 
