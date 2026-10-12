@@ -7,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordAudit } from '@/lib/audit/events'
 import { vehicleIdByName } from './vehicle-id'
 import { accountIdByCode } from './persist'
-import { ESCROW_VIA_HOLDING } from './bank'
+import { ESCROW_VIA_HOLDING, counterPosting } from './bank'
 import { ESCROW_CODE } from './adopt'
 import { closedPeriodRanges, dateInAnyClosedPeriod } from './periods'
 import { ACTUAL_BOOK } from './books'
@@ -81,7 +81,7 @@ async function loadActionableTxn(
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   const { data: txn } = await admin
     .from('bank_transactions' as any)
-    .select('id, journal_entry_id, status, raw')
+    .select('id, journal_entry_id, status, amount, raw')
     .eq('id', id)
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
@@ -146,15 +146,15 @@ export async function setBankTransactionAccount(
   const cashId = codes.get('1000')
   const { data: postings } = await admin
     .from('journal_postings' as any)
-    .select('id, account_id')
+    .select('id, account_id, amount')
     .eq('book', ACTUAL_BOOK)
     .eq('journal_entry_id', entryId)
-  const nonCash = ((postings as any[]) ?? []).filter(p => p.account_id !== cashId)
-  if (nonCash.length !== 1) return { error: 'This entry has a custom allocation — edit it in the Journal.', status: 400 }
+  const counter = counterPosting((postings as any[]) ?? [], cashId, Number(txn.amount))
+  if (!counter) return { error: 'This entry has a custom allocation — edit it in the Journal.', status: 400 }
 
   await admin.from('journal_postings' as any)
     .update({ account_id: newAccountId, lp_entity_id: newLpEntityId })
-    .eq('id', nonCash[0].id)
+    .eq('id', counter.id)
   await admin.from('bank_transactions' as any).update({ suggested_account_code: code }).eq('id', id).eq('fund_id', fundId)
   return { ok: true, suggested_account_code: code }
 }
