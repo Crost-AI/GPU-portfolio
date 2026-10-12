@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolvePageAccess, canViewPage } from '@/lib/access/page-gate'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 import type { FeatureKey } from '@/lib/types/features'
+import type { Domain } from '@/lib/access/domains'
 import { canSeeVehicle } from '@/lib/access/scope'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -75,14 +76,14 @@ export async function requireAccountingAccess(): Promise<{ fundId: string; role:
  */
 export async function requireVehicleAccess(
   rawParam: string,
-  opts: { feature?: FeatureKey } = {},
+  opts: { feature?: FeatureKey; domain?: Domain } = {},
 ): Promise<{ fundId: string; role: string; vehicle: string; vehicleId: string | null; kind: string | null; active: boolean }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth')
 
   const page = await resolvePageAccess(user.id)
-  if (!page || !canViewPage(page, 'accounting', opts.feature)) redirect('/dashboard')
+  if (!page || !canViewPage(page, opts.domain ?? 'accounting', opts.feature)) redirect('/dashboard')
 
   const resolved = await resolveVehicleParam(page.fundId, rawParam)
 

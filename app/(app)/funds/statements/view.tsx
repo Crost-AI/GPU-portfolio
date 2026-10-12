@@ -74,7 +74,7 @@ export function StatementsView() {
   const currency = useCurrency()
   // A tax basis is the ledger plus the book-to-tax adjusting entries the tax run writes. With tax
   // reporting off there are none, so the option would read identically to book — hide it.
-  const taxOn = useCanRead('accounting', 'tax_reporting')
+  const taxOn = useCanRead('tax')
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
   const [data, setData] = useState<Data | null>(null)
   const [loading, setLoading] = useState(true)

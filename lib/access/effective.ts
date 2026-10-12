@@ -63,8 +63,14 @@ export function effectiveAccess(ctx: AccessContext, domain: Domain, feature?: Fe
   // plain member does not). Grants never widen it past read.
   if (ctx.role === 'viewer') return 'read'
 
-  // What the fund's own switch allows this member, before any implication.
-  const own = level === 'admin' ? 'none' : (ctx.grants[domain] ?? ctx.defaults[domain] ?? 'none')
+  // A domain that restates another's data is closed to anyone who cannot read that one, whatever
+  // its own grant says. Only `tax` has this, over `accounting`.
+  if (meta.requires && !hasAccess(ctx, meta.requires, 'read')) return 'none'
+
+  // What the fund's own switch allows this member, before any implication. A domain newer than
+  // the fund's default rows falls back to the domain it was split from (`defaultFrom`).
+  const fallback = meta.defaultFrom ? (ctx.grants[meta.defaultFrom] ?? ctx.defaults[meta.defaultFrom]) : undefined
+  const own = level === 'admin' ? 'none' : (ctx.grants[domain] ?? ctx.defaults[domain] ?? fallback ?? 'none')
 
   // …and what another domain confers on this one. Only lp_capital has this, and only from
   // accounting: the partner capital accounts ARE the ledger, so granting the books grants

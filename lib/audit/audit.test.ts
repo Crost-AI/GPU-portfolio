@@ -18,7 +18,7 @@ describe('approving a close', () => {
 
 describe('reading the audit trail', () => {
   const ctx = (grants: Record<string, string>) => ({
-    fundId: 'f', userId: 'u', role: 'member', features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps: 'everyone', lp_tracking: 'everyone', gp_economics: 'everyone' }, grants, defaults: {}, vehicles: { all: true, ids: [] },
+    fundId: 'f', userId: 'u', role: 'member', features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps: 'everyone', lp_tracking: 'everyone', gp_economics: 'everyone', tax_reporting: 'everyone' }, grants, defaults: {}, vehicles: { all: true, ids: [] },
   }) as any
 
   it('keeps K-1 events from a caller without the carry; partner events follow the books', () => {
@@ -28,6 +28,16 @@ describe('reading the audit trail', () => {
     expect(books('commitment.edit')).toBe(true)
     expect(books('k1.finalize')).toBe(false)
     expect(visibleTo(ctx({ accounting: 'read', gp_economics: 'read' }))('k1.finalize')).toBe(true)
+  })
+
+  it('shows tax and K-1 events only to the Tax area', () => {
+    // Tax falls back to the accounting grant until the fund has a tax default (defaultFrom).
+    expect(visibleTo(ctx({ accounting: 'read' }))('tax.adjustments')).toBe(true)
+    // An explicit "none" for Tax hides both, even with the books and the carry.
+    const noTax = visibleTo(ctx({ accounting: 'read', gp_economics: 'read', tax: 'none' }))
+    expect(noTax('tax.adjustments')).toBe(false)
+    expect(noTax('k1.finalize')).toBe(false)
+    expect(noTax('entry.void')).toBe(true)
   })
 
   it('writes a CSV an auditor can open, quoting what needs quoting', () => {

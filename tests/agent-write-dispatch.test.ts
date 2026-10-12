@@ -23,6 +23,11 @@ vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => store.admin })
 vi.mock('@/lib/oauth/enabled', () => ({ agentApiEnabled: async () => true }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => null }))
 vi.mock('@/lib/accounting/chart-add', () => ({ addChartAccount: (...args: any[]) => (addChartAccount as any)(...args) }))
+const addPartner = vi.fn(async () => ({ entityId: 'lp-1', commitmentId: 'c-1' }))
+vi.mock('@/lib/accounting/add-partner', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/accounting/add-partner')>()),
+  addPartner: (...args: any[]) => (addPartner as any)(...args),
+}))
 vi.mock('@/lib/accounting/api-keys', async importOriginal => {
   const credential = (req: Request) =>
     req.headers.get('authorization') ? { fundId: 'fund-1', keyId, userId: 'user-me', role: access.role, scopes } : null
@@ -75,6 +80,7 @@ beforeEach(() => {
   keyId = 'oauth:claude'
   access = member({ accounting: 'write' })
   addChartAccount.mockClear()
+  addPartner.mockClear()
   store = memoryAdmin({
     fund_members: [{ fund_id: 'fund-1', user_id: 'user-me', role: 'member' }],
     fund_vehicles: [{ id: 'v1', fund_id: 'fund-1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
@@ -179,6 +185,50 @@ describe('a script (API key over /api/agent)', () => {
     const reused = await callAgent('add_account', { code: '6200', name: 'Audit', type: 'expense' }, { 'idempotency-key': 'k1' })
     expect(reused.status).toBe(400)
     expect(addChartAccount).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('admin-only operations (lib/access/admin-only.ts)', () => {
+  const partner = { name: 'New LP', partnerClass: 'limited', commitment: 1_000_000 }
+
+  it('refuses a member’s API key outright: there is nobody to ask', async () => {
+    keyId = 'key-1'
+    const out = await callAgent('add_partner', partner)
+    expect(out.status).toBe(403)
+    expect(out.body).toMatchObject({ code: 'ADMIN_ONLY', error: 'Only an admin can add a partner and commitment.' })
+    expect(addPartner).not.toHaveBeenCalled()
+    expect(audit()).toEqual([])
+  })
+
+  it('applies an admin’s API key at once', async () => {
+    keyId = 'key-1'
+    access = member({}, 'admin')
+    const out = await callAgent('add_partner', partner)
+    expect(out.status).toBe(200)
+    expect(addPartner).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a member propose one from chat, and says an admin must approve it', async () => {
+    const staged = await callTool('add_partner', partner)
+    expect(staged.json).toMatchObject({ staged: true, next: expect.stringMatching(/admin/i) })
+
+    const approved = await callTool('approve_action', { id: staged.json.pendingActionId })
+    expect(approved.isError).toBe(true)
+    expect(approved.text).toBe('Only an admin can add a partner and commitment.')
+    expect(addPartner).not.toHaveBeenCalled()
+    expect(store.tables.pending_actions[0].status).toBe('pending')
+
+    // The member can still withdraw what they proposed.
+    const rejected = await callTool('reject_action', { id: staged.json.pendingActionId })
+    expect(rejected.json).toMatchObject({ rejected: true })
+  })
+
+  it('applies a member’s proposal once an admin approves it', async () => {
+    const staged = await callTool('add_partner', partner)
+    access = member({}, 'admin')
+    const approved = await callTool('approve_action', { id: staged.json.pendingActionId })
+    expect(approved.isError).toBe(false)
+    expect(addPartner).toHaveBeenCalledTimes(1)
   })
 })
 

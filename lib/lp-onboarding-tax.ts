@@ -64,8 +64,8 @@ export function parseTaxFormInput(raw: unknown): { input: TaxFormInput } | { err
 /** Whether this caller may write tax-form records at all. */
 export async function canRecordTaxForms(admin: SupabaseClient, fundId: string, userId: string, role: string): Promise<{ access: AccessContext; can: boolean }> {
   const access = await loadAccessContext(admin, fundId, userId, role)
-  // Tax forms are lp_capital gated on the tax_reporting feature (lib/access/route-domains.ts).
-  return { access, can: hasAccess(access, 'lp_capital', 'write', 'tax_reporting') }
+  // Tax forms belong to the Tax area (lib/access/route-domains.ts), behind its tax_reporting switch.
+  return { access, can: hasAccess(access, 'tax', 'write') }
 }
 
 /** Write the record, linked to the verified document. One row per form received; history stays. */

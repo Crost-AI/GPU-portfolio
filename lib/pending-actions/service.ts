@@ -3,6 +3,7 @@ import { recordAudit } from '@/lib/audit/events'
 import { hasAccess } from '@/lib/access/effective'
 import { isRestrictedCredential, type AnalystPrincipal } from '@/lib/ai/analyst/types'
 import { stagedAction } from './staged'
+import { adminOnlyMessage } from '@/lib/access/admin-only'
 import { AGENT_TOOL_CALL } from '@/lib/agent/tool-call-action'
 import { canSeeVehicle } from '@/lib/access/scope'
 
@@ -137,7 +138,7 @@ async function visibleToCaller(admin: SupabaseClient, principal: AnalystPrincipa
   }
 }
 
-function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow) {
+function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow, decision: 'approve' | 'reject') {
   // A restricted credential changes nothing, whatever its grants say. Checked here rather than at
   // each route so approve and reject cannot diverge, and stated as a property of the credential so
   // no request body can assert its way past it.
@@ -148,6 +149,13 @@ function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow) {
   if (!action) throw new PendingActionServiceError('Unknown pending-action type.', 400, 'UNKNOWN_ACTION_TYPE')
   if (!hasAccess(principal.access, action.domain, 'write', action.accessFeature)) {
     throw new PendingActionServiceError('You do not have current write access for this action.', 403, 'FORBIDDEN')
+  }
+  // The tier above write (lib/access/admin-only.ts): anyone with write may propose these, and only
+  // an admin may decide them. Rejecting is a decision too, so it is held to the same rule.
+  // Only APPROVING an admin-only change needs an admin. Rejecting one changes nothing, and the
+  // member who proposed it must be able to withdraw it.
+  if (decision === 'approve' && action.adminOnly && principal.role !== 'admin') {
+    throw new PendingActionServiceError(adminOnlyMessage(action.adminOnly), 403, 'ADMIN_ONLY')
   }
   return action
 }
@@ -166,7 +174,7 @@ export async function approvePendingAction(
   if (!existing || !(await visibleToCaller(admin, principal, existing))) {
     throw new PendingActionServiceError('Pending action not found.', 404, 'NOT_FOUND')
   }
-  const action = authorizeDecision(principal, existing)
+  const action = authorizeDecision(principal, existing, 'approve')
   if (existing.status === 'applied') {
     return { ok: true, replayed: true, result: existing.applied_result, action: actionDto(existing) }
   }
@@ -187,7 +195,7 @@ export async function approvePendingAction(
   if (!claimed) {
     const latest = await loadAction(admin, principal.fundId, id)
     if (latest) {
-      authorizeDecision(principal, latest)
+      authorizeDecision(principal, latest, 'approve')
       if (latest.status === 'applied') {
         return { ok: true, replayed: true, result: latest.applied_result, action: actionDto(latest) }
       }
@@ -241,7 +249,7 @@ export async function rejectPendingAction(
   if (!existing || !(await visibleToCaller(admin, principal, existing))) {
     throw new PendingActionServiceError('Pending action not found.', 404, 'NOT_FOUND')
   }
-  authorizeDecision(principal, existing)
+  authorizeDecision(principal, existing, 'reject')
   if (existing.status === 'rejected') return { ok: true, replayed: true, action: actionDto(existing) }
   if (existing.status !== 'pending') {
     throw new PendingActionServiceError('Pending action is no longer available.', 409, 'ACTION_NOT_PENDING')

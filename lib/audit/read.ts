@@ -29,7 +29,8 @@ export interface AuditRow {
  * events the carry too (`gp_economics`) — the same straddle the statements route gates in-handler.
  *
  * Two more straddles:
- *   - `tax.*` events are the tax module's (`accounting` + feature `tax_reporting`, off by default).
+ *   - `tax.*` and `k1.*` events are the Tax area's (`tax`, behind the `tax_reporting` switch, off by
+ *     default). K-1 events carry the carry too, so they also need `gp_economics`.
  *   - `pending_action.*` events carry the approved action's full `args`, and an action may belong
  *     to ANY domain (a portfolio metric, an investment, a forecast). They follow that action's own
  *     gate — `getWriteAction(actionType).domain` + `accessFeature` — and an action type the
@@ -41,9 +42,9 @@ export interface AuditRow {
 export function visibleTo(access: AccessContext) {
   const partners = hasAccess(access, 'lp_capital', 'read')
   const carry = hasAccess(access, 'gp_economics', 'read')
-  const tax = hasAccess(access, 'accounting', 'read', 'tax_reporting')
+  const tax = hasAccess(access, 'tax', 'read')
   return (action: string, details?: Record<string, unknown> | null) => {
-    if (action.startsWith('k1.')) return partners && carry
+    if (action.startsWith('k1.')) return tax && partners && carry
     if (/^(commitment|lp_position|snapshot|lp_statement|capital_call|distribution)\./.test(action)) return partners
     if (action.startsWith('tax.')) return tax
     if (action.startsWith('pending_action.')) {

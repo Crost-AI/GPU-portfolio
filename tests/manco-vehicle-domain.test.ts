@@ -181,7 +181,7 @@ describe('the manco module stands on its own grant', () => {
     // vehicle it is rendering.
     const guard = read('app/(app)/funds/guard.ts')
     const fn = guard.slice(guard.indexOf('export async function requireVehicleAccess'))
-    expect(fn).toContain("canViewPage(page, 'accounting', opts.feature)")
+    expect(fn).toContain("canViewPage(page, opts.domain ?? 'accounting', opts.feature)")
     expect(fn).toContain("canViewPage(page, 'management_company')")
     expect(fn).toContain('isManagementCompany(resolved.kind)')
     // The refusal must not be reachable around: the check sits before the only return.

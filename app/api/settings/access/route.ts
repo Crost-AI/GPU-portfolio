@@ -7,6 +7,8 @@ import { expireTag } from '@/lib/cache/tags'
 import { DOMAINS, DOMAIN_META, type Domain } from '@/lib/access/domains'
 import { allEntitiesProblem, entityGrantProblem } from '@/lib/access/entity-grants'
 import { logActivity } from '@/lib/activity'
+import { ACCESS_PRESETS, getPreset } from '@/lib/access/presets'
+import { accessExpiryProblem, normalizeExpiry } from '@/lib/access/expiry'
 
 // Per-user, per-domain access grants, and the fund's per-domain default for new members.
 //
@@ -14,6 +16,8 @@ import { logActivity } from '@/lib/activity'
 // PATCH  → { userId, domain, level }  set one member's grant
 //        | { domain, level }          set the fund default for new members
 //        | { userId, role }           change a member's role
+//        | { userId, preset }         apply a role preset: one grant per area (lib/access/presets.ts)
+//        | { userId, accessExpiresAt } end their access on a date, or null for no end date
 //
 // Admin-only: this is the control panel for who can see what, so being able to READ it already
 // tells you the shape of the fund's data. See plans/plan-access-control.md.
@@ -60,6 +64,8 @@ export async function GET() {
         entities: entityRows.filter(g => g.user_id === m.user_id).map(g => g.vehicle_id),
         // "All entities": everything, including entities created later and unassigned items.
         allEntities: (m as any).all_entities === true,
+        // When their access ends (null: no end date). Absent until 20261012160000 is pushed.
+        accessExpiresAt: ((m as any).access_expires_at as string | null | undefined) ?? null,
       }
     }),
   )
@@ -75,6 +81,7 @@ export async function GET() {
       description: DOMAIN_META[d].description,
     })),
     members: withEmail,
+    presets: ACCESS_PRESETS.map(p => ({ key: p.key, label: p.label, description: p.description })),
     entities: ((vehicles ?? []) as any[]).map(v => ({ id: v.id, name: v.name, kind: v.kind, active: v.active })),
     defaults: Object.fromEntries(
       (((defaults ?? []) as unknown) as { domain: string; level: string }[]).map(d => [d.domain, d.level]),
@@ -136,6 +143,49 @@ export async function PATCH(req: NextRequest) {
 
     expireTag('membership')
     return NextResponse.json({ ok: true })
+  }
+
+  // --- Apply a role preset: every grantable area at once ---
+  if (body?.preset !== undefined) {
+    const preset = getPreset(body.preset)
+    if (!preset) return NextResponse.json({ error: 'Unknown preset' }, { status: 400 })
+    const targetId = String(body.userId ?? '')
+    const { data: target } = await admin.from('fund_members').select('user_id, role')
+      .eq('fund_id', gate.fundId).eq('user_id', targetId).maybeSingle()
+    if (!target) return NextResponse.json({ error: 'Not a member of this fund' }, { status: 404 })
+    // An admin's grants are never read (effectiveAccess), so a preset would change nothing and
+    // suggest otherwise. Admin-only operations stay admin-only whatever a preset grants.
+    if ((target as { role: string }).role !== 'member') {
+      return NextResponse.json({ error: 'Presets apply to members. An admin already has every area.' }, { status: 400 })
+    }
+    const now = new Date().toISOString()
+    const rows = (Object.entries(preset.grants) as [Domain, string][])
+      .filter(([d]) => GRANTABLE.includes(d))
+      .map(([domain, level]) => ({ fund_id: gate.fundId, user_id: targetId, domain, level, updated_at: now, updated_by: user.id }))
+    const { error } = await admin.from('fund_member_access' as any).upsert(rows, { onConflict: 'fund_id,user_id,domain' })
+    if (error) return dbError(error, 'settings-access-preset')
+    logActivity(admin, gate.fundId, user.id, 'access.preset_applied', { member: targetId, preset: preset.key })
+    expireTag('domain-grants')
+    return NextResponse.json({ ok: true, grants: preset.grants })
+  }
+
+  // --- End a member's access on a date (fund_members.access_expires_at) ---
+  if (body?.accessExpiresAt !== undefined) {
+    const targetId = String(body.userId ?? '')
+    const { data: target } = await admin.from('fund_members').select('user_id, role')
+      .eq('fund_id', gate.fundId).eq('user_id', targetId).maybeSingle()
+    const problem = accessExpiryProblem({ target: target as any, expiresAt: body.accessExpiresAt })
+    if (problem) return NextResponse.json({ error: problem.error }, { status: problem.status })
+    const value = body.accessExpiresAt === null ? null : normalizeExpiry(String(body.accessExpiresAt))
+    const { error } = await admin.from('fund_members').update({ access_expires_at: value } as any)
+      .eq('fund_id', gate.fundId).eq('user_id', targetId)
+    if (error?.code === '42703') {
+      return NextResponse.json({ error: 'End dates need the latest database migration. Run supabase db push, then try again.' }, { status: 409 })
+    }
+    if (error) return dbError(error, 'settings-access-expiry')
+    logActivity(admin, gate.fundId, user.id, 'access.expiry_set', { member: targetId, accessExpiresAt: value })
+    expireTag('membership')
+    return NextResponse.json({ ok: true, accessExpiresAt: value })
   }
 
   // --- "All entities" on or off (fund_members.all_entities) ---

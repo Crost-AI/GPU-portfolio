@@ -4,7 +4,7 @@ import { resolveFundFromApiKey, authorizeToolUse, loadCredentialAccess } from '@
 import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { issuerFor } from '@/lib/oauth/metadata'
 import { AGENT_TOOLS, getTool, accessDomainFor, accessDomainForCall, accessFeatureFor } from '@/lib/accounting/agent-tools'
-import { idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
+import { AgentCallError, idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
 import { withChangeSource } from '@/lib/audit/source'
 import { hasAccess } from '@/lib/access/effective'
 import { rateLimit } from '@/lib/rate-limit'
@@ -102,6 +102,10 @@ async function handlePost(req: NextRequest) {
   } catch (e) {
     // Don't leak internals to an API-key caller — log the detail, return the message only.
     console.error('[accounting-agent]', body?.tool, e)
+    // A permission refusal is a 403, as the same operation is from the web.
+    if (e instanceof AgentCallError && e.code === 'ADMIN_ONLY') {
+      return NextResponse.json({ error: e.message, code: e.code }, { status: 403 })
+    }
     return NextResponse.json({ error: (e as Error).message }, { status: 400 })
   }
 }

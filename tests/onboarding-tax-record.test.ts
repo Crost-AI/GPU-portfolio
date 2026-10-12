@@ -75,7 +75,7 @@ describe('PATCH /api/lps/onboarding verifying a tax form', () => {
     hasAccess.mockReturnValue(true)
     const res = await PATCH(req({ lp_entity_id: 'ent-1', kind: 'tax_form', status: 'verified', tax }))
     expect(res.status).toBe(200)
-    expect(hasAccess).toHaveBeenCalledWith(expect.anything(), 'lp_capital', 'write', 'tax_reporting')
+    expect(hasAccess).toHaveBeenCalledWith(expect.anything(), 'tax', 'write')
     expect(upserted).toEqual([expect.objectContaining({ kind: 'tax_form', status: 'verified', reviewed_by: 'admin-1' })])
     expect(inserted.lp_tax_forms).toEqual([expect.objectContaining({
       fund_id: 'fund-1', lp_entity_id: 'ent-1', form_type: 'w8ben', legal_name: 'Hans Muster', tin_type: 'foreign', tin_last4: '4321',

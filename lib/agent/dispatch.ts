@@ -29,6 +29,7 @@ import {
   IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyScope,
 } from '@/lib/api-v1/idempotency'
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
+import { adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
 
 /** Which door a call came through. Recorded on every write, as `source` (lib/audit/source.ts). */
 export type AgentChannel = Extract<ChangeSource, 'mcp' | 'api'>
@@ -83,6 +84,17 @@ export function shouldStage(tool: AgentTool, input: Record<string, unknown>, aut
   return tool.scope === 'write' && isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
 }
 
+/**
+ * An admin-only operation (lib/access/admin-only.ts) from someone who is not an admin. From chat
+ * it is still staged, so they can propose it and an admin decides; from a key it is refused, since
+ * a key has no one to ask.
+ */
+function adminOnlyRefusal(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId' | 'role'>): string | null {
+  const label = adminOnlyToolLabel(tool.name, input)
+  if (!label || auth.role === 'admin' || isAssistantCredential(auth)) return null
+  return adminOnlyMessage(label)
+}
+
 /** A key the caller sent, or null when it is absent or unusable. */
 export function idempotencyKeyOf(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
@@ -128,6 +140,9 @@ export async function runAgentTool(call: AgentCall): Promise<unknown> {
     const portfolioGroup = await resolveVehicleForTool(tool, admin, auth.fundId, input.vehicle as string | undefined, access)
     return tool.handler({ admin, fundId: auth.fundId, portfolioGroup, userId: auth.userId, access, origin }, input)
   }
+
+  const refusal = adminOnlyRefusal(tool, input, auth)
+  if (refusal) throw new AgentCallError(refusal, 'ADMIN_ONLY')
 
   const scope: IdempotencyScope = { fundId: auth.fundId, clientId: auth.keyId, userId: auth.userId }
   const key = call.idempotencyKey ?? null
@@ -200,8 +215,10 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     pendingActionId: id,
     summary: preview.summary,
     preview: preview.details,
-    next:
-      'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
+    next: adminOnlyToolLabel(tool.name, input) && auth.role !== 'admin'
+      ? `Nothing has changed yet. ${adminOnlyMessage(adminOnlyToolLabel(tool.name, input)!)} ` +
+        'Tell the user it is waiting for an admin to approve, in the app or in their own chat.'
+      : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
       `Only after they confirm, call approve_action with id "${id}"; if they decline, call reject_action. ` +
       'They can also approve it in the app.',
   }

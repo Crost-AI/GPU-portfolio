@@ -46,7 +46,7 @@ export const PRODUCT_META: Record<ProductKey, ProductMeta> = {
       'Fund accounting, the management company\u2019s own books, tax reporting, GP economics and carry, and compliance.',
     order: 4,
     shipsOn: false,
-    domains: ['accounting', 'management_company', 'gp_economics', 'compliance'],
+    domains: ['accounting', 'management_company', 'tax', 'gp_economics', 'compliance'],
     features: ['accounting', 'management_company', 'tax_reporting', 'gp_economics', 'compliance'],
   },
 }

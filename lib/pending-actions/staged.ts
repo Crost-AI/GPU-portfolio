@@ -9,6 +9,7 @@
 import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
 import { getWriteAction } from './registry'
+import { ADMIN_ONLY_ACTIONS, adminOnlyToolLabel } from '@/lib/access/admin-only'
 import type { ActionDeps, PreviewResult } from './types'
 import {
   AGENT_TOOL_CALL, executeToolCall, previewToolCall, toolCallGate,
@@ -19,6 +20,8 @@ export interface StagedAction {
   accessFeature?: FeatureKey
   /** As WriteAction.entity: whether a row with no vehicle is about everyone's data. */
   entity: 'required' | 'optional' | 'none'
+  /** Set when only an admin may approve it (lib/access/admin-only.ts): what it does, for the refusal. */
+  adminOnly?: string
   preview: (deps: ActionDeps, input: any) => Promise<PreviewResult>
   execute: (deps: ActionDeps, input: any) => Promise<Record<string, unknown>>
 }
@@ -28,7 +31,12 @@ export function stagedAction(actionType: string, args: unknown): StagedAction | 
   if (actionType === AGENT_TOOL_CALL) {
     const gate = toolCallGate(args)
     if (!gate) return undefined
-    return { ...gate, entity: 'optional', preview: previewToolCall, execute: executeToolCall }
+    const a = args as { tool?: string; input?: unknown }
+    return {
+      ...gate, entity: 'optional', preview: previewToolCall, execute: executeToolCall,
+      adminOnly: adminOnlyToolLabel(String(a.tool), a.input),
+    }
   }
-  return getWriteAction(actionType)
+  const action = getWriteAction(actionType)
+  return action && { ...action, adminOnly: ADMIN_ONLY_ACTIONS[actionType] }
 }
