@@ -20,6 +20,8 @@ import { buildAllocationEntry, type AllocationBody } from './allocation-actions'
 import { importBankTransactions } from './bank-import'
 import { addChartAccount } from './chart-add'
 import { addPartner, parseAddPartnerInput } from './add-partner'
+import { postBankTransaction, setBankTransactionAccount } from './bank-actions'
+import { mayTouchInvestments } from './investment-access'
 import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerText, postLedgerText } from './text-ledger-run'
@@ -204,6 +206,18 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   book_capital_call: async ({ admin, fundId, portfolioGroup, userId }, input) => {
     const result = await bookCapitalCallFromInflow(admin, fundId, portfolioGroup, userId, String(input.bankTransactionId))
     if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  set_bank_transaction_account: async ({ admin, fundId, portfolioGroup }, input) => {
+    const result = await setBankTransactionAccount(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), input?.accountCode)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  post_bank_transaction: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
+    const result = await postBankTransaction(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), { investments: mayTouchInvestments(access) })
+    if ('error' in result) throw new Error(String(result.error))
     return result
   },
 

@@ -235,6 +235,26 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'set_bank_transaction_account',
+    description: "Re-point one drafted bank transaction's draft entry to a chart account by code (the bank page's account picker). A per-partner capital account (3100-<partner>) carries that partner onto the posting.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId', 'accountCode'],
+      properties: { bankTransactionId: { type: 'string' }, accountCode: { type: 'string' } },
+    },
+  },
+  {
+    name: 'post_bank_transaction',
+    description: "Post one drafted bank transaction's entry and mark the row reconciled (the bank page's Post). Refuses a voided entry or one dated in a closed period.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId'],
+      properties: { bankTransactionId: { type: 'string' } },
+    },
+  },
+  {
     name: 'list_bank_transactions',
     description: 'List staged bank transactions and their status (drafted / reconciled / ignored).',
     scope: 'read',
