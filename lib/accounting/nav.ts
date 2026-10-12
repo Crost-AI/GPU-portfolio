@@ -4,7 +4,7 @@
 
 import {
   Landmark, Users, ScrollText, Gauge,
-  Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp,
+  Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp, LineChart,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Domain } from '@/lib/access/domains'
@@ -110,6 +110,13 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     icon: Layers,
     desc: 'Each investment at cost and fair value, with its share of net assets.',
     hideFor: ['associate', 'manco'],
+  },
+  {
+    href: '/funds/performance',
+    label: 'Fund performance',
+    icon: LineChart,
+    desc: 'The LP-only cash flows through a date, with net IRR, TVPI, DPI and RVPI — the quarterly performance report, as a PDF.',
+    hideFor: ['associate', 'manco', 'individual'],
   },
   {
     href: '/funds/forecast',
