@@ -7,6 +7,7 @@
 // passed in as a predicate, so the same catalog filters to a member's own areas on the server and
 // shows everything where there is no member (the plugin README, the Support page).
 
+import { SETUP_PROMPT } from '@/lib/onboarding/setup-prompt'
 import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
 
@@ -126,6 +127,14 @@ export interface PromptTemplate {
 const opt = (v: string | undefined, f: (s: string) => string) => (v && v.trim() ? f(v.trim()) : '')
 
 export const PROMPT_TEMPLATES: PromptTemplate[] = [
+  {
+    name: 'set_up_fund',
+    title: 'Set up this fund',
+    description: 'Products, entities, the team and their access, and authorized senders, from chat, applied in one step once you confirm. Admins only.',
+    arguments: [],
+    domain: 'admin',
+    text: () => SETUP_PROMPT,
+  },
   {
     name: 'get_started',
     title: 'Get started',

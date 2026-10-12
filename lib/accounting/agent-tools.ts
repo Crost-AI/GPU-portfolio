@@ -46,10 +46,13 @@ import { CONSTRUCTION_TOOL_MANIFEST } from '@/lib/agent/construction-tools-manif
 import { CONSTRUCTION_HANDLERS } from '@/lib/agent/construction-tools'
 import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
+import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
+import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
 import { readBulkScope, runBulkDraftAction } from './journal-bulk'
+import { addEntityDocument, entityDocumentUploadUrl, listEntityDocuments } from '@/lib/entity-documents/agent'
 
 export { resolveVehicle } from './vehicle-resolver'
 
@@ -289,6 +292,22 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const txns: BankTxnState[] = ((data as any[]) ?? []).map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled' }))
     return summarizeBankRec(txns, ledgerCashBalance)
   },
+
+  list_entity_documents: async ({ admin, fundId, portfolioGroup, userId }) =>
+    listEntityDocuments(await documentScope(admin, fundId, portfolioGroup, userId)),
+
+  entity_document_upload_url: async ({ admin, fundId, portfolioGroup, userId }, input) =>
+    entityDocumentUploadUrl(await documentScope(admin, fundId, portfolioGroup, userId), input ?? {}),
+
+  add_entity_document: async ({ admin, fundId, portfolioGroup, userId }, input) =>
+    addEntityDocument(await documentScope(admin, fundId, portfolioGroup, userId), input ?? {}),
+}
+
+/** The resolved vehicle a document tool works in. The dispatcher has already checked the caller can see it. */
+async function documentScope(admin: SupabaseClient, fundId: string, portfolioGroup: string, userId: string | null) {
+  const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+  if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
+  return { admin, fundId, vehicleId, userId }
 }
 
 const VEHICLE_PROP = { type: 'string', description: 'vehicle (portfolio_group), or a management company by name; optional when the fund has a single vehicle' }
@@ -328,6 +347,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(LP_TOOL_MANIFEST, LP_HANDLERS),
   ...bind(CONSTRUCTION_TOOL_MANIFEST, CONSTRUCTION_HANDLERS),
   ...bind(FORECAST_TOOL_MANIFEST, FORECAST_HANDLERS),
+  ...bind(SETUP_TOOL_MANIFEST, SETUP_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

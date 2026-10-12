@@ -301,7 +301,7 @@ export const TABLE_RULES: Record<string, TableRule> = {
   // worth keeping: a K-1 line is a partner's allocated income, a tax form carries legal name and
   // TIN last-four, and a delivery consent is a legal fact about electronic delivery. A "fund
   // members read their fund's rows" policy is the wrong shape for all of them — the routes that
-  // serve them gate on `lp_capital`/`accounting` + the `tax_reporting` feature, and a browser-side
+  // serve them gate on the `tax` domain + the `tax_reporting` feature, and a browser-side
   // grant would hand every figure to a member the middleware would have refused.
   lp_tax_forms: { scope: 'service', note: 'W-9/W-8 facts per partner: legal name, TIN last-four, country, state.' },
   k1_packages: { scope: 'service', note: 'A tax year’s K-1 package; frozen once issued.' },

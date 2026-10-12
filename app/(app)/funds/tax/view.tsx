@@ -49,7 +49,7 @@ export function TaxView() {
   const canReadCarry = useCanRead('gp_economics')
   const canReadPartners = useCanRead('lp_capital')
   const canSeeK1 = canReadCarry && canReadPartners
-  const canWrite = useCanWrite('accounting', 'tax_reporting')
+  const canWrite = useCanWrite('tax')
 
   const [year, setYear] = useState(thisYear - 1)
   const [loading, setLoading] = useState(true)

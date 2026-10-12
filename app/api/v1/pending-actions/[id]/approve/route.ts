@@ -1,3 +1,4 @@
+import { withChangeSource } from '@/lib/audit/source'
 import { expireTag } from '@/lib/cache/tags'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requireV1Write, resolveV1Principal, V1PrincipalError } from '@/lib/api-v1/principal'
@@ -13,7 +14,7 @@ import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-a
 
 const ENDPOINT = 'POST /api/v1/pending-actions/:id/approve'
 
-export async function POST(req: Request, props: { params: Promise<{ id: string }> }) {
+async function postHandler(req: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const requestID = requestId()
   const key = idempotencyKeyFrom(req)
@@ -59,3 +60,6 @@ export async function POST(req: Request, props: { params: Promise<{ id: string }
     return v1Error('INTERNAL_ERROR', 'The request could not be completed.', 500, requestID)
   }
 }
+
+/** Changes made through /api/v1 are attributed to the API (lib/audit/source.ts). */
+export const POST = (...args: Parameters<typeof postHandler>) => withChangeSource('api', () => postHandler(...args))

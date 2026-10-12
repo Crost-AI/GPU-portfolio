@@ -25,6 +25,7 @@ export type Domain =
   | 'gp_economics'
   | 'lp_relations'
   | 'compliance'
+  | 'tax'
   | 'admin'
 
 /**
@@ -44,6 +45,7 @@ export const DOMAINS: Domain[] = [
   'gp_economics',
   'lp_relations',
   'compliance',
+  'tax',
   'admin',
 ]
 
@@ -71,6 +73,17 @@ export interface DomainMeta {
    * Only one exists, and it is an admission rather than a convenience. See `lp_capital`.
    */
   impliedBy?: Domain
+  /**
+   * The opposite direction: this domain is reachable only by someone who can at least READ that
+   * one. A grant here without it resolves to none. See `tax`.
+   */
+  requires?: Domain
+  /**
+   * Where a member's level comes from when they have no grant and the fund has no default row for
+   * this domain — the state a fund is in between a deploy and the migration that seeds the row.
+   * Without it a new domain locks every member out until `supabase db push`. See `tax`.
+   */
+  defaultFrom?: Domain
 }
 
 /** Which domain owns a feature key — derived from DOMAIN_META, so the two can't drift. */
@@ -134,20 +147,9 @@ export const DOMAIN_META: Record<Domain, DomainMeta> = {
   accounting: {
     label: 'Fund accounting',
     description:
-      'Bank, journal, chart of accounts, periods, statements, schedule of investments, and the K-1 packages derived from them.',
+      'Bank, journal, chart of accounts, periods, statements and the schedule of investments.',
     primaryFeature: 'accounting',
-    /**
-     * `tax_reporting` lives here rather than in a domain of its own for the same reason
-     * `lp_capital` is `impliedBy: 'accounting'`: a K-1 is derived from the partner capital
-     * accounts, and those accounts ARE the chart of accounts. Every figure a K-1 carries is
-     * already legible to anyone holding this grant — from the trial balance, the ledger export,
-     * or the statement of changes in partners' capital. A separate grant would suggest a boundary
-     * that does not exist.
-     *
-     * The feature key still earns its place: it decides whether the fund does tax reporting AT
-     * ALL, independently of whether it keeps books.
-     */
-    features: ['accounting', 'tax_reporting'],
+    features: ['accounting'],
   },
   management_company: {
     label: 'Management company',
@@ -217,6 +219,37 @@ export const DOMAIN_META: Record<Domain, DomainMeta> = {
     description: 'Filings, deadlines, workflows.',
     primaryFeature: 'compliance',
     features: ['compliance'],
+  },
+  tax: {
+    label: 'Tax',
+    description:
+      'Book-to-tax adjustments, the tax-year close, K-1 packages, partner tax forms and delivery, and K-1s received from underlying funds.',
+    primaryFeature: 'tax_reporting',
+    features: ['tax_reporting'],
+    /**
+     * WHY TAX IS ITS OWN AREA NOW. It used to live inside `accounting`, on the argument that a K-1
+     * is derived from the capital accounts, so anyone who can read the books can already read
+     * every figure on one. That is still true, and it is why `requires` is below. What it missed
+     * is the WRITE side: a tax preparer needs to post book-to-tax adjustments and generate K-1s,
+     * and inside `accounting` that meant handing them the whole journal, the bank and the period
+     * close. A separate grant lets an admin give "read the books, do the tax work" without "change
+     * the books".
+     *
+     * `requires: 'accounting'` keeps the reading side honest. Every tax payload is the ledger
+     * restated, so a member who cannot read the books cannot hold this either, whatever its grant
+     * says. And reading the books confers LP capital (see `lp_capital`), which covers the
+     * per-partner tax forms and K-1 lines. The carry inside a K-1 still needs `gp_economics`,
+     * checked in the K-1 handlers (lib/tax/access.ts).
+     *
+     * `defaultFrom: 'accounting'` is for deploy order. Until 20261012150000 seeds this domain's
+     * defaults, members fall back to their accounting level here, which is exactly what they had
+     * before the split.
+     *
+     * Finalizing and amending K-1s, delivering them to LPs and reopening a closed tax year stay
+     * admin-only (lib/access/admin-only.ts).
+     */
+    requires: 'accounting',
+    defaultFrom: 'accounting',
   },
   admin: {
     label: 'Administration',

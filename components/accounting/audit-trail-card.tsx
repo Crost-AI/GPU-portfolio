@@ -8,6 +8,7 @@ import { useLedgerFetch, useVehicle } from '@/components/accounting-vehicle'
 interface AuditEvent {
   id: string; createdAt: string; action: string; subjectType: string; subjectId: string | null
   actorName: string | null; actorId: string | null; reason: string | null; details: Record<string, unknown>
+  source: string | null
 }
 
 // Plain words for each recorded action — an auditor reads this, not a developer.
@@ -21,12 +22,18 @@ const ACTION_LABELS: Record<string, string> = {
   'lp_statement.force_publish': 'Published an interim LP statement',
   'capital_call.issue': 'Issued a capital call', 'distribution.declare': 'Declared a distribution',
   'k1.generate': 'Generated K-1s', 'k1.finalize': 'Issued K-1s', 'k1.amend': 'Amended K-1s', 'tax.adjustments': 'Posted book-to-tax adjustments',
-  'pending_action.approve': 'Approved an Analyst proposal', 'pending_action.reject': 'Rejected an Analyst proposal',
+  'pending_action.approve': 'Approved a staged change', 'pending_action.reject': 'Rejected a staged change',
+  'pending_action.stage': 'Staged a change for approval', 'agent.write': 'Changed through a connected assistant',
 }
+
+// Which door a change came through (lib/audit/source.ts). Older events have none.
+const SOURCE_LABELS: Record<string, string> = { web: 'Web', api: 'API', mcp: 'MCP' }
 
 /** One line of what the event touched: a date, an amount, a period — whatever it carries. */
 function summary(e: AuditEvent): string | null {
   const d = e.details as Record<string, any>
+  const tool = d.tool ?? d.args?.tool
+  if (tool) return String(tool)
   if (d.periodEnd) return `Through ${d.periodEnd}${d.selfApproved ? ' · self-approved (only member who can do the books)' : ''}`
   if (d.reopenedPeriods?.length) return (d.reopenedPeriods as string[]).join(', ')
   if (d.entryDate || d.memo) return [d.entryDate, d.memo, d.reference && `#${d.reference}`].filter(Boolean).join(' · ')
@@ -67,7 +74,7 @@ export function AuditTrailCard() {
               <li key={e.id} className="px-3 py-2">
                 <div className="flex flex-wrap items-baseline justify-between gap-x-3">
                   <span className="font-medium">{ACTION_LABELS[e.action] ?? e.action}</span>
-                  <span className="text-xs text-muted-foreground tabular-nums">{new Date(e.createdAt).toLocaleString()} · {e.actorName ?? 'Unknown user'}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">{new Date(e.createdAt).toLocaleString()} · {e.actorName ?? 'Unknown user'}{e.source ? ` · ${SOURCE_LABELS[e.source] ?? e.source}` : ''}</span>
                 </div>
                 {summary(e) && <p className="text-xs text-muted-foreground">{summary(e)}</p>}
                 {e.reason && <p className="text-xs">Reason: {e.reason}</p>}

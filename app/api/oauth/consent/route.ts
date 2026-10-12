@@ -5,6 +5,8 @@ import { getClient, redirectUriAllowed, issueAuthorizationCode, grantableScope }
 import { canWriteAnywhere, loadAccessContext } from '@/lib/access/effective'
 import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { issuerFor } from '@/lib/oauth/metadata'
+import { createFund, fundCreationRefusal } from '@/lib/onboarding/create-fund'
+import { rateLimit } from '@/lib/rate-limit'
 
 /**
  * The user's decision on the consent screen. This is the ONLY place an
@@ -58,13 +60,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'code_challenge is required (PKCE S256)' }, { status: 400 })
   }
 
-  const { data: membership } = await admin
+  let { data: membership } = await admin
     .from('fund_members')
     .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
-  if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 403 })
+  // No fund yet: the consent screen asked them to name one, so an assistant can set it up from
+  // here. Same creation path as the web wizard (lib/onboarding/create-fund.ts), with agent access
+  // on, since connecting this assistant is the point. Only on approve, so "Deny" creates nothing.
+  if (!membership) {
+    const fundName = str(body.fund_name)
+    if (!fundName) return NextResponse.json({ error: 'Name your fund to connect.' }, { status: 400 })
+    const limited = await rateLimit({ key: `onboard-fund:${user.id}`, limit: 5, windowSeconds: 300 })
+    if (limited) return limited
+    const refusal = await fundCreationRefusal(admin, user.id)
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 403 })
+    const created = await createFund(admin, { userId: user.id, email: user.email, fundName, agentApiEnabled: true })
+    if (!created.ok) return NextResponse.json({ error: created.error }, { status: created.status })
+    // The funds insert trigger made them its admin.
+    membership = { fund_id: created.fundId, role: 'admin' }
+  }
   const { fund_id: fundId, role } = membership as { fund_id: string; role: string }
 
   // The read-only demo may not hand an agent the keys to a fund.

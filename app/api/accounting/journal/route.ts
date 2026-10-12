@@ -1,3 +1,4 @@
+import { adminOnlyDenial, HANDLER_CHECKED } from '@/lib/access/admin-only'
 import { auditReason, recordAudit } from '@/lib/audit/events'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
@@ -272,6 +273,12 @@ export async function PATCH(req: NextRequest) {
   if (!existing) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
 
   const status = (existing as any).status
+  // Voiding a POSTED entry undoes the books, so it is admin-only like unpost and reverse (which the
+  // middleware refuses by action); voiding a draft is just discarding it. Only the row says which.
+  if (action === 'void' && status === 'posted') {
+    const denial = adminOnlyDenial(gate.role, HANDLER_CHECKED.voidPostedEntry)
+    if (denial) return NextResponse.json({ error: denial }, { status: 403 })
+  }
   // Undoing what was posted needs a reason, recorded with who did it (accounting_audit_events).
   // Discarding a draft does not: nothing it held was ever on the books.
   const reason = auditReason(body.reason)

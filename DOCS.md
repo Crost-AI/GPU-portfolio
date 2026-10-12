@@ -9,6 +9,8 @@
 
 Designed as a single-tenant deployment per fund. You control your own data, your own API keys, your own domain, and your own infrastructure. [Taylor Davidson](https://www.hemrock.com) of Hemrock is available to manage the setup, onboard you and your portfolio data, and provide ongoing support, [contact him for details](https://www.hemrock.com/contact).
 
+**In the app or headless.** The web app and chat are two views of the same fund. Everything below can be done in the web app, and most of it can instead be done from Claude, ChatGPT, Claude Code or a script over MCP and the REST API: setting the fund up, adding the team and their access, recording investments and capital, posting entries and closing periods, and reading any of it back. The preformatted PDFs and reports are the same either way. A headless setup still needs Steps 1 to 5 (the code, the database, the encryption key, the deploy and auth); Steps 6, 7, 9 and 12 can then be done from chat or a terminal instead, as [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script) describes. Inbound email (Step 8) and AI provider keys involve secrets or third-party accounts, so they stay in Settings, or for the AI key, in the bootstrap script's environment.
+
 ### Required services
 
 | Service | What it does | Free tier |
@@ -54,6 +56,8 @@ Next setup your database.
 3. Run the SQL migrations to create the database schema. Either:
    - Use the Supabase CLI: `supabase db push`
    - Or paste each file in `supabase/migrations/` into the SQL Editor in the Supabase dashboard, in filename order
+
+   Pick one and keep to it. The CLI records what it applied in `supabase_migrations.schema_migrations`; files pasted into the SQL Editor are not recorded there, so a later `supabase db push` would try to run all of them again. Files under `supabase/pending-deploy/` are not migrations yet: each waits for the release named in its header.
 4. In **Authentication > Providers**, confirm **Email** is enabled (it is by default)
 
 Don't configure the auth URLs yet — you need your deployed app URL first.
@@ -121,6 +125,8 @@ Signups are restricted by an email whitelist. Before anyone can create an accoun
 
 By default the first signup is the admin, with access to the fund-level and technical settings, but the admin can be changed after creation if needed.
 
+> **Headless:** `npm run bootstrap -- --email you@yourfund.com --fund "Your Fund"`, run where your `.env.local` holds the Supabase keys and `ENCRYPTION_KEY`, does this step and Step 7 for you: it adds the address to `allowed_signups`, creates a confirmed account and the fund, turns Agent access on and prints an API key. Or add the address to `allowed_signups` and connect Claude or ChatGPT; with no fund yet, the consent screen asks you to name one. See [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script).
+
 ### Step 7: Complete the onboarding wizard
 
 After confirming your email and signing in, the app walks you through a short wizard. Only the fund name is required; everything else can be skipped and finished later in Settings.
@@ -132,6 +138,8 @@ After confirming your email and signing in, the app walks you through a short wi
 5. **Google Drive** — optional archiving; skippable. See *Optional: Google Drive* below.
 
 Then continue with [Setting up a new fund](#setting-up-a-new-fund) for the entities, partners, investments and books.
+
+> **Headless:** the `setup_fund` tool does steps 2 and 4 (products, entities, senders) in one call; the AI key goes in Settings or the bootstrap script's environment, and inbound email and Google Drive in Settings.
 
 ### Step 8: Set up inbound email
 
@@ -172,6 +180,8 @@ Forward a portfolio company report email to your inbound address. Within a minut
 
 You can send your colleagues at your fund an email directing them to the signup link. They will not go through the onboarding wizard, and instead get a screen to request access to the fund you created. In your admin login in the settings, you will be able to approve them, and if you have configured the outbound email in Settings, they will get an email noting they have been approved. 
 
+> **Headless:** list colleagues in a `setup_fund` plan instead, each with their role, access preset, entities and an optional end date. They are added to the signup allow-list and sent an invitation email, and need no approval step. Any domain works.
+
 > Many of the inputs on Settings are only for the admin. All setting only available to admins are noted with a lock icon and color.
 
 > By default the app assumes all colleagues use the same email domain. If this is not the case, contact Taylor and we can change this restriction.
@@ -192,6 +202,100 @@ Once the wizard is done, this is the minimum path from an empty deployment to a 
 7. **Make the first forecast** — **Forecast** (turn it on under Settings → Feature visibility) builds a budget and rolling forecast on top of the posted books.
 
 The templates are also served by the app at `/templates/<name>.csv` for signed-in users.
+
+### Setting up a fund with Claude, ChatGPT or a script
+
+You can set up a fund without clicking through the web app. The web app stays available as a view
+of the data, but every setup step below can be done from chat (MCP) or from a script (the agent API).
+
+#### 1. Get in
+
+Pick one.
+
+**From Claude or ChatGPT.** Add the connector `https://<your-domain>/api/mcp`. When it sends you to
+sign in, use your email (the address must be on the signup allow-list; the first time, add it with
+the bootstrap script below or in the `allowed_signups` table). If your account has no fund yet, the
+connect screen asks you to name one. Allow, and the fund exists with you as its admin and agent
+access on.
+
+**From a terminal, with no web sign-in at all.** On the machine with your `.env.local`:
+
+```sh
+npm run bootstrap -- --email you@firm.com --fund "Hemrock Ventures" \
+  --products portfolio_reporting,fund_operations,lp_reporting
+```
+
+This adds you to the signup allow-list, creates your account and the fund, turns agent access on,
+and prints an API key once. To store an AI provider key, put `ANTHROPIC_API_KEY` (or
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`) in the environment first; keys are never taken on the
+command line or in a chat. Re-running it reuses the account and fund and mints a new key.
+
+#### 2. Run the setup prompt
+
+In Claude or ChatGPT, pick **Set up this fund** from the connector's prompt menu, or paste this:
+
+```text
+Help me set up this fund. First call setup_status and tell me in a few lines where things stand.
+
+Then ask me, one short question at a time, only for what is missing:
+1. What we will run here: portfolio tracking, fund books, LP capital and the investor portal, deal flow and diligence, management company books.
+2. Our entities: each fund, SPV or management company, with its vintage year.
+3. The team: each person's email; whether they are an admin (admins approve deletes, capital calls, distributions, anything sent to LPs, and finalizing K-1s) or a member; which preset fits each member (CFO, fund administrator, tax preparer, auditor, investment team, investor relations); which entities they should see; and an end date for anyone here for one engagement, like an auditor or tax preparer.
+4. Who emails us company updates, so those addresses can be authorized.
+
+Then show me the whole plan as a short list. Once I confirm, apply it with one setup_fund call. Tell me what was created and any warnings, call setup_status again, and walk me through the next open steps: partners and commitments (add_partner), investments (record_investment), opening balances (post_ledger_text) and the first close (close_period).
+
+Never ask me for API keys or passwords. If a step needs one, tell me where to add it in Settings.
+```
+
+The assistant reads `setup_status`, asks only for what is missing, shows you the plan and applies
+it with one `setup_fund` call. Because a connected assistant's changes wait for approval, you
+approve the whole plan once, in the chat or in the app's pending-actions queue.
+
+#### 3. Or do it from a script
+
+The same two tools are on the agent API. An admin's API key applies changes directly.
+
+```sh
+KEY=lk_...            # from the bootstrap script, or Settings → API and MCP
+URL=https://<your-domain>
+
+# Where setup stands
+curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"tool":"setup_status","input":{}}'
+
+# Apply a plan. Safe to re-run: entities match by name, people and senders by email.
+curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: setup-1' -d '{
+  "tool": "setup_fund",
+  "input": {
+    "products": ["portfolio_reporting", "fund_operations", "lp_reporting"],
+    "entities": [{"name": "Fund I", "kind": "fund", "vintageYear": 2024}],
+    "team": [
+      {"email": "cfo@firm.com", "preset": "cfo"},
+      {"email": "partner@firm.com", "role": "admin"},
+      {"email": "audit@auditors.com", "preset": "auditor", "accessEndsOn": "2027-04-30"}
+    ],
+    "authorizedSenders": [{"email": "founder@portfolio-co.com", "label": "Portfolio Co"}],
+    "finish": true
+  }
+}'
+```
+
+#### What setup_fund does
+
+- **Products** decide which areas the fund has. While the fund is new, the list is the full choice;
+  once it is set up, products are only added, never switched off (do that in Settings).
+- **Entities** are created with a chart of accounts suited to their kind.
+- **Team members** are added to the signup allow-list, invited by email if they have no account,
+  and given their role, preset, entities and end date. A preset that includes an area the fund
+  keeps "Admins only" opens that area to members, with its default for everyone else set to none,
+  so only the people granted it gain anything. Admins approve deletes, capital calls, distributions,
+  anything sent to LPs and finalizing K-1s, whatever the presets grant.
+- **Authorized senders** may email company updates in.
+
+AI provider keys and inbound email (Postmark or Mailgun) involve secrets or third-party accounts,
+so they are set in Settings, or for the AI key, by the bootstrap script.
 
 ### Verify your setup
 
@@ -253,6 +357,13 @@ Admins and team members can enable TOTP-based two-factor authentication from the
 ### Optional: Invite team members
 
 In **Settings > Team**, your team members can sign up (if their email matches the whitelist or your fund's email domain) and request to join. Admins approve requests, assign admin or member roles, and choose **which entities** the new member can see — All entities (including ones added later) or specific funds, SPVs and entities; a member must be given at least one, and starts with none otherwise. The **Access** grid under Team sets each member's entities and their domain grants (none / read / read & write for portfolio, accounting, LP capital, GP economics, and so on). Admins always see everything. See FEATURES → Access for what an entity grant hides.
+
+- **Presets.** *Apply a preset* in the Access grid sets every area for a CFO, fund administrator, tax preparer, auditor, investment team member or investor relations in one step (`lib/access/presets.ts`). Cells can still be changed afterwards.
+- **Access ends.** A date after which a member can no longer reach the fund, for an auditor or tax preparer here for one engagement. Access stops resolving at that moment; the hourly `/api/cron/access-expiry` job (in `vercel.json`) then removes the membership. On a host without Vercel Cron, schedule that path yourself with `Authorization: Bearer $CRON_SECRET`. Admins never expire.
+- **Tax** is its own area, so a tax preparer can work in Tax (adjustments, the tax-year close, K-1s) without write access to the books. It needs read access to accounting.
+- **Admin-only changes.** Deleting records, undoing posted entries and reopening periods, capital calls and distributions, anything sent to LPs, finalizing or delivering K-1s and the fund's structure need an admin, in the app, over the API and over MCP alike (`lib/access/admin-only.ts`). A member can propose one from chat for an admin to approve.
+
+All of this can also be set from chat or a script, with `setup_fund`.
 
 ### Onboarding LPs to the portal
 
@@ -331,21 +442,36 @@ The deployment is an MCP server and a REST API. Everything an agent does runs ag
 
 The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answers). Claude and ChatGPT sign in with **OAuth 2.1** — dynamic client registration, PKCE, discovery at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` — on your fund's branded consent screen, where the member chooses read, or read and change. Access tokens last an hour and refresh for 30 days. **API keys** (`lk_…`) are per member, read or read & write, and revocable in Settings; a key's scope is a ceiling, and every write is still checked against the member's grant for that area.
 
+**No fund yet?** Someone whose account belongs to no fund can still connect: the consent screen asks them to name one, and Allow creates it with them as its admin and Agent access on (Deny creates nothing; investor portal accounts are refused). That is how a fund is set up entirely from chat; see [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script). Admins also get `setup_status` and `setup_fund`, and a **Set up this fund** prompt, for adding products, entities, team members and senders later.
+
 **Getting started once connected.** Ask "What can you do?" — the assistant opens the member's **home dashboard** (`show_home`): what they can open, their saved dashboards, and questions to click. The endpoint also serves **MCP prompts** (`prompts/list`, `prompts/get`) — Get started, Portfolio review, Company check-in, Quarter-end review, LP capital status, Draft a forecast, Budget variance — filtered to the member's access; hosts list them in their prompt menu. Settings → API and MCP shows the same *Try asking* list. The catalog behind all three is `lib/agent/getting-started.ts`.
 
 **Documents.** `lp_statement_pdf` and `lp_report_card_pdf` return a signed link to `/api/agent/reports/<token>` rather than the file. The token names the member, the fund and the document, is signed with a key derived from `ENCRYPTION_KEY` (rotating it voids every link), and expires after an hour; opening it re-checks the member's live access and renders the PDF. Nothing is stored.
+
+**Changes wait for approval.** A change Claude or ChatGPT makes (an OAuth connection) is staged, not applied: the tool returns `{ staged: true, pendingActionId, summary }` and nothing changes until a person approves it, either in the conversation (`approve_action`, or `reject_action`; `list_pending_actions` shows what is waiting) or in the app. Approving re-checks the approver's own write access to that change. Calls that only make drafts or previews run at once (a draft entry, an allocation with `post: false`, importing or categorizing bank lines), since a draft still has to be posted. An API key (`lk_…`) is a script someone wrote on purpose, so its writes apply directly. Admin-only changes (deletes, undoing posted entries, capital calls and distributions, anything sent to LPs, finalizing K-1s, and the fund's structure; the list is `lib/access/admin-only.ts`) can only be approved by an admin, and a member's API key is refused them outright.
+
+**Every change is recorded with its source.** Each change made through MCP or the API is written to the audit trail (the entity's Admin page, and its CSV) with the person, the credential, and the source it came through: `web`, `api` or `mcp`. Changes made in the app are recorded as `web`, and activity-log entries carry the same source as `changeSource`. A write may carry an idempotency key, `_meta.idempotencyKey` on an MCP `tools/call` or an `Idempotency-Key` header on `/api/agent`, and a retry under the same key returns the first result instead of writing twice.
 
 **What it can reach.** The tool list is filtered to the areas the member can read and the entities they can see, and re-checked on every call. Requests are limited per fund to 300 reads or 60 writes a minute, in batches of up to 20 calls. The Analyst never writes directly — it stages changes for approval — and `/api/v1` (chat, streamed chat over Server-Sent Events, conversations, approving staged actions with an `Idempotency-Key`) takes only OAuth tokens issued for it.
 
 ### Data connectors
 
-Beyond the built-in integrations (Affinity, Google Drive, inbound email), data comes in through **connectors**: small programs you keep in your own, usually private, repository. A connector reads an outside system and calls this deployment's MCP server with an API key, exactly as an agent does. No connector code lives here, and none is needed to add one.
+The headless path covers the other direction too. Beyond the built-in integrations (Affinity, Google Drive, inbound email), data comes in through **connectors**. A connector is a small program you keep in your own repository, usually a private one. It reads an outside system (a general ledger, a fund administrator) and calls this deployment's MCP server with an API key, just as a script would. No connector code lives in this repository, and adding one needs no change here.
 
-[`examples/connector-template`](./examples/connector-template) is the starting point. Copy it into a private repository, add your connectors, and run `npm run sync -- <connector>` on a schedule. Its README covers the contract; in short:
+[`examples/connector-template`](./examples/connector-template) is the starting point. Copy it into a private repository, add your connectors, and run `npm run sync -- <connector>` on a schedule. Its README covers the contract and how the QuickBooks and Carta connectors are built.
 
-- Give each connector its own API key (read & write) so it can be revoked on its own. It reaches only what that key's member can.
-- Outside general ledgers (QuickBooks, Carta fund admin) go through `journal_import_accounts` → `save_journal_mapping` → `import_journal`. That is the same mapping, review and draft import as **Accounting → QuickBooks**, and each source keeps its own account mapping. Entries land as **drafts**. Re-sending a window matches what was already imported instead of duplicating it.
-- If the import's comparison with investment and LP records finds a difference, nothing is written until a person confirms with the review token.
+**Setting one up**
+
+1. An admin turns on **Settings → Agent access**.
+2. Create an API key for the connector (read & write) under **Settings → API and MCP**, or with `npm run bootstrap`. Give each connector its own key, so you can revoke one without the others.
+3. The key's member needs write access to accounting for the entity the connector feeds. Admin rights are not needed: everything a connector imports is a draft.
+
+**How it behaves**
+
+- **Writes apply directly, as drafts.** A connector's writes come from a key, so they are not staged for approval the way an assistant's are. They are recorded in the audit trail with source `mcp`. Outside ledger entries still land as **drafts**, and a person reviews and posts them on the journal page.
+- **Outside general ledgers** (QuickBooks, Carta fund admin) go through three steps: `journal_import_accounts`, then `save_journal_mapping`, then `import_journal`. This is the same mapping, review and draft import as **Accounting → QuickBooks**. Each source (`quickbooks`, `carta`) keeps its own account mapping and tags its entries with its own `source_type`.
+- **Safe to repeat.** Each entry is keyed by a hash of its content, so re-sending an overlapping window matches what was already imported instead of duplicating it.
+- **Review holds stop the run.** If the import's comparison with investment and LP records finds a difference, nothing is written until a person re-runs the import with the review token.
 
 ### Dashboards in Claude and ChatGPT
 
@@ -476,6 +602,9 @@ Turning a feature off hides and denies it; it never deletes data, and for accoun
 - Timing-safe webhook verification
 - Security headers
 - Row Level Security on all database tables
+- One set of access rules for the web app, the API and MCP, with admin-only changes enforced on every surface
+- Changes from a connected assistant are staged until a person approves them
+- An append-only audit trail that records who made each change and its source (web, API or MCP)
 
 ### Updates
 

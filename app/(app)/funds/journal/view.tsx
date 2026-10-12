@@ -54,7 +54,7 @@ export function JournalView({ onPlainText }: { onPlainText?: () => void } = {}) 
   const { kind, group } = useVehicle()
   // The tax book only has entries once the tax run has written them; with tax reporting off it
   // is always empty, so the selector is not offered.
-  const taxOn = useCanRead('accounting', 'tax_reporting')
+  const taxOn = useCanRead('tax')
   const router = useRouter()
 
   const [entries, setEntries] = useState<Entry[]>([])
