@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseQbJournal } from './parse-journal'
+import { normalizeQbTransactions, parseQbJournal } from './parse-journal'
 
 // The shape QuickBooks Online exports: header row, then one row per SPLIT LINE, with the
 // transaction's date/type/num present only on its first line.
@@ -102,5 +102,51 @@ describe('parseQbJournal', () => {
     expect(errors).toEqual([])
     expect(transactions).toHaveLength(1)
     expect(transactions[0].lines[0].debit).toBe(1_000_000)
+  })
+})
+
+describe('normalizeQbTransactions', () => {
+  const structured = [
+    { date: '2024-01-15', type: 'Journal Entry', num: 'JE-1', memo: 'Capital call', lines: [
+      { account: 'Investments:Acme Ventures III', debit: 1_000_000 },
+      { account: 'Bank:Operating', credit: '1,000,000.00' },
+    ] },
+  ]
+
+  it('accepts what a connector sends and summarises it like a parsed export', () => {
+    const { transactions, accounts, errors } = normalizeQbTransactions(structured)
+    expect(errors).toEqual([])
+    expect(transactions[0].lines.map(l => [l.debit, l.credit])).toEqual([[1_000_000, 0], [0, 1_000_000]])
+    expect(accounts.map(a => a.account).sort()).toEqual(['Bank:Operating', 'Investments:Acme Ventures III'])
+  })
+
+  it('agrees with the export parser on the same journal', () => {
+    const fromApi = normalizeQbTransactions([
+      { date: '2024-01-15', type: 'Journal Entry', num: 'JE-1', memo: 'Capital call — Acme III', lines: [
+        { account: 'Investments:Acme Ventures III', memo: 'Capital call — Acme III', debit: 1_000_000 },
+        { account: 'Bank:Operating', memo: 'Capital call — Acme III', credit: 1_000_000 },
+      ] },
+    ])
+    expect(fromApi.transactions[0]).toEqual(parseQbJournal(EXPORT).transactions[0])
+  })
+
+  it('drops an unbalanced transaction by the same rule as an export', () => {
+    const { transactions, errors } = normalizeQbTransactions([{ ...structured[0], lines: [structured[0].lines[0]] }])
+    expect(transactions).toEqual([])
+    expect(errors[0]).toMatch(/does not balance/)
+  })
+
+  it('refuses an unreadable amount rather than reading it as zero', () => {
+    const { transactions, errors } = normalizeQbTransactions([{ date: '2024-01-15', lines: [
+      { account: 'A', debit: 'abc' }, { account: 'B', credit: 0 },
+    ] }])
+    expect(transactions).toEqual([])
+    expect(errors[0]).toMatch(/unreadable amount/)
+  })
+
+  it('names a transaction with no date or no lines', () => {
+    expect(normalizeQbTransactions([{ lines: [] }]).errors[0]).toMatch(/date/)
+    expect(normalizeQbTransactions([{ date: '2024-01-01', lines: [] }]).errors[0]).toMatch(/no lines/)
+    expect(normalizeQbTransactions('nope').errors[0]).toMatch(/array/)
   })
 })

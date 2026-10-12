@@ -52,6 +52,38 @@ export interface AgentToolMeta {
 }
 
 const EMPTY_SCHEMA = { type: 'object', properties: {}, additionalProperties: false }
+
+const JOURNAL_SOURCE_SCHEMA = { type: 'string', enum: ['quickbooks', 'carta'], description: 'Whose books these are (default quickbooks). Each source has its own account mapping.' }
+
+/** One outside-ledger transaction (QuickBooks, Carta): a date and its balanced split lines (debit/credit as positive magnitudes). */
+const QB_TRANSACTIONS_SCHEMA = {
+  type: 'array',
+  description: 'Journal transactions, each with balanced lines. Debits and credits are positive magnitudes, as QuickBooks prints them.',
+  items: {
+    type: 'object',
+    required: ['date', 'lines'],
+    properties: {
+      date: { type: 'string', description: 'YYYY-MM-DD' },
+      type: { type: 'string', description: 'Transaction type, e.g. "Journal Entry", "Bill" (QuickBooks) or "CAPITAL_CALL" (Carta event type)' },
+      num: { type: 'string', description: 'The source document number or id — it is part of the idempotency key, so keep it stable across syncs' },
+      memo: { type: 'string' },
+      lines: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['account'],
+          properties: {
+            account: { type: 'string', description: 'Fully qualified source account name — the key the mapping is saved under' },
+            name: { type: 'string', description: 'Payee, vendor or partner on the line (an LP name routes capital lines to that partner)' },
+            memo: { type: 'string' },
+            debit: { type: 'number' },
+            credit: { type: 'number' },
+          },
+        },
+      },
+    },
+  },
+}
 const ALLOCATION_ACTIONS = ['management_fee', 'expense', 'gain', 'distribution', 'carry', 'close_period']
 
 export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
@@ -210,6 +242,65 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         csv: { type: 'string', description: 'CSV/TSV with date, description, and amount (or debit/credit) columns' },
         reviewToken: { type: 'string', description: 'Token returned by the import comparison. Supply only after presenting the differences and the user authorizes proceeding.' },
         source: { type: 'string', description: 'csv | plaid | ramp | quickbooks (default csv)' },
+      },
+    },
+  },
+  // Importing an outside general ledger (QuickBooks, Carta fund admin) — what a connector calls
+  // after reading the source's API or MCP server, instead of a person pasting a Journal export.
+  // Same three steps and same code path as the Accounting → QuickBooks page
+  // (lib/accounting/quickbooks/import-journal.ts): accounts → mapping → import as drafts. Each
+  // source keeps its own mapping and tags its entries with its own source_type (sources.ts).
+  {
+    name: 'journal_import_accounts',
+    description: "Step 1 of importing an outside general ledger (QuickBooks or Carta): list the source's accounts a batch of journal transactions touches, with the saved mapping for each and a proposed chart code where none is saved. Writes nothing. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).",
+    scope: 'read',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        transactions: QB_TRANSACTIONS_SCHEMA,
+        text: { type: 'string', description: 'A QuickBooks Journal report export (CSV/TSV), instead of transactions' },
+        source: JOURNAL_SOURCE_SCHEMA,
+      },
+    },
+  },
+  {
+    name: 'save_journal_mapping',
+    description: "Step 2: save confirmed source account → chart code mappings for this vehicle and source. A saved mapping always wins over a later proposal. Confirm proposals with the user before saving them; a wrong mapping misstates the account for every period imported.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['rows'],
+      properties: {
+        source: JOURNAL_SOURCE_SCHEMA,
+        rows: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['qbAccount'],
+            properties: {
+              qbAccount: { type: 'string', description: 'The source account name, exactly as in the transactions (e.g. "Investments:Acme Ventures III")' },
+              accountCode: { type: 'string', description: 'Chart code on this vehicle' },
+              excluded: { type: 'boolean', description: 'Deliberately not imported; transactions touching it are skipped whole' },
+              note: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'import_journal',
+    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend. Transactions touching an unmapped account are skipped and named. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        transactions: QB_TRANSACTIONS_SCHEMA,
+        text: { type: 'string', description: 'A QuickBooks Journal report export (CSV/TSV), instead of transactions' },
+        dryRun: { type: 'boolean', description: 'Report what would be created without writing (default false)' },
+        reviewToken: { type: 'string', description: 'Token returned by the import comparison. Supply only after presenting the differences and the user authorizes proceeding.' },
+        sourceLabel: { type: 'string', description: 'Shown in the import history, e.g. "quickbooks-connector 2026-10-01..2026-10-31"' },
+        source: JOURNAL_SOURCE_SCHEMA,
       },
     },
   },

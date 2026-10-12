@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ParsedTxn } from './bank'
 import { ACTUAL_BOOK } from './books'
 import { adoptedEntryIds } from './adoption'
+import { EXTERNAL_BOOK_SOURCE_TYPES } from './quickbooks/sources'
 
 export interface QuickBooksCashEntry {
   id: string
@@ -51,7 +52,7 @@ export async function loadQuickBooksCashEntries(
   const rows = await readAll<any>((from, to) => admin.from('journal_entries' as any)
     .select('id, entry_date, memo, status, journal_postings(account_id, amount)')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK)
-    .eq('source_type', 'quickbooks').in('status', ['posted', 'draft'])
+    .in('source_type', EXTERNAL_BOOK_SOURCE_TYPES).in('status', ['posted', 'draft'])
     .gte('entry_date', offset(sorted[0], -CLEARING_DAYS))
     .lte('entry_date', offset(sorted[sorted.length - 1], CLEARING_DAYS))
     .order('id').range(from, to))

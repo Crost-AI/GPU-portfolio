@@ -118,6 +118,59 @@ export function parseQbJournal(text: string): {
     })
   }
 
+  return finalize(out, errors)
+}
+
+/**
+ * The same journal, handed over already structured — by a connector reading QuickBooks' API or
+ * MCP server rather than a person pasting an export. Pure.
+ *
+ * It goes through the SAME balance check and account summary as a parsed export, so an API-fed
+ * transaction cannot reach the ledger by a looser path than a pasted one. Anything malformed is
+ * named and dropped, never coerced: an amount that cannot be read is an error, not a zero, because
+ * a zero would still balance and would misstate the account. An ABSENT debit or credit is zero,
+ * as an empty export cell is.
+ */
+export function normalizeQbTransactions(input: unknown): {
+  transactions: QbTransaction[]
+  accounts: QbAccountSummary[]
+  errors: string[]
+} {
+  const errors: string[] = []
+  if (!Array.isArray(input)) return { transactions: [], accounts: [], errors: ['transactions must be an array.'] }
+
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  const amount = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return 0
+    const n = typeof v === 'number' ? v : parseAmount(String(v))
+    return n === null || !Number.isFinite(n) ? null : Math.abs(n)
+  }
+
+  const out: QbTransaction[] = []
+  input.forEach((raw: any, i) => {
+    const label = `Transaction ${i + 1}${str(raw?.num) ? ` (${raw.num})` : ''}`
+    const date = str(raw?.date) ? normalizeDate(raw.date) : null
+    if (!date) { errors.push(`${label}: missing or unreadable date.`); return }
+    if (!Array.isArray(raw?.lines) || raw.lines.length === 0) { errors.push(`${label}: has no lines.`); return }
+
+    const lines: QbLine[] = []
+    for (const l of raw.lines) {
+      const account = str(l?.account)
+      const debit = amount(l?.debit)
+      const credit = amount(l?.credit)
+      if (!account || debit === null || credit === null) {
+        errors.push(`${label}: a line is missing its account or has an unreadable amount.`)
+        return
+      }
+      lines.push({ account, name: str(l?.name), memo: str(l?.memo), debit, credit })
+    }
+    out.push({ date, type: str(raw?.type), num: str(raw?.num), memo: str(raw?.memo), lines })
+  })
+
+  return finalize(out, errors)
+}
+
+function finalize(out: QbTransaction[], errors: string[]) {
   // Drop anything that does not balance. An unbalanced transaction is a broken export or a
   // parse error, and importing it would fail assertBalanced in persistEntry anyway — better
   // to name it here, where the user can see which one.

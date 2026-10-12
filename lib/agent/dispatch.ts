@@ -71,6 +71,9 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   allocation: input => input.post === false,
   // Stage a feed as drafts and re-point those drafts; posting them is post_bank_transaction / post_drafts.
   import_bank_transactions: () => true,
+  // An outside ledger lands as drafts too (lib/accounting/quickbooks/import-journal.ts); a mapping
+  // change is not a draft and still stages.
+  import_journal: () => true,
   categorize_bank_transactions: () => true,
   set_bank_transaction_account: () => true,
 }

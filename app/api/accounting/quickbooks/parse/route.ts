@@ -1,14 +1,11 @@
-import { chartForVehicleKind } from '@/lib/accounting/chart'
-import { vehicleKindByName } from '@/lib/accounting/vehicle-domain'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // accounting domain (lib/access/route-domains.ts). The middleware has already checked the grant.
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
-import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { parseQbJournal } from '@/lib/accounting/quickbooks/parse-journal'
-import { proposeMapping, type ChartAccount } from '@/lib/accounting/quickbooks/propose-mapping'
+import { proposeQbAccounts } from '@/lib/accounting/quickbooks/import-journal'
 
 /**
  * Step 1 of the migration: read a QuickBooks Journal export and propose a mapping.
@@ -31,54 +28,10 @@ export async function POST(req: NextRequest) {
 
   const group = await resolveGroupOr400(admin, gate, body?.group ?? null)
   if (group instanceof NextResponse) return group
-  const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
-  const { transactions, accounts, errors } = parseQbJournal(body.text)
-
-  const [{ data: chartRows, error: chartError }, { data: savedRows, error: savedError }] = await Promise.all([
-    admin.from('chart_of_accounts' as any)
-      .select('id, code, name, type, subtype, company_id, lp_entity_id, is_active')
-      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId),
-    (admin as any).from('qb_account_mappings')
-      .select('qb_account, account_code, excluded')
-      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId),
-  ])
-  if (chartError || savedError) {
-    return NextResponse.json({ error: chartError?.message ?? savedError?.message }, { status: 500 })
+  try {
+    return NextResponse.json(await proposeQbAccounts(admin, gate.fundId, group, parseQbJournal(body.text)))
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
-
-  const chart = ((chartRows as any[]) ?? []) as ChartAccount[]
-  const kind = await vehicleKindByName(admin, gate.fundId, group)
-  for (const a of chartForVehicleKind(kind)) {
-    if (!chart.some(existing => existing.code === a.code)) chart.push({ ...a, id: `template:${a.code}`, is_active: true } as ChartAccount)
-  }
-  const saved = new Map(((savedRows as any[]) ?? []).map(r => [r.qb_account, r]))
-
-  // A previously CONFIRMED mapping always wins over a fresh proposal — see the migration's
-  // comment on why re-proposing between passes would move balances for no visible reason.
-  const proposals = proposeMapping(accounts, chart).map(p => {
-    const prior = saved.get(p.qbAccount)
-    if (!prior) return p
-    if (!prior.excluded && !chart.some(a => a.code === prior.account_code && a.is_active !== false)) return p
-    return {
-      ...p,
-      code: prior.account_code ?? null,
-      excluded: !!prior.excluded,
-      confidence: 'exact' as const,
-      reason: prior.excluded ? 'Excluded from import (saved).' : 'Confirmed previously.',
-    }
-  })
-
-  const dates = transactions.map(t => t.date).sort()
-
-  return NextResponse.json({
-    group,
-    transactionCount: transactions.length,
-    dateRange: dates.length ? { first: dates[0], last: dates[dates.length - 1] } : null,
-    accounts: proposals.map(p => ({ ...p, lineCount: accounts.find(a => a.account === p.qbAccount)?.lineCount ?? 0 })),
-    mappedCount: proposals.filter((p: any) => p.code && !p.excluded).length,
-    excludedCount: proposals.filter((p: any) => p.excluded).length,
-    discoveredHoldings: Array.from(new Set(proposals.map(p => p.suggestsHolding).filter(Boolean))),
-    errors,
-  })
 }

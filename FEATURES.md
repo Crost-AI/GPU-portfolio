@@ -15,6 +15,8 @@ Once data starts flowing, the Portfolio dashboard gives you a real-time view of 
 
 **Headless, if you prefer.** Everything that matters can be done without opening the app: Claude, ChatGPT, Claude Code or your own agent connect over MCP or the REST API to set up the fund and its team, record investments and capital, post entries, close periods and read anything back, under the same access rules as the app. Changes from a connected assistant wait for your approval, and every change records whether it came from the web, the API or MCP. The app is a view of the same data, and the PDFs and reports are the same either way. See *Claude, ChatGPT and other agents* below.
 
+**Connectors for your other systems.** Data from another system, such as a QuickBooks or Carta general ledger, comes in through a connector: a small program you keep in your own, usually private, repository. It reads that system and sends what it finds to your deployment with an API key. The QuickBooks import works through the same mapping and review whether the ledger is pasted or sent by a connector, and every entry lands as a draft for you to post. Carta's fund-admin ledger uses the same import, with its own account mapping. `examples/connector-template` is a starting point you can copy.
+
 ## Portfolio
 
 The Portfolio page is the main dashboard and your starting point for monitoring the fund. It shows all active companies with key headline metrics (such as MRR and cash balance) so you can quickly scan the health of the portfolio without clicking into individual companies. Companies are displayed as cards with their most recently reported figures, sparkline charts, and badges for stage, industry, and vehicle.

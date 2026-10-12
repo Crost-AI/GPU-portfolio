@@ -13,6 +13,7 @@ import { POST as parse } from '@/app/api/accounting/quickbooks/parse/route'
 import { PUT as save } from '@/app/api/accounting/quickbooks/mapping/route'
 import { POST as discover } from '@/app/api/accounting/quickbooks/mapping/discover/route'
 import { POST as createAccount } from '@/app/api/accounting/chart/route'
+import { getTool } from '@/lib/accounting/agent-tools'
 
 let tables: Record<string, any[]>
 let writes: { table: string; row: any }[]
@@ -101,5 +102,33 @@ describe('QuickBooks import review routes', () => {
     const res = await discover(req({ holdings: ['Coinbase'], holdingTypes: { Coinbase: 'company' } }))
     expect(writes).toEqual([])
     expect((await res.json()).mappings).toEqual([{ name: 'Coinbase', code: '1100-coinbase' }])
+  })
+
+  it('keeps each journal source on its own mapping', async () => {
+    const res = await save(req({ rows: [{ qbAccount: 'Bank', accountCode: '1000' }] }, 'PUT'))
+    expect(res.status).toBe(200)
+    expect(writes[0].row.source).toBe('quickbooks')
+
+    const tool = getTool('save_journal_mapping')!
+    const ctx = { admin: { from } as any, fundId: 'tenant', portfolioGroup: 'Fund II', userId: 'user', access: {} as any }
+    await tool.handler(ctx, { source: 'carta', rows: [{ qbAccount: '1108 Cash - Operating', accountCode: '1000' }] })
+    expect(writes[1].row).toMatchObject({ source: 'carta', qb_account: '1108 Cash - Operating', vehicle_id: 'vehicle-2' })
+    await expect(tool.handler(ctx, { source: 'xero', rows: [] })).rejects.toThrow(/Unknown journal source/)
+  })
+
+  it('proposes accounts for structured transactions a connector sends, without writing', async () => {
+    tables.qb_account_mappings = [{ fund_id: 'tenant', vehicle_id: 'vehicle-2', source: 'quickbooks', qb_account: 'Operating cash', account_code: '1000', excluded: false }]
+    const tool = getTool('journal_import_accounts')!
+    const ctx = { admin: { from } as any, fundId: 'tenant', portfolioGroup: 'Fund II', userId: 'user', access: {} as any }
+    const transactions = [{ date: '2026-01-15', num: 'GL-1', lines: [{ account: 'Operating cash', debit: 100 }, { account: 'Contributed capital - LP', name: 'Example LP', credit: 100 }] }]
+
+    const carta: any = await tool.handler(ctx, { source: 'carta', transactions })
+    expect(carta.source).toBe('carta')
+    // The QuickBooks mapping for the same name is not Carta's.
+    expect(carta.accounts.find((a: any) => a.qbAccount === 'Operating cash').reason).not.toBe('Confirmed previously.')
+
+    const qb: any = await tool.handler(ctx, { transactions })
+    expect(qb.accounts.find((a: any) => a.qbAccount === 'Operating cash')).toMatchObject({ code: '1000', reason: 'Confirmed previously.' })
+    expect(writes).toEqual([])
   })
 })

@@ -454,6 +454,25 @@ The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answ
 
 **What it can reach.** The tool list is filtered to the areas the member can read and the entities they can see, and re-checked on every call. Requests are limited per fund to 300 reads or 60 writes a minute, in batches of up to 20 calls. The Analyst never writes directly — it stages changes for approval — and `/api/v1` (chat, streamed chat over Server-Sent Events, conversations, approving staged actions with an `Idempotency-Key`) takes only OAuth tokens issued for it.
 
+### Data connectors
+
+The headless path covers the other direction too. Beyond the built-in integrations (Affinity, Google Drive, inbound email), data comes in through **connectors**. A connector is a small program you keep in your own repository, usually a private one. It reads an outside system (a general ledger, a fund administrator) and calls this deployment's MCP server with an API key, just as a script would. No connector code lives in this repository, and adding one needs no change here.
+
+[`examples/connector-template`](./examples/connector-template) is the starting point. Copy it into a private repository, add your connectors, and run `npm run sync -- <connector>` on a schedule. Its README covers the contract and how the QuickBooks and Carta connectors are built.
+
+**Setting one up**
+
+1. An admin turns on **Settings → Agent access**.
+2. Create an API key for the connector (read & write) under **Settings → API and MCP**, or with `npm run bootstrap`. Give each connector its own key, so you can revoke one without the others.
+3. The key's member needs write access to accounting for the entity the connector feeds. Admin rights are not needed: everything a connector imports is a draft.
+
+**How it behaves**
+
+- **Writes apply directly, as drafts.** A connector's writes come from a key, so they are not staged for approval the way an assistant's are. They are recorded in the audit trail with source `mcp`. Outside ledger entries still land as **drafts**, and a person reviews and posts them on the journal page.
+- **Outside general ledgers** (QuickBooks, Carta fund admin) go through three steps: `journal_import_accounts`, then `save_journal_mapping`, then `import_journal`. This is the same mapping, review and draft import as **Accounting → QuickBooks**. Each source (`quickbooks`, `carta`) keeps its own account mapping and tags its entries with its own `source_type`.
+- **Safe to repeat.** Each entry is keyed by a hash of its content, so re-sending an overlapping window matches what was already imported instead of duplicating it.
+- **Review holds stop the run.** If the import's comparison with investment and LP records finds a difference, nothing is written until a person re-runs the import with the review token.
+
 ### Dashboards in Claude and ChatGPT
 
 Members can open the fund's dashboards inside a Claude or ChatGPT conversation, ask questions about what they are looking at, and save a dashboard to reopen later. There are four: the portfolio overview, a company with its KPIs, a vehicle's financial statements, and LP capital.

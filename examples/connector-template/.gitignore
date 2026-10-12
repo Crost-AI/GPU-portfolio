@@ -1,0 +1,4 @@
+node_modules/
+.env
+# Cursors and OAuth tokens. Never commit these; see "Where state lives" in the README.
+.state/

@@ -161,3 +161,21 @@ describe('per-LP capital from QuickBooks', () => {
     expect(result.capitalWarnings).toHaveLength(1)
   })
 })
+
+describe('journal sources', () => {
+  it('tags a Carta import with its own provenance and idempotency prefix', () => {
+    const [e] = buildEntries([txn], MAPPING, IDS, 'fund-1', undefined, undefined, 'carta').entries
+    expect(e.sourceType).toBe('carta')
+    expect(e.sourceRef).toMatch(/^carta:[0-9a-f]+$/)
+  })
+
+  it('never matches the same transaction across sources as a re-import', () => {
+    expect(qbSourceRef(txn, 'carta').slice(6)).toBe(qbSourceRef(txn).slice(3))
+    expect(qbSourceRef(txn, 'carta')).not.toBe(qbSourceRef(txn))
+  })
+
+  it('names the source in an unmapped-account skip', () => {
+    const { skipped } = buildEntries([txn], new Map(), IDS, 'fund-1', undefined, undefined, 'carta')
+    expect(skipped[0].reason).toContain('Carta account')
+  })
+})

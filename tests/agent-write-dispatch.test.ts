@@ -334,6 +334,8 @@ describe('the same access rules as the web', () => {
     ['allocation', 'api/accounting/allocation'],
     ['post_bank_transaction', 'api/accounting/bank'],
     ['import_bank_transactions', 'api/accounting/bank'],
+    ['import_journal', 'api/accounting/quickbooks/import'],
+    ['save_journal_mapping', 'api/accounting/quickbooks/mapping'],
     ['add_partner', 'api/accounting/commitments'],
     ['book_capital_call', 'api/accounting/capital-calls'],
     ['record_investment', 'api/portfolio/investments'],

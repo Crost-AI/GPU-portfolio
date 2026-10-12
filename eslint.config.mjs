@@ -30,6 +30,8 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Standalone projects with their own package.json and dependencies (examples/*/README.md).
+      "examples/**",
       // Worktrees Claude Code creates under .claude/ are separate checkouts, not source.
       ".claude/**",
       // Vendored tarballs and generated output.
