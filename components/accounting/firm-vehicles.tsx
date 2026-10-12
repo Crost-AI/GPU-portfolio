@@ -136,7 +136,6 @@ const ALL: Col[] = [CLOSED, LAST_ENTRY, POSTED, DRAFTS, BANK_OPEN, TOTAL_DEBITS,
 const COLUMNS: Record<string, Col[]> = {
   status: ALL,
   journal: [DRAFTS, POSTED, LAST_ENTRY],
-  bank: [BANK_OPEN, CASH, CLOSED],
   ledger: [POSTED, LAST_ENTRY, TOTAL_DEBITS],
   text: [DRAFTS, POSTED, LAST_ENTRY],
   periods: [CLOSED, DRAFTS, TIES],

@@ -20,7 +20,7 @@ interface Rec { bankEndingBalance: number; ledgerCashBalance: number; difference
 
 const actionBtn = 'text-xs border border-input rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors'
 
-export function BankView() {
+export function BankView({ initialSearch = '' }: { initialSearch?: string } = {}) {
   const currency = useCurrency()
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
   const [csv, setCsv] = useState('')
@@ -39,7 +39,7 @@ export function BankView() {
   const [result, setResult] = useState<{ imported: number; skipped: number; matched?: number; needsReview?: number; errors: string[] } | null>(null)
   const [editing, setEditing] = useState<{ txnId: string; entryId: string; readOnly?: boolean } | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(initialSearch)
   const [duplicateSelection, setDuplicateSelection] = useState<Record<string, string>>({})
   const [resolvingDuplicate, setResolvingDuplicate] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState('')

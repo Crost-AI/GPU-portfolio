@@ -5,8 +5,10 @@ import { BankView } from '../../bank/view'
 
 export const metadata: Metadata = { title: 'Bank transactions' }
 
-export default async function BankPage(props: { params: Promise<{ id: string }> }) {
+export default async function BankPage(props: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await props.params;
+  // The firm-wide bank queue links a row here with ?q=<its description>, so it opens found.
+  const q = (await props.searchParams).q
   const { vehicle, vehicleId } = await requireVehicleAccess(params.id)
   return (
     <div className="pt-4 md:pt-8 pb-8 w-full">
@@ -16,7 +18,7 @@ export default async function BankPage(props: { params: Promise<{ id: string }> 
         vehicle={vehicle}
         vehicleId={vehicleId}
       >
-        <BankView />
+        <BankView initialSearch={typeof q === 'string' ? q : ''} />
       </FundSubpageChrome>
     </div>
   )
