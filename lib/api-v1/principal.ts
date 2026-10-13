@@ -68,6 +68,9 @@ export async function resolveV1Principal(
     // mint 'demo' here; nothing a client sends can reach this field.
     credentialKind: 'oauth',
     clientId: resolved.clientId,
+    // The same id the MCP door gives this client (lib/accounting/api-keys.ts), so a change staged
+    // over MCP cannot be approved by the same client over /api/v1 either.
+    credentialId: `oauth:${resolved.clientId}`,
     scopes,
   }
 }

@@ -127,6 +127,8 @@ const DESTRUCTIVE: Record<string, boolean> = {
   save_dashboard: false, delete_dashboard: true,
   // Approving applies a change to the fund's records; hosts should ask before running it.
   approve_action: true, reject_action: false,
+  // Staging a run writes nothing but the proposal; approving it is the destructive act.
+  stage_run: false,
 }
 
 /**

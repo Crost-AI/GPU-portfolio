@@ -37,7 +37,7 @@ export async function callMcpTool(call: McpCall): Promise<McpCallOutcome> {
   if (denied) return refusal(denied)
   try {
     // Approval tools: authorized per action by the pending-actions service.
-    if (isPendingTool(tool)) return { result: toolResult(tool, await tool.run({ admin: ctx.admin, auth, access }, args)) }
+    if (isPendingTool(tool)) return { result: toolResult(tool, await tool.run({ admin: ctx.admin, auth, access, origin: ctx.origin }, args)) }
     // The shared registry goes through the one dispatcher, which stages, audits and dedupes
     // writes (lib/agent/dispatch.ts). A retry may name its call with _meta.idempotencyKey.
     const agentTool = getTool(tool.name)

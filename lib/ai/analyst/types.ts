@@ -31,6 +31,12 @@ export interface AnalystPrincipal {
    * rather than reading the field, so the default lives in one place.
    */
   credentialKind?: CredentialKind
+  /**
+   * The credential this request presented, when it is one (`oauth:<clientId>`, or an API key's id).
+   * Absent for a cookie session: a person in the app. The pending-actions service compares it with
+   * the credential that staged an action, so a chat cannot approve its own change.
+   */
+  credentialId?: string
 }
 
 /** The credential kind, defaulting an unset one to the least-privileged interpretation available. */

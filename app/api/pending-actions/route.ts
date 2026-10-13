@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveBrowserPrincipal } from '@/lib/pending-actions/browser-principal'
-import { listPendingActions, PendingActionServiceError } from '@/lib/pending-actions/service'
+import { listAgentRuns, listPendingActions, PendingActionServiceError } from '@/lib/pending-actions/service'
 
 /**
  * The fund's pending-action queue.
@@ -13,6 +13,10 @@ import { listPendingActions, PendingActionServiceError } from '@/lib/pending-act
  *
  * Paginated, unlike the version this replaces, which selected every pending row. The client walks
  * the cursor to the end.
+ *
+ * `?view=runs` lists the latest runs that were applied or stopped partway (lib/agent/run-action.ts),
+ * with their per-step results, so the Approvals page can show what each did and offer Undo. Same
+ * filter: every step's domain, and the caller's entities.
  */
 export async function GET(req: Request) {
   const admin = createAdminClient()
@@ -23,6 +27,9 @@ export async function GET(req: Request) {
   const cursor = url.searchParams.get('cursor')
 
   try {
+    if (url.searchParams.get('view') === 'runs') {
+      return NextResponse.json(await listAgentRuns(admin, principal, 20))
+    }
     const { actions, nextCursor } = await listPendingActions(admin, principal, { limit: 50, cursor })
     return NextResponse.json({ actions, nextCursor })
   } catch (error) {
