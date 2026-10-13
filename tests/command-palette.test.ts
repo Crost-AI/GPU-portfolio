@@ -66,6 +66,7 @@ describe('pageEntries', () => {
     const busy = pageEntries(true, allowAll, { badges: { review: 2 } }).map(e => e.href)
     expect(busy).toContain('/review')
     expect(busy).not.toContain('/pending-actions')
+    expect(pageEntries(true, allowAll, { badges: { approvals: 1 } }).map(e => e.href)).toContain('/pending-actions')
   })
 
   it('has a unique id per entry, so the list has a stable key and an active row', () => {

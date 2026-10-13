@@ -9,7 +9,7 @@
 // Affordances only, like the rest of the nav. Nothing here is a boundary — every href leads to a
 // page or API that gates itself.
 
-import { navSectionsFor, visibleChildrenFor, type NavItem } from '@/components/app-sidebar'
+import { navSectionsFor, visibleChildrenFor, type NavItem, type NavBadges } from '@/components/app-sidebar'
 import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
 import type { AccessLevel } from '@/lib/access/effective'
@@ -58,8 +58,8 @@ function vehicleSeg(v: PaletteVehicle): string {
  * management company never gets a "Capital accounts" entry. The entity itself is an entry too,
  * in its own group, pointing at its overview.
  *
- * The badges are passed through so the palette agrees with the sidebar about Review, which exists
- * only while something is waiting.
+ * The badges are passed through so the palette agrees with the sidebar about Review and Approvals,
+ * which exist only while something is waiting.
  */
 export function pageEntries(
   isAdmin: boolean,
@@ -67,7 +67,7 @@ export function pageEntries(
   opts: {
     fofActive?: boolean
     vehicles?: PaletteVehicle[]
-    badges?: { review?: number }
+    badges?: NavBadges
   } = {},
 ): PaletteEntry[] {
   const out: PaletteEntry[] = []

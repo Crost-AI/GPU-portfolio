@@ -38,6 +38,7 @@ import type { FeatureVisibilityMap } from '@/lib/types/features'
  */
 interface MobileNavProps {
   reviewBadge: number
+  approvalsBadge?: number
   settingsBadge?: number
   notesBadge?: number
   isAdmin?: boolean
@@ -75,6 +76,7 @@ export const MOBILE_TAB_BAR_SPACER =
 
 export function MobileNav({
   reviewBadge,
+  approvalsBadge,
   settingsBadge,
   notesBadge,
   isAdmin,
@@ -92,6 +94,7 @@ export function MobileNav({
 
   const badgeFor = (key: string | undefined) =>
     key === 'review' ? reviewBadge
+      : key === 'approvals' ? (approvalsBadge ?? 0)
       : key === 'settings' ? (settingsBadge ?? 0)
       : key === 'notes' ? (notesBadge ?? 0)
       : 0
@@ -101,7 +104,7 @@ export function MobileNav({
   // sheet, which is exactly the state you would not think to check.
   const shownBadges = new Set(tabs.map(t => t.badgeKey).filter(Boolean))
   const moreHasBadge =
-    (['review', 'settings', 'notes'] as const).some(
+    (['review', 'approvals', 'settings', 'notes'] as const).some(
       key => !shownBadges.has(key) && badgeFor(key) > 0
     ) || !!updateAvailable
 
@@ -208,6 +211,7 @@ export function MobileNav({
         onOpenChange={setMoreOpen}
         tabHrefs={tabs.map(t => t.href)}
         reviewBadge={reviewBadge}
+        approvalsBadge={approvalsBadge}
         settingsBadge={settingsBadge}
         notesBadge={notesBadge}
         isAdmin={isAdmin}

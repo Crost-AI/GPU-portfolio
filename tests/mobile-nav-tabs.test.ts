@@ -139,8 +139,10 @@ describe('navSectionsFor', () => {
     expect(busy).toContain('/review')
   })
 
-  it('has no Pending Actions section — drafts are approved in the Analyst panel', () => {
+  it('shows Approvals only while something is waiting for this user', () => {
     expect(navSectionsFor(true, allowAll, { review: 1 }).map(s => s.href)).not.toContain('/pending-actions')
+    const busy = navSectionsFor(false, denyAll, { approvals: 2 }).find(s => s.href === '/pending-actions')
+    expect(busy?.label).toBe('Approvals')
   })
 
   it('applies the same access rules as the sidebar and the bar', () => {

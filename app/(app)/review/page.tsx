@@ -15,8 +15,6 @@ import { FundReviewCard, resolveSummary, type FundReviewDecision } from '@/compo
 import { isFundReviewType, type FundProposal } from '@/lib/portfolio/fof-review-types'
 import { investingEntities } from '@/lib/portfolio/investing-entities'
 import { useCanWrite } from '@/components/access-context'
-import { AnalystPendingActions } from '@/components/analyst-pending-actions'
-import { usePendingActions } from '@/components/pending-approvals'
 
 interface ReviewItem {
   id: string
@@ -82,9 +80,6 @@ export default function ReviewPage() {
   const [entities, setEntities] = useState<{ id: string; name: string }[]>([])
   const [fundMessage, setFundMessage] = useState<{ text: string; error: boolean } | null>(null)
   const canWrite = useCanWrite('portfolio', 'investments')
-  // Changes staged from a connected chat, a script or the Analyst. The route filters each row by
-  // the caller's read access; Approve re-checks write per action (see /pending-actions).
-  const pending = usePendingActions()
 
   // `silent` refetches without the spinner: after resolving an item the list is already correct
   // optimistically, and blanking the page to a loader would be a worse answer than the one on
@@ -226,20 +221,7 @@ export default function ReviewPage() {
         </div>
       )}
 
-      {!pending.loading && pending.actions.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-base font-medium text-muted-foreground">
-            Approvals ({pending.actions.length})
-          </h2>
-          <AnalystPendingActions
-            actions={pending.actions}
-            title="Changes staged from a connected chat or the Analyst. Nothing here has taken effect until you approve it."
-          />
-        </div>
-      )}
-      {pending.error && <p className="mb-3 text-sm text-destructive">{pending.error}</p>}
-
-      {!loading && !pending.loading && items.length === 0 && (data?.needsReviewEmails ?? []).length === 0 && pending.actions.length === 0 && (
+      {!loading && items.length === 0 && (data?.needsReviewEmails ?? []).length === 0 && (
         <EmptyState>All clear, nothing to review.</EmptyState>
       )}
 

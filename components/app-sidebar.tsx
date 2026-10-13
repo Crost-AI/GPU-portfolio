@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles, ListChecks } from 'lucide-react'
+import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles, ListChecks, BadgeCheck } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTheme } from 'next-themes'
@@ -38,7 +38,7 @@ interface NavItem {
   href: string
   label: string
   icon: LucideIcon
-  badgeKey?: 'review' | 'settings' | 'notes'
+  badgeKey?: 'review' | 'approvals' | 'settings' | 'notes'
   adminOnly?: boolean
   featureKey?: FeatureKey
   /** Only where the featureKey can't imply it (or there is no featureKey). */
@@ -77,6 +77,10 @@ export function canSee(
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/review', label: 'Review', icon: ClipboardCheck, badgeKey: 'review', domain: 'portfolio' },
+  // Changes staged from a connected chat, a script or the Analyst. No domain: the queue spans
+  // domains, and /api/pending-actions filters each row by the caller's read access. Shown, like
+  // Review, only while something is waiting — the layout counts with RLS, so that is per user.
+  { href: '/pending-actions', label: 'Approvals', icon: BadgeCheck, badgeKey: 'approvals' },
   // Portfolio, not dealflow — the mailbox is where portfolio updates arrive and where the review
   // queue's emails live, so gating it on the Deals product hid the only page that can reprocess an
   // email from every fund running Portfolio Reporting alone. Deal-specific actions inside it gate
@@ -211,11 +215,12 @@ export function navItemMatches(item: NavItem, pathname: string): boolean {
 export function navSectionsFor(
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
-  badges: { review?: number } = {},
+  badges: NavBadges = {},
 ): NavItem[] {
   return NAV_ITEMS.filter(item => {
     if (!canSee(item, isAdmin, access)) return false
     if (item.badgeKey === 'review' && (badges.review ?? 0) === 0) return false
+    if (item.badgeKey === 'approvals' && (badges.approvals ?? 0) === 0) return false
     return true
   })
 }
@@ -233,7 +238,7 @@ export function moreSectionsFor(
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
   tabHrefs: string[],
-  badges: { review?: number } = {},
+  badges: NavBadges = {},
 ): NavItem[] {
   const inBar = new Set(tabHrefs)
   return navSectionsFor(isAdmin, access, badges).filter(item => !inBar.has(item.href))
@@ -297,8 +302,12 @@ export function useFundSeg(): string | null {
 
 export type { NavItem, NavChild }
 
+/** The counts that decide whether a conditional section (Review, Approvals) is shown at all. */
+export interface NavBadges { review?: number; approvals?: number }
+
 interface AppSidebarProps {
   reviewBadge: number
+  approvalsBadge?: number
   settingsBadge?: number
   notesBadge?: number
   isAdmin?: boolean
@@ -321,7 +330,7 @@ interface AppSidebarProps {
   onNavigate?: () => void
 }
 
-export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, isAdmin, updateAvailable, featureVisibility, fofActive, mobile, onNavigate }: AppSidebarProps) {
+export function AppSidebar({ reviewBadge, approvalsBadge, settingsBadge, notesBadge, isAdmin, updateAvailable, featureVisibility, fofActive, mobile, onNavigate }: AppSidebarProps) {
   const pathname = usePathname()
   const access = useAccess()
   const { collapsed: collapsedPref, toggle } = useSidebar()
@@ -349,7 +358,7 @@ export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, isAdmin, up
   return (
     <div className="flex flex-col flex-1">
       <nav className={`flex-1 p-2 space-y-0.5 ${collapsed ? 'md:px-1' : ''}`}>
-        {navSectionsFor(!!isAdmin, access, { review: reviewBadge }).map((item) => {
+        {navSectionsFor(!!isAdmin, access, { review: reviewBadge, approvals: approvalsBadge }).map((item) => {
           const { href, label, icon: Icon, badgeKey, adminOnly, featureKey, beta } = item
           // The parent row is highlighted ONLY when it is the exact current page — never
           // merely because a child is open. Otherwise the highlight was inconsistent: Funds
@@ -360,6 +369,7 @@ export function AppSidebar({ reviewBadge, settingsBadge, notesBadge, isAdmin, up
           // page you're actually on, with section context coming from the expanded children.
           const isActive = pathname === href
           const badgeCount = badgeKey === 'review' ? reviewBadge
+            : badgeKey === 'approvals' ? (approvalsBadge ?? 0)
             : badgeKey === 'settings' ? (settingsBadge ?? 0)
             : badgeKey === 'notes' ? (notesBadge ?? 0)
             : 0
