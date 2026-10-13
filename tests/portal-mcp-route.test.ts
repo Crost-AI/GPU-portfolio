@@ -15,8 +15,10 @@ const connectorPrincipal = vi.fn(async (): Promise<any> => ({ userId: 'u1', lpAc
 const acknowledgeCapitalCall = vi.fn(async () => ({ ok: true, lineId: 'line-1' }))
 const portalLetter = vi.fn(async (): Promise<any> => ({ id: 'l1', period_label: 'Q3 2026', status: 'final', full_draft: 'Dear LPs', portfolio_table_html: '<table><tr><td>Acme</td><td>1x</td></tr></table>', company_narratives: null }))
 let source: string | undefined
+let overview: any = { investorName: 'Pat', currency: 'USD', hasData: false }
 
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
+vi.mock('@/lib/mcp-apps/branding', () => ({ loadBranding: async () => ({ fundName: 'Fund', currency: 'USD', cssVars: '' }) }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => null }))
 vi.mock('@/lib/oauth/store', () => ({ resolveAccessToken: (a: unknown, t: string, aud: string) => resolveAccessToken(a, t, aud) }))
 vi.mock('@/lib/portal/principal', () => ({
@@ -28,7 +30,7 @@ vi.mock('@/lib/portal/service', async importOriginal => {
   const real = await importOriginal<typeof import('@/lib/portal/service')>()
   return {
     ...real,
-    portalOverview: async () => { source = currentChangeSource(); return { investorName: 'Pat', currency: 'USD', hasData: false } },
+    portalOverview: async () => { source = currentChangeSource(); return overview },
     portalLetter: () => portalLetter(),
     acknowledgeCapitalCall: (...a: unknown[]) => (acknowledgeCapitalCall as any)(...a),
     portalDocumentUrl: async () => { throw new real.PortalError(404, 'Not found') },
@@ -46,7 +48,10 @@ const rpc = (body: unknown, token: string | null = 'good') =>
 const call = (name: string, args: Record<string, unknown> = {}, token?: string) =>
   rpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, token)
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  overview = { investorName: 'Pat', currency: 'USD', hasData: false }
+})
 
 describe('authentication', () => {
   it('answers 401 with the investor resource metadata when there is no token', async () => {
@@ -108,5 +113,37 @@ describe('tools', () => {
     const res = await (await call('get_document', { document_id: 'd1' })).json()
     expect(res.result.isError).toBe(true)
     expect(res.result.content[0].text).toMatch(/not shared with you/)
+  })
+})
+
+describe('the position dashboard', () => {
+  it('lists show_my_position with the dashboard view, and serves that view', async () => {
+    const list = await (await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).json()
+    const tool = list.result.tools.find((t: { name: string }) => t.name === 'show_my_position')
+    expect(tool._meta.ui.resourceUri).toMatch(/^ui:\/\//)
+    expect(list.result.tools.find((t: { name: string }) => t.name === 'portal_overview')._meta).toBeUndefined()
+    const res = await (await rpc({ jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: tool._meta.ui.resourceUri } })).json()
+    expect(res.result.contents[0].text).toContain('<')
+    const missing = await (await rpc({ jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'ui://nope' } })).json()
+    expect(missing.error.code).toBe(-32002)
+  })
+
+  it("draws the investor's own vehicles, figures as text for the model", async () => {
+    overview = {
+      investorName: 'Pat', currency: 'USD', hasData: true, asOfDate: '2026-09-30',
+      vehicles: [{ name: 'Fund I', commitment: 1000000, called: 400000, distributed: 100000, nav: 500000, dpi: 0.25, tvpi: 1.5 }],
+      totals: { commitment: 1000000, called: 400000, distributed: 100000, nav: 500000, dpi: 0.25, tvpi: 1.5 },
+    }
+    const res = await (await call('show_my_position')).json()
+    expect(res.result.structuredContent).toMatchObject({ view: 'lps', title: 'Your position', subtitle: 'As of 2026-09-30' })
+    expect(res.result.structuredContent.data.rows).toEqual([expect.objectContaining({ entity: 'Pat', vehicle: 'Fund I', paidIn: 400000, nav: 500000 })])
+    const text = JSON.parse(res.result.content[0].text)
+    expect(text.dashboard).toBe('Your position')
+    expect(text.branding).toBeUndefined()
+  })
+
+  it('says so when nothing has been published', async () => {
+    const res = await (await call('show_my_position')).json()
+    expect(res.result.structuredContent).toEqual({ available: false, reason: expect.stringMatching(/not published/) })
   })
 })

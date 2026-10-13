@@ -25,7 +25,7 @@ import { canSeeVehicle } from '@/lib/access/scope'
 import { buildStatementPackage } from '@/lib/accounting/statement-package'
 import { ACTIVITY_FIELDS, CAPITAL_ACCOUNT_LABELS, type CapitalAccount } from '@/lib/accounting/capital-account'
 import { lpRatios } from '@/lib/lp-metrics'
-import { themeCssVars, type FundTheme } from '@/lib/theme'
+import { loadBranding } from '@/lib/mcp-apps/branding'
 import { shortDate } from '@/lib/mcp-apps/app/format'
 import {
   STATEMENT_PRESETS, VIEW_LABEL,
@@ -60,26 +60,6 @@ function isoDate(value: unknown, label: string): string | undefined {
 
 const text = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim() : undefined
-
-/**
- * The fund's name, reporting currency and theme. One query each, in parallel; a failure of
- * either degrades to the defaults rather than failing a dashboard over its heading.
- */
-async function loadBranding(admin: SupabaseClient, fundId: string): Promise<DashboardBranding> {
-  const [fund, settings] = await Promise.all([
-    (admin as any).from('funds').select('name').eq('id', fundId).maybeSingle(),
-    (admin as any).from('fund_settings').select('currency, theme').eq('fund_id', fundId).maybeSingle(),
-  ])
-  const currency = typeof settings?.data?.currency === 'string' && /^[A-Za-z]{3}$/.test(settings.data.currency)
-    ? settings.data.currency.toUpperCase()
-    : 'USD'
-  return {
-    fundName: typeof fund?.data?.name === 'string' ? fund.data.name : null,
-    currency,
-    // themeCssVars validates every value it emits (lib/theme.ts); the view checks the shape again.
-    cssVars: themeCssVars((settings?.data?.theme as FundTheme | null) ?? null),
-  }
-}
 
 // ---------------------------------------------------------------------------------------------
 // The four views

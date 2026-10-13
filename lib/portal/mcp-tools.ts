@@ -17,6 +17,8 @@ import {
   portalNotices, portalOnboarding, portalOverview, portalStatementFunds, sendPortalMessage, type LpPrincipal,
 } from './service'
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
+import { loadBranding } from '@/lib/mcp-apps/branding'
+import type { LpPayload, LpRow } from '@/lib/mcp-apps/payload'
 
 export interface PortalToolContext {
   admin: SupabaseClient
@@ -31,8 +33,41 @@ export interface PortalTool {
   title: string
   description: string
   scope: 'read' | 'write'
+  /** The result is a dashboard payload, drawn by the fund connector's own view (lib/mcp-apps). */
+  ui?: boolean
   inputSchema: Record<string, unknown>
   run(ctx: PortalToolContext, args: Record<string, unknown>): Promise<unknown>
+}
+
+/**
+ * The investor's position as the LP capital dashboard: one row per vehicle they hold, from the same
+ * published statement as portal_overview. The view is the fund connector's, so it carries the fund's
+ * colours; it needs no other tool, since every row is already the investor's own.
+ */
+async function positionDashboard(ctx: PortalToolContext): Promise<LpPayload | { available: false; reason: string }> {
+  const [overview, branding] = await Promise.all([portalOverview(ctx.admin, ctx.principal), loadBranding(ctx.admin, ctx.fundId)])
+  if (!overview.hasData) return { available: false, reason: 'The fund has not published a capital statement to you yet.' }
+  const investor = overview.investorName ?? 'You'
+  const n = (v: number | null) => v ?? 0
+  const rows: LpRow[] = overview.vehicles.map(v => ({
+    investor, entity: investor, vehicle: v.name,
+    commitment: v.commitment, paidIn: n(v.called), distributions: n(v.distributed), nav: n(v.nav),
+    dpi: v.dpi, rvpi: null, tvpi: v.tvpi, irr: null,
+  }))
+  const t = overview.totals
+  return {
+    view: 'lps',
+    title: 'Your position',
+    subtitle: overview.asOfDate ? `As of ${overview.asOfDate}` : null,
+    args: {},
+    generatedAt: new Date().toISOString(),
+    branding: { ...branding, currency: overview.currency || branding.currency },
+    data: {
+      asOf: overview.asOfDate, vehicle: 'all',
+      rows,
+      totals: { commitment: t.commitment, paidIn: n(t.called), distributions: n(t.distributed), nav: n(t.nav), dpi: t.dpi, rvpi: null, tvpi: t.tvpi },
+    },
+  }
 }
 
 const noArgs = { type: 'object', properties: {}, additionalProperties: false }
@@ -66,7 +101,7 @@ export const PORTAL_TOOLS: PortalTool[] = [
         position: overview.hasData ? overview : 'The fund has not published a capital statement to you yet.',
         openCapitalCalls: open.length,
         youCanAsk: [
-          'How is my investment doing? (portal_overview)',
+          'How is my investment doing? (portal_overview, or show_my_position for a dashboard)',
           'Get my capital account statement (statement_pdf)',
           'Show me the latest letter (list_letters, read_letter)',
           'What documents has the fund shared? (list_documents, get_document)',
@@ -85,6 +120,18 @@ export const PORTAL_TOOLS: PortalTool[] = [
     scope: 'read',
     inputSchema: noArgs,
     run: ctx => portalOverview(ctx.admin, ctx.principal),
+  },
+  {
+    name: 'show_my_position',
+    title: 'My position (dashboard)',
+    description:
+      "Show the investor's position as an interactive dashboard in the conversation: commitment, paid-in, distributions, " +
+      'NAV, DPI and TVPI, in total and by vehicle. Use it when the user asks to see or show their investment. ' +
+      'A host that cannot draw it gets the same figures as text.',
+    scope: 'read',
+    ui: true,
+    inputSchema: noArgs,
+    run: ctx => positionDashboard(ctx),
   },
   {
     name: 'statement_pdf',

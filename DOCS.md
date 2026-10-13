@@ -500,7 +500,7 @@ Investors can connect Claude, ChatGPT or another assistant to their own portal a
 **Connecting.** The investor finds the address under **Settings → Connect an assistant** in their portal and adds it as a custom connector in their assistant. The assistant then sends them to sign in with their portal account. The consent screen names the fund (an investor in more than one fund on this deployment picks one) and says what the assistant may do. The same card lists the assistants they have connected, with a **Disconnect** button for each.
 
 **What it can do.** It covers the investor's own investment in the one fund they chose and nothing else, the same as their web portal:
-- their position and capital account statement (as a one-hour PDF link);
+- their position, as figures or as a dashboard drawn in the conversation (`show_my_position`, in the fund's colours), and their capital account statement (as a one-hour PDF link);
 - letters and documents shared with them;
 - capital calls and distributions;
 - their messages with the fund;
