@@ -28,7 +28,9 @@ export default async function LpCapitalPage() {
 
   return (
     <div className="px-4 md:pl-8 md:pr-4 pt-4 md:pt-6 pb-8 w-full">
-      <LpCapitalView isAdmin={page.isAdmin} />
+      {/* The LP statement (and its PDF) lives under /funds, which is gated on accounting — link to
+          it only for a member who can open it, rather than a link that bounces to the dashboard. */}
+      <LpCapitalView isAdmin={page.isAdmin} canOpenStatement={canViewPage(page, 'accounting')} />
     </div>
   )
 }
