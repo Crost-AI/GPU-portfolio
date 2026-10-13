@@ -27,7 +27,7 @@ interface Position {
   irr: number | null
 }
 
-export function LpCapitalView({ isAdmin }: { isAdmin: boolean }) {
+export function LpCapitalView({ isAdmin, canOpenStatement = false }: { isAdmin: boolean; canOpenStatement?: boolean }) {
   const currency = useCurrency()
   const fmt = (v: number) => formatCurrencyFull(v, currency)
   const confirm = useConfirm()
@@ -46,6 +46,20 @@ export function LpCapitalView({ isAdmin }: { isAdmin: boolean }) {
   const [search, setSearch] = useState('')
   const [delErr, setDelErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Registry ids by vehicle name, for the statement links: `/funds/<name>` resolves only for a
+  // member who sees every entity, so a member granted some of them needs the id (as FundSwitcher).
+  const [vehicleIds, setVehicleIds] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!canOpenStatement) return
+    fetch('/api/accounting/vehicle-index')
+      .then(r => (r.ok ? r.json() : []))
+      .then((v: { id: string | null; name: string }[]) => {
+        if (!Array.isArray(v)) return
+        setVehicleIds(Object.fromEntries(v.filter(o => o.id).map(o => [o.name, o.id as string])))
+      })
+      .catch(() => {})
+  }, [canOpenStatement])
 
   useEffect(() => {
     fetch('/api/accounting/vehicles')
@@ -209,6 +223,11 @@ export function LpCapitalView({ isAdmin }: { isAdmin: boolean }) {
             fmt={fmt}
             search={search}
             metrics
+            // Each LP opens its capital statement (and Generate PDF), which reads the ledger — so
+            // only for a ledger vehicle. `from=lps` sends the statement's back link here.
+            lpHref={canOpenStatement && acct?.source === 'ledger' && group
+              ? (id) => `/funds/${vehicleIds[group] ?? encodeURIComponent(group)}/capital-accounts/${id}?from=lps`
+              : undefined}
             editable={isAdmin && preset === 'itd' ? { onSave: savePosition, onDelete: deleteLp } : undefined}
           />
           {isAdmin && preset !== 'itd' && (
