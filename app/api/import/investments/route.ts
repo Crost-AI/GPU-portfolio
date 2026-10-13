@@ -7,6 +7,7 @@ import { logAIUsage } from '@/lib/ai/usage'
 import { logActivity } from '@/lib/activity'
 import { rateLimit } from '@/lib/rate-limit'
 import { draftEntryForTransaction } from '@/lib/accounting/from-portfolio'
+import { escrowExceedsGross } from '@/lib/portfolio/proceeds'
 import { normalizeSecurityType, SECURITY_TYPES } from '@/lib/accounting/soi'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
 import { loadEntityScope } from '@/lib/access/entity-scope'
@@ -179,6 +180,7 @@ Rules:
 - All monetary values should be plain numbers (no currency symbols)
 - For investment rows: include investment_cost, shares_acquired, share_price, and optionally interest_converted, postmoney_valuation
 - For proceeds rows: include proceeds_received, and optionally cost_basis_exited, proceeds_escrow, proceeds_written_off, proceeds_per_share, exit_valuation
+- proceeds_received is the GROSS proceeds of the exit, INCLUDING any amount held back in escrow. proceeds_escrow is the part of that gross still held back; it is never added on top. If the source gives the cash received and the escrow separately, set proceeds_received to their sum
 - For unrealized_gain_change rows: include current_share_price, and optionally unrealized_value_change, latest_postmoney_valuation
 - For round_info rows: record a funding round the fund did NOT participate in. Include share_price, and optionally postmoney_valuation. This captures round details for reference and updates the latest share price
 - If amounts are in a different currency than fund currency, include original_currency (ISO 4217 code like "EUR", "GBP") and the original_* versions of relevant monetary fields
@@ -186,7 +188,8 @@ Rules:
 - If the data has column headers like "Cost", "Amount Invested", "Investment Amount" those map to investment_cost
 - "Shares", "# Shares" maps to shares_acquired
 - "Price/Share", "Share Price" maps to share_price
-- "Proceeds", "Exit Proceeds", "Amount Received" maps to proceeds_received
+- "Proceeds", "Exit Proceeds", "Gross Proceeds" maps to proceeds_received. An "Amount Received" or "Cash Received" column is net of escrow: add the escrow to it for proceeds_received
+- "Escrow", "Holdback", "Held in Escrow" maps to proceeds_escrow
 - If the data describes valuations or current fair market value, create unrealized_gain_change entries
 - If the data includes a portfolio group, fund name, or vehicle (e.g. "Fund I", "SPV 1"), set portfolio_group to that string value
 - If you can't determine the transaction type, default to "investment"
@@ -337,6 +340,14 @@ ${text}`,
     // Dropping the transaction because a model wrote "Series A-1 Pfd" would lose the position to
     // save the caption — so the caption goes, the position stays, and the import says so. Left null,
     // the SOI falls back to its derived priced-equity/convertible proxy.
+    // Proceeds are gross, escrow included (lib/portfolio/proceeds.ts). A row with more in escrow
+    // than in proceeds was read as cash received; importing it would book negative cash.
+    const escrowProblem = escrowExceedsGross({ transaction_type: txnType, proceeds_received: pt.proceeds_received, proceeds_escrow: pt.proceeds_escrow })
+    if (escrowProblem) {
+      results.errors.push(`Skipped the exit for "${companyName}": ${escrowProblem}`)
+      continue
+    }
+
     const security_type = pt.security_type ? normalizeSecurityType(pt.security_type) : null
     if (pt.security_type && !security_type) {
       results.errors.push(

@@ -9,7 +9,8 @@
 //
 // Netted per company, per kind of investment account:
 //   cost debit                → investment at that cost
-//   cost credit               → an exit: basis = the credit; proceeds = basis + gain − escrow
+//   cost credit               → an exit: basis = the credit; proceeds = basis + gain (GROSS,
+//                               escrow included); escrow = the 1350 debit (lib/portfolio/proceeds.ts)
 //   unrealized, no cost line  → a mark
 //   FX translation, no cost   → an FX mark
 // A 1200/1250 credit beside a cost credit is the exit unwinding its mark, not a separate mark.
@@ -126,8 +127,10 @@ export function readInvestmentLines(postings: ReadPosting[], chart: ChartAccount
       if (c.unrealized > 0 || c.fx > 0) return { refused: 'This entry records an exit and a mark-up together. Split the mark into its own entry.' }
       const basis = roundCents(-c.cost) // 0 for an earn-out
       const gain = roundCents(-(c.realized + (companies.length === 1 ? pooledGain : 0)))
+      // proceeds_received is the GROSS: the gain is measured on it, so it is basis + gain whatever
+      // part of it is still held in escrow. The escrow is recorded beside it, not netted out.
       const held = companies.length === 1 || exits.length === 1 ? escrow : 0
-      const txn: AdoptedTxn = { company_id: id, transaction_type: 'proceeds', cost_basis_exited: basis, proceeds_received: roundCents(basis + gain - held) }
+      const txn: AdoptedTxn = { company_id: id, transaction_type: 'proceeds', cost_basis_exited: basis, proceeds_received: roundCents(basis + gain) }
       if (held !== 0) txn.proceeds_escrow = held
       transactions.push(txn)
       continue

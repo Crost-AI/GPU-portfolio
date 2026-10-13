@@ -520,6 +520,14 @@ Cash/income in; each LP's capital increases. Line: **gains**.
   Equity:Partners-Capital-Acme-LLC:3100-bbbb     -200000.00 USD
 ```
 
+**An exit recorded on the company** posts the same way, with the cost retired (Cr 1100) and any
+escrow held back. Its **Proceeds** is the *gross* amount realized, escrow included; **In escrow** is
+the part of it not yet paid. The entry books gross − escrow to 1000 Cash, the escrow to 1350 Escrow
+receivable, and gross − cost basis as the realized gain — the same gain the tracker reports. An
+*escrow receipt* on the company later moves the escrow from 1350 to cash and books no further gain.
+Exits booked before this rule debited cash with the full Proceeds; the entity's status page lists
+the ones to check against the bank (`scripts/diagnose-escrow-exits.ts` prints the detail).
+
 ### 7. Revaluation (unrealized mark) — `source: valuation` (compound, via bridge)
 Mark the investment to a new fair value by recording a valuation update on the company (or booking
 a quoted price or a manager's NAV). The derived entry books the **delta** vs the ledger's current

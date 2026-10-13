@@ -5,6 +5,8 @@
 // entry is retracted: a row the database will refuse must not cost the transaction its journal entry.
 // Used by POST /api/companies/[id]/investments (the new row) and PATCH …/[txnId] (the edited row).
 
+import { escrowExceedsGross } from './proceeds'
+
 export const TRANSACTION_TYPES = ['investment', 'proceeds', 'escrow_receipt', 'unrealized_gain_change', 'round_info', 'split', 'income']
 export const INCOME_KINDS = ['staking', 'airdrop', 'dividend', 'other']
 export const INCOME_SETTLEMENTS = ['cash', 'in_kind']
@@ -102,5 +104,7 @@ export function transactionRowError(row: Record<string, unknown>): string | null
   if (row.valuation_change_source != null && !VALUATION_CHANGE_SOURCES.includes(row.valuation_change_source as string)) {
     return `valuation_change_source must be one of: ${VALUATION_CHANGE_SOURCES.join(', ')}.`
   }
-  return splitError(row) ?? incomeError(row)
+  // Not a database constraint: escrow is part of the gross proceeds (lib/portfolio/proceeds.ts), so
+  // a row with more in escrow than in proceeds was entered under the old net reading.
+  return splitError(row) ?? incomeError(row) ?? escrowExceedsGross(row)
 }

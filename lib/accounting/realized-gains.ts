@@ -9,6 +9,7 @@
 import { disposalBasis, type LotMethod } from '@/lib/portfolio/lots'
 import { isLongTerm } from './holding-period'
 import { roundCents } from './ledger'
+import { grossProceeds } from '@/lib/portfolio/proceeds'
 
 type Txn = Parameters<typeof disposalBasis>[0][number]
 
@@ -55,9 +56,9 @@ export interface RealizedGains {
   totals: RealizedGainsTotals
 }
 
-/** Proceeds recognised on a disposal row — cash plus escrow, as the tracker counts them. */
+/** Proceeds recognised on a disposal row — the gross, escrow included, as the tracker counts them. */
 function proceedsOf(t: any): number {
-  return Number(t.proceeds_received ?? 0) + Number(t.proceeds_escrow ?? 0)
+  return grossProceeds(t)
 }
 
 export function realizedGains(

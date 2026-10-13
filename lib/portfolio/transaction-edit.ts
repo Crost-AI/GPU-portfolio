@@ -12,6 +12,7 @@ import { TRANSACTION_TYPES, transactionRowError } from '@/lib/portfolio/transact
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
 import { groupWriteDenial } from '@/lib/access/scope'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
+import { proceedsSplit } from '@/lib/portfolio/proceeds'
 
 /** Who is making the change: their fund, their id (null for a credential with no user) and their entities. */
 export interface TxnEditor {
@@ -216,9 +217,25 @@ export async function updateInvestmentTransaction(
 
   // Re-mirror the ledger: derive the edited transaction afresh.
   const derived = await draftEntryForTransaction(admin, existing.fund_id, who.userId, txn, companyName)
-  const ledger = retracted.warning ? { ...derived, warning: retracted.warning } : derived
+  const warnings = [retracted.warning, derived.drafted ? escrowRebookNote(txn) : null].filter(Boolean)
+  const ledger = warnings.length > 0 ? { ...derived, warning: warnings.join(' ') } : derived
 
   return done({ transaction: txn, ledger })
+}
+
+/**
+ * Said back whenever an exit with escrow is re-booked. Rows recorded before the proceeds columns had
+ * one meaning may hold the cash received rather than the gross, and re-deriving books them as gross
+ * (lib/portfolio/proceeds.ts) — so the person editing sees what was booked and can correct it.
+ */
+export function escrowRebookNote(txn: any): string | null {
+  if (txn?.transaction_type !== 'proceeds') return null
+  const { gross, escrow, cash } = proceedsSplit(txn)
+  if (!(escrow > 0)) return null
+  const money = (v: number) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return `Proceeds are read as the gross amount, escrow included: this exit booked ${money(cash)} to cash `
+    + `(${money(gross)} less ${money(escrow)} in escrow) and ${money(escrow)} to the escrow receivable. `
+    + 'If Proceeds was entered as the cash received, change it to the gross.'
 }
 
 /** Delete a recorded transaction, retracting its journal entry first. */

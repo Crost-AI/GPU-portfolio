@@ -194,7 +194,8 @@ export function computeSummary(
 
     if (txn.transaction_type === 'proceeds') {
       // `proceeds_received` stores gross proceeds realized at the exit. `proceeds_escrow` is a
-      // disclosure of the portion still held back, not an additional amount to add again.
+      // disclosure of the portion still held back, not an additional amount to add again. The one
+      // definition every reader uses, the ledger included: lib/portfolio/proceeds.ts.
       const proceedsAmount = txn.proceeds_received ?? 0
       totalRealized += proceedsAmount
       totalWrittenOff += txn.proceeds_written_off ?? 0
