@@ -196,27 +196,6 @@ export const PROMPT_TEMPLATES: PromptTemplate[] = [
     domain: 'accounting',
     text: a => `Compare ${a.vehicle || 'the entity'}'s actuals this year with its approved budget. List the largest variances by account, favourable and unfavourable, and for each say whether it looks like timing or a real change.`,
   },
-  {
-    name: 'quarterly_lp_letter',
-    title: 'Quarterly LP letter draft',
-    description:
-      "A two-page LP letter for an entity's quarter, drafted only from the stored company updates and the books: three themes, " +
-      'each company in plain English, bad news stated plainly, next quarter\'s priorities, every performance figure labeled gross ' +
-      'or net, and a Missing information list. Saved as an unshared draft for review.',
-    arguments: [
-      { name: 'vehicle', description: 'The fund or SPV the letter is for.', required: true },
-      { name: 'quarter', description: 'The quarter, e.g. Q3 2026.', required: true },
-    ],
-    domain: 'lp_relations',
-    feature: 'lp_letters',
-    text: a =>
-      `Draft the ${a.quarter || 'last quarter'} LP letter for ${a.vehicle || 'the fund'}. Call lp_draft_letter for that entity and quarter ` +
-      'with no text, so the fund drafts it from its own stored company updates and books. If the fund has no AI provider set up, ' +
-      'call lp_letter_brief instead, write the letter yourself following its instructions exactly, and save it with lp_draft_letter, ' +
-      'passing your text. Then show me the draft, every review flag it returned, and the Missing information list. Do not add any ' +
-      'number or claim that is not in the sources, and do not mark the letter complete or share it: it stays a draft until a ' +
-      'person reviews it.',
-  },
 ]
 
 export function promptsFor(canRead?: CanRead): PromptTemplate[] {
