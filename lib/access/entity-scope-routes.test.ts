@@ -18,7 +18,6 @@ const PENDING: Record<string, string> = {
   'api/cron/memo-agent-worker': 'exempt: a job acting for the fund, not a member request',
   'api/webhooks/transcription/[token]': 'exempt: a provider webhook, authenticated by its token',
   'api/portal/analyst': 'exempt: the LP portal — an LP’s own data, authenticated as that LP, not a fund member',
-  'api/portal/letters/[id]/pdf': 'exempt: the LP portal — an LP’s own data, authenticated as that LP, not a fund member',
   'api/portal/snapshots/[id]/pdf': 'exempt: the LP portal — an LP’s own data, authenticated as that LP, not a fund member',
   'api/cron/deal-research': 'exempt: a job or webhook acting for the fund, not a member request',
   'api/cron/deals-digest': 'exempt: a job or webhook acting for the fund, not a member request',

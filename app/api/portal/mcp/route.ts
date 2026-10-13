@@ -3,7 +3,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveAccessToken } from '@/lib/oauth/store'
 import { issuerFor, wwwAuthenticate, PORTAL_MCP_PATH } from '@/lib/oauth/metadata'
 import { withChangeSource } from '@/lib/audit/source'
-import { negotiateProtocolVersion } from '@/lib/mcp-apps/server'
+import { DASHBOARD_RESOURCE_URI, listResources, negotiateProtocolVersion, readResource } from '@/lib/mcp-apps/server'
+import { isDashboardPayload } from '@/lib/mcp-apps/payload'
 import { rateLimit } from '@/lib/rate-limit'
 import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
 import { getPortalTool, portalToolsFor, type PortalToolContext } from '@/lib/portal/mcp-tools'
@@ -50,6 +51,16 @@ function describe(t: ReturnType<typeof portalToolsFor>[number]) {
     description: t.description,
     inputSchema: t.inputSchema,
     annotations: { title: t.title, readOnlyHint: t.scope === 'read', destructiveHint: false, openWorldHint: false },
+    // Drawn by the fund connector's own dashboard view (lib/mcp-apps/server.ts), served below.
+    ...(t.ui ? {
+      _meta: {
+        ui: { resourceUri: DASHBOARD_RESOURCE_URI },
+        'ui/resourceUri': DASHBOARD_RESOURCE_URI,
+        'openai/outputTemplate': DASHBOARD_RESOURCE_URI,
+        'openai/toolInvocation/invoking': 'Loading your position',
+        'openai/toolInvocation/invoked': 'Position ready',
+      },
+    } : {}),
   }
 }
 
@@ -58,7 +69,7 @@ async function handle(rpc: RpcRequest, ctx: PortalToolContext, scope: string): P
     case 'initialize':
       return ok(rpc.id, {
         protocolVersion: negotiateProtocolVersion(rpc.params?.protocolVersion),
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { ...SERVER_INFO, websiteUrl: ctx.origin },
         instructions: SERVER_INSTRUCTIONS,
       })
@@ -80,6 +91,11 @@ async function handle(rpc: RpcRequest, ctx: PortalToolContext, scope: string): P
       }
       try {
         const result = await tool.run(ctx, rpc.params?.arguments ?? {})
+        // A dashboard: the whole payload for the view, the figures (not the theme) for the model.
+        if (tool.ui && isDashboardPayload(result)) {
+          const forModel = { dashboard: result.title, scope: result.subtitle, data: result.data }
+          return ok(rpc.id, { content: [{ type: 'text', text: JSON.stringify(forModel) }], structuredContent: result })
+        }
         return ok(rpc.id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: wrap(result) })
       } catch (e) {
         // A PortalError is a refusal or a bad argument, worded for the user. Anything else is ours.
@@ -89,7 +105,11 @@ async function handle(rpc: RpcRequest, ctx: PortalToolContext, scope: string): P
       }
     }
     case 'resources/list':
-      return ok(rpc.id, { resources: [] })
+      return ok(rpc.id, listResources())
+    case 'resources/read': {
+      const resource = readResource(rpc.params?.uri)
+      return resource ? ok(rpc.id, resource) : err(rpc.id, -32002, `Resource not found: ${rpc.params?.uri}`)
+    }
     case 'resources/templates/list':
       return ok(rpc.id, { resourceTemplates: [] })
     case 'prompts/list':

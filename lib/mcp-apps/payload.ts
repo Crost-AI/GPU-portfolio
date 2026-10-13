@@ -318,14 +318,38 @@ export type CallsPayload = PayloadBase<'calls', CallsData>
 
 export type HomePayload = Omit<PayloadBase<DashboardView, HomeData>, 'view'> & { view: 'home' }
 
-export type DashboardPayload = PortfolioPayload | CompanyPayload | StatementsPayload | LpPayload | CallsPayload | HomePayload
+// ---------------------------------------------------------------------------------------------
+// Chart — figures the assistant already has, drawn
+// ---------------------------------------------------------------------------------------------
+
+/** Not a saveable dashboard: its figures come from the conversation, not from a live read. */
+export const CHART_TOOL = 'show_chart'
+export const CHART_KINDS = ['bar', 'line'] as const
+export const CHART_UNITS = ['currency', 'number', 'percent', 'multiple'] as const
+export const CHART_MAX_POINTS = 60
+
+export interface ChartData {
+  /** Bars compare categories; a line follows one measure over time, oldest first. */
+  kind: (typeof CHART_KINDS)[number]
+  /** How values are written. A percent is in percentage points (12.5 = 12.5%). */
+  unit: (typeof CHART_UNITS)[number]
+  /** What the values measure, for the legend, the table header and the screen-reader label. */
+  measure: string
+  points: { label: string; value: number }[]
+  /** Where the figures came from, said under the chart. */
+  source: string | null
+}
+
+export type ChartPayload = Omit<PayloadBase<DashboardView, ChartData>, 'view'> & { view: 'chart' }
+
+export type DashboardPayload = PortfolioPayload | CompanyPayload | StatementsPayload | LpPayload | CallsPayload | HomePayload | ChartPayload
 
 /** Narrowing guard for anything arriving over the wire. */
 export function isDashboardPayload(x: unknown): x is DashboardPayload {
   if (!x || typeof x !== 'object') return false
   const p = x as { view?: unknown; data?: unknown }
   return typeof p.view === 'string'
-    && ((DASHBOARD_VIEWS as readonly string[]).includes(p.view) || p.view === 'home')
+    && ((DASHBOARD_VIEWS as readonly string[]).includes(p.view) || p.view === 'home' || p.view === 'chart')
     && !!p.data && typeof p.data === 'object'
 }
 

@@ -33,7 +33,7 @@ export const DOCUMENT_HANDLERS: Record<string, AgentToolHandler> = {
   document_generate: async ({ admin, fundId, userId, origin }: AgentToolContext, input: any) => {
     if (!userId) throw new Error('Documents are issued to a signed-in member; this credential has no user.')
     const doc = await generateDocument(admin, fundId, userId, input ?? {})
-    const { token, expiresAt } = signReportLink({ fundId, userId, kind: 'document', args: { render: doc.renderId } })
+    const { token, expiresAt } = signReportLink({ fundId, userId, kind: 'template_document', args: { render: doc.renderId } })
     return {
       document: doc.title, template: doc.template,
       url: reportLinkUrl(origin ?? siteOrigin(), token),

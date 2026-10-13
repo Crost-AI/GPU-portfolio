@@ -58,7 +58,7 @@ const statement = (lp = 'ent-1', vehicle = 'Fund I') => signReportLink({
 }).token
 const card = () => signReportLink({ fundId: 'fund-1', userId: 'user-me', kind: 'lp_report_card', args: { investor: 'inv-1' } }).token
 
-const letter = (render = 'render-1') => signReportLink({ fundId: 'fund-1', userId: 'user-me', kind: 'document', args: { render } }).token
+const letter = (render = 'render-1') => signReportLink({ fundId: 'fund-1', userId: 'user-me', kind: 'template_document', args: { render } }).token
 
 const open = (token: string) => GET(new NextRequest(`https://fund.test/api/agent/reports/${token}`), { params: Promise.resolve({ token }) })
 

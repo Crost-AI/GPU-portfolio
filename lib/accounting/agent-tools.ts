@@ -42,6 +42,7 @@ import { DEALS_TOOL_MANIFEST } from '@/lib/agent/deals-tools-manifest'
 import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
 import { LP_TOOL_MANIFEST } from '@/lib/agent/lp-tools-manifest'
 import { LP_HANDLERS } from '@/lib/agent/lp-tools'
+import { LP_RECORD_HANDLERS } from '@/lib/agent/lp-record-tools'
 import { DOCUMENT_TOOL_MANIFEST } from '@/lib/agent/document-tools-manifest'
 import { DOCUMENT_HANDLERS } from '@/lib/agent/document-tools'
 import { CONSTRUCTION_TOOL_MANIFEST } from '@/lib/agent/construction-tools-manifest'
@@ -50,6 +51,12 @@ import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
 import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
 import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
+import { REPORT_TOOL_MANIFEST } from '@/lib/agent/report-tools-manifest'
+import { REPORT_HANDLERS } from '@/lib/agent/report-tools'
+import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
+import { LETTER_HANDLERS } from '@/lib/agent/letter-tools'
+import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
+import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -346,11 +353,14 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
-  ...bind(LP_TOOL_MANIFEST, LP_HANDLERS),
+  ...bind(LP_TOOL_MANIFEST, { ...LP_HANDLERS, ...LP_RECORD_HANDLERS }),
   ...bind(DOCUMENT_TOOL_MANIFEST, DOCUMENT_HANDLERS),
   ...bind(CONSTRUCTION_TOOL_MANIFEST, CONSTRUCTION_HANDLERS),
   ...bind(FORECAST_TOOL_MANIFEST, FORECAST_HANDLERS),
   ...bind(SETUP_TOOL_MANIFEST, SETUP_HANDLERS),
+  ...bind(REPORT_TOOL_MANIFEST, REPORT_HANDLERS),
+  ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
+  ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

@@ -218,6 +218,13 @@ export function toolResult(tool: McpTool, result: unknown) {
   if (isUi(tool) && isDashboardPayload(result) && result.view === 'home') {
     return { content: [{ type: 'text', text: result.data.help }], structuredContent: result }
   }
+  // The model sent these figures; echoing them back would only double the context. A host without
+  // MCP Apps shows this line, so it says what was drawn.
+  if (isUi(tool) && isDashboardPayload(result) && result.view === 'chart') {
+    const text = `Drew "${result.title}": ${result.data.points.length} ${result.data.kind === 'bar' ? 'bars' : 'points'} of ${result.data.measure}. ` +
+      'If the chart does not appear, this host cannot draw it; give the figures as a table instead.'
+    return { content: [{ type: 'text', text }], structuredContent: result }
+  }
   if (isUi(tool) && isDashboardPayload(result)) {
     const forModel = {
       dashboard: result.title,

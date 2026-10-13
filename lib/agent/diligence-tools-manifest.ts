@@ -36,7 +36,8 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'diligence_deal_detail',
     description:
       'One diligence deal in full: status, sector, stage, lead partner, plus a progress report across the five pipeline stages ' +
-      '(data room, checklist, research, scoring, memo) with what is blocking each.',
+      '(data room, checklist, research, scoring, memo) with what is blocking each, and the memo agent\'s latest job ' +
+      '(running, finished or failed, with its error) — check here after diligence_run_agent.',
     scope: 'read',
     domain: 'diligence',
     inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },
@@ -249,6 +250,18 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
         full: { type: 'boolean', description: 'analyze only: re-read every document and re-check every item.' },
       },
       required: ['deal', 'stage'],
+    },
+  },
+  {
+    name: 'diligence_job_status',
+    description:
+      'How a memo-agent job is going: queued, running, done or failed, its latest progress message, and its error if it failed. ' +
+      "Pass the job_id diligence_run_agent returned, or a deal for its recent jobs.",
+    scope: 'read',
+    domain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: { job_id: { type: 'string', description: 'The job id a tool returned (its job.id).' }, deal: { type: 'string', description: 'Deal id or name: its latest jobs.' } },
     },
   },
   {

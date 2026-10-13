@@ -154,4 +154,139 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
     domain: 'lp',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  // ---- The LP register's records. Writes: staged for approval from a chat, like every other write.
+  // Investors and entities need an admin, as on the Investors page; profiles and corrections need
+  // write on LP capital. Each runs the web route's own function (lib/lps/records.ts).
+  {
+    name: 'lp_commitments',
+    description:
+      'The commitment history of a vehicle: every increase, decrease and transfer, with its id, date, amount and memo, and each ' +
+      'partner\'s commitment as of a date. Use the ids with lp_correct_commitment.',
+    scope: 'read',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vehicle: VEHICLE,
+        lp: { type: 'string', description: 'Optional: only this LP entity.' },
+        as_of: { type: 'string', description: 'Optional: commitments as of this date (YYYY-MM-DD). Default today.' },
+      },
+      required: ['vehicle'],
+    },
+  },
+  {
+    name: 'lp_create_investor',
+    description: 'Add an investor (a person, family or institution) to the LP register. Add their legal entities with lp_create_entity. Admin only.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+  },
+  {
+    name: 'lp_update_investor',
+    description: 'Rename an investor, or set the investor it rolls up to (parent). Admin only.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        investor: { type: 'string', description: 'The investor, by name or id.' },
+        name: { type: 'string', description: 'The new name.' },
+        parent: { type: 'string', description: 'The parent investor by name or id, or an empty string to clear it.' },
+      },
+      required: ['investor'],
+    },
+  },
+  {
+    name: 'lp_create_entity',
+    description: 'Add a legal entity (the subscribing vehicle: a trust, an LLC, an IRA) under an investor. Commitments are recorded against entities. Admin only.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        investor: { type: 'string', description: 'The investor it belongs to, by name or id.' },
+        entity_name: { type: 'string' },
+      },
+      required: ['investor', 'entity_name'],
+    },
+  },
+  {
+    name: 'lp_update_entity',
+    description: 'Rename an LP entity, or move it to another investor. Admin only.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lp: LP,
+        name: { type: 'string', description: 'The new entity name.' },
+        investor: { type: 'string', description: 'The investor to move it to, by name or id.' },
+      },
+      required: ['lp'],
+    },
+  },
+  {
+    name: 'lp_update_profile',
+    description:
+      'Update an LP entity\'s profile (the facts subscription documents are filled from) and its investor\'s relationship contact. ' +
+      'Only the fields given change.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lp: LP,
+        entity: {
+          type: 'object',
+          description: 'Entity facts: entity_type, formation_jurisdiction, address_line1, address_line2, city, region, postal_code, country, ' +
+            'notice_email, signatories [{ name, title?, email? }], profile_notes, onboarding_excluded.',
+        },
+        contact: {
+          type: 'object',
+          description: 'The investor\'s relationship contact: contact_name, contact_email, contact_phone.',
+        },
+      },
+      required: ['lp'],
+    },
+  },
+  {
+    name: 'lp_record_commitment',
+    description:
+      'Record a change to an LP\'s commitment in a vehicle after their admission: an increase (positive amount), a decrease ' +
+      '(negative), or a transfer from another LP (from_lp, positive amount). For a new partner use add_partner. Admin only.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vehicle: VEHICLE,
+        lp: LP,
+        effective_date: { type: 'string', description: 'YYYY-MM-DD' },
+        amount: { type: 'number' },
+        from_lp: { type: 'string', description: 'For a transfer: the LP entity the commitment moves from.' },
+        memo: { type: 'string' },
+      },
+      required: ['vehicle', 'lp', 'effective_date', 'amount'],
+    },
+  },
+  {
+    name: 'lp_correct_commitment',
+    description:
+      'Correct a recorded commitment event\'s date, amount or memo (its id from lp_commitments). Changing an amount needs a reason; ' +
+      'a transfer\'s amount cannot be changed here.',
+    scope: 'write',
+    domain: 'lp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vehicle: VEHICLE,
+        event_id: { type: 'string' },
+        effective_date: { type: 'string', description: 'YYYY-MM-DD' },
+        amount: { type: 'number' },
+        memo: { type: 'string' },
+        reason: { type: 'string', description: 'Why, required to change an amount. Kept in the audit trail.' },
+      },
+      required: ['vehicle', 'event_id'],
+    },
+  },
 ]

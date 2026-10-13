@@ -9,7 +9,7 @@ import {
   describeTool, getMcpTool, listResources, listableTools, negotiateProtocolVersion, readResource, toolResult,
 } from './server'
 import { DASHBOARD_HTML, DASHBOARD_HTML_HASH } from './dashboard-html.generated'
-import { portfolio } from './fixtures'
+import { chart, portfolio } from './fixtures'
 
 const access = (role: 'admin' | 'member' | 'viewer', grants: Partial<Record<Domain, AccessLevel>> = {}): AccessContext => ({
   fundId: 'f', userId: 'u', vehicles: { all: true, ids: [] }, role,
@@ -202,6 +202,13 @@ describe('toolResult', () => {
     expect(forModel.data.totals).toEqual(portfolio.data.totals)
     // The theme is presentation, not something for the model to reason over.
     expect(forModel.branding).toBeUndefined()
+  })
+
+  it("draws a chart for the view, and tells the model only what was drawn: the figures were its own", () => {
+    const result = toolResult(tool('show_chart'), chart) as any
+    expect(result.structuredContent).toBe(chart)
+    expect(result.content[0].text).toMatch(/^Drew "NAV by quarter": 4 points of NAV/)
+    expect(result.content[0].text).not.toContain('22750000')
   })
 
   it('sends anything else as text only', () => {

@@ -29,6 +29,7 @@ import {
   IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyScope,
 } from '@/lib/api-v1/idempotency'
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
+import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
 import { adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
 
 /** Which door a call came through. Recorded on every write, as `source` (lib/audit/source.ts). */
@@ -218,6 +219,11 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     subjectType: 'pending_action', subjectId: id, source: channel,
     details: { actionType: AGENT_TOOL_CALL, args: { tool: tool.name, input: auditInput(args.input) }, credentialId: auth.keyId },
   })
+  // An admin-only change from a member waits on someone outside this conversation: tell them.
+  const adminLabel = adminOnlyToolLabel(tool.name, input)
+  const emailed = adminLabel && auth.role !== 'admin'
+    ? await notifyAdminsOfStagedChange(admin, { fundId: auth.fundId, label: adminLabel, summary: preview.summary, requesterId: auth.userId, origin })
+    : 0
   // A chat whose tool list predates the approval tools (hosts cache it per conversation) is told to
   // call one it does not have, so the result also carries the page where a person can approve.
   const approveUrl = origin ? `${origin}/pending-actions` : undefined
@@ -228,8 +234,8 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     summary: preview.summary,
     preview: preview.details,
     ...(approveUrl ? { approveUrl } : {}),
-    next: adminOnlyToolLabel(tool.name, input) && auth.role !== 'admin'
-      ? `Nothing has changed yet. ${adminOnlyMessage(adminOnlyToolLabel(tool.name, input)!)} ` +
+    next: adminLabel && auth.role !== 'admin'
+      ? `Nothing has changed yet. ${adminOnlyMessage(adminLabel)}${emailed ? " The fund's admins have been emailed." : ''} ` +
         'Tell the user it is waiting for an admin, who can approve it from their own chat ' +
         '(list_pending_actions, then approve_action) or through the API, without opening the app.'
       : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +

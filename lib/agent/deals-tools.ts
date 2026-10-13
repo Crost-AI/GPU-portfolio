@@ -15,6 +15,7 @@ import { parseUpdateFiles } from '@/lib/company-updates/submit'
 import { createManualDeal, promoteInboundDeal, queueDealResearch, updateInboundDeal } from '@/lib/deals/service'
 import { unwrap } from '@/lib/service-outcome'
 import { fundMemberId, visibleVehicleId } from './refs'
+import { jobHandle, jobRecordId } from './jobs'
 
 const LIST_COLUMNS =
   'id, company_name, company_url, company_domain, founder_name, founder_email, intro_source, referrer_name, ' +
@@ -188,7 +189,19 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
   deals_research_inbound: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
     const deal = await resolveInboundDeal(admin, fundId, str(input?.deal), access)
     const out = unwrap(await queueDealResearch(admin, fundId, deal.id))
-    return { dealId: deal.id, company: deal.company_name, ...out, note: 'Research runs in the background. Check deals_inbound_detail later.' }
+    return { dealId: deal.id, company: deal.company_name, ...out, job: jobHandle('deal_research', deal.id, out.research_status) }
+  },
+
+  deals_research_status: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const ref = input?.job_id ? jobRecordId('deal_research', input.job_id) : str(input?.deal)
+    const deal = await resolveInboundDeal(admin, fundId, ref, access)
+    if (!deal.research_status) return { dealId: deal.id, company: deal.company_name, job: null, note: 'No research has been queued for this deal. Start it with deals_research_inbound.' }
+    const job = jobHandle('deal_research', deal.id, deal.research_status)
+    return {
+      dealId: deal.id, company: deal.company_name, job,
+      error: job.status === 'failed' ? deal.research_error ?? null : null,
+      research: job.status === 'done' ? deal.research_output ?? null : null,
+    }
   },
 
   deals_promote_to_diligence: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
