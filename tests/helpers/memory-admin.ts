@@ -2,7 +2,7 @@
 // An in-memory stand-in for the Supabase admin client, for tests whose flow crosses several
 // tables (post an entry, adopt its transactions, link a bank row). Implements the query-builder
 // subset lib/accounting uses — select (with `journal_postings(...)` embedded under
-// `journal_entries`), eq/neq/in/is/not-is/like/contains/gt/gte/lt/lte, order, range, limit, insert, upsert
+// `journal_entries`), eq/match/neq/in/is/not-is/like/contains/gt/gte/lt/lte, order, range, limit, insert, upsert
 // (ignoreDuplicates), update, delete, maybeSingle, single, count+head — over plain arrays.
 // Not a database: no RLS, no triggers, no joins beyond the one embed.
 
@@ -119,6 +119,7 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
       update: (v: Row) => { mode = 'update'; payload = v; return q },
       delete: () => { mode = 'delete'; return q },
       eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return q },
+      match: (o: Row) => { for (const [k, v] of Object.entries(o)) filters.push(r => r[k] === v); return q },
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q },
       in: (k: string, vs: unknown[]) => { filters.push(r => vs.includes(r[k])); return q },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },

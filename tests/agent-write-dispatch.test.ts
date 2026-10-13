@@ -43,7 +43,7 @@ vi.mock('@/lib/accounting/api-keys', async importOriginal => {
 
 import { POST as mcpPost } from '@/app/api/mcp/route'
 import { POST as agentPost } from '@/app/api/agent/route'
-import { isDraftOnlyCall, shouldStage, auditInput } from '@/lib/agent/dispatch'
+import { isDraftOnlyCall, shouldStage, auditInput, assistantDedupeKey, ASSISTANT_DEDUPE_WINDOW_MS } from '@/lib/agent/dispatch'
 import { getTool } from '@/lib/accounting/agent-tools'
 import { visibleTo } from '@/lib/audit/read'
 import { recordAudit } from '@/lib/audit/events'
@@ -257,6 +257,81 @@ describe('MCP idempotency', () => {
     const b = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' }, { idempotencyKey: 'abc' })
     expect(b.json).toEqual(a.json)
     expect(addChartAccount).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('an assistant asking for the same change twice (no idempotency key)', () => {
+  // Two chats each staged the same carry reallocation and each was approved: booked twice. An
+  // assistant's staged write without a key is now keyed by what it asks, for 24 hours.
+  const legal = { code: '6100', name: 'Legal', type: 'expense' }
+  const pending = () => store.tables.pending_actions
+
+  it('replays the first pending action instead of staging a second', async () => {
+    const first = await callTool('add_account', legal)
+    const second = await callTool('add_account', { type: 'expense', name: 'Legal', code: '6100', vehicle: 'Fund I' })
+    expect(second.json).toMatchObject({ staged: true, duplicate: true, status: 'pending', pendingActionId: first.json.pendingActionId })
+    expect(second.json.next).toMatch(/already waiting for approval/)
+    expect(pending()).toHaveLength(1)
+  })
+
+  it('is caught from a second assistant host too', async () => {
+    const first = await callTool('add_account', legal)
+    keyId = 'oauth:another-host'
+    const second = await callTool('add_account', legal)
+    expect(second.json.pendingActionId).toBe(first.json.pendingActionId)
+    expect(pending()).toHaveLength(1)
+  })
+
+  it('says a repeat of an applied change is already done, and applies nothing', async () => {
+    const first = await callTool('add_account', legal)
+    await callTool('approve_action', { id: first.json.pendingActionId })
+    const again = await callTool('add_account', legal)
+    expect(again.json).toMatchObject({ duplicate: true, status: 'applied', pendingActionId: first.json.pendingActionId })
+    expect(again.json.next).toMatch(/Do NOT approve or send it again/)
+    expect(pending()).toHaveLength(1)
+    expect(addChartAccount).toHaveBeenCalledTimes(1)
+  })
+
+  it('stages afresh after the first was declined', async () => {
+    const first = await callTool('add_account', legal)
+    await callTool('reject_action', { id: first.json.pendingActionId })
+    const again = await callTool('add_account', legal)
+    expect(again.json.duplicate).toBeUndefined()
+    expect(again.json.pendingActionId).not.toBe(first.json.pendingActionId)
+    expect(pending()).toHaveLength(2)
+  })
+
+  it('treats a different change as a different request', async () => {
+    await callTool('add_account', legal)
+    await callTool('add_account', { ...legal, code: '6101' })
+    expect(pending()).toHaveLength(2)
+  })
+
+  it('stages afresh once the window has passed', async () => {
+    const first = await callTool('add_account', legal)
+    for (const row of store.tables.api_idempotency_keys) row.created_at = new Date(Date.now() - ASSISTANT_DEDUPE_WINDOW_MS - 60_000).toISOString()
+    const again = await callTool('add_account', legal)
+    expect(again.json.pendingActionId).not.toBe(first.json.pendingActionId)
+    expect(pending()).toHaveLength(2)
+  })
+
+  it('lets an explicit key win, so a deliberate second copy is possible', async () => {
+    const first = await callTool('add_account', legal)
+    const second = await callTool('add_account', legal, { idempotencyKey: 'second-on-purpose' })
+    expect(second.json.duplicate).toBeUndefined()
+    expect(second.json.pendingActionId).not.toBe(first.json.pendingActionId)
+  })
+
+  it('leaves calls that only make drafts or previews, and API keys, alone', async () => {
+    const call = (name: string, input: Record<string, unknown>, k = 'oauth:claude') => ({
+      admin: store.admin, tool: getTool(name)!, input, auth: { fundId: 'fund-1', keyId: k, userId: 'user-me', role: 'member', scopes } as any, access, channel: 'mcp' as const,
+    })
+    access = member({ accounting: 'write', lp_capital: 'write' }, 'admin')
+    expect(await assistantDedupeKey(call('post_entry', { status: 'draft' }))).toBeNull()
+    expect(await assistantDedupeKey(call('categorize_bank_transactions', {}))).toBeNull()
+    expect(await assistantDedupeKey(call('allocation', { action: 'carry', post: false }))).toBeNull()
+    expect(await assistantDedupeKey(call('add_account', legal, 'key-1'))).toBeNull()
+    expect(await assistantDedupeKey(call('allocation', { action: 'carry' }))).toMatchObject({ key: expect.stringMatching(/^derived:user-me:/) })
   })
 })
 

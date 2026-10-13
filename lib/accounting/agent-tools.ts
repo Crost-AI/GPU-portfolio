@@ -10,13 +10,13 @@ import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { carryRecipientIds, combineCarryRecipients, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import type { FeatureKey } from '@/lib/types/features'
 import { loadPostedLedger, loadEntityNames, loadOwnership, fetchAllRows } from './load'
-import { accountIdByCode, persistEntry } from './persist'
+import { accountIdByCode, duplicateRefMessage, liveEntryByRef, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
 import { computeCapitalAccounts, totalNav } from './capital-account'
 import { trialBalance, balanceSheet, incomeStatement } from './statements'
 import { reconcileCapital, type AdminCapitalAccount } from './reconcile'
 import { runWaterfall } from './waterfall'
-import { buildAllocationEntry, type AllocationBody } from './allocation-actions'
+import { allocationSourceRef, buildAllocationEntry, type AllocationBody } from './allocation-actions'
 import { importBankTransactions } from './bank-import'
 import { normalizeQbTransactions, parseQbJournal } from './quickbooks/parse-journal'
 import { importQbJournal, proposeQbAccounts, saveQbMappings } from './quickbooks/import-journal'
@@ -202,10 +202,19 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   allocation: async ({ admin, fundId, portfolioGroup, userId }, input) => {
     const built = await buildAllocationEntry(admin, fundId, portfolioGroup, input as AllocationBody)
     if ('error' in built) throw new Error(built.error)
-    if (input.post === false) return { preview: built.entry }
-    const result = await persistEntry(admin, fundId, portfolioGroup, userId, built.entry, 'posted')
+    // IDEMPOTENT BY CONTENT. This tool used to post with no source_ref, so two chats asked for
+    // the same carry reallocation booked it twice. The ref is derived from what the entry does
+    // (action, date, lines), and a live entry already carrying it is refused by name — here, with
+    // the friendlier message, and by the unique index if two posts race.
+    const sourceRef = allocationSourceRef(String(input.action), built.entry)
+    const entry: JournalEntry = { ...built.entry, sourceRef }
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const existing = vehicleId ? await liveEntryByRef(admin, fundId, vehicleId, sourceRef) : null
+    if (input.post === false) return { preview: entry, ...(existing ? { alreadyBooked: existing } : {}) }
+    if (existing) throw new Error(duplicateRefMessage(sourceRef, existing))
+    const result = await persistEntry(admin, fundId, portfolioGroup, userId, entry, 'posted')
     if ('error' in result) throw new Error(result.error)
-    return { entryId: result.entryId, entry: built.entry }
+    return { entryId: result.entryId, entry }
   },
 
   reconcile: async ({ admin, fundId, portfolioGroup }, input) => {

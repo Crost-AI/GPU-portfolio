@@ -7,6 +7,7 @@
 // used to both allocate, which would have double-counted. Distributions and carry
 // still move capital directly — they are capital movements, not P&L.
 
+import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadOwnership } from './load'
 import { accountIdByCode, ensureCapitalAccounts } from './persist'
@@ -143,4 +144,27 @@ export async function buildAllocationEntry(
   } catch (e) {
     return { error: (e as Error).message }
   }
+}
+
+/** The source_ref namespace of entries the agent `allocation` tool posts. Unique while live
+ *  (20261013141500_agent_allocation_source_ref_once.sql). Not `allocation:` — that prefix marks the
+ *  entries the ledger GENERATES when it allocates a posted entry (continuous-allocation.ts). */
+export const AGENT_ALLOCATION_REF_PREFIX = 'agent-allocation:'
+
+/**
+ * A deterministic source_ref for an allocation-tool entry: the action, the date and the entry's
+ * lines (account, partner, amount in cents — summed per account and partner, sorted). Two chats
+ * asking for the same carry reallocation get the same ref, so the second is refused instead of
+ * booked. The memo is left out on purpose: two sessions describe the same entry in different words.
+ * The vehicle and book are not in the hash because the uniqueness is already scoped to them.
+ */
+export function allocationSourceRef(action: string, entry: Pick<JournalEntry, 'entryDate' | 'postings'>): string {
+  const cents = new Map<string, number>()
+  for (const p of entry.postings) {
+    const k = `${p.accountId}|${p.lpEntityId ?? ''}`
+    cents.set(k, (cents.get(k) ?? 0) + Math.round(Number(p.amount) * 100))
+  }
+  const lines = Array.from(cents.entries()).filter(([, c]) => c !== 0).map(([k, c]) => `${k}|${c}`).sort()
+  const digest = createHash('sha256').update(JSON.stringify([action, entry.entryDate, lines])).digest('hex').slice(0, 32)
+  return `${AGENT_ALLOCATION_REF_PREFIX}${action}:${digest}`
 }

@@ -3,14 +3,11 @@ import { describePrompt, promptsFor, PromptArgumentError, renderPrompt } from '@
 import { canReadFor } from '@/lib/mcp-apps/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveAgentAuth, loadCredentialAccess, type ResolvedKey } from '@/lib/accounting/api-keys'
-import { getTool, resolveVehicleForTool, type AgentToolContext } from '@/lib/accounting/agent-tools'
-import { idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
 import { withChangeSource } from '@/lib/audit/source'
 import type { AccessContext } from '@/lib/access/effective'
-import {
-  authorizeMcpTool, describeTool, getMcpTool, isPendingTool, listableTools, listResources, negotiateProtocolVersion,
-  readResource, toolResult,
-} from '@/lib/mcp-apps/server'
+import { getMcpTool, listResources, negotiateProtocolVersion, readResource } from '@/lib/mcp-apps/server'
+import { callMcpTool, type McpCallContext } from '@/lib/mcp-apps/call'
+import { gatewayTargetName, listedTools, toolListVersion } from '@/lib/mcp-apps/gateway'
 import { rateLimit } from '@/lib/rate-limit'
 import { agentApiEnabled } from '@/lib/oauth/enabled'
 import { issuerFor, wwwAuthenticate } from '@/lib/oauth/metadata'
@@ -70,7 +67,14 @@ const SERVER_INSTRUCTIONS =
   'When an admin asks to set up the fund (or the fund is new), call setup_status, ask only for what is missing, ' +
   'confirm the plan, and apply it with one setup_fund call. ' +
   "When the user shares a portfolio company's update (a letter, deck or KPI sheet), pass it to submit_company_update " +
-  'with the company named, rather than recording each figure yourself.'
+  'with the company named, rather than recording each figure yourself. ' +
+  'Your tool list may be cached from when this conversation began. If a tool you expect is missing, or one ' +
+  'you were told to call is not in your list, call search_tools to find it, then run it with call_tool.'
+
+/** The instructions, with the version of the tool list this caller was served at initialize. */
+function serverInstructions(version: string) {
+  return `${SERVER_INSTRUCTIONS} This connection's tool list is version ${version}; search_tools reports the current one.`
+}
 
 interface RpcRequest { jsonrpc: string; id?: string | number | null; method: string; params?: any }
 
@@ -81,7 +85,7 @@ function err(id: any, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } }
 }
 
-type BaseCtx = Omit<AgentToolContext, 'portfolioGroup'>
+type BaseCtx = McpCallContext
 
 async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: AccessContext): Promise<any | null> {
   switch (rpc.method) {
@@ -91,7 +95,8 @@ async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: 
         // Prompts are the templates a host lists in its prompt menu (lib/agent/getting-started.ts).
         capabilities: { tools: {}, resources: {}, prompts: {} },
         serverInfo: serverInfo(ctx.origin),
-        instructions: SERVER_INSTRUCTIONS,
+        instructions: serverInstructions(toolListVersion(access)),
+        _meta: { toolListVersion: toolListVersion(access) },
       })
     case 'ping':
       return ok(rpc.id, {})
@@ -102,33 +107,15 @@ async function handle(rpc: RpcRequest, ctx: BaseCtx, auth: ResolvedKey, access: 
       // Filtered by what the credential's owner may actually reach, so an agent is never shown a
       // tool it would be refused — and the tool list itself stops being a map of the fund's
       // contents to someone who can't read them.
-      return ok(rpc.id, { tools: listableTools(access).map(describeTool) })
+      // search_tools and call_tool come last, on every list: a host caches the list per
+      // conversation, and they are how a cached list reaches a tool added since (gateway.ts).
+      return ok(rpc.id, { tools: listedTools(access), _meta: { toolListVersion: toolListVersion(access) } })
     case 'tools/call': {
-      const name = rpc.params?.name
-      const tool = getMcpTool(name)
-      if (!tool) return err(rpc.id, -32602, `Unknown tool: ${name}`)
-      const args = rpc.params?.arguments ?? {}
-      const denied = authorizeMcpTool(tool, auth, access, args)
-      if (denied) return ok(rpc.id, { content: [{ type: 'text', text: denied }], isError: true })
-      try {
-        // Approval tools: authorized per action by the pending-actions service.
-        if (isPendingTool(tool)) return ok(rpc.id, toolResult(tool, await tool.run({ admin: ctx.admin, auth, access }, args)))
-        // The shared registry goes through the one dispatcher, which stages, audits and dedupes
-        // writes (lib/agent/dispatch.ts). A retry may name its call with _meta.idempotencyKey.
-        const agentTool = getTool(tool.name)
-        if (agentTool) {
-          const result = await runAgentTool({
-            admin: ctx.admin, tool: agentTool, input: args, auth, access, channel: 'mcp', origin: ctx.origin,
-            idempotencyKey: idempotencyKeyOf(rpc.params?._meta?.idempotencyKey),
-          })
-          return ok(rpc.id, toolResult(tool, result))
-        }
-        const portfolioGroup = await resolveVehicleForTool(tool, ctx.admin, ctx.fundId, args.vehicle, access)
-        const result = await tool.handler({ ...ctx, portfolioGroup }, args)
-        return ok(rpc.id, toolResult(tool, result))
-      } catch (e) {
-        return ok(rpc.id, { content: [{ type: 'text', text: (e as Error).message }], isError: true })
-      }
+      // The same function serves call_tool, so a call through the gateway cannot skip a check.
+      const outcome = await callMcpTool({
+        name: rpc.params?.name, args: rpc.params?.arguments ?? {}, meta: rpc.params?._meta, ctx, auth, access,
+      })
+      return 'error' in outcome ? err(rpc.id, outcome.error.code, outcome.error.message) : ok(rpc.id, outcome.result)
     }
     // The dashboard view. It is the same static document for every caller and carries no fund
     // data (the figures arrive with each tool result), so it needs no grant beyond the credential
@@ -250,7 +237,8 @@ async function meter(
 ): Promise<NextResponse | null> {
   const isWrite = calls.some(c => {
     if (c?.method !== 'tools/call') return false
-    const tool = getMcpTool(c?.params?.name)
+    // Through call_tool, the tool it names: a write by any route is metered as a write.
+    const tool = getMcpTool(gatewayTargetName(c?.params))
     return tool?.scope === 'write'
   })
 
