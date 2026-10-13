@@ -36,6 +36,7 @@ import { buildCapitalCallIssuanceEntry } from './entries'
 import { allocateAmount } from './allocation'
 import { vehicleIdByName } from './vehicle-id'
 import { roundCents } from './ledger'
+import { ytdWindow } from './statement-period'
 import { RECEIVABLE_CODE, DISTRIBUTION_PAYABLE_CODE } from './chart'
 import { ACTUAL_BOOK } from './books'
 import { callExtras } from './call-extras'
@@ -481,6 +482,13 @@ export interface LpStatement {
   rollForward: CapitalAccount
   /** Roll-forward scoped to the statement period, opening with capital carried in. */
   periodRollForward: CapitalAccount
+  /** January 1 of the period end's year through the period end (ytdWindow). Equal to the period
+   *  roll-forward for a Q1 or year-to-date statement. */
+  ytdRollForward: CapitalAccount
+  ytdPeriod: { start: string; end: string }
+  /** The partner's share of the vehicle's commitments at the period end — the basis the close
+   *  allocates on. */
+  ownership: number
   transactions: LpStatementTxn[]
 }
 
@@ -549,12 +557,21 @@ export async function lpStatement(
   const summary = await lpCapitalSummary(admin, fundId, group, period?.end ?? undefined)
   const row = summary.find(r => r.lpEntityId === lpEntityId)
   if (!row) return { error: 'LP not found in this vehicle' }
+  // Same resolver for numerator and total (resolveCommitmentMap, via lpCapitalSummary): summing
+  // the raw lp_investments scalar would disagree with the row for any event-only partner.
+  const totalCommitment = summary.reduce((s, r) => s + r.commitment, 0)
+  const ownership = totalCommitment > 0 ? row.commitment / totalCommitment : 0
 
   const { source, postings: capitalPostings } = await loadCapitalPostings(admin, fundId, group)
   const rollForward = computeCapitalAccounts(capitalPostings, { end: period?.end })
     .get(lpEntityId) ?? emptyAccount()
   const periodRollForward = computeCapitalAccounts(capitalPostings, period)
     .get(lpEntityId) ?? emptyAccount()
+  // The middle column. Same postings, so no second pass over the ledger.
+  const ytdPeriod = ytdWindow(period)
+  const ytdRollForward = period?.start === ytdPeriod.start && period?.end === ytdPeriod.end
+    ? periodRollForward
+    : computeCapitalAccounts(capitalPostings, ytdPeriod).get(lpEntityId) ?? emptyAccount()
 
   const vehicleId = await vehicleIdByName(admin, fundId, group)
 
@@ -584,5 +601,5 @@ export async function lpStatement(
     transactions.push({ date: m.date, memo: m.memo, sourceType: m.sourceType, amount: m.delta, balance })
   }
 
-  return { row, rollForward, periodRollForward, transactions }
+  return { row, rollForward, periodRollForward, ytdRollForward, ytdPeriod, ownership, transactions }
 }

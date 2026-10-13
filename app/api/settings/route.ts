@@ -51,7 +51,8 @@ export async function GET() {
   // that can't silently blank itself. Anything genuinely secret is stored encrypted and
   // exposed here only as a `!!has…` boolean, as before.
   const [{ data: fund }, { data: settings }, { data: senders }] = await Promise.all([
-    admin.from('funds').select('id, name, logo_url, address').eq('id', membership.fund_id).single(),
+    // Star for the same reason: contact_email ships in 20261013160000_letterhead_email.sql.
+    (admin as any).from('funds').select('*').eq('id', membership.fund_id).single(),
     (admin as any).from('fund_settings').select('*').eq('fund_id', membership.fund_id).maybeSingle(),
     admin.from('authorized_senders').select('id, email, label, created_at').eq('fund_id', membership.fund_id).order('email'),
   ])
@@ -80,6 +81,8 @@ export async function GET() {
     fundName: fund?.name,
     fundLogo: fund?.logo_url ?? null,
     fundAddress: fund?.address ?? null,
+    // The letterhead email every LP document prints under the address, unless a vehicle sets its own.
+    fundContactEmail: fund?.contact_email ?? null,
     // Ship in 20261005120000_sign_in_branding.sql; absent, they read as unset.
     signInLogo: settings?.sign_in_logo ?? null,
     signInTitle: settings?.sign_in_title ?? null,
@@ -162,7 +165,7 @@ export async function PATCH(req: NextRequest) {
   if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 404 })
 
   const body = await req.json()
-  const { fundName, fundLogo, fundAddress, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled, lpAgentEnabled } = body
+  const { fundName, fundLogo, fundAddress, fundContactEmail, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled, lpAgentEnabled } = body
 
   // Update display name on fund_members (any user can do this)
   if (displayName !== undefined) {
@@ -170,7 +173,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   // All other settings require admin role
-  const hasAdminFields = fundName !== undefined || fundLogo !== undefined || fundAddress !== undefined ||
+  const hasAdminFields = fundName !== undefined || fundLogo !== undefined || fundAddress !== undefined || fundContactEmail !== undefined ||
     signInLogo !== undefined || signInTitle !== undefined || postmarkInboundAddress !== undefined ||
     claudeApiKey !== undefined || claudeModel !== undefined || retainResolvedReviews !== undefined ||
     resolvedReviewsTtlDays !== undefined || googleClientId !== undefined || googleClientSecret !== undefined ||
@@ -215,6 +218,14 @@ export async function PATCH(req: NextRequest) {
   // Update fund address
   if (fundAddress !== undefined) {
     await admin.from('funds').update({ address: fundAddress?.trim() || null }).eq('id', membership.fund_id)
+  }
+
+  // Update the fund's letterhead email
+  if (fundContactEmail !== undefined) {
+    const v = typeof fundContactEmail === 'string' ? fundContactEmail.trim() : ''
+    if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return NextResponse.json({ error: 'Email is not a valid address' }, { status: 400 })
+    const { error } = await (admin as any).from('funds').update({ contact_email: v || null }).eq('id', membership.fund_id)
+    if (error) return NextResponse.json({ error: 'Could not save the email. Has 20261013160000_letterhead_email.sql been applied?' }, { status: 500 })
   }
 
   // Update fund_settings

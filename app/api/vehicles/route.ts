@@ -10,7 +10,7 @@ import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
-import { safeLogo } from '@/lib/vehicle-letterhead'
+import { safeLogo, fundLetterhead, loadFundEmail } from '@/lib/vehicle-letterhead'
 
 // Fund-wide investment-vehicle registry (fund_vehicles). Vehicles are used across
 // LP snapshots, portfolio, compliance, and accounting — so management lives here,
@@ -19,8 +19,8 @@ import { safeLogo } from '@/lib/vehicle-letterhead'
 const KINDS: readonly string[] = VEHICLE_KINDS
 
 // GET — all of the fund's vehicles (for the management UI). `?letterhead=<id>` returns that one
-// vehicle's letterhead (logo, name, address) instead: logos are data URIs up to 200KB, too heavy
-// to ride on every list.
+// vehicle's letterhead (logo, name, address, email) instead, with the fund's values it falls back
+// to: logos are data URIs up to 200KB, too heavy to ride on every list.
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
@@ -34,17 +34,34 @@ export async function GET(req: NextRequest) {
   if (letterheadFor) {
     const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
     if (!canSeeVehicle(access, letterheadFor)) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
-    const { data, error } = await (admin as any)
-      .from('fund_vehicles').select('logo_url, letterhead_name, letterhead_address')
+    let res = await (admin as any)
+      .from('fund_vehicles').select('logo_url, letterhead_name, letterhead_address, letterhead_email')
       .eq('id', letterheadFor).eq('fund_id', gate.fundId).maybeSingle()
+    // letterhead_email not migrated yet (20261013160000_letterhead_email.sql): the rest still edits.
+    const emailAvailable = !res.error
+    if (res.error) {
+      res = await (admin as any)
+        .from('fund_vehicles').select('logo_url, letterhead_name, letterhead_address')
+        .eq('id', letterheadFor).eq('fund_id', gate.fundId).maybeSingle()
+    }
+    const { data, error } = res
     // Columns not migrated yet (20261012120000_vehicle_letterhead.sql): no vehicle has a letterhead.
-    if (error) return NextResponse.json({ logo: null, name: null, address: null, available: false })
+    if (error) return NextResponse.json({ logo: null, name: null, address: null, email: null, available: false })
     if (!data) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    // The fund's letterhead, which each blank part falls back to — shown as the placeholder.
+    const [{ data: fundRow }, fundEmail] = await Promise.all([
+      (admin as any).from('funds').select('name, address').eq('id', gate.fundId).maybeSingle(),
+      loadFundEmail(admin, gate.fundId),
+    ])
+    const fund = fundLetterhead(fundRow)
     return NextResponse.json({
       logo: safeLogo((data as any).logo_url),
       name: (data as any).letterhead_name ?? null,
       address: (data as any).letterhead_address ?? null,
+      email: (data as any).letterhead_email ?? null,
+      fund: { name: fund.name || null, address: fund.address, email: fundEmail },
       available: true,
+      emailAvailable,
     })
   }
 
@@ -114,7 +131,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data)
 }
 
-// PATCH — update a vehicle. { id, name?, kind?, active?, logo?, letterheadName?, letterheadAddress? }
+// PATCH — update a vehicle. { id, name?, kind?, active?, logo?, letterheadName?, letterheadAddress?, letterheadEmail? }
 // Renaming cascades the string across every vehicle-scoped table (pre-Phase-2);
 // the old name is kept as an alias so stray legacy rows still map back.
 export async function PATCH(req: NextRequest) {
@@ -235,6 +252,12 @@ export async function PATCH(req: NextRequest) {
     const v = typeof body.letterheadAddress === 'string' ? body.letterheadAddress.trim() : ''
     if (v.length > 1000) return NextResponse.json({ error: 'Letterhead address must be under 1,000 characters' }, { status: 400 })
     update.letterhead_address = v || null
+  }
+  if (body.letterheadEmail !== undefined) {
+    const v = typeof body.letterheadEmail === 'string' ? body.letterheadEmail.trim() : ''
+    if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return NextResponse.json({ error: 'Letterhead email is not a valid address' }, { status: 400 })
+    if (v.length > 320) return NextResponse.json({ error: 'Letterhead email is too long' }, { status: 400 })
+    update.letterhead_email = v || null
   }
   if (body.kind !== undefined) {
     if (!KINDS.includes(body.kind)) return NextResponse.json({ error: 'invalid kind' }, { status: 400 })

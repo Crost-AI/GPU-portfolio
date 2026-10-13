@@ -63,6 +63,20 @@ export function resolvePeriod(preset: PeriodPreset, today: Date = new Date()): S
   }
 }
 
+/**
+ * The year-to-date window for a statement: January 1 of the period end's year (today's, for an
+ * open-ended period) through the period end. Always returned, so a statement always has its three
+ * columns (statement period, year to date, inception to date): a Q1 or year-to-date statement's YTD
+ * column repeats its period column, as a hand-built one does.
+ */
+export function ytdWindow(
+  period: { start?: string | null; end?: string | null } | null | undefined,
+  today: Date = new Date(),
+): { start: string; end: string } {
+  const end = period?.end ?? iso(today)
+  return { start: `${end.slice(0, 4)}-01-01`, end }
+}
+
 /** A custom window, for the explicit start/end date inputs. */
 export function customPeriod(start: string | null, end: string | null): StatementPeriod {
   return {

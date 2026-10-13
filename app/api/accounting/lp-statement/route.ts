@@ -5,10 +5,12 @@ import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { lpStatement } from '@/lib/accounting/capital-calls'
 import { resolvePeriod, customPeriod, type PeriodPreset } from '@/lib/accounting/statement-period'
+import { vehicleLetterheadDetail } from '@/lib/vehicle-letterhead'
 
-// GET ?lp=<lpEntityId> — one LP's capital statement (summary + roll-forward + txns).
-// Optional ?preset= / ?start=&end= scopes the period roll-forward; the inception-to-date
-// roll-forward is always returned alongside it.
+// GET ?lp=<lpEntityId> — one LP's capital statement: the roll-forward in three columns (statement
+// period, year to date, inception to date), the commitment summary, the letterhead the PDF prints,
+// and the period's transactions. Optional ?preset= / ?start=&end= scopes the period column; year to
+// date runs from January 1 of the period end's year.
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
@@ -28,7 +30,10 @@ export async function GET(req: NextRequest) {
     ? resolvePeriod(preset)
     : customPeriod(sp.get('start'), sp.get('end'))
 
-  const result = await lpStatement(admin, gate.fundId, group, lp, period)
+  const [result, letterhead] = await Promise.all([
+    lpStatement(admin, gate.fundId, group, lp, period),
+    vehicleLetterheadDetail(admin, gate.fundId, group),
+  ])
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: 404 })
-  return NextResponse.json({ ...result, period })
+  return NextResponse.json({ ...result, period, letterhead })
 }
