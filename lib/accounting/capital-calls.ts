@@ -489,6 +489,8 @@ export interface LpStatement {
   /** The partner's share of the vehicle's commitments at the period end — the basis the close
    *  allocates on. */
   ownership: number
+  /** The partner's first capital movement in this vehicle, or null when there is none. */
+  inception: string | null
   transactions: LpStatementTxn[]
 }
 
@@ -601,5 +603,5 @@ export async function lpStatement(
     transactions.push({ date: m.date, memo: m.memo, sourceType: m.sourceType, amount: m.delta, balance })
   }
 
-  return { row, rollForward, periodRollForward, ytdRollForward, ytdPeriod, ownership, transactions }
+  return { row, rollForward, periodRollForward, ytdRollForward, ytdPeriod, ownership, inception: movements[0]?.date ?? null, transactions }
 }
