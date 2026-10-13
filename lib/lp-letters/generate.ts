@@ -7,7 +7,7 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function fmt(value: number, currency: string): string {
+export function fmt(value: number, currency: string): string {
   const sym = getCurrencySymbol(currency)
   if (Math.abs(value) >= 1_000_000) return `${sym}${(value / 1_000_000).toFixed(1)}M`
   if (Math.abs(value) >= 1_000) return `${sym}${(value / 1_000).toFixed(0)}K`
@@ -38,7 +38,7 @@ export function buildPortfolioTableHtml(
     <tr>
       <th>Company</th><th>Status</th><th>Stage</th>
       <th style="text-align:right">Invested</th>
-      <th style="text-align:right">FMV</th>
+      <th style="text-align:right">Gross FMV</th>
       <th style="text-align:right">Gross MOIC</th>
     </tr>
   </thead>

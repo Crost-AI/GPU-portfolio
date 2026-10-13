@@ -87,7 +87,7 @@ function buildPortfolioTable(companies: PortfolioCompany[], currency: string): T
       headerCell('Status', 14),
       headerCell('Stage', 14),
       headerCell('Invested', 14, AlignmentType.RIGHT),
-      headerCell('FMV', 14, AlignmentType.RIGHT),
+      headerCell('Gross FMV', 14, AlignmentType.RIGHT),
       headerCell('Gross MOIC', 14, AlignmentType.RIGHT),
     ],
   })

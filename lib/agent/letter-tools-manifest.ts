@@ -12,6 +12,16 @@
 import type { AgentToolMeta } from '@/lib/accounting/agent-tools-manifest'
 
 const LETTER = { type: 'string', description: 'The letter id, from lp_letters.' }
+const PERIOD = {
+  type: 'object' as const,
+  properties: {
+    vehicle: { type: 'string', description: 'The entity (portfolio_group) the letter is for.' },
+    year: { type: 'integer' },
+    quarter: { type: 'integer', minimum: 1, maximum: 4 },
+    year_end: { type: 'boolean', description: 'Also the year-end letter.' },
+  } as Record<string, any>,
+  required: ['vehicle', 'year', 'quarter'],
+}
 const base = { domain: 'lp' as const, accessDomain: 'lp_relations' as const, accessFeature: 'lp_letters' as const }
 
 export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
@@ -38,6 +48,35 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
     scope: 'read',
     ...base,
     inputSchema: { type: 'object', properties: { letter_id: LETTER }, required: ['letter_id'] },
+  },
+  {
+    name: 'lp_letter_brief',
+    description:
+      'Everything a quarterly LP letter may be written from, for an entity and quarter, and how to write it as a fund CFO ' +
+      'would: each company\'s stored updates, KPI values and team notes for the quarter, its figures from the books labeled ' +
+      'gross, net, cost or cash, the write-offs, down rounds and markdowns the books show, and what is missing. No LP or ' +
+      'investor-level data is included. Follow its instructions exactly when writing; then save with lp_draft_letter (text).',
+    scope: 'read',
+    ...base,
+    inputSchema: PERIOD,
+  },
+  {
+    name: 'lp_draft_letter',
+    description:
+      'Draft the quarterly LP letter for an entity and quarter as a NEW unshared draft letter for a person to review. With no ' +
+      'text, the fund\'s own AI writes it from lp_letter_brief\'s sources; with text, saves the letter you wrote from that ' +
+      'brief. Returns the draft and review flags (numbers not in the sources, performance figures not labeled gross or net, ' +
+      'events not stated, a missing "Missing information" section). Show the user the draft and every flag. Never marks a ' +
+      'letter complete or shares it.',
+    scope: 'write',
+    ...base,
+    inputSchema: {
+      ...PERIOD,
+      properties: {
+        ...PERIOD.properties,
+        text: { type: 'string', description: 'The letter you wrote from lp_letter_brief. Omit to have the fund\'s AI write it.' },
+      },
+    },
   },
   {
     name: 'lp_letter_pdf',

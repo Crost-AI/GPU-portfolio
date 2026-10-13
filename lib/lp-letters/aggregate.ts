@@ -18,6 +18,23 @@ export interface CompanyInvestmentSummary {
   unrealizedValue: number
   fmv: number
   moic: number | null
+  /**
+   * Dated price and value moves, oldest first: priced rounds and price marks (company-wide), and
+   * value-change marks without a price (this entity's). What a letter needs to name a down round
+   * or a markdown from the books rather than from prose. Optional: older callers build summaries
+   * without it.
+   */
+  priceEvents?: PriceEvent[]
+}
+
+export interface PriceEvent {
+  date: string
+  /** 'round' = a priced round (investment or round info); 'mark' = a revaluation. */
+  kind: 'round' | 'mark'
+  round: string | null
+  sharePrice: number | null
+  /** A value-change mark with no price: the change in fair value, in fund currency. */
+  valueChange: number | null
 }
 
 export interface CompanyMetricData {
@@ -216,6 +233,20 @@ export async function aggregatePortfolioData(
       }
     }
 
+    const priceEvents: PriceEvent[] = []
+    for (const t of txns) {
+      if (!t.transaction_date) continue
+      const priced = (t.transaction_type === 'investment' && t.share_price != null && Number(t.share_price) > 0 && !t.converts_from_txn_id)
+        || (t.transaction_type === 'round_info' && t.share_price != null && Number(t.share_price) > 0)
+      if (priced) {
+        priceEvents.push({ date: t.transaction_date, kind: 'round', round: t.round_name ?? null, sharePrice: Number(t.share_price), valueChange: null })
+      } else if (t.transaction_type === 'unrealized_gain_change' && t.current_share_price != null) {
+        priceEvents.push({ date: t.transaction_date, kind: 'mark', round: t.round_name ?? null, sharePrice: Number(t.current_share_price), valueChange: null })
+      } else if (t.transaction_type === 'unrealized_gain_change' && t.unrealized_value_change != null && t.portfolio_group === portfolioGroup) {
+        priceEvents.push({ date: t.transaction_date, kind: 'mark', round: t.round_name ?? null, sharePrice: null, valueChange: Number(t.unrealized_value_change) })
+      }
+    }
+
     // Filter to transactions in this portfolio group (exact match — see the note above)
     const groupTxns = txns.filter(t => t.portfolio_group === portfolioGroup)
     // Also include company-wide unrealized_gain_change/round_info (no portfolio_group) for share price
@@ -322,6 +353,7 @@ export async function aggregatePortfolioData(
       unrealizedValue,
       fmv,
       moic,
+      priceEvents,
     })
   }
 

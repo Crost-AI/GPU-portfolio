@@ -9,6 +9,9 @@ import { unwrap } from '@/lib/service-outcome'
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
 import { siteOrigin } from '@/lib/site-links'
 import { createLetter, getLetter, letterData, listLetters, shareLetter, updateLetter, writeLetterSections } from '@/lib/lp-letters/service'
+import { loadLetterBrief, saveCfoDraft, writeWithFundAI, type LetterPeriod } from '@/lib/lp-letters/cfo-draft'
+import { CFO_DRAFT_LABEL, checkLetterDraft } from '@/lib/lp-letters/cfo-brief'
+import { rateLimit } from '@/lib/rate-limit'
 import { requireUser } from './deals-tools'
 import { resolveInvestor } from './lp-record-tools'
 
@@ -20,6 +23,18 @@ async function letterOf(ctx: AgentToolContext, id: unknown) {
   const letter = unwrap(await getLetter(ctx.admin, ctx.fundId, await visible(ctx), String(id ?? '')))
   if (!letter) throw new Error('No letter with that id. Use lp_letters to list them.')
   return letter
+}
+
+/** An entity and quarter the caller can see, from a tool's input. */
+async function periodOf(ctx: AgentToolContext, input: any): Promise<LetterPeriod> {
+  const vehicle = await resolveVehicle(ctx.admin, ctx.fundId, String(input?.vehicle ?? '') || undefined, { access: ctx.access })
+  const v = await visible(ctx)
+  if (v !== null && !v.includes(vehicle)) throw new Error('Not found')
+  const year = Number(input?.year)
+  const quarter = Number(input?.quarter)
+  if (!Number.isInteger(year) || year < 1990 || year > 2100) throw new Error('year must be a four-digit year')
+  if (![1, 2, 3, 4].includes(quarter)) throw new Error('quarter must be 1 to 4')
+  return { vehicle, year, quarter, yearEnd: !!input?.year_end }
 }
 
 const summary = (l: any) => ({
@@ -47,6 +62,33 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   lp_letter_data: async (ctx: AgentToolContext, input: any) => {
     const l = await letterOf(ctx, input?.letter_id)
     return { letter: summary(l), ...(await letterData(ctx.admin, ctx.fundId, l)) }
+  },
+
+  lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
+    return (await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input))).brief
+  },
+
+  lp_draft_letter: async (ctx: AgentToolContext, input: any) => {
+    const userId = requireUser(ctx.userId)
+    const p = await periodOf(ctx, input)
+    const given = typeof input?.text === 'string' && input.text.trim() ? String(input.text).trim() : null
+    if (!given && await rateLimit({ key: `lp-letter-gen:${userId}`, limit: 5, windowSeconds: 300 })) {
+      throw new Error('Too many letters drafted in the last few minutes. Try again shortly.')
+    }
+    const { brief, preview, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, p)
+    const text = given ?? await writeWithFundAI(ctx.admin, ctx.fundId, userId, brief)
+    if (!text) throw new Error('The draft came back empty. Try again, or write it from lp_letter_brief and pass text.')
+    const row = unwrap(await saveCfoDraft(ctx.admin, { fundId: ctx.fundId, userId, visible: await visible(ctx) }, p, text, preview))
+    return {
+      letter: summary(row),
+      written_by: given ? 'assistant' : 'fund AI',
+      draft: text,
+      review_flags: checkLetterDraft(text, brief, investorNames),
+      missing_information: brief.missing_information,
+      next:
+        'This is a new, unshared draft. Show the user the draft and every review flag. Edits go through lp_write_letter ' +
+        '(full_draft); it is reviewed and shared from the LP Letters page or lp_share_letter, by an admin.',
+    }
   },
 
   lp_letter_pdf: async (ctx: AgentToolContext, input: any) => {
@@ -92,7 +134,15 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     } else {
       row = await letterOf(ctx, id)
     }
-    return { letter: summary(row), sections_written: sections?.length ?? 0 }
+    // A CFO draft edited from chat gets the same review as when it was drafted.
+    let review_flags: string[] | undefined
+    if (fullDraft !== undefined && row?.generation_prompt === CFO_DRAFT_LABEL) {
+      const { brief, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, {
+        vehicle: row.portfolio_group, year: row.period_year, quarter: row.period_quarter, yearEnd: !!row.is_year_end,
+      })
+      review_flags = checkLetterDraft(fullDraft, brief, investorNames)
+    }
+    return { letter: summary(row), sections_written: sections?.length ?? 0, ...(review_flags ? { review_flags } : {}) }
   },
 
   lp_share_letter: async (ctx: AgentToolContext, input: any) => {
