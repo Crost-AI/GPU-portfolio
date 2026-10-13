@@ -11,8 +11,10 @@
 -- any fund member (or an LP with a portal login) read every partner's proposed call from the
 -- browser console, past the domain gate, so there is none and no policy: RLS denies by default.
 -- Pinned in tests/proposed-calls-grants.test.ts.
+--
+-- Safe to re-run: it was applied by hand before it was pushed, so every statement is idempotent.
 
-create table public.proposed_capital_calls (
+create table if not exists public.proposed_capital_calls (
   id                  uuid primary key default gen_random_uuid(),
   fund_id             uuid not null references funds(id) on delete cascade,
   vehicle_id          uuid not null references fund_vehicles(id) on delete cascade,
@@ -42,7 +44,7 @@ create table public.proposed_capital_calls (
   updated_at          timestamptz not null default now()
 );
 
-create index proposed_capital_calls_fund_idx on public.proposed_capital_calls (fund_id, vehicle_id, created_at desc);
+create index if not exists proposed_capital_calls_fund_idx on public.proposed_capital_calls (fund_id, vehicle_id, created_at desc);
 
 -- 1. Grants: service_role alone (see above). The revoke undoes the default privileges a project
 --    created before 2026-10-30 still hands every new table.

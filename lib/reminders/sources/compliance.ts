@@ -18,7 +18,7 @@ export interface ComplianceData {
   items: ComplianceItemRow[]
   profile: ComplianceProfile | null
   settings: { compliance_item_id: string; portfolio_group: string | null; applies: string | null; dismissed: boolean | null; notes?: string | null }[]
-  closed: { compliance_item_id: string; portfolio_group: string; quarter: number; year: number }[]
+  closed: { compliance_item_id: string; portfolio_group: string; quarter: number; year: number; status?: string }[]
   portfolioGroups: string[]
   closeDates: Record<string, string[]>
 }
