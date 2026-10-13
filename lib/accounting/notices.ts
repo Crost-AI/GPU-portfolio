@@ -25,7 +25,7 @@ import { getOutboundConfig, sendOutboundEmail, type EmailAttachment } from '@/li
 import { buildLpEmailHtml, siteUrl } from '@/lib/lp-email'
 import { logDelivery, listDeliveries, lastSentByItem, type DeliveryKind } from '@/lib/lp-deliveries'
 import { roundCents } from './ledger'
-import { documentLetterhead } from '@/lib/vehicle-letterhead'
+import { documentLetterhead, contactBlock } from '@/lib/vehicle-letterhead'
 
 export interface NoticeLine {
   id: string
@@ -262,7 +262,7 @@ export async function publishNotices(
         displayFont: displayFontOf((settingsRes as any).data?.theme),
         fundName: letterhead.name,
         fundLogo: letterhead.logo,
-        fundAddress: letterhead.address,
+        fundAddress: contactBlock(letterhead),
         currency,
         vehicle: group,
         partnerName,
@@ -612,7 +612,7 @@ export async function sendReceipts(
       const row = summaryByLp.get(c.lpEntityId)
       const pdf = await generateReceiptPdf({
         displayFont: displayFontOf((settingsRes as any).data?.theme),
-        fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address, currency,
+        fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: contactBlock(letterhead), currency,
         vehicle: group, partnerName: c.name,
         amountReceived: c.received, receivedOn: c.receivedOn ?? found.call.date,
         call: { date: found.call.date, number: found.call.number, description: found.call.description, amount: roundCents(c.received + c.outstanding), outstanding: c.outstanding },

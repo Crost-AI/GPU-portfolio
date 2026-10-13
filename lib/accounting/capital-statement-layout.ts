@@ -1,0 +1,85 @@
+// The layout of a partner's capital account statement: which rows, in what order, with what
+// figures in each column. Shared by the PDF (lp-statement-pdf.ts) and the web view
+// (funds/capital-accounts/[lpEntityId]/view.tsx) so the two can't drift. Pure: no I/O, safe to
+// import from a client component.
+//
+// Three columns, left to right: the statement period, year to date, inception to date — always
+// all three, as a hand-built statement has them (a Q1 statement's YTD column repeats its period).
+// The statement is the roll-forward and the commitment summary, and ends there.
+
+import { ACTIVITY_FIELDS, CAPITAL_ACCOUNT_LABELS, type CapitalAccount } from './capital-account'
+
+export const STATEMENT_COLUMNS = ['Statement period', 'Year to date', 'Inception to date'] as const
+
+/** The roll-forward lines that make up the partner's profit and loss, in statement order. Carried
+ *  interest stays outside: it reallocates profit between partners rather than earning it. */
+export const PNL_FIELDS: (keyof CapitalAccount)[] = [
+  'managementFees', 'expenses', 'operatingIncome', 'realizedGains', 'unrealizedGains', 'fxTranslation',
+]
+/** Capital movements printed above the profit and loss block. */
+const PRE_PNL_FIELDS: (keyof CapitalAccount)[] = ['contributions', 'distributions']
+export const NET_PNL_LABEL = 'Net profit / (loss)'
+
+export type StatementRowStyle = 'plain' | 'total' | 'subtotal' | 'component'
+
+export interface StatementRow {
+  key: string
+  label: string
+  values: number[]
+  style: StatementRowStyle
+}
+
+/**
+ * The roll-forward rows for the given columns. A line shows only if it moved in ANY column (an SPV
+ * shouldn't print four empty rows). The partner's share of the fund's profit and loss (fees,
+ * expenses, income and gains) is indented under one subtotal, so an LP reads a single
+ * profit-or-loss figure; the rows that are not indented still sum to ending capital.
+ */
+export function rollForwardRows(accounts: CapitalAccount[]): StatementRow[] {
+  const lines = ACTIVITY_FIELDS.filter(f => accounts.some(a => Math.abs(a[f]) > 0.004))
+  const row = (f: keyof CapitalAccount, style: StatementRowStyle = 'plain'): StatementRow =>
+    ({ key: f, label: CAPITAL_ACCOUNT_LABELS[f], values: accounts.map(a => a[f]), style })
+  const pnlShown = lines.filter(f => PNL_FIELDS.includes(f))
+  const sumPnl = (a: CapitalAccount) => PNL_FIELDS.reduce((s, f) => s + a[f], 0)
+  return [
+    row('beginning'),
+    ...lines.filter(f => !PNL_FIELDS.includes(f) && PRE_PNL_FIELDS.includes(f)).map(f => row(f)),
+    ...pnlShown.map(f => row(f, 'component')),
+    ...(pnlShown.length > 0 ? [{ key: 'netPnl', label: NET_PNL_LABEL, values: accounts.map(sumPnl), style: 'subtotal' as const }] : []),
+    ...lines.filter(f => !PNL_FIELDS.includes(f) && !PRE_PNL_FIELDS.includes(f)).map(f => row(f)),
+    row('ending', 'total'),
+  ]
+}
+
+export interface SummaryRow {
+  label: string
+  /** One per column; null is a blank cell. */
+  values: (number | null)[]
+  format: 'money' | 'percent'
+}
+
+/**
+ * The commitment summary, laid out in the roll-forward's columns.
+ *
+ * Capital is recognized when it is CALLED, not when the cash lands — which is why "Called capital"
+ * is the headline and matches the contributions line in the roll-forward. The receivable gets its
+ * own line whenever there is one. Capital called is a flow, so it has a figure for each column; the
+ * rest are balances at the period end and sit under inception to date only.
+ */
+export function commitmentSummaryRows(
+  accounts: CapitalAccount[],
+  row: { commitment: number; called: number | null; outstanding: number | null; receivable: number | null; ending: number | null },
+  ownership: number,
+): SummaryRow[] {
+  const last = (v: number | null): (number | null)[] => [...accounts.slice(1).map(() => null), v]
+  return [
+    { label: 'Commitment', values: last(row.commitment), format: 'money' },
+    { label: 'Called capital', values: [...accounts.slice(0, -1).map(a => a.contributions), row.called], format: 'money' },
+    ...(Math.abs(row.receivable ?? 0) > 0.004
+      ? [{ label: '— of which not yet funded', values: last(row.receivable), format: 'money' as const }]
+      : []),
+    { label: 'Remaining to be called', values: last(row.outstanding), format: 'money' },
+    { label: 'Ownership', values: last(ownership), format: 'percent' },
+    { label: 'Ending capital (NAV)', values: last(row.ending), format: 'money' },
+  ]
+}

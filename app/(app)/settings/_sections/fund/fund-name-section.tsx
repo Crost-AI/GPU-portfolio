@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import { AlertCircle, Check, ImagePlus, Loader2, X } from 'lucide-react'
 import { Section } from '@/components/settings/section'
 
-export function FundNameSection({ name, logo, address, onSaved }: { name: string; logo: string | null; address: string | null; onSaved: () => void }) {
+export function FundNameSection({ name, logo, address, contactEmail, onSaved }: { name: string; logo: string | null; address: string | null; contactEmail: string | null; onSaved: () => void }) {
   const [value, setValue] = useState(name)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -17,6 +17,10 @@ export function FundNameSection({ name, logo, address, onSaved }: { name: string
   const [addressValue, setAddressValue] = useState(address ?? '')
   const [addressSaving, setAddressSaving] = useState(false)
   const [addressSaved, setAddressSaved] = useState(false)
+  const [emailValue, setEmailValue] = useState(contactEmail ?? '')
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailSaved, setEmailSaved] = useState(false)
+  const [emailError, setEmailError] = useState<string | null>(null)
 
   const handleSave = async () => {
     setSaving(true)
@@ -147,16 +151,17 @@ export function FundNameSection({ name, logo, address, onSaved }: { name: string
       </div>
 
       <div className="mt-4 pt-4 border-t">
-        <Label>Address / Contact Info</Label>
+        <Label>Address</Label>
         <p className="text-xs text-muted-foreground mb-2">
-          Displayed on investor report PDFs below the fund name.
+          Displayed on LP documents (capital account statements, notices, letters, reports) below the fund name.
+          A vehicle can replace the name, logo, address or email with its own letterhead, from Edit on the fund&rsquo;s Status page or Edit letterhead on a partner&rsquo;s capital statement.
         </p>
         <textarea
           value={addressValue}
           onChange={e => setAddressValue(e.target.value)}
           rows={3}
           className="w-full border rounded p-2 text-sm bg-background mb-2"
-          placeholder="123 Main St&#10;New York, NY 10001&#10;info@fund.com"
+          placeholder="123 Main St&#10;New York, NY 10001"
         />
         <Button
           size="sm"
@@ -178,6 +183,43 @@ export function FundNameSection({ name, logo, address, onSaved }: { name: string
         >
           {addressSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : addressSaved ? <Check className="h-3.5 w-3.5" /> : 'Save'}
         </Button>
+      </div>
+
+      <div className="mt-4 pt-4 border-t">
+        <Label>Email</Label>
+        <p className="text-xs text-muted-foreground mb-2">
+          Printed under the address on the same documents.
+        </p>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <Input type="email" value={emailValue} onChange={e => setEmailValue(e.target.value)} placeholder="partners@fund.com" className="flex-1" />
+          <Button
+            size="sm"
+            disabled={emailSaving || emailValue === (contactEmail ?? '')}
+            onClick={async () => {
+              setEmailSaving(true); setEmailError(null)
+              const res = await fetch('/api/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fundContactEmail: emailValue || null }),
+              })
+              setEmailSaving(false)
+              if (res.ok) {
+                setEmailSaved(true)
+                setTimeout(() => setEmailSaved(false), 2000)
+                onSaved()
+              } else {
+                setEmailError((await res.json().catch(() => ({}))).error ?? 'Could not save email')
+              }
+            }}
+          >
+            {emailSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : emailSaved ? <Check className="h-3.5 w-3.5" /> : 'Save'}
+          </Button>
+        </div>
+        {emailError && (
+          <p className="text-sm text-destructive mt-1 flex items-center gap-1">
+            <AlertCircle className="h-3 w-3" /> {emailError}
+          </p>
+        )}
       </div>
     </Section>
   )

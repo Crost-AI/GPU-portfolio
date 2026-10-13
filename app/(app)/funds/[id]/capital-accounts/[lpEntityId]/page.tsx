@@ -31,7 +31,7 @@ export default async function LpStatementPage(
       </Link>
       <AccountingPageHeader title="LP capital statement" actions={<FundSwitcher />} />
       <AccountingBody>
-        <LpStatementView lpEntityId={params.lpEntityId} />
+        <LpStatementView lpEntityId={params.lpEntityId} vehicleId={vehicleId} />
       </AccountingBody>
     </div>
   )
