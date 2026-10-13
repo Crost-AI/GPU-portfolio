@@ -90,6 +90,11 @@ export function isDraftOnlyCall(tool: Pick<AgentTool, 'name'>, input: Record<str
   return DRAFT_ONLY[tool.name]?.(input) ?? false
 }
 
+/** Whether some calls of this tool are draft-only (search_tools says so beside "staged"). */
+export function hasDraftMode(name: string): boolean {
+  return name in DRAFT_ONLY
+}
+
 /** Whether this write waits for a person. Reads never do. */
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
   return tool.scope === 'write' && isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
@@ -225,7 +230,8 @@ function nextStep(opts: { id: string; approveUrl?: string; adminLabel?: string |
   }
   return 'Nothing has changed yet. Show the user this change in plain words, then give them the link to approve it ' +
     `${inApp}. This connection cannot approve its own changes: approve_action on id "${opts.id}" from here is refused. ` +
-    'If they decline, call reject_action. When a fix needs several changes, stage them together with stage_run so they are approved once.'
+    'If they decline, call reject_action. When a fix needs several changes, stage them together with stage_run so they are approved once. ' +
+    'If a tool named here is not in your tool list (a stale list), run it through call_tool.'
 }
 
 /** Stage the write as a pending action for a person to approve. Nothing else changes. */

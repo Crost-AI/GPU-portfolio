@@ -61,11 +61,3 @@ jobs:
             The public demo widget, rebuilt from `main` on every relevant change. Consumed by the
             marketing site's build; not a release of the application.
           files: demo-widget/dist/*
-      - name: Rebuild the marketing site
-        # Only when the Vercel deploy hook for tdavidson/content is set as a repo secret.
-        env:
-          SITE_DEPLOY_HOOK: ${{ secrets.ADMIN_SITE_DEPLOY_HOOK }}
-        run: |
-          if [ -n "$SITE_DEPLOY_HOOK" ]; then
-            curl -fsS -X POST "$SITE_DEPLOY_HOOK" > /dev/null
-          fi
