@@ -294,7 +294,10 @@ describe('an assistant asking for the same change twice (no idempotency key)', (
 
   it('says a repeat of an applied change is already done, and applies nothing', async () => {
     const first = await callTool('add_account', legal)
+    // Approved by a person from another credential: the staging chat cannot approve its own change.
+    keyId = 'oauth:another-chat'
     await callTool('approve_action', { id: first.json.pendingActionId })
+    keyId = 'oauth:claude'
     const again = await callTool('add_account', legal)
     expect(again.json).toMatchObject({ duplicate: true, status: 'applied', pendingActionId: first.json.pendingActionId })
     expect(again.json.next).toMatch(/Do NOT approve or send it again/)
