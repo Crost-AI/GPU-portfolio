@@ -65,3 +65,66 @@ export function WireInstructionsCard() {
     </div>
   )
 }
+
+/**
+ * The LPA's capital call notice period for this vehicle. Every drafted notice checks its dates
+ * against it (lib/accounting/call-notice-check.ts). An LPA term, so only an admin changes it.
+ */
+export function CallNoticePeriodField({ isAdmin }: { isAdmin: boolean }) {
+  const lf = useLedgerFetch()
+  const [days, setDays] = useState('')
+  const [basis, setBasis] = useState<'calendar' | 'business'>('calendar')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    lf('/api/accounting/vehicle-settings')
+      .then(r => (r.ok ? r.json() : {}))
+      .then((d: { callNoticeDays?: number | null; callNoticeBasis?: string | null }) => {
+        setDays(d.callNoticeDays == null ? '' : String(d.callNoticeDays))
+        setBasis(d.callNoticeBasis === 'business' ? 'business' : 'calendar')
+      })
+      .catch(() => {})
+  }, [lf])
+
+  async function save() {
+    setSaving(true); setErr(null); setSaved(false)
+    const n = days.trim() === '' ? null : Number(days)
+    const res = await lf('/api/accounting/vehicle-settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callNoticeDays: n, callNoticeBasis: basis }),
+    })
+    setSaving(false)
+    if (!res.ok) { setErr((await res.json().catch(() => ({}))).error ?? 'Could not save'); return }
+    setSaved(true)
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <span>LPA notice period</span>
+      <input
+        type="number" min={0} max={365} value={days} disabled={!isAdmin}
+        onChange={e => { setDays(e.target.value); setSaved(false) }}
+        className="w-20 rounded-md border border-input bg-transparent px-2 py-1 text-sm tabular-nums"
+        aria-label="Notice period in days"
+      />
+      <select
+        value={basis} disabled={!isAdmin}
+        onChange={e => { setBasis(e.target.value === 'business' ? 'business' : 'calendar'); setSaved(false) }}
+        className="rounded-md border border-input bg-transparent px-2 py-1 text-sm"
+      >
+        <option value="calendar">calendar days</option>
+        <option value="business">business days</option>
+      </select>
+      {isAdmin && (
+        <Button size="sm" variant="outline" onClick={save} disabled={saving}>
+          {saving && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}Save
+        </Button>
+      )}
+      {saved && <span className="flex items-center gap-1 text-xs text-success"><Check className="h-3.5 w-3.5" />Saved</span>}
+      {err && <span className="text-sm text-warning">{err}</span>}
+      <span className="text-xs text-muted-foreground">Drafted capital call notices flag any date inside it.{!isAdmin && ' An admin sets it.'}</span>
+    </div>
+  )
+}

@@ -23,6 +23,7 @@ import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
 import { PortalError, portalLetterShare, portalStatementInvestors } from '@/lib/portal/service'
 import { getLetter } from '@/lib/lp-letters/service'
 import { renderPdf as renderTemplateDocumentPdf } from '@/lib/document-templates/pdf'
+import { draftNoticePdf } from '@/lib/accounting/call-notice-publish'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -182,6 +183,15 @@ async function fundDocument(admin: ReturnType<typeof createAdminClient>, claims:
         if (!a.render) return notFound()
         const result = await renderTemplateDocumentPdf(admin, fundId, a.render)
         doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
+        break
+      }
+      // /api/accounting/call-notices/pdf — lp_capital, and the draft's entity.
+      case 'call_notice_draft': {
+        if (!hasAccess(access, 'lp_capital', 'read')) return notFound()
+        if (!a.draft || !a.lp) return notFound()
+        const group = await resolveVehicle(admin, fundId, a.vehicle ?? undefined, { access })
+        const out = await draftNoticePdf(admin, { fundId, group, userId: claims.userId }, a.draft, a.lp)
+        doc = out.ok ? { body: out.value.pdf, fileName: out.value.fileName, contentType: 'application/pdf' } : null
         break
       }
       default:

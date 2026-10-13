@@ -61,6 +61,16 @@ export interface NoticeData {
    * source of the amount itself.
    */
   context?: { label: string; value: number | null }[]
+  /**
+   * Calls only: what the WHOLE call is for, fund-wide, as frozen at issue. Shown with the
+   * partner's share rather than split per partner, so no rounding makes the parts disagree with
+   * the amount above.
+   */
+  purposes?: { label: string; amount: number; basis?: string | null }[] | null
+  /** The partner's share of the vehicle's commitments, 0..1, shown beside the purposes. */
+  share?: number | null
+  /** A preview: marked DRAFT on every page, so it can never pass for a demand. */
+  draft?: boolean
 }
 
 const TITLE: Record<NoticeKind, string> = {
@@ -105,6 +115,26 @@ export function buildNoticeHtml(d: NoticeData): string {
       Payment instructions will be provided separately.
     </p>` : ''
 
+  // What the whole call is for. Fund-wide figures, labelled as such; the partner's own figure is
+  // the headline above.
+  const purposeRows = isCall && d.purposes && d.purposes.length > 0 ? d.purposes.map(p => `
+    <tr>
+      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;">${esc(p.label)}${p.basis ? `<div style="color:#888;font-size:10px;">${esc(p.basis)}</div>` : ''}</td>
+      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(p.amount)}</td>
+    </tr>`).join('') : ''
+  const purposeTotal = (d.purposes ?? []).reduce((s, p) => s + p.amount, 0)
+  const purposeSection = purposeRows ? `
+    <h3 style="font-size:12px;font-weight:600;margin:24px 0 6px;">Purpose of this call (whole fund)</h3>
+    <table><tbody>${purposeRows}
+      <tr><td style="padding:5px 8px;border-top:2px solid #ccc;font-weight:600;">Total call</td><td style="padding:5px 8px;border-top:2px solid #ccc;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${m(purposeTotal)}</td></tr>
+    </tbody></table>
+    ${d.share != null ? `<p style="font-size:11px;color:#555;margin-top:6px;">Your share is ${(d.share * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}% of the fund's total commitments.</p>` : ''}` : ''
+
+  const draftBanner = d.draft ? `
+    <div style="margin-bottom:18px;padding:8px 12px;border:1px solid #111;font-size:11px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">
+      Draft for review. Not a demand for payment.
+    </div>` : ''
+
   const contextSection = contextRows ? `
     <h3 style="font-size:12px;font-weight:600;margin:24px 0 6px;">${isCall ? 'Your commitment' : 'Your capital account'}</h3>
     <table><tbody>${contextRows}</tbody></table>` : ''
@@ -117,6 +147,7 @@ export function buildNoticeHtml(d: NoticeData): string {
   th { font-weight:600; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; color:#555; }
 </style></head><body>
   <div style="padding-bottom:40px;">
+    ${draftBanner}
     <!-- Fund header — identical to the capital account statement and LP letter -->
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:32px;">
       <div style="flex-shrink:0;">
@@ -135,13 +166,14 @@ export function buildNoticeHtml(d: NoticeData): string {
     ${d.description ? `<p style="font-size:12px;color:#333;margin-top:18px;">${esc(d.description)}</p>` : ''}
 
     ${headline}
+    ${purposeSection}
     ${contextSection}
     ${wireSection}
     ${wireMissing}
   </div>
 
   <div style="position:fixed;bottom:0;left:0;right:0;padding:8px 0;border-top:1px solid #e5e5e5;background:white;font-size:9px;color:#888;">
-    ${isCall ? 'Capital call notice' : 'Distribution notice'} for ${esc(d.partnerName)} in ${esc(d.vehicle)}, dated ${esc(d.noticeDate)}.
+    ${d.draft ? 'DRAFT. ' : ''}${isCall ? 'Capital call notice' : 'Distribution notice'} for ${esc(d.partnerName)} in ${esc(d.vehicle)}, dated ${esc(d.noticeDate)}.
     Figures are stated in ${esc(currency)} and are those recorded in the fund's books at the date of this notice.
     ${isCall ? 'Please reference your name and the vehicle when remitting funds.' : ''}
   </div>

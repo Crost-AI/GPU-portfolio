@@ -57,6 +57,8 @@ import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
 import { LETTER_HANDLERS } from '@/lib/agent/letter-tools'
 import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
+import { CALL_NOTICE_TOOL_MANIFEST } from '@/lib/agent/call-notice-tools-manifest'
+import { CALL_NOTICE_HANDLERS } from '@/lib/agent/call-notice-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -419,6 +421,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(REPORT_TOOL_MANIFEST, REPORT_HANDLERS),
   ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
+  ...bind(CALL_NOTICE_TOOL_MANIFEST, CALL_NOTICE_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

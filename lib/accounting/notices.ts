@@ -26,6 +26,7 @@ import { buildLpEmailHtml, siteUrl } from '@/lib/lp-email'
 import { logDelivery, listDeliveries, lastSentByItem, type DeliveryKind } from '@/lib/lp-deliveries'
 import { roundCents } from './ledger'
 import { documentLetterhead } from '@/lib/vehicle-letterhead'
+import { PURPOSE_LABEL, type PurposeCategory } from './call-notice-check'
 
 export interface NoticeLine {
   id: string
@@ -49,6 +50,8 @@ export interface NoticeRegister {
   posted: boolean
   /** True on a capital-tracking vehicle, where there is no entry to check. */
   tracking: boolean
+  /** Calls drafted as a notice (lib/accounting/call-notice-drafts.ts): what the call is for. */
+  purposes?: { label: string; amount: number; basis?: string | null }[] | null
 }
 
 /** The register row a notice is rendered from, or why there is none to render. */
@@ -118,7 +121,9 @@ export async function loadNoticeRegister(
   }
 
   const lpTotal = roundCents(lines.filter(l => l.role === 'lp').reduce((s, l) => s + l.amount, 0))
+  const purposes = kind === 'capital_call' ? await loadCallPurposes(admin, fundId, id) : null
   return {
+    purposes,
     kind,
     id,
     noticeDate: kind === 'capital_call' ? row.call_date : row.distribution_date,
@@ -132,6 +137,23 @@ export async function loadNoticeRegister(
     posted,
     tracking: entryIds.length === 0,
   }
+}
+
+/**
+ * The purposes frozen on a call issued from a notice draft. Read on its own, and an error read as
+ * none, so a release that is live before the column is pushed still publishes notices.
+ */
+async function loadCallPurposes(admin: SupabaseClient, fundId: string, callId: string): Promise<NoticeRegister['purposes']> {
+  const { data, error } = await (admin as any).from('capital_calls').select('purposes').eq('id', callId).eq('fund_id', fundId).maybeSingle()
+  if (error || !Array.isArray((data as any)?.purposes)) return null
+  return purposeRows((data as any).purposes)
+}
+
+/** Stored purposes as the notice prints them. */
+export function purposeRows(raw: unknown[]): { label: string; amount: number; basis?: string | null }[] {
+  return raw
+    .filter((p: any) => p && Number.isFinite(Number(p.amount)))
+    .map((p: any) => ({ label: String(p.description || PURPOSE_LABEL[p.category as PurposeCategory] || 'Other'), amount: Number(p.amount), basis: p.basis ?? null }))
 }
 
 export function noticeTitle(reg: Pick<NoticeRegister, 'kind' | 'numberLabel' | 'noticeDate'>): string {
@@ -205,6 +227,9 @@ export async function publishNotices(
   )
 
   const title = noticeTitle(reg)
+  // A drafted call is fund-wide and split by commitment, so a line over the call is the partner's
+  // share of commitments.
+  const callTotal = roundCents(reg.lines.filter(l => l.role === 'lp').reduce((s, l) => s + l.amount, 0))
   const table = reg.kind === 'capital_call' ? 'capital_call_lines' : 'distribution_lines'
   const published: PublishedNotice[] = []
   const errors: string[] = []
@@ -273,6 +298,8 @@ export async function publishNotices(
         dueDate: reg.dueDate,
         wireInstructions,
         context,
+        purposes: reg.purposes ?? null,
+        share: reg.purposes && line.role === 'lp' && callTotal > 0 ? line.amount / callTotal : null,
       })
 
       const fileName = `${title.replace(/[^a-zA-Z0-9 ._-]/g, '_')} — ${partnerName.replace(/[^a-zA-Z0-9 ._-]/g, '_')}.pdf`

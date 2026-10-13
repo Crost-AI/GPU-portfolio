@@ -52,6 +52,7 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
 
   // ── Move money ─────────────────────────────────────────────────────────────
   { route: 'api/accounting/capital-calls', method: 'POST', when: action('issue'), label: 'issue a capital call' },
+  { route: 'api/accounting/call-notices', method: 'POST', when: action('approve'), label: 'approve a capital call notice' },
   { route: 'api/accounting/distributions', method: 'POST', when: action('declare'), label: 'declare a distribution' },
 
   // ── Tell LPs something ─────────────────────────────────────────────────────
@@ -75,6 +76,8 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
   { route: 'api/accounting/commitments', method: 'POST', label: 'add a commitment' },
   { route: 'api/accounting/closings', method: 'POST', label: 'add a closing' },
   { route: 'api/accounting/waterfall-terms', method: 'PUT', label: 'change waterfall terms' },
+  // The LPA's capital call notice period: every call is checked against it.
+  { route: 'api/accounting/vehicle-settings', method: 'PATCH', when: body => body?.callNoticeDays !== undefined || body?.callNoticeBasis !== undefined, label: 'change the LPA notice period' },
   { route: 'api/accounting/gp-economics', method: 'PUT', label: 'change GP economics' },
   { route: 'api/accounting/gp-economics', method: 'POST', label: 'change GP economics' },
   { route: 'api/accounting/gp-economics', method: 'DELETE', label: 'change GP economics' },
@@ -101,6 +104,9 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_record_commitment: { label: 'add a commitment' },
   // As the letter's share route (ADMIN_ONLY_ROUTES above): what an LP sees in their portal.
   lp_share_letter: { label: 'share an LP letter' },
+  // Approving a drafted notice issues the call and publishes each LP's notice to their portal.
+  approve_capital_call_notice: { label: 'approve a capital call notice' },
+  set_call_notice_period: { label: 'change the LPA notice period' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */
