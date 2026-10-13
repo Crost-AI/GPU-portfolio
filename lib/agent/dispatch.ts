@@ -78,6 +78,9 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   import_journal: () => true,
   categorize_bank_transactions: () => true,
   set_bank_transaction_account: () => true,
+  // Filling a saved template makes a draft document for the person to read before sending; it
+  // changes nothing else. Saving the template itself still stages.
+  document_generate: () => true,
 }
 
 export function isDraftOnlyCall(tool: Pick<AgentTool, 'name'>, input: Record<string, unknown>): boolean {

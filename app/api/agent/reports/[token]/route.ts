@@ -16,6 +16,7 @@ import { withChangeSource } from '@/lib/audit/source'
 import { logLpAccessEvent } from '@/lib/lp-access-log'
 import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
 import { PortalError, portalStatementInvestors } from '@/lib/portal/service'
+import { renderPdf as renderDocumentPdf } from '@/lib/document-templates/pdf'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -53,6 +54,21 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
   if (!(await agentApiEnabled(admin, claims.fundId))) return notFound()
 
   const access = await loadAccessContext(admin, claims.fundId, claims.userId, (membership as { role: string }).role)
+  // A document from the fund's own template (document_generate) is an LP letter, not a capital
+  // account: it answers to the letters grant, and prints the render stored when it was generated.
+  if (claims.kind === 'document') {
+    if (!hasAccess(access, 'lp_relations', 'read', 'lp_letters')) return notFound()
+    const renderId = claims.args.render
+    if (typeof renderId !== 'string') return notFound()
+    let doc: { pdf: Buffer; fileName: string } | null
+    try {
+      doc = await renderDocumentPdf(admin, claims.fundId, renderId)
+    } catch (e) {
+      console.error('[agent/reports] document', e)
+      return NextResponse.json({ error: 'This document could not be generated. Try again, or ask for a new link.' }, { status: 500 })
+    }
+    return doc ? pdfResponse(doc) : notFound()
+  }
   if (!hasAccess(access, 'lp_capital', 'read')) return notFound()
   const scope = await entityScopeFor(admin, access)
 
@@ -93,7 +109,10 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
     return NextResponse.json({ error: 'This document could not be generated. Try again, or ask for a new link.' }, { status: 500 })
   }
   if (!result) return notFound()
+  return pdfResponse(result)
+}
 
+function pdfResponse(result: { pdf: Buffer; fileName: string }) {
   return new NextResponse(new Uint8Array(result.pdf), {
     headers: {
       'Content-Type': 'application/pdf',

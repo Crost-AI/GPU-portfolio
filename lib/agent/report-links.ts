@@ -15,7 +15,8 @@
 import { createHmac, hkdfSync, timingSafeEqual } from 'crypto'
 
 // `portal_statement` is the investor connector's (app/api/portal/mcp): the LP's own live statement.
-export type ReportKind = 'lp_statement' | 'lp_report_card' | 'portal_statement'
+// `document` is a stored render of a fund's own document template (lib/document-templates).
+export type ReportKind = 'lp_statement' | 'lp_report_card' | 'portal_statement' | 'document'
 
 export interface ReportLinkClaims {
   fundId: string
@@ -65,7 +66,7 @@ export function verifyReportLink(token: string, now = Date.now()): ReportLinkCla
   const claims = authenticClaims(token)
   if (!claims || claims.exp * 1000 <= now) return null
   if (typeof claims.fundId !== 'string' || typeof claims.userId !== 'string') return null
-  if (claims.kind !== 'lp_statement' && claims.kind !== 'lp_report_card' && claims.kind !== 'portal_statement') return null
+  if (!(['lp_statement', 'lp_report_card', 'portal_statement', 'document'] as string[]).includes(claims.kind)) return null
   return claims
 }
 
