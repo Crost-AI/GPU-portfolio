@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { effectiveAIMode, hasAnyAIKey, type AIMode } from '@/lib/ai/capabilities'
 
 export async function GET() {
   if (process.env.ENABLE_SETUP_PAGE !== 'true') {
@@ -106,7 +107,7 @@ export async function GET() {
   }
 
   // AI, email, storage, senders — only check if fund exists
-  let ai = null
+  let ai: { hasProvider: boolean; mode: AIMode | null } | null = null
   let inboundEmail = null
   let outboundEmail = null
   let fileStorage = null
@@ -118,9 +119,9 @@ export async function GET() {
       const [settingsResult, sendersResult, schemasResult, anchorsResult] = await Promise.all([
         supabase
           .from('fund_settings')
-          .select(
-            'claude_api_key_encrypted, openai_api_key_encrypted, default_ai_provider, inbound_email_provider, postmark_webhook_token, postmark_webhook_token_encrypted, mailgun_signing_key_encrypted, outbound_email_provider, postmark_server_token_encrypted, resend_api_key_encrypted, mailgun_api_key_encrypted, file_storage_provider, google_refresh_token_encrypted'
-          )
+          // select('*') so `ai_mode`, from a migration that may not be applied yet, reads as
+          // undefined instead of failing every check below.
+          .select('*')
           .limit(1)
           .maybeSingle(),
         supabase.from('authorized_senders').select('id', { count: 'exact', head: true }),
@@ -136,10 +137,11 @@ export async function GET() {
 
       const s = settingsResult.data
 
-      const hasClaudeKey = !!s?.claude_api_key_encrypted
-      const hasOpenAIKey = !!s?.openai_api_key_encrypted
+      const hasProvider = hasAnyAIKey(s)
       ai = {
-        hasProvider: hasClaudeKey || hasOpenAIKey,
+        hasProvider,
+        // 'assistant' when the fund runs with no server key, through the admin's own assistant.
+        mode: effectiveAIMode(hasProvider, (s as Record<string, unknown> | null)?.ai_mode),
       }
 
       const hasInboundProvider = !!s?.inbound_email_provider

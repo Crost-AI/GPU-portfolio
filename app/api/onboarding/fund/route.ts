@@ -95,7 +95,19 @@ export async function GET() {
     webhookToken: readWebhookToken(settings),
     products: productsFromVisibility(featureVisibility),
     hasAIKey: !!(settings.claude_api_key_encrypted || settings.openai_api_key_encrypted || settings.openrouter_api_key_encrypted),
+    aiMode: settings.ai_mode ?? null,
   })
+}
+
+/**
+ * "Use my own assistant" in step 1: record the no-key choice (lib/ai/capabilities.ts). A separate,
+ * best-effort update rather than part of the settings insert, so a database still missing the
+ * `ai_mode` migration only loses the choice (the checklist asks again) instead of the whole fund.
+ */
+async function recordAIMode(admin: ReturnType<typeof createAdminClient>, fundId: string, body: Record<string, unknown>, ai: unknown) {
+  if (body.aiMode !== 'assistant' || ai) return
+  const { error } = await (admin as any).from('fund_settings').update({ ai_mode: 'assistant' }).eq('fund_id', fundId)
+  if (error) console.warn('[onboarding] could not record ai_mode:', error.message)
 }
 
 /** Body of POST: step 1. `claudeApiKey` is the pre-provider-choice field, still accepted. */
@@ -128,7 +140,7 @@ export async function POST(req: NextRequest) {
   if (fundName.length > 200) {
     return NextResponse.json({ error: 'Fund name is too long' }, { status: 400 })
   }
-  // The AI key is optional: "Skip — add a key later".
+  // The AI key is optional: "Use my own assistant" (aiMode) or "Skip — decide later".
   const ai = readAIKey(body)
   if (ai && 'error' in ai) return NextResponse.json({ error: ai.error }, { status: 400 })
 
@@ -167,6 +179,7 @@ export async function POST(req: NextRequest) {
       if (fundError || insertError) {
         return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 })
       }
+      await recordAIMode(admin, existing.fund_id, body, ai)
       return NextResponse.json({ fundId: existing.fund_id, webhookToken: fresh.webhookToken })
     }
 
@@ -201,6 +214,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to update fund settings' }, { status: 500 })
     }
 
+    await recordAIMode(admin, existing.fund_id, body, ai)
     return NextResponse.json({
       fundId: existing.fund_id,
       webhookToken: readWebhookToken(settings),
@@ -209,6 +223,7 @@ export async function POST(req: NextRequest) {
 
   const created = await createFund(admin as any, { userId: user.id, email: user.email, fundName, ai })
   if (!created.ok) return NextResponse.json({ error: created.error }, { status: created.status })
+  await recordAIMode(admin, created.fundId, body, ai)
   return NextResponse.json({ fundId: created.fundId, webhookToken: created.webhookToken })
 }
 

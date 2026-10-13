@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
+  hasKey: true as boolean | undefined,
   events: [] as string[],
   captureCompanyUpdate: vi.fn(async () => {
     mocks.events.push('capture')
@@ -22,11 +23,19 @@ vi.mock('@/lib/parsing/extractAttachmentText', () => ({
   extractAttachmentText: vi.fn(async () => ({ emailBody: 'Reporting evidence', attachments: [] })),
 }))
 
+// A fund with a server key. With none, the pipeline saves the email for the person's assistant
+// instead (lib/ai/keyless.ts), which the test below pins.
+vi.mock('@/lib/ai/keyless', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/ai/keyless')>()),
+  fundHasAIKey: vi.fn(async () => mocks.hasKey ?? true),
+}))
+
 vi.mock('@/lib/ai/feature-provider', () => ({
   getFeatureProvider: vi.fn(async () => ({ provider: {}, providerType: 'test', model: 'test-model' })),
 }))
 
 import { runPipeline, type PostmarkPayload } from './processEmail'
+import { AWAITING_ASSISTANT } from '@/lib/ai/keyless'
 
 describe('runPipeline Company Updates boundary', () => {
   beforeEach(() => {
@@ -56,6 +65,19 @@ describe('runPipeline Company Updates boundary', () => {
     })
   })
 
+  it('with no server AI key, saves a reporting email for the assistant instead of failing it', async () => {
+    mocks.hasKey = false
+    const updates: Record<string, unknown>[] = []
+    const supabase = fakePipelineDatabase(updates)
+    try {
+      await runPipeline(supabase as any, 'email-3', 'fund-1', { From: 'f@acme.test', To: 'u@fund.test', TextBody: 'Q3' }, null, { forcedRoute: 'reporting' })
+    } finally {
+      mocks.hasKey = true
+    }
+    expect(updates.at(-1)).toMatchObject({ processing_status: 'pending', processing_error: AWAITING_ASSISTANT })
+    expect(mocks.captureCompanyUpdate).not.toHaveBeenCalled()
+  })
+
   it('removes the projection and does not capture an interactions email', async () => {
     const supabase = fakePipelineDatabase()
     await runPipeline(
@@ -72,12 +94,12 @@ describe('runPipeline Company Updates boundary', () => {
   })
 })
 
-function fakePipelineDatabase() {
+function fakePipelineDatabase(updates: Record<string, unknown>[] = []) {
   return {
     from(table: string) {
       if (table === 'inbound_emails') {
         return {
-          update: () => chain({ data: null, error: null }),
+          update: (row: Record<string, unknown>) => { updates.push(row); return chain({ data: null, error: null }) },
           select: () => chain({ data: { company_id: 'company-1' }, error: null }),
         }
       }

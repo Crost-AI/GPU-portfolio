@@ -1,6 +1,7 @@
 import type { AIProvider } from '@/lib/ai/types'
 import { getFeatureProvider } from '@/lib/ai/feature-provider'
 import { logAIUsage } from '@/lib/ai/usage'
+import { fundHasAIKey } from '@/lib/ai/keyless'
 import {
   ARTIFACT_PARSER_VERSION,
   assemblePdfPages,
@@ -30,6 +31,25 @@ export interface OcrEngine {
 }
 
 export const OCR_MAX_ATTEMPTS = 3
+
+/** `ocr_error` on an artifact left for the person's assistant because the fund has no server key. */
+export const AWAITING_ASSISTANT_OCR = 'Waiting for your assistant: this fund has no server AI key to read scanned pages with.'
+
+/**
+ * An engine whose transcription the person's assistant already did (`ocr_save_text`): it answers
+ * with the supplied text, so the result goes through exactly the apply path the cron uses.
+ */
+export function suppliedTextEngine(supplied: { text?: string; pages?: Record<number, string> }): OcrEngine {
+  return {
+    name: 'assistant-ocr',
+    async transcribeImage() { return supplied.text ?? '' },
+    async transcribePdfPages(_buffer, pages) {
+      const out: Record<number, string> = {}
+      for (const p of pages) if (supplied.pages?.[p]) out[p] = supplied.pages[p]
+      return out
+    },
+  }
+}
 export const OCR_PARSER_VERSION = `${ARTIFACT_PARSER_VERSION}+ocr-v1`
 
 type OcrAdmin = {
@@ -57,7 +77,7 @@ export interface OcrBatchResult {
   completed: number
   failed: number
   retried: number
-  details: Array<{ artifactId: string; outcome: 'complete' | 'failed' | 'retry' | 'no_text'; error?: string }>
+  details: Array<{ artifactId: string; outcome: 'complete' | 'failed' | 'retry' | 'no_text' | 'awaiting_assistant'; error?: string }>
 }
 
 /** Process up to `limit` pending artifacts. Safe to run concurrently from several workers. */
@@ -73,8 +93,23 @@ export async function runOcrBatch(
   const artifacts = (claimed ?? []) as ClaimedArtifact[]
   const result: OcrBatchResult = { claimed: artifacts.length, completed: 0, failed: 0, retried: 0, details: [] }
   const engines = new Map<string, OcrEngine>()
+  const keyed = new Map<string, boolean>()
 
   for (const artifact of artifacts) {
+    // No server key: no model to transcribe with, so the artifact waits for the person's own
+    // assistant (ocr_waiting / ocr_page / ocr_save_text) instead of burning its attempts on an
+    // error. The claim already counted one, so after a few passes the cron stops picking it up.
+    if (!options.engine) {
+      if (!keyed.has(artifact.fund_id)) keyed.set(artifact.fund_id, await fundHasAIKey(admin as any, artifact.fund_id))
+      if (!keyed.get(artifact.fund_id)) {
+        await admin.rpc('company_update_artifact_apply_ocr', {
+          p_fund_id: artifact.fund_id, p_artifact_id: artifact.id,
+          p_patch: { ocr_status: 'pending', ocr_error: AWAITING_ASSISTANT_OCR }, p_chunks: null,
+        })
+        result.details.push({ artifactId: artifact.id, outcome: 'awaiting_assistant' })
+        continue
+      }
+    }
     try {
       let engine = engines.get(artifact.fund_id)
       if (!engine) {
@@ -105,7 +140,8 @@ export async function runOcrBatch(
   return result
 }
 
-async function ocrOneArtifact(admin: OcrAdmin, artifact: ClaimedArtifact, engine: OcrEngine): Promise<'complete' | 'no_text'> {
+/** Transcribe one artifact with `engine` and merge the text back. Also the path `ocr_save_text` takes. */
+export async function ocrOneArtifact(admin: OcrAdmin, artifact: ClaimedArtifact, engine: OcrEngine): Promise<'complete' | 'no_text'> {
   const buffer = await loadArtifactBytes(admin, artifact)
   const contentType = artifact.detected_content_type ?? artifact.declared_content_type ?? ''
 

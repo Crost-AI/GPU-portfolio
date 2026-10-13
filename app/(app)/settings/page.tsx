@@ -182,6 +182,7 @@ export default function SettingsPage() {
               openrouterModel={settings.openrouterModel}
               openrouterBaseUrl={settings.openrouterBaseUrl}
               defaultAIProvider={settings.defaultAIProvider}
+              aiMode={settings.aiMode ?? null}
               onSaved={load}
             />
             <InboundEmailSection

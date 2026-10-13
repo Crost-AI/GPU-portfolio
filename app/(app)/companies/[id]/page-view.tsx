@@ -86,7 +86,7 @@ export function CompanyPageView({
             <Badge key={ind} variant="outline">{ind}</Badge>
           ))}
           {showNotes && <ChatButton />}
-          <AnalystButton companyId={company.id} pushRight={!showNotes} />
+          <AnalystButton companyId={company.id} companyName={company.name} pushRight={!showNotes} />
         </div>
 
         {panels.companyProfile && (latestMrr || latestCash) && (

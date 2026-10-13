@@ -84,6 +84,25 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },
   },
   {
+    name: 'diligence_document_text',
+    description:
+      'The text of one data-room document (PDF, Word, Excel, text), read now from the stored file: how you answer questions ' +
+      'about a deal from its documents yourself, including when the fund has no server AI key. A scanned PDF has no text ' +
+      'layer and comes back empty; say so rather than guessing. Page through a long one with offset.',
+    scope: 'read',
+    domain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deal: DEAL,
+        document: { type: 'string', description: 'The document id, or its file name, from diligence_list_documents.' },
+        offset: { type: 'number', description: 'Character offset to start from (default 0).' },
+        max_chars: { type: 'number', description: '2000-60000; default 30000.' },
+      },
+      required: ['deal', 'document'],
+    },
+  },
+  {
     name: 'diligence_evidence',
     description:
       'The raw evidence base extracted from the deal: per-document claims (with criticality), research findings, contradictions, ' +
@@ -239,7 +258,7 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
       'Start a stage of the memo agent on a deal: "analyze" reads the data room into evidence and checks the checklist ' +
       '(only what is new, unless full is true), "research" runs outside research, "draft" writes the memo, "score" scores it ' +
       'against the rubric. Each costs model spend, within the fund\'s caps, and runs in the background; follow it with ' +
-      'diligence_deal_detail.',
+      'diligence_deal_detail. With no server AI key it waits for you instead: run it with diligence_stage_next.',
     scope: 'write',
     domain: 'diligence',
     inputSchema: {
@@ -289,5 +308,67 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
     scope: 'write',
     domain: 'diligence',
     inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },
+  },
+  {
+    name: 'diligence_stage_next',
+    description:
+      'Run the memo agent on a deal with your own model, when the fund has no server AI key. diligence_run_agent queues a ' +
+      'stage; this carries the deal\'s queued stages as far as it can and returns the calls that need your answer: each is a ' +
+      'request the stage would have sent a model (a system prompt and content). Read them with diligence_stage_read, answer with ' +
+      'diligence_stage_submit, and the stage stores its result exactly as it does with a key. Writes only into the open memo draft, ' +
+      'which only a partner can finalise.',
+    scope: 'write',
+    domain: 'diligence',
+    inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },
+  },
+  {
+    name: 'diligence_stage_read',
+    description:
+      'Read one call diligence_stage_next listed: its content by call_id, or the stage\'s system prompt by system_id (once per ' +
+      'system_id; calls share it). Long texts come in pages: pass offset = next_offset until it is null. An attachment (a ' +
+      'scanned PDF or an image the call carries) comes back as an image: pass attachment, and page for a PDF.',
+    scope: 'read',
+    domain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deal: DEAL,
+        call_id: { type: 'string' },
+        system_id: { type: 'string' },
+        offset: { type: 'number' },
+        max_chars: { type: 'number', description: '2000-60000; default 40000.' },
+        attachment: { type: 'number', description: 'The attachment index the call\'s text names.' },
+        page: { type: 'number', description: 'For a PDF attachment: the page, from 1.' },
+      },
+      required: ['deal'],
+    },
+  },
+  {
+    name: 'diligence_stage_submit',
+    description:
+      'Answer calls diligence_stage_next listed, each with the JSON object its content asks for (nothing around it). For a call ' +
+      'with web_search, pass the pages you read as sources. When every listed call is answered the stage carries on, and ' +
+      'this returns the next calls, or what finished.',
+    scope: 'write',
+    domain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deal: DEAL,
+        answers: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              call_id: { type: 'string' },
+              text: { type: 'string', description: 'The JSON object, as text.' },
+              sources: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] } },
+            },
+            required: ['call_id', 'text'],
+          },
+        },
+      },
+      required: ['deal', 'answers'],
+    },
   },
 ]

@@ -9,7 +9,13 @@
 
 Designed as a single-tenant deployment per fund. You control your own data, your own API keys, your own domain, and your own infrastructure. [Taylor Davidson](https://www.hemrock.com) of Hemrock is available to manage the setup, onboard you and your portfolio data, and provide ongoing support, [contact him for details](https://www.hemrock.com/contact).
 
-**In the app or headless.** The web app and chat are two views of the same fund. Everything below can be done in the web app, and most of it can instead be done from Claude, ChatGPT, Claude Code or a script over MCP and the REST API: setting the fund up, adding the team and their access, recording investments and capital, posting entries and closing periods, and reading any of it back. The preformatted PDFs and reports are the same either way. A headless setup still needs Steps 1 to 5 (the code, the database, the encryption key, the deploy and auth); Steps 6, 7, 9 and 12 can then be done from chat or a terminal instead, as [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script) describes. Inbound email (Step 8) and AI provider keys involve secrets or third-party accounts, so they stay in Settings, or for the AI key, in the bootstrap script's environment.
+**In the app or headless.** The web app and chat are two views of the same fund. Everything below can be done in the web app, and most of it can instead be done from Claude, ChatGPT, Claude Code or a script over MCP and the REST API: setting the fund up, adding the team and their access, recording investments and capital, posting entries and closing periods, and reading any of it back. The preformatted PDFs and reports are the same either way. There are three ways through setup:
+
+- **`npm run setup`** does Steps 2 to 7 from a terminal, using the Supabase and Vercel CLIs when you have them (it offers to install them) and printing the manual step for anything it can't do. See [The quick way](#the-quick-way-npm-run-setup).
+- **Step by step**, below, in the Supabase and hosting dashboards and the web app.
+- **Headless.** After Steps 1 to 5 (the code, the database, the encryption key, the deploy and auth), Steps 6, 7, 9 and 12 can be done from chat or a terminal instead, as [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script) describes.
+
+**An AI key is optional.** With no server key, your own Claude or ChatGPT does the AI work over MCP, and work that would run unattended waits until you ask. [AI without a server key](#ai-without-a-server-key) lists what works that way and what still needs a key. Inbound email (Step 8) and any AI key involve secrets or third-party accounts, so they stay in Settings, or for the AI key, in the setup or bootstrap script's environment.
 
 ### Required services
 
@@ -18,7 +24,7 @@ Designed as a single-tenant deployment per fund. You control your own data, your
 | Hosting platform | Runs the Next.js app — choose **Netlify** or **Vercel** or other platfoms | Yes |
 | [Supabase](https://supabase.com) | Database (PostgreSQL), authentication, file storage, row-level security | Yes — 500 MB database, 1 GB storage |
 | Inbound email provider | Receives portfolio company emails — choose **Postmark** or **Mailgun** | Postmark: 100 emails/mo. Mailgun: 1,000/mo |
-| AI provider — at least one | AI for email processing, metric extraction, and summaries | See below |
+| AI provider — optional | AI for the web app's AI buttons, email processing and background jobs. Without one, your own assistant does the AI work over MCP: see [AI without a server key](#ai-without-a-server-key) | See below |
 | ↳ [Anthropic](https://console.anthropic.com) | Claude API (default model: `claude-sonnet-4-5`) | Pay-as-you-go |
 | ↳ [OpenAI](https://platform.openai.com) | OpenAI API (default model: `gpt-4o`) | Pay-as-you-go |
 | ↳ [OpenRouter](https://openrouter.ai) | Unified API for many model providers | Pay-as-you-go |
@@ -29,6 +35,19 @@ Designed as a single-tenant deployment per fund. You control your own data, your
 |---------|-------------|-----------------|
 | Outbound email provider | Sends quarterly reporting requests and system notifications | If you want to email portfolio companies from the app. Choose **Resend**, **Postmark**, **Mailgun**, or **Gmail**. |
 | [Google Cloud](https://console.cloud.google.com) (OAuth) | Google Drive archiving + Gmail sending | If you want to save emails/attachments to Drive or send via Gmail |
+
+### The quick way: `npm run setup`
+
+After cloning and `npm install`, `npm run setup` walks through Steps 2 to 7 in your terminal and does each one itself where it can:
+
+- **Tools.** If the Supabase CLI or the Vercel CLI is missing, it asks whether to install it (Homebrew or Scoop for Supabase, falling back to `npx`; `npm i -g vercel` for Vercel) and signs you in. Say no and that part becomes printed steps and pasted values.
+- **Database.** With the Supabase CLI it creates a project or uses one of yours, writes the URL and keys to `.env.local`, links it and runs `supabase db push`. Files under `supabase/pending-deploy/` are not applied.
+- **Keys.** It generates `ENCRYPTION_KEY` and `CRON_SECRET` if they are not already set, and never replaces an existing encryption key.
+- **Deploy.** With the Vercel CLI it links a project, sets the environment variables, deploys, and deploys again with `NEXT_PUBLIC_SITE_URL` set (it is baked in at build time). On Netlify or another host it lists the variables and asks for your URL.
+- **Sign-in settings.** Given a Supabase access token, it sets the site URL, redirect URLs, email confirmations and the signup hook (Step 5); otherwise it prints them.
+- **Your fund and AI.** It runs the bootstrap script (Steps 6 and 7) and asks how AI should work here: your own assistant with no server key, or a server key from the environment. See [AI without a server key](#ai-without-a-server-key).
+
+Every question has a flag, so Claude Code or CI can run it without prompts, for example `npm run setup -- --email you@firm.com --fund "Your Fund" --ai assistant --supabase cli --vercel cli --install-clis yes --yes`. The header of `scripts/setup.ts` lists them all. It is safe to re-run: values already in `.env.local` are kept.
 
 ### Step-by-step setup guide
 
@@ -131,7 +150,7 @@ By default the first signup is the admin, with access to the fund-level and tech
 
 After confirming your email and signing in, the app walks you through a short wizard. Only the fund name is required; everything else can be skipped and finished later in Settings.
 
-1. **Your fund** — the fund name (it appears in the app header) and, optionally, an AI provider key: **Claude** (Anthropic, from [console.anthropic.com](https://console.anthropic.com)), **OpenAI** (from [platform.openai.com](https://platform.openai.com)) or **OpenRouter** (from [openrouter.ai](https://openrouter.ai)). Choose *Skip — add a key later* to go on without one; the Analyst, imports and email parsing need a key, so add one in Settings before using them. You can configure several providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
+1. **Your fund** — the fund name (it appears in the app header) and how AI works here. **Add a key** stores an AI provider key: **Claude** (Anthropic, from [console.anthropic.com](https://console.anthropic.com)), **OpenAI** (from [platform.openai.com](https://platform.openai.com)) or **OpenRouter** (from [openrouter.ai](https://openrouter.ai)). **Use my own assistant** runs with no server key: Claude or ChatGPT, connected over MCP, does the AI work, and the step lists what works that way and what needs a key ([AI without a server key](#ai-without-a-server-key)). *Skip — decide later* leaves it open on the getting-started checklist. You can configure several providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
 2. **Products** — what you will run here (portfolio tracking, fund operations, LP reporting, and so on), and the first fund entity. Each product can be switched on or off later from its own section in Settings.
 3. **Inbound email** — only when portfolio tracking is on; skippable. See Step 8.
 4. **Senders** — only when portfolio tracking is on; skippable. See Step 9.
@@ -139,7 +158,7 @@ After confirming your email and signing in, the app walks you through a short wi
 
 Then continue with [Setting up a new fund](#setting-up-a-new-fund) for the entities, partners, investments and books.
 
-> **Headless:** the `setup_fund` tool does steps 2 and 4 (products, entities, senders) in one call; the AI key goes in Settings or the bootstrap script's environment, and inbound email and Google Drive in Settings.
+> **Headless:** the `setup_fund` tool does steps 1, 2 and 4 in one call: products, entities, senders, and with `aiMode: "assistant"` the choice to run with no server key. An AI key goes in Settings or the bootstrap script's environment, and inbound email and Google Drive in Settings.
 
 ### Step 8: Set up inbound email
 
@@ -228,7 +247,9 @@ npm run bootstrap -- --email you@firm.com --fund "Hemrock Ventures" \
 This adds you to the signup allow-list, creates your account and the fund, turns agent access on,
 and prints an API key once. To store an AI provider key, put `ANTHROPIC_API_KEY` (or
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) in the environment first; keys are never taken on the
-command line or in a chat. Re-running it reuses the account and fund and mints a new key.
+command line or in a chat. To run with no key, pass `--ai assistant`: it records the choice and
+prints what your assistant can do without one. Re-running it reuses the account and fund and mints
+a new key. `npm run setup` runs this script for you at its last step, after the database and deploy.
 
 #### 2. Run the setup prompt
 
@@ -242,6 +263,7 @@ Then ask me, one short question at a time, only for what is missing:
 2. Our entities: each fund, SPV or management company, with its vintage year.
 3. The team: each person's email; whether they are an admin (admins approve deletes, capital calls, distributions, anything sent to LPs, and finalizing K-1s) or a member; which preset fits each member (CFO, fund administrator, tax preparer, auditor, investment team, investor relations); which entities they should see; and an end date for anyone here for one engagement, like an auditor or tax preparer.
 4. Who emails us company updates, so those addresses can be authorized.
+5. How AI should work here. If there is no server AI key, tell me in a few lines what you can do for me in chat without one and what needs a key (setup_status lists both), and ask whether to run without a key.
 
 Then show me the whole plan as a short list. Once I confirm, apply it with one setup_fund call. Tell me what was created and any warnings, call setup_status again, and walk me through the next open steps: partners and commitments (add_partner), investments (record_investment), opening balances (post_ledger_text) and the first close (close_period).
 
@@ -293,9 +315,11 @@ curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: applica
   so only the people granted it gain anything. Admins approve deletes, capital calls, distributions,
   anything sent to LPs and finalizing K-1s, whatever the presets grant.
 - **Authorized senders** may email company updates in.
+- **`aiMode: "assistant"`** records that the fund runs with no server AI key, so the checklist stops asking for one. See [AI without a server key](#ai-without-a-server-key).
 
 AI provider keys and inbound email (Postmark or Mailgun) involve secrets or third-party accounts,
-so they are set in Settings, or for the AI key, by the bootstrap script.
+so they are set in Settings, or for the AI key, by the bootstrap script. An AI key is optional:
+see [AI without a server key](#ai-without-a-server-key).
 
 ### Verify your setup
 
@@ -444,13 +468,13 @@ The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answ
 
 **No fund yet?** Someone whose account belongs to no fund can still connect: the consent screen asks them to name one, and Allow creates it with them as its admin and Agent access on (Deny creates nothing; investor portal accounts are refused). That is how a fund is set up entirely from chat; see [Setting up a fund with Claude, ChatGPT or a script](#setting-up-a-fund-with-claude-chatgpt-or-a-script). Admins also get `setup_status` and `setup_fund`, and a **Set up this fund** prompt, for adding products, entities, team members and senders later.
 
-**Getting started once connected.** Ask "What can you do?" — the assistant opens the member's **home dashboard** (`show_home`): what they can open, their saved dashboards, and questions to click. The endpoint also serves **MCP prompts** (`prompts/list`, `prompts/get`) — Get started, Portfolio review, Company check-in, Quarter-end review, LP capital status, Draft a forecast, Budget variance — filtered to the member's access; hosts list them in their prompt menu. Settings → API and MCP shows the same *Try asking* list. The catalog behind all three is `lib/agent/getting-started.ts`.
+**Getting started once connected.** Ask "What can you do?" — the assistant opens the member's **home dashboard** (`show_home`): what they can open, their saved dashboards, and questions to click. The endpoint also serves **MCP prompts** (`prompts/list`, `prompts/get`) — Set up this fund (admins), Get started, Portfolio review, Company check-in, Process my inbox, Quarter-end review, LP capital status, Draft a forecast, Budget variance — filtered to the member's access; hosts list them in their prompt menu. Settings → API and MCP shows the same *Try asking* list. The catalog behind all three is `lib/agent/getting-started.ts`.
 
 **A tool added since the conversation started.** Claude and ChatGPT fetch the tool list once per conversation and keep it, and the server cannot tell them it changed (it runs stateless, so there is no notification stream). A tool added by a deploy is therefore missing from conversations already open. Two tools that never change cover the gap. `search_tools` searches the current list by keyword (or lists it, or describes named tools in full), filtered to the member's access exactly as the list itself is, and says for each tool whether it reads or writes and whether a write from this connection waits for approval. `call_tool { name, arguments }` then runs any tool on that list through the same checks as calling it directly: the credential's read-only ceiling, the member's grants, admin-only rules, approval for chat writes, the rate limit, the audit trail and `_meta.idempotencyKey`. The server's instructions tell the assistant to use them when a tool it expects is missing. The list's version (`toolListVersion`, a hash of what this member is served) is returned by `initialize`, `tools/list` and `search_tools`, so a client can tell its copy is stale. Both are MCP-only; `/api/agent` lists its tools fresh on every `GET` and runs any of them by name, so it refuses them with that explanation (`lib/mcp-apps/gateway.ts`).
 
 **Documents.** The document tools return a signed link to `/api/agent/reports/<token>` rather than the file: `lp_statement_pdf`, `lp_report_card_pdf`, `fund_performance_pdf`, `financial_statements_pdf`, `schedule_k_pdf` (one partner's K-1 from the vehicle's latest package for a year), `lp_snapshot_pdf` (the investor report for a stored snapshot) and `tax_package_zip`. The token names the member, the fund and the document, is signed with a key derived from `ENCRYPTION_KEY` (rotating it voids every link), and expires after an hour. Opening it re-checks the member's live access the way the document's web route does (accounting for performance, statements and the tax package; tax, the Tax reporting switch and GP economics for a K-1; LP capital, the LP portal switch and every entity for a snapshot report) and then builds the document with the same code (`lib/reports/documents.ts`). Nothing is stored.
 
-**Changes wait for approval.** A change Claude or ChatGPT makes (an OAuth connection) is staged, not applied: the tool returns `{ staged: true, pendingActionId, summary, approveUrl }` and nothing changes until a person approves it under **Approvals** in the app. The chat that staged a change cannot approve it: `approve_action` (and `/api/v1`) refuse an approval from the credential that staged it, and the assistant gives the person the link instead. `reject_action` withdraws a change. `list_pending_actions` lists what is waiting, including changes other people staged, so an admin can still clear a member's admin-only request from their own chat. Scripts approve through `/api/v1/pending-actions/<id>/approve` and `/reject`. Approving re-checks the approver's own write access to that change. Calls that only make drafts or previews run at once (a draft entry, an allocation with `post: false`, importing or categorizing bank lines), since a draft still has to be posted. An API key (`lk_…`) is a script someone wrote on purpose, so its writes apply directly. Admin-only changes (deletes, undoing posted entries, capital calls and distributions, anything sent to LPs, finalizing K-1s and memos, and the fund's structure; the list is `lib/access/admin-only.ts`) can only be approved by an admin, and a member's API key is refused them outright. When a member stages one, the fund's admins get an email (through the fund's outbound email provider, if one is set up) saying what is waiting and from whom. Waiting changes are also flagged at the top of the Portfolio dashboard and the Start page.
+**Changes wait for approval.** A change Claude or ChatGPT makes (an OAuth connection) is staged, not applied: the tool returns `{ staged: true, pendingActionId, summary, approveUrl }` and nothing changes until a person approves it under **Approvals** in the app. The chat that staged a change cannot approve it: `approve_action` (and `/api/v1`) refuse an approval from the credential that staged it, and the assistant gives the person the link instead. `reject_action` withdraws a change. `list_pending_actions` lists what is waiting, including changes other people staged, so an admin can still clear a member's admin-only request from their own chat. Scripts approve through `/api/v1/pending-actions/<id>/approve` and `/reject`. Approving re-checks the approver's own write access to that change. Calls that only make drafts or previews run at once (a draft entry, an allocation with `post: false`, importing or categorizing bank lines, and answering the memo agent's questions with `diligence_stage_next` and `diligence_stage_submit`, which write only into the open memo draft), since a draft still has to be posted or finalized. An API key (`lk_…`) is a script someone wrote on purpose, so its writes apply directly. Admin-only changes (deletes, undoing posted entries, capital calls and distributions, anything sent to LPs, finalizing K-1s and memos, and the fund's structure; the list is `lib/access/admin-only.ts`) can only be approved by an admin, and a member's API key is refused them outright. When a member stages one, the fund's admins get an email (through the fund's outbound email provider, if one is set up) saying what is waiting and from whom. Waiting changes are also flagged at the top of the Portfolio dashboard and the Start page.
 
 **Runs: one approval for a whole fix.** `stage_run` stages several changes as one pending action: a `title`, a `rationale`, the ordered `steps` (`{ tool, input }`, each a write tool the member could call directly; read tools, the approval tools and nested runs are refused) and optional `expected` checks: `account_balance` (an account code's balance on its normal side equals a figure), `type_total` (all accounts of a type) or `trial_balance` (debits equal credits), each for a vehicle and, optionally, as of a date. Every step is checked when the run is staged: its input against the tool's schema, the member's grant for that call, and its entity. Approving runs the steps in order with the approver's access, through each tool's own handler; a `post_drafts` step with no `ids` follows its cursor to the end. The run stops at the first step that fails (or that is held for review) and records where; steps before it stay applied, because each tool commits as it goes. Then the checks are read from the posted ledger and reported as passed or failed. Approvals shows a run's steps and checks before approval and, under *Recent runs*, what each step did, the checks' results and **Undo**. Undo voids the journal entries the run created (`post_entry`, a posted `allocation`) and deletes the investment transactions it recorded (`record_investment`), last step first; it leaves alone an entry in a closed period, one that investment transactions own and half of an investment reversal pair, and voiding a posted entry needs an admin. Other steps (edits, deletes, posting existing drafts, settings) cannot be undone from the app and are listed as such.
 
@@ -469,8 +493,8 @@ They call the same code as the app's own pages, under the same access checks.
 **Correcting an investment from chat.** `record_investment` adds a transaction; `update_investment` and `delete_investment` correct one, by the id `list_investments` returns. An update changes only the fields passed, for example turning a mark into an FX revaluation (`valuation_change_source: "fx"` with the rates and the position's own-currency value). Both run the company page's edit and delete (`lib/portfolio/transaction-edit.ts`): the journal entry is retracted first and re-derived from the new values, and the same refusals apply (a closed period, a row the fund register owns, a SAFE or note a conversion depends on).
 
 **Deals and diligence from chat.** Deal flow and the deal room can be worked end to end from Claude, ChatGPT or `/api/agent`. Each write is staged for approval from a chat, like any other change:
-- Inbound deals: `deals_create_inbound` (a pitch heard outside the inbox, with the deck as files if there is one; it is scored against the thesis like an emailed pitch), `deals_update_inbound` (status, entity, assignee), `deals_research_inbound` (queue web research) and `deals_promote_to_diligence` (open a deal room linked to the deal).
-- The deal room: `diligence_create_deal` and `diligence_update_deal`, `diligence_add_checklist_item` and `diligence_update_checklist_item` (status, notes, a fact the partner learned), `diligence_add_note`, `diligence_add_documents` (up to five files of 3 MB each; larger ones through the app), `diligence_resolve_attention`, `diligence_run_agent` (analyze the data room, research, draft or score, within the fund's cost caps), `diligence_write_memo` (rewrite a paragraph, or write in a section such as the recommendation) and `diligence_finalize_memo`.
+- Inbound deals: `deals_create_inbound` (a pitch heard outside the inbox, with the deck as files if there is one; it is scored against the thesis like an emailed pitch, or saved unanalysed when the fund has no AI key), `deals_update_inbound` (status, entity, assignee, and the analysis or web research your assistant wrote), `deals_research_inbound` (queue web research) and `deals_promote_to_diligence` (open a deal room linked to the deal).
+- The deal room: `diligence_create_deal` and `diligence_update_deal`, `diligence_add_checklist_item` and `diligence_update_checklist_item` (status, notes, a fact the partner learned), `diligence_add_note`, `diligence_add_documents` (up to five files of 3 MB each; larger ones through the app), `diligence_resolve_attention`, `diligence_document_text` (a data-room document's text, for answering questions yourself), `diligence_run_agent` (analyze the data room, research, draft or score, within the fund's cost caps; with no AI key, your assistant runs the stage with `diligence_stage_next`, `diligence_stage_read` and `diligence_stage_submit`), `diligence_write_memo` (rewrite a paragraph, or write in a section such as the recommendation) and `diligence_finalize_memo`.
 
 A member can only act on deals on their own entities, and must put a new deal on one of them. Finalizing a memo is admin-only, so a member's request waits for an admin. The tools and the Deals and Diligence pages call the same functions (`lib/deals/service.ts`, `lib/diligence/service.ts`, `lib/memo-agent/enqueue.ts`). `diligence_deal_detail` reports the memo agent's latest job (running, finished or failed, with its error), so a chat can follow what `diligence_run_agent` started.
 
@@ -490,7 +514,7 @@ A member can only act on deals on their own entities, and must put a new deal on
 
 A query names a dataset and, optionally, columns, filters (`eq`, `gt`, `between`, `in`, `contains`, `is_null` and so on), a grouping (a date can be grouped by day, month, quarter or year, as `date:quarter`), totals (`count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `median`), a sort and a limit (up to 500 rows). Each dataset's rows come from the named tool behind it (`portfolio_summary`, `list_investments`, `lp_live_report` and so on), so a query sees exactly what that tool would: the member's own entities, carried interest folded as on capital accounts, and the same figures. Nothing is written, and no SQL reaches the database (`lib/agent/query/`).
 
-**Following long-running work.** Some things outlast a tool call. `diligence_run_agent`, `deals_research_inbound` and a slow `submit_company_update` return a `job` with an id (such as `diligence:3f…`), its state (queued, running, done or failed) and the status tool that reads it back: `diligence_job_status`, `deals_research_status` or `company_update_status`. The status tool shows the result when it's done (the research, the KPIs recorded) and the error when it failed, under the same access as the tool that started it. `diligence_job_status` also lists a deal's last five jobs. The assistant is told to say the work has started and check back when asked, rather than poll.
+**Following long-running work.** Some things outlast a tool call. `diligence_run_agent`, `deals_research_inbound` and a slow `submit_company_update` return a `job` with an id (such as `diligence:3f…`), its state (queued, running, done or failed) and the status tool that reads it back: `diligence_job_status`, `deals_research_status` or `company_update_status`. The status tool shows the result when it's done (the research, the KPIs recorded) and the error when it failed, under the same access as the tool that started it. `diligence_job_status` also lists a deal's last five jobs. The assistant is told to say the work has started and check back when asked, rather than poll. A memo-agent job in a fund with no AI key is the exception: it waits for the assistant itself, and the job's `next` says to run it with `diligence_stage_next`.
 
 **What it can reach.** The tool list is filtered to the areas the member can read and the entities they can see, and re-checked on every call. Requests are limited per fund to 300 reads or 60 writes a minute, in batches of up to 20 calls. The Analyst never writes directly — it stages changes for approval — and `/api/v1` (chat, streamed chat over Server-Sent Events, conversations, approving staged actions with an `Idempotency-Key`) takes only OAuth tokens issued for it.
 
@@ -583,6 +607,7 @@ npm install
 # Copy environment variables
 cp .env.example .env.local
 # Fill in your Supabase URL, keys, and encryption key
+# (or run `npm run setup -- --vercel skip`, which writes them for you)
 
 # Run Supabase migrations (if using Supabase CLI)
 npx supabase db push
@@ -611,7 +636,7 @@ Then set the tunnel URL as your inbound webhook (e.g. `https://your-tunnel.ngrok
 
 ### AI Providers
 
-The platform supports three AI providers. Configure at least one in Settings, then select the default provider used for email processing, metric extraction, summaries, and imports.
+The platform supports three AI providers, all optional (see [AI without a server key](#ai-without-a-server-key)). Configure one or more in Settings, then select the default provider used for email processing, metric extraction, summaries, and imports.
 
 | Provider | Default Model | Key Required | Notes |
 |----------|--------------|-------------|-------|
@@ -620,6 +645,37 @@ The platform supports three AI providers. Configure at least one in Settings, th
 | **OpenRouter** | Configurable | API key from [openrouter.ai](https://openrouter.ai) | Unified access to many model providers through one key |
 
 Each provider has a model selector in Settings — after saving your API key, you can fetch the available models and choose which one to use. The **Analyst** panel also has a model dropdown that shows models from all configured providers, with an "Auto" option that uses the fund's default.
+
+### AI without a server key
+
+A server key is optional. Without one, your own assistant does the AI work: connect Claude, ChatGPT or Claude Code to `https://<your-domain>/api/mcp` (see [Connecting Claude, ChatGPT and other agents](#connecting-claude-chatgpt-and-other-agents)) and ask it. It reads the fund's data with the read tools, does the thinking with its own model, and writes the result back with the write tools, so the server needs no AI key at all. What it cannot replace is the web app's own AI buttons, which have no model of their own to borrow, and work that runs with nobody present, like parsing an email as it arrives.
+
+Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI providers, with `npm run bootstrap -- --ai assistant`, or from chat with `setup_fund { "aiMode": "assistant" }`. Adding a key later switches the fund to the server key; your assistant can still do any of this either way. `setup_status` returns the same list as `ai.worksWithoutKey`, `ai.waitsForYou` and `ai.needsKey`.
+
+**Inbound email without a key.** Updates still arrive and are saved, but nothing reads them as they come in. Each waits on the Emails page as pending until you ask your assistant to **Process my inbox** (a prompt in the connector's menu): it lists them with `inbox_waiting`, reads each with `inbox_read`, records the figures with `record_metric_value` and files it under the company with `inbox_done`. A scanned PDF or image in an update waits the same way: `ocr_waiting` lists them, `ocr_page` shows your assistant each page as an image, and `ocr_save_text` saves what it read, which makes the file searchable like any other. A deal you add from chat (`deals_create_inbound`) is saved unanalysed, and `deals_inbound_detail` hands your assistant the pitch and the fund's thesis to write the analysis back with `deals_update_inbound`.
+
+**The memo agent without a key.** A stage you start (`diligence_run_agent`, or the deal page) waits for your assistant instead of failing, and the deal page says so. Ask your assistant to run it: `diligence_stage_next` carries the deal's queued stages along and lists the requests each would have sent a model, `diligence_stage_read` shows one (its system prompt, its content in pages, and any scanned page as an image), and `diligence_stage_submit` takes the answers. The stage's own code then parses and stores them exactly as it does with a key, and the next stage it queues (synthesis after ingest, review and scoring after the draft) comes back from the same call. The fund's cost caps don't apply, since the spend is your assistant's. A data room is read a document at a time, so a large one takes many rounds.
+
+| Feature | Without a server key | How, or why not |
+|---|---|---|
+| Questions about the fund (the Analyst) | Yes, from your assistant | Your assistant answers from the same data the Analyst reads, through the read tools. (`portfolio_summary`, `company_detail`, `lp_capital_summary`, `fund_performance`) |
+| Drafting a forecast | Yes, from your assistant | Your assistant builds the plan from the forecast tools. (`forecast_create_plan`, `forecast_update_plan`, `forecast_series`) |
+| Writing the quarterly LP letter | Yes, from your assistant | Your assistant reads the quarter's figures and writes the draft back. (`lp_create_letter`, `lp_letter_data`, `lp_write_letter`) |
+| Learning a letter template from an example | Yes, from your assistant | Your assistant reads the example and saves the template. (`document_template_get`, `document_template_save`) |
+| Reading a company update you share in chat | Yes, from your assistant | Your assistant reads the letter, deck or KPI sheet and records each figure. (`company_detail`, `record_metric_value`) |
+| Importing companies, investments and LPs from a paste or spreadsheet | Yes, from your assistant | Your assistant parses the rows and records each one. (`create_company`, `record_metric_value`, `record_investment`, `lp_create_investor`, `lp_record_commitment`) |
+| Categorising bank transactions | Yes, from your assistant | Your assistant matches each transaction to the chart of accounts and sets it. (`list_bank_transactions`, `list_accounts`, `set_bank_transaction_account`) |
+| Adding and analysing a deal against the thesis | Yes, from your assistant | A deal added from chat is saved unanalysed; your assistant reads it and the thesis and writes the analysis back. (`deals_create_inbound`, `deals_inbound_detail`, `deals_update_inbound`) |
+| Editing an investment memo | Yes, from your assistant | Your assistant reads the memo and evidence and rewrites paragraphs. (`diligence_memo`, `diligence_evidence`, `diligence_write_memo`) |
+| Investor questions in the LP portal | Yes, from your assistant | An investor connects their own assistant to the portal and asks it. |
+| AI buttons in the web app (Analyst panel, Generate letter, AI import, Summarise) | Needs a key | A button in the browser has no model of its own to borrow; without a key, do the same thing from your assistant. |
+| Reading emailed company updates | Waits for your assistant | With a key it runs as each email arrives. Without one, each update is saved and waits in an inbox your assistant clears when you ask. (`inbox_waiting`, `inbox_read`, `record_metric_value`, `inbox_done`) |
+| Sorting inbound email into deals, diligence and updates | Needs a key | It runs as each email arrives, with nobody present. Without a key, everything is treated as a company update. |
+| Reading scanned pages in company updates | Waits for your assistant | With a key a background job reads them. Without one, scans wait until you ask: your assistant looks at each page and saves its text. Text PDFs are read without a model either way. (`ocr_waiting`, `ocr_page`, `ocr_save_text`) |
+| The memo agent (ingest, research, draft, score) | Waits for your assistant | With a key its stages run as background jobs. Without one, a stage waits until you ask: your assistant answers each request the stage would have sent a model, and the stage stores the result as it would with a key. (`diligence_run_agent`, `diligence_stage_next`, `diligence_stage_read`, `diligence_stage_submit`) |
+| Asking questions of a deal's data room | Yes, from your assistant | Your assistant reads the documents' text and the memo agent's evidence, and answers in chat. (`diligence_list_documents`, `diligence_document_text`, `diligence_evidence`) |
+| Saving an AI summary on a company page | Yes, from your assistant | Your assistant reads the company's metrics and updates, writes the summary and saves it to the company. (`company_detail`, `company_metrics`, `get_updates`, `company_save_summary`) |
+| Web research on inbound deals | Yes, from your assistant | Your assistant searches the web with its own tools and saves the findings and sources to the deal. (`deals_inbound_detail`, `deals_update_inbound`) |
 
 ### Feature Visibility
 

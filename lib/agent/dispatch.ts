@@ -76,6 +76,10 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   post_entry: input => input.status === 'draft',
   post_ledger_text: input => input.status === 'draft',
   allocation: input => input.post === false,
+  // The memo agent run on the person's own model: it writes only into the open memo draft, which the
+  // agent can never finalise (diligence_finalize_memo stages), and starting the stage already staged.
+  diligence_stage_next: () => true,
+  diligence_stage_submit: () => true,
   // Stage a feed as drafts and re-point those drafts; posting them is post_bank_transaction / post_drafts.
   import_bank_transactions: () => true,
   // An outside ledger lands as drafts too (lib/accounting/quickbooks/import-journal.ts); a mapping

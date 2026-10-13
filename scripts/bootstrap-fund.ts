@@ -6,7 +6,11 @@
 // or from a script: see "Setting up a fund with Claude, ChatGPT or a script" in DOCS.md.
 //
 //   npm run bootstrap -- --email you@firm.com --fund "Hemrock Ventures" \
-//     [--products portfolio_reporting,fund_operations,lp_reporting] [--no-key]
+//     [--products portfolio_reporting,fund_operations,lp_reporting] [--ai assistant|key] [--no-key]
+//
+// --ai assistant runs the fund with no server AI key: your own assistant (Claude, ChatGPT) does the
+// AI work over MCP. --ai key requires a provider key in the environment (below). Either way the
+// script prints what works without a key and what needs one (lib/ai/capabilities.ts).
 //
 // Reads NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and ENCRYPTION_KEY from .env.local.
 // An AI provider key, if you want one stored, comes from ANTHROPIC_API_KEY, OPENAI_API_KEY or
@@ -18,6 +22,7 @@ import { createFund, fundCreationRefusal, type AIKeyInput } from '../lib/onboard
 import { applySetupPlan, parseSetupPlan } from '../lib/onboarding/setup-plan'
 import { generateApiKey } from '../lib/accounting/api-keys'
 import { siteOrigin } from '../lib/site-links'
+import { AI_CAPABILITIES, hasAnyAIKey } from '../lib/ai/capabilities'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -40,6 +45,10 @@ async function main() {
   const email = arg('email')?.trim().toLowerCase()
   const fundName = arg('fund')?.trim()
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail('Pass --email you@firm.com')
+  const aiChoice = arg('ai')
+  if (aiChoice !== undefined && aiChoice !== 'assistant' && aiChoice !== 'key') fail('--ai is "assistant" (no server key) or "key".')
+  const aiKey = aiChoice === 'assistant' ? null : aiKeyFromEnv()
+  if (aiChoice === 'key' && !aiKey) fail('--ai key needs ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY in the environment.')
   const admin = createAdminClient()
   const db = admin as any
 
@@ -76,7 +85,7 @@ async function main() {
     if (!fundName) fail('Pass --fund "Your Fund Name" to create the fund.')
     const refusal = await fundCreationRefusal(admin, userId)
     if (refusal) fail(refusal)
-    const created = await createFund(admin, { userId, email, fundName, ai: aiKeyFromEnv(), agentApiEnabled: true })
+    const created = await createFund(admin, { userId, email, fundName, ai: aiKey, agentApiEnabled: true })
     if (!created.ok) fail(created.error)
     fundId = created.fundId
     console.log(`Created "${fundName}" with you as its admin.`)
@@ -92,7 +101,17 @@ async function main() {
     for (const w of result.warnings) console.log(`Note: ${w}`)
   }
 
-  // 5. A key for the agent API and MCP, shown once.
+  // 5. How AI runs here. Only the no-key choice is recorded: a saved key is what makes a fund
+  //    run on the server key, and an existing fund's key is changed in Settings, not here.
+  if (aiChoice === 'assistant') {
+    const { error } = await db.from('fund_settings').update({ ai_mode: 'assistant' }).eq('fund_id', fundId)
+    if (error) console.log(error.code === '42703'
+      ? 'Note: could not record the AI choice; the database needs the latest migrations (supabase db push).'
+      : `Note: could not record the AI choice: ${error.message}`)
+    else console.log('AI runs through your own assistant, with no server key.')
+  }
+
+  // 6. A key for the agent API and MCP, shown once.
   const origin = siteOrigin()
   if (!process.argv.includes('--no-key')) {
     const key = generateApiKey()
@@ -103,9 +122,21 @@ async function main() {
     console.log(`\nAPI key (shown once, store it somewhere safe; revoke it in Settings → API and MCP):\n  ${key.token}\n`)
   }
 
+  const { data: savedSettings } = await db.from('fund_settings').select('*').eq('fund_id', fundId).maybeSingle()
+  if (!hasAnyAIKey(savedSettings)) printKeylessSummary(aiChoice === 'assistant')
+
   console.log(`MCP server:  ${origin}/api/mcp   (Claude and ChatGPT sign in with OAuth; scripts send the key as a Bearer token)`)
   console.log(`Agent API:   ${origin}/api/agent  (GET lists tools; POST {"tool": "setup_status", "input": {}})`)
   console.log('Next: run the setup prompt in DOCS.md ("Setting up a fund with Claude, ChatGPT or a script"), in Claude or as a script.')
+}
+
+function printKeylessSummary(chosen: boolean) {
+  console.log(chosen ? '\nWith no server AI key:' : '\nNo server AI key is stored. Without one (pass --ai assistant to make it the plan):')
+  console.log('  Works from your assistant over MCP:')
+  for (const c of AI_CAPABILITIES.filter(c => c.keyless !== 'needs_key')) console.log(`    - ${c.label}${c.keyless === 'on_demand' ? ' (waits until you ask)' : ''}`)
+  console.log('  Needs a server key (add one in Settings → AI providers):')
+  for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'needs_key')) console.log(`    - ${c.label}: ${c.why}`)
+  console.log('')
 }
 
 main().catch(e => fail(e instanceof Error ? e.message : String(e)))

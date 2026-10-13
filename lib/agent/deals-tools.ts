@@ -105,10 +105,24 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
 
     const { data: email } = await (admin as any)
       .from('inbound_emails')
-      .select('from_address, subject, received_at')
+      .select('from_address, subject, received_at, raw_payload')
       .eq('id', deal.email_id)
       .eq('fund_id', fundId)
       .maybeSingle()
+
+    // Not analysed yet (the fund has no server AI key, or the analyzer failed): hand the caller what
+    // the analyzer would have read, so it can write the analysis back with deals_update_inbound.
+    let toAnalyse: Record<string, unknown> | undefined
+    if (!deal.thesis_fit_score) {
+      const { data: settings } = await (admin as any).from('fund_settings').select('*').eq('fund_id', fundId).maybeSingle()
+      toAnalyse = {
+        pitch: String((email as any)?.raw_payload?.TextBody ?? '').slice(0, 12_000),
+        attachments: (((email as any)?.raw_payload?.Attachments ?? []) as { Name?: string }[]).map(a => a.Name).filter(Boolean),
+        fund_thesis: (settings as any)?.deal_thesis ?? null,
+        screening_guidance: (settings as any)?.deal_screening_prompt ?? null,
+        then: 'deals_update_inbound with company_summary, thesis_fit_analysis, thesis_fit_score, stage, industry, raise_amount',
+      }
+    }
 
     return {
       id: deal.id,
@@ -142,6 +156,7 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
         ? { from: (email as any).from_address, subject: (email as any).subject, received_at: (email as any).received_at }
         : null,
       created_at: deal.created_at,
+      ...(toAnalyse ? { to_analyse: toAnalyse } : {}),
     }
   },
 
@@ -171,6 +186,10 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
       thesis_fit: deal?.thesis_fit_score ?? null,
       status: deal?.status ?? null,
       url: out.dealId ? `${(origin ?? '').replace(/\/$/, '')}/deals/${out.dealId}` : null,
+      ...(out.analysed ? {} : {
+        note: 'Saved without analysis: this fund has no server AI key. Read the fund\'s thesis and this pitch, then write the ' +
+          'analysis with deals_update_inbound (company_summary, thesis_fit_analysis, thesis_fit_score, stage, industry, raise_amount).',
+      }),
     }
   },
 
@@ -182,6 +201,15 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
       status: input?.status,
       vehicleId: vehicleRef ? await visibleVehicleId(admin, access, vehicleRef) : undefined,
       assignedTo: assigned === undefined ? undefined : assigned === '' ? null : await fundMemberId(admin, fundId, assigned),
+      analysis: {
+        companySummary: input?.company_summary,
+        thesisFitAnalysis: input?.thesis_fit_analysis,
+        thesisFitScore: input?.thesis_fit_score,
+        stage: input?.stage,
+        industry: input?.industry,
+        raiseAmount: input?.raise_amount,
+      },
+      research: input?.research && typeof input.research === 'object' ? input.research : undefined,
     }))
     return { dealId: deal.id, company: deal.company_name, updated: out.updated }
   },

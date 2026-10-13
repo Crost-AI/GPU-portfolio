@@ -30,6 +30,12 @@ function plan(raw: unknown): SetupPlan {
 }
 
 describe('parseSetupPlan', () => {
+  it('takes only the no-key AI choice; a server key is never set from a plan', () => {
+    expect(parseSetupPlan({ aiMode: 'assistant' }, NOW)).toEqual({ aiMode: 'assistant' })
+    expect(parseSetupPlan({ aiMode: 'server_key' }, NOW)).toEqual({ error: expect.stringMatching(/Settings/) })
+    expect(describeSetupPlan({ aiMode: 'assistant' })).toEqual(['Run AI through your own assistant, with no server key'])
+  })
+
   it('refuses an empty plan, an unknown product, a duplicate email and a preset on an admin', () => {
     expect(parseSetupPlan({}, NOW)).toEqual({ error: expect.stringMatching(/empty/) })
     expect(parseSetupPlan({ products: ['crypto'] }, NOW)).toEqual({ error: expect.stringMatching(/products must be/) })

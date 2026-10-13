@@ -20,7 +20,7 @@ describe('getting-started catalog', () => {
   it('filters areas and prompts to what the member can read', () => {
     expect(areasFor(only('portfolio')).map(a => a.key)).toEqual(['portfolio'])
     const names = promptsFor(only('portfolio')).map(p => p.name)
-    expect(names).toEqual(['get_started', 'portfolio_review', 'company_check_in'])
+    expect(names).toEqual(['get_started', 'portfolio_review', 'company_check_in', 'process_inbox'])
     // No member to filter for (the Support page, the plugin README): everything.
     expect(areasFor().length).toBe(AREAS.length)
   })

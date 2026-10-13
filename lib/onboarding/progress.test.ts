@@ -44,6 +44,7 @@ function facts(over: Partial<SetupFacts> = {}, vehicle: Partial<SetupVehicleFact
     can: ALL,
     settings: {
       hasAiKey: false,
+      aiMode: null,
       productsChosen: false,
       activeProducts: [],
       inboundProvider: null,
@@ -80,7 +81,7 @@ describe('computeSetupProgress — order and sections', () => {
   it('is complete when every applicable step is done', () => {
     const p = computeSetupProgress(facts(
       {
-        settings: { hasAiKey: true, productsChosen: true, activeProducts: ['Portfolio Reporting'], inboundProvider: 'postmark', inboundConfigured: true, senderCount: 2 },
+        settings: { hasAiKey: true, aiMode: 'server_key', productsChosen: true, activeProducts: ['Portfolio Reporting'], inboundProvider: 'postmark', inboundConfigured: true, senderCount: 2 },
         lpPortalLinks: 3,
       },
       {
@@ -181,6 +182,24 @@ describe('computeSetupProgress — blocked and done', () => {
     ])
     expect(step(facts({}, { id: 'abc' }), 'first_close')?.href).toBe('/funds/abc/periods')
     expect(step(facts({}, { id: 'abc' }), 'forecast')?.href).toBe('/funds/abc/forecast')
+  })
+})
+
+describe('computeSetupProgress — how AI works here', () => {
+  const settings = facts().settings!
+
+  it('asks until an admin chooses', () => {
+    expect(step(facts(), 'ai_key')?.status).toBe('todo')
+  })
+
+  it('is done with a server key', () => {
+    expect(step(facts({ settings: { ...settings, hasAiKey: true, aiMode: 'server_key' } }), 'ai_key')?.status).toBe('done')
+  })
+
+  it('is done with no key when the admin chose their own assistant', () => {
+    const s = step(facts({ settings: { ...settings, aiMode: 'assistant' } }), 'ai_key')
+    expect(s?.status).toBe('done')
+    expect(s?.detail).toMatch(/your own assistant/)
   })
 })
 

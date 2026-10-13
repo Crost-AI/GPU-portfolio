@@ -7,6 +7,7 @@ import { applySetupPlan, parseSetupPlan } from '@/lib/onboarding/setup-plan'
 import { productsFromVisibility, parseOnboardingRecord } from '@/lib/onboarding/wizard'
 import { ACCESS_PRESETS } from '@/lib/access/presets'
 import { siteOrigin } from '@/lib/site-links'
+import { aiStatus, hasAnyAIKey } from '@/lib/ai/capabilities'
 
 /** How each checklist step is done from chat, where a tool does it. The rest link to the web page. */
 export const STEP_TOOLS: Partial<Record<StepKey, string>> = {
@@ -22,7 +23,7 @@ export const STEP_TOOLS: Partial<Record<StepKey, string>> = {
 
 /** Steps that need a secret or a third-party account, which do not belong in a chat. */
 const WEB_ONLY: Partial<Record<StepKey, string>> = {
-  ai_key: 'An AI provider key is a secret: add it in Settings, or pass it to the bootstrap script, rather than in a chat.',
+  ai_key: 'To run with no server key, record that with setup_fund { aiMode: "assistant" }: you then do the AI work in chat (see ai.worksWithoutKey). A server key is a secret: add it in Settings, or pass it to the bootstrap script, never in a chat.',
   inbound_email: 'Inbound email needs a Postmark or Mailgun account and a webhook; set it up in Settings.',
 }
 
@@ -42,6 +43,7 @@ export const SETUP_HANDLERS: Record<string, AgentToolHandler> = {
       fund: fund?.name ?? null,
       products: productsFromVisibility(settings?.feature_visibility ?? null),
       agentAccess: !!settings?.agent_api_enabled,
+      ai: aiStatus(hasAnyAIKey(settings), settings?.ai_mode),
       finished: !!parseOnboardingRecord(settings?.onboarding)?.completed_at,
       team: {
         admins: memberRows.filter(m => m.role === 'admin').length,

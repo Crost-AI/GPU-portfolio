@@ -4,8 +4,9 @@ import { useEffect } from 'react'
 import { Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAnalystContext } from '@/components/analyst-context'
+import { AskYourAssistant } from '@/components/ask-your-assistant'
 
-export function AnalystButton({ companyId, pushRight }: { companyId: string; pushRight?: boolean }) {
+export function AnalystButton({ companyId, companyName, pushRight }: { companyId: string; companyName: string; pushRight?: boolean }) {
   const { open, toggleOpen, setCompanyId, hasAIKey } = useAnalystContext()
 
   useEffect(() => {
@@ -13,7 +14,7 @@ export function AnalystButton({ companyId, pushRight }: { companyId: string; pus
     return () => setCompanyId(null)
   }, [companyId, setCompanyId])
 
-  if (!hasAIKey) return null
+  if (!hasAIKey) return <AskYourAssistant prompt={`How is ${companyName} doing? Summarise its latest update and metrics.`} className={pushRight ? 'ml-auto' : ''} />
 
   return (
     <Button

@@ -1,7 +1,8 @@
 // lib/pipeline/processEmail.fund-holding.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ propose: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  hasKey: true as boolean | undefined, propose: vi.fn() }))
 vi.mock('@/lib/company-updates/capture', () => ({
   captureCompanyUpdate: vi.fn(async () => 'update-1'),
   removeCompanyUpdate: vi.fn(async () => undefined),
@@ -16,6 +17,13 @@ vi.mock('@/lib/parsing/extractAttachmentText', () => ({
     ],
   })),
 }))
+// A fund with a server key. With none, the pipeline saves the email for the person's assistant
+// instead (lib/ai/keyless.ts), which the test below pins.
+vi.mock('@/lib/ai/keyless', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/ai/keyless')>()),
+  fundHasAIKey: vi.fn(async () => mocks.hasKey ?? true),
+}))
+
 vi.mock('@/lib/ai/feature-provider', () => ({
   getFeatureProvider: vi.fn(async () => ({ provider: { createMessage: vi.fn() }, providerType: 'test', model: 'test-model' })),
 }))

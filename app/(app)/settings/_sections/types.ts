@@ -22,6 +22,8 @@ export interface SettingsData {
   hasOpenAIKey: boolean
   openaiModel: string
   defaultAIProvider: string
+  /** fund_settings.ai_mode: 'assistant' when the admin chose to run with no server key. */
+  aiMode?: 'server_key' | 'assistant' | null
   hasOpenRouterKey: boolean
   openrouterModel: string
   openrouterBaseUrl: string

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AGENT_TOOLS, getTool } from '@/lib/accounting/agent-tools'
-import { shouldStage } from '@/lib/agent/dispatch'
+import { isDraftOnlyCall, shouldStage } from '@/lib/agent/dispatch'
 import { previewToolCall, stageToolCall } from '@/lib/agent/tool-call-action'
 import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
 import { DILIGENCE_HANDLERS } from '@/lib/agent/diligence-tools'
@@ -56,7 +56,14 @@ describe('deal and diligence tools', () => {
     ]) expect(WRITES, name).toContain(name)
   })
 
-  it.each(WRITES)('%s is staged from a chat and runs directly from a key', name => {
+  // Running a memo-agent stage on the assistant's own model writes only into the open draft, and
+  // starting the stage (diligence_run_agent) was already approved, so those calls are not staged again.
+  const RUN_ON_ASSISTANT = ['diligence_stage_next', 'diligence_stage_submit']
+  it('runs a stage on the assistant without asking twice', () => {
+    for (const name of RUN_ON_ASSISTANT) expect(isDraftOnlyCall({ name }, {}), name).toBe(true)
+  })
+
+  it.each(WRITES.filter(n => !RUN_ON_ASSISTANT.includes(n)))('%s is staged from a chat and runs directly from a key', name => {
     const tool = getTool(name)!
     expect(shouldStage(tool, {}, oauth)).toBe(true)
     expect(shouldStage(tool, {}, key)).toBe(false)

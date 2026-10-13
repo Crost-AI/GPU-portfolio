@@ -46,6 +46,8 @@ export interface SetupPlan {
   entities?: FirstEntityInput[]
   team?: TeamMemberInput[]
   authorizedSenders?: { email: string; label: string | null }[]
+  /** Run AI through the admin's own assistant, with no server key (lib/ai/capabilities.ts). */
+  aiMode?: 'assistant'
   finish?: boolean
 }
 
@@ -59,6 +61,7 @@ export interface SetupResult {
   authorizedSenders: { email: string; status: RowStatus; error?: string }[]
   /** Areas switched from "Admins only" to members, because someone on the team was granted them. */
   openedToMembers: string[]
+  aiMode?: 'assistant'
   finished?: boolean
   warnings: string[]
 }
@@ -147,6 +150,13 @@ export function parseSetupPlan(raw: unknown, now: Date = new Date()): SetupPlan 
     plan.authorizedSenders = senders
   }
 
+  if (r.aiMode !== undefined) {
+    // Only the no-key choice is made here: a server key is a secret, added in Settings or by the
+    // bootstrap script, and saving one is what makes a fund 'server_key'.
+    if (r.aiMode !== 'assistant') return { error: 'aiMode can only be "assistant" (no server key). Add a server key in Settings.' }
+    plan.aiMode = 'assistant'
+  }
+
   if (r.finish !== undefined) plan.finish = r.finish === true
 
   if (Object.keys(plan).length === 0) return { error: 'The plan is empty. Say what to set up.' }
@@ -165,6 +175,7 @@ export function describeSetupPlan(plan: SetupPlan): string[] {
     lines.push(`Add ${t.email} as ${access}${ends} (an invitation email is sent if they have no account)`)
   }
   if (plan.authorizedSenders?.length) lines.push(`Authorize ${plan.authorizedSenders.length} sender(s): ${plan.authorizedSenders.map(s => s.email).join(', ')}`)
+  if (plan.aiMode === 'assistant') lines.push('Run AI through your own assistant, with no server key')
   if (plan.finish) lines.push('Mark setup as finished')
   return lines
 }
@@ -330,7 +341,17 @@ export async function applySetupPlan(
     expire('fund-settings')
   }
 
-  // 6. Done.
+  // 6. How AI runs here.
+  if (plan.aiMode) {
+    const { error } = await db.from('fund_settings').update({ ai_mode: plan.aiMode }).eq('fund_id', fundId)
+    if (error) result.warnings.push(error.code === '42703'
+      ? 'Could not record the AI choice: the database needs the latest migrations (supabase db push).'
+      : 'Could not record the AI choice.')
+    else result.aiMode = plan.aiMode
+    expire('fund-settings')
+  }
+
+  // 7. Done.
   if (plan.finish) {
     const res = await patchOnboardingRecord(admin, fundId, rec => ({ ...rec, completed_at: rec.completed_at ?? new Date().toISOString() }))
     result.finished = res.ok

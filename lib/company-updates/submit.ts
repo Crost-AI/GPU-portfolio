@@ -194,6 +194,15 @@ export async function submitCompanyUpdate(deps: Deps, input: SubmitUpdateInput):
   }
 
   const result = await outcome(admin, emailId)
+  if (result.status === 'pending') {
+    // No server key: the pipeline saved it unread (lib/ai/keyless.ts). The caller is an assistant
+    // that already has the text, so it records the figures itself.
+    warnings.push(
+      'Saved but not read: this fund has no server AI key. Record each figure yourself with record_metric_value ' +
+      '(company_metrics lists the company\'s metrics), then call inbox_done with this emailId and the company.',
+    )
+    return { ...result, warnings, url, job: jobHandle('company_update', emailId, result.status) }
+  }
   return { ...result, warnings: [...warnings, ...(await pipelineWarnings(admin, emailId))], url, job: jobHandle('company_update', emailId, result.status) }
 }
 
