@@ -84,6 +84,8 @@ export interface DemoSnapshot {
   lps: { id: string; name: string }[]
   /** Each vehicle's LP entities (lp_investments), so every LP capital statement has a URL to walk. */
   lpPositions?: { vehicleId: string; lpEntityId: string }[]
+  /** The fund's LP letters, so each letter's page has a URL to walk. */
+  letters?: { id: string; periodLabel: string; portfolioGroup: string; status: string }[]
   deals: DemoDeal[]
   notes: DemoNote[]
   interactions: DemoInteraction[]

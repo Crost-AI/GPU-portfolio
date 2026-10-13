@@ -76,6 +76,10 @@ async function main() {
     (admin as any).from('lp_investments').select('entity_id, portfolio_group').eq('fund_id', fundId) as Promise<{ data: { entity_id: string; portfolio_group: string }[] | null; error: unknown }>,
   ])
   for (const r of [vehicles, companies, metrics, values, lps, deals, notes, interactions, investments, positions]) if (r.error) throw r.error
+  // The LP letters, so the widget walks and records each letter's page. Read as the viewer: a fund
+  // whose viewers cannot read lp_relations gets none, and the demo serves the list without them.
+  const letters = await (admin as any).from('lp_letters').select('id, period_label, portfolio_group, status')
+    .eq('fund_id', fundId).neq('status', 'generating').order('period_year', { ascending: false }).order('period_quarter', { ascending: false }) as { data: { id: string; period_label: string; portfolio_group: string; status: string }[] | null }
 
   const valuesByMetric = new Map<string, DemoSnapshot['companies'][number]['metrics'][number]['values']>()
   for (const v of values.data ?? []) {
@@ -105,6 +109,7 @@ async function main() {
       const vehicleId = (vehicles.data ?? []).find(v => v.name === p.portfolio_group)?.id
       return vehicleId ? [[`${vehicleId}/${p.entity_id}`, { vehicleId, lpEntityId: p.entity_id }] as const] : []
     })).values()],
+    letters: (letters.data ?? []).map(l => ({ id: l.id, periodLabel: l.period_label, portfolioGroup: l.portfolio_group, status: l.status })),
     deals: (deals.data ?? []).map(d => ({ ...d })),
     notes: (notes.data ?? []).map(n => ({ id: n.id, company_id: n.company_id, content: n.content, created_at: String(n.created_at).slice(0, 10) })),
     interactions: (interactions.data ?? []).map(i => ({ company_id: i.company_id, subject: i.subject ?? '', summary: i.summary ?? '', date: String(i.interaction_date).slice(0, 10) })),

@@ -111,12 +111,14 @@ for (const href of routes) {
     await page.screenshot({ path: path.join(shots, href.replace(/[^a-z0-9]+/gi, '_').replace(/^_/, '') + '.png') })
   }
   report.routes.push(current)
-  // A crash unmounts the React tree; start over so the next page is judged on its own.
-  if (current.errors.length) { current = null; await open() }
   const flag = current.errors.length ? 'CRASH' : current.console.length ? 'error' : current.misses.length ? 'miss ' : 'ok   '
   console.log(`${flag} ${href}${current.misses.length ? `  (${current.misses.length} unanswered)` : ''}`)
   for (const e of current.errors) console.log(`       ! ${e}`)
   for (const e of current.console) console.log(`       ~ ${e}`)
+  // A crash unmounts the React tree; start over so the next page is judged on its own. Report the
+  // page first: clearing `current` before the log above is what turned every crash into a
+  // TypeError that hid the page and the error.
+  if (current.errors.length) { current = null; await open() }
 }
 
 await browser.close()
