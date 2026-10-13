@@ -9,7 +9,7 @@ import { AnalystToggleButton } from '@/components/analyst-button'
 import { AnalystPanel } from '@/components/analyst-panel'
 import { PortfolioNotesProvider, PortfolioNotesButton, PortfolioNotesPanel } from '@/components/portfolio-notes'
 import { evaluateAll, type ComplianceProfile, type Applicability } from '@/lib/compliance/applicability'
-import { expandInstances } from '@/lib/compliance/schedule'
+import { expandInstances, parseGroupKey } from '@/lib/compliance/schedule'
 import { resolveStatus } from '@/lib/compliance/status'
 import { parseYear } from '@/lib/compliance/completion'
 import { ComplianceNav, type ComplianceTab } from './compliance-nav'
@@ -446,6 +446,23 @@ export default function CompliancePage() {
     }
   }
 
+  // Save an item's standing notes — for a vehicle item they belong to the vehicle, not one quarter's
+  // occurrence, so every quarter shows the same notes (a capital-statement distribution list, say).
+  async function handleSaveNotes(itemId: string, notes: string, notesGroup: string) {
+    const res = await fetch('/api/compliance/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ compliance_item_id: itemId, portfolio_group: notesGroup, year, notes }),
+    })
+    if (res.ok) {
+      const updated = await res.json()
+      setFundSettings(prev => {
+        const others = prev.filter(s => !(s.compliance_item_id === itemId && (s.portfolio_group ?? '') === notesGroup))
+        return [...others, updated]
+      })
+    }
+  }
+
   // Check if an item passes the current status filter
   const passesFilter = useCallback((status: Applicability): boolean => {
     if (statusFilter === 'all') return true
@@ -554,6 +571,7 @@ export default function CompliancePage() {
               setStatusFilter={setStatusFilter}
               onToggleDismiss={handleToggleDismiss}
               onMarkComplete={handleMarkComplete}
+              onSaveNotes={handleSaveNotes}
               links={links}
             />
           )}
@@ -570,6 +588,7 @@ export default function CompliancePage() {
               setStatusFilter={setStatusFilter}
               onToggleDismiss={handleToggleDismiss}
               onMarkComplete={handleMarkComplete}
+              onSaveNotes={handleSaveNotes}
               links={links}
               portfolioGroups={portfolioGroups}
               closeMonths={closeMonths}
@@ -685,7 +704,7 @@ function IntakeQuestionnaire({
 // --- Calendar View ---
 function CalendarView({
   calendarData, items, getStatus, applicability, getSetting, expandedItem, setExpandedItem,
-  statusFilter, setStatusFilter, onToggleDismiss, onMarkComplete, links,
+  statusFilter, setStatusFilter, onToggleDismiss, onMarkComplete, onSaveNotes, links,
 }: {
   calendarData: { months: Record<number, CalendarEntry[]> }
   items: ComplianceItem[]
@@ -698,6 +717,7 @@ function CalendarView({
   setStatusFilter: (v: StatusFilter) => void
   onToggleDismiss: (id: string, dismiss: boolean, reason?: string, group?: string) => void
   onMarkComplete: (id: string, completed: boolean, note?: string, link?: string, group?: string) => void
+  onSaveNotes: (id: string, notes: string, notesGroup: string) => void
   links: ComplianceLink[]
 }) {
   const now = new Date()
@@ -759,10 +779,12 @@ function CalendarView({
                               status={getStatus(item.id, group)}
                               reason={applicability[item.id]?.reason}
                               setting={getSetting(item.id, group)}
+                              notes={getSetting(item.id, notesGroupOf(items.find(i => i.id === item.id), group))?.notes ?? null}
                               group={group}
                               onClose={() => setExpandedEntry(null)}
                               onToggleDismiss={onToggleDismiss}
                               onMarkComplete={onMarkComplete}
+                              onSaveNotes={onSaveNotes}
                               links={links.filter(l => l.compliance_item_id === item.id)}
                             />
                           </div>
@@ -786,10 +808,12 @@ function CalendarView({
                 status={getStatus(expandedEntry.itemId, expandedEntry.group)}
                 reason={applicability[expandedEntry.itemId]?.reason}
                 setting={getSetting(expandedEntry.itemId, expandedEntry.group)}
+                notes={getSetting(expandedEntry.itemId, notesGroupOf(items.find(i => i.id === expandedEntry.itemId), expandedEntry.group))?.notes ?? null}
                 group={expandedEntry.group}
                 onClose={() => setExpandedEntry(null)}
                 onToggleDismiss={onToggleDismiss}
                 onMarkComplete={onMarkComplete}
+                onSaveNotes={onSaveNotes}
                 links={links.filter(l => l.compliance_item_id === expandedEntry.itemId)}
               />
             </div>
@@ -814,7 +838,7 @@ function instanceKey(inst: ItemInstance) {
 
 function ItemsView({
   items, getStatus, applicability, getSetting, expandedItem, setExpandedItem,
-  statusFilter, setStatusFilter, onToggleDismiss, onMarkComplete, links,
+  statusFilter, setStatusFilter, onToggleDismiss, onMarkComplete, onSaveNotes, links,
   portfolioGroups, closeMonths,
 }: {
   items: ComplianceItem[]
@@ -827,6 +851,7 @@ function ItemsView({
   setStatusFilter: (v: StatusFilter) => void
   onToggleDismiss: (id: string, dismiss: boolean, reason?: string, group?: string) => void
   onMarkComplete: (id: string, completed: boolean, note?: string, link?: string, group?: string) => void
+  onSaveNotes: (id: string, notes: string, notesGroup: string) => void
   links: ComplianceLink[]
   portfolioGroups: string[]
   closeMonths: Record<string, number[]>
@@ -908,10 +933,12 @@ function ItemsView({
                         status={status}
                         reason={applicability[inst.item.id]?.reason}
                         setting={getSetting(inst.item.id, inst.group)}
+                        notes={getSetting(inst.item.id, notesGroupOf(inst.item, inst.group))?.notes ?? null}
                         group={inst.group}
                         onClose={() => setExpandedItem(null)}
                         onToggleDismiss={onToggleDismiss}
                         onMarkComplete={onMarkComplete}
+                        onSaveNotes={onSaveNotes}
                         links={links.filter(l => l.compliance_item_id === inst.item.id)}
                       />
                     )}
@@ -926,23 +953,35 @@ function ItemsView({
   )
 }
 
+/** Where an item's standing notes live: the vehicle for a vehicle item (every quarter's occurrence
+ *  of "Fund II::Q3" shares "Fund II"), the firm ('') otherwise. */
+function notesGroupOf(item: ComplianceItem | undefined, group?: string): string {
+  if (!item || item.scope !== 'vehicle' || !group) return ''
+  return parseGroupKey(group).portfolioGroup
+}
+
 // --- Item Detail Panel ---
 function ItemDetail({
-  item, status, reason, setting, group, onClose, onToggleDismiss, onMarkComplete, links,
+  item, status, reason, setting, notes, group, onClose, onToggleDismiss, onMarkComplete, onSaveNotes, links,
 }: {
   item: ComplianceItem
   status: Applicability
   reason?: string
   setting?: FundSetting
+  /** The fund's own standing notes for this item (and vehicle), kept across quarters. */
+  notes: string | null
   group?: string
   onClose: () => void
   onToggleDismiss: (id: string, dismiss: boolean, reason?: string, group?: string) => void
   onMarkComplete: (id: string, completed: boolean, note?: string, link?: string, group?: string) => void
+  onSaveNotes: (id: string, notes: string, notesGroup: string) => void
   links?: ComplianceLink[]
 }) {
   const [showCompleteForm, setShowCompleteForm] = useState(false)
   const [completeNote, setCompleteNote] = useState(setting?.completed_note ?? '')
   const [completeLink, setCompleteLink] = useState(setting?.completed_link ?? '')
+  const [editingNotes, setEditingNotes] = useState(false)
+  const [notesDraft, setNotesDraft] = useState(notes ?? '')
 
   if (!item) return null
 
@@ -991,6 +1030,45 @@ function ItemDetail({
       {item.notes && (
         <p className="text-sm text-muted-foreground mb-3">{item.notes}</p>
       )}
+
+      {/* The fund's own notes — e.g. who receives a vehicle's statements. Per vehicle, not per quarter. */}
+      <div className="mb-3 rounded border p-3">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-xs font-medium">
+            Our notes{notesGroupOf(item, group) ? ` · ${notesGroupOf(item, group)}` : ''}
+          </p>
+          {!editingNotes && (
+            <button
+              onClick={() => { setNotesDraft(notes ?? ''); setEditingNotes(true) }}
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+            >
+              {notes ? 'Edit' : 'Add'}
+            </button>
+          )}
+        </div>
+        {editingNotes ? (
+          <div className="space-y-2">
+            <textarea
+              value={notesDraft}
+              onChange={e => setNotesDraft(e.target.value)}
+              rows={6}
+              maxLength={2000}
+              placeholder="e.g. who receives this, and anyone starting in a later quarter"
+              className="w-full text-sm px-2 py-1.5 rounded border bg-background"
+            />
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => { onSaveNotes(item.id, notesDraft, notesGroupOf(item, group)); setEditingNotes(false) }}>
+                Save
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setEditingNotes(false)}>Cancel</Button>
+            </div>
+          </div>
+        ) : notes ? (
+          <p className="text-sm whitespace-pre-line">{notes}</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">None yet.</p>
+        )}
+      </div>
 
       {item.id === 'ca-diversity' && (
         <p className="text-sm text-muted-foreground mb-3">

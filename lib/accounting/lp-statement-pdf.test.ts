@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildStatementHtml, NET_PNL_LABEL, type StatementPdfData } from './lp-statement-pdf'
+import { buildStatementHtml, ytdWindow, NET_PNL_LABEL, type StatementPdfData } from './lp-statement-pdf'
 import { emptyAccount, type CapitalAccount } from './capital-account'
 
 // One 3SE Holdings LP partner's books, inception to date (capital_accounts, Oct 2026).
@@ -49,5 +49,41 @@ describe('buildStatementHtml', () => {
 
   it("puts the vehicle's logo in the header when one is passed", () => {
     expect(buildStatementHtml(data({ fundLogo: 'data:image/png;base64,3SE' }))).toContain('src="data:image/png;base64,3SE"')
+  })
+
+  it('adds a year-to-date column, and lays the commitment summary out in the same columns', () => {
+    const quarter = { ...emptyAccount(), beginning: 75940, operatingIncome: 170, ending: 76110 }
+    const html = buildStatementHtml(data({
+      period: { label: 'Q1 2026', start: '2026-01-01', end: '2026-03-31' } as any,
+      periodRollForward: quarter, ytdRollForward: quarter,
+    }))
+    const t = text(html)
+    expect(t).toContain('Statement period Year to date Inception to date')
+    expect(t).toContain('Ending capital $76,110.00 $76,110.00 $76,798.45')
+    // Called capital is a flow (nothing called this quarter); the balances sit under inception to date.
+    expect(t).toContain('Called capital — — $90,000.00')
+    expect(t).toContain('Remaining to be called $10,000.00')
+    expect(t).toContain('unaudited')
+  })
+
+  it('keeps two columns when there is no year-to-date figure', () => {
+    expect(text(buildStatementHtml(data()))).not.toContain('Year to date')
+  })
+})
+
+describe('ytdWindow', () => {
+  const today = new Date('2026-10-13T00:00:00Z')
+  it('runs from January 1 of the period end year to the period end', () => {
+    expect(ytdWindow({ preset: 'custom', start: '2026-04-01', end: '2026-06-30', label: 'Q2 2026' }, today))
+      .toEqual({ start: '2026-01-01', end: '2026-06-30' })
+  })
+  it('repeats the period for a Q1 statement, and is null for a year-to-date one', () => {
+    expect(ytdWindow({ preset: 'custom', start: '2026-01-01', end: '2026-03-31', label: 'Q1 2026' }, today))
+      .toEqual({ start: '2026-01-01', end: '2026-03-31' })
+    expect(ytdWindow({ preset: 'ytd', start: '2026-01-01', end: '2026-10-13', label: 'YTD 2026' }, today)).toBeNull()
+  })
+  it('ends today for an inception-to-date statement', () => {
+    expect(ytdWindow({ preset: 'itd', start: null, end: null, label: 'Inception to date' }, today))
+      .toEqual({ start: '2026-01-01', end: '2026-10-13' })
   })
 })

@@ -77,6 +77,9 @@ export interface StatementPdfData {
   period: StatementPeriod
   row: { commitment: number; called: number | null; funded: number | null; outstanding: number | null; receivable: number | null; ending: number | null }
   periodRollForward: CapitalAccount
+  /** January 1 of the period's year through the period end. Absent or null (a statement that is
+   *  itself year to date) prints two columns. */
+  ytdRollForward?: CapitalAccount | null
   rollForward: CapitalAccount
   transactions: { date: string; memo: string | null; sourceType: string | null; amount: number }[]
   ownership: number
@@ -181,17 +184,21 @@ export function buildStatementHtml(d: StatementPdfData): string {
   const { currency, displayFont } = d
   const m = (v: number | null) => money(v, currency)
 
-  // Only show a line if it moved in EITHER column — an SPV shouldn't print four empty rows.
-  const lines = ACTIVITY_FIELDS.filter(
-    f => Math.abs(d.periodRollForward[f]) > 0.004 || Math.abs(d.rollForward[f]) > 0.004
-  )
+  // The columns, left to right: the statement period, year to date when it says something the
+  // period doesn't, and inception to date.
+  const accounts = [d.periodRollForward, ...(d.ytdRollForward ? [d.ytdRollForward] : []), d.rollForward]
 
-  const row = (label: string, period: number, itd: number, style: 'plain' | 'total' | 'subtotal' | 'component' = 'plain') => `
+  // Only show a line if it moved in ANY column — an SPV shouldn't print four empty rows.
+  const lines = ACTIVITY_FIELDS.filter(f => accounts.some(a => Math.abs(a[f]) > 0.004))
+
+  const cell = (v: string) =>
+    `<td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${v}</td>`
+  const row = (label: string, values: number[], style: 'plain' | 'total' | 'subtotal' | 'component' = 'plain') => `
     <tr${style === 'total' ? ' style="font-weight:600;background:#fafafa;"' : style === 'subtotal' ? ' style="font-weight:600;"' : ''}>
       <td style="padding:6px 8px${style === 'component' ? ' 6px 22px' : ''};border-top:1px solid #e5e5e5;${style === 'component' ? 'color:#555;' : ''}">${esc(label)}</td>
-      <td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(period)}</td>
-      <td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(itd)}</td>
+      ${values.map(v => cell(m(v))).join('')}
     </tr>`
+  const field = (f: keyof CapitalAccount) => accounts.map(a => a[f])
 
   // The partner's share of the fund's profit and loss — management fees, expenses, income and
   // gains — indented under one subtotal, so an LP reads a single profit-or-loss figure the way a
@@ -199,14 +206,14 @@ export function buildStatementHtml(d: StatementPdfData): string {
   const pnlShown = lines.filter(f => PNL_FIELDS.includes(f))
   const sumPnl = (a: CapitalAccount) => PNL_FIELDS.reduce((s, f) => s + a[f], 0)
   const rollForwardRows = [
-    row(CAPITAL_ACCOUNT_LABELS.beginning, d.periodRollForward.beginning, d.rollForward.beginning),
+    row(CAPITAL_ACCOUNT_LABELS.beginning, field('beginning')),
     ...lines.filter(f => !PNL_FIELDS.includes(f) && PRE_PNL_FIELDS.includes(f))
-      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f])),
-    ...pnlShown.map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f], 'component')),
-    ...(pnlShown.length > 0 ? [row(NET_PNL_LABEL, sumPnl(d.periodRollForward), sumPnl(d.rollForward), 'subtotal')] : []),
+      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], field(f))),
+    ...pnlShown.map(f => row(CAPITAL_ACCOUNT_LABELS[f], field(f), 'component')),
+    ...(pnlShown.length > 0 ? [row(NET_PNL_LABEL, accounts.map(sumPnl), 'subtotal')] : []),
     ...lines.filter(f => !PNL_FIELDS.includes(f) && !PRE_PNL_FIELDS.includes(f))
-      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], d.periodRollForward[f], d.rollForward[f])),
-    row(CAPITAL_ACCOUNT_LABELS.ending, d.periodRollForward.ending, d.rollForward.ending, 'total'),
+      .map(f => row(CAPITAL_ACCOUNT_LABELS[f], field(f))),
+    row(CAPITAL_ACCOUNT_LABELS.ending, field('ending'), 'total'),
   ].join('')
 
   const txns = d.transactions.filter(t => {
@@ -241,16 +248,24 @@ export function buildStatementHtml(d: StatementPdfData): string {
   // summary and the roll-forward disagreed by exactly the receivable whenever a call was
   // outstanding. The receivable now gets its own line whenever there is one, rather than
   // being suppressed by a comparison against a figure it used to be double-counted in.
-  const summary = [
-    ['Commitment', m(d.row.commitment)],
-    ['Called capital', m(d.row.called)],
+  //
+  // Laid out in the roll-forward's columns. Capital called is a flow, so it has a figure for each;
+  // the rest are balances at the period end and sit under inception to date only.
+  const blank = accounts.slice(1).map(() => '')
+  const summary: [string, string[]][] = [
+    ['Commitment', [...blank, m(d.row.commitment)]],
+    ['Called capital', [
+      ...accounts.slice(0, -1).map(a => m(a.contributions)),
+      m(d.row.called),
+    ]],
     ...(Math.abs(d.row.receivable ?? 0) > 0.004
-      ? [['— of which not yet funded', m(d.row.receivable)]]
+      ? [['— of which not yet funded', [...blank, m(d.row.receivable)]] as [string, string[]]]
       : []),
-    ['Remaining to be called', m(d.row.outstanding)],
-    ['Ownership', pct(d.ownership)],
-    ['Ending capital (NAV)', m(d.row.ending)],
+    ['Remaining to be called', [...blank, m(d.row.outstanding)]],
+    ['Ownership', [...blank, pct(d.ownership)]],
+    ['Ending capital (NAV)', [...blank, m(d.row.ending)]],
   ]
+  const columnHeads = ['Statement period', ...(d.ytdRollForward ? ['Year to date'] : []), 'Inception to date']
 
   const periodLabel = d.period.start && d.period.end
     ? `${d.period.label} (${d.period.start} to ${d.period.end})`
@@ -284,8 +299,7 @@ export function buildStatementHtml(d: StatementPdfData): string {
       <thead>
         <tr>
           <th></th>
-          <th style="text-align:right;width:130px;">Statement period</th>
-          <th style="text-align:right;width:130px;">Inception to date</th>
+          ${columnHeads.map(h => `<th style="text-align:right;width:130px;">${h}</th>`).join('')}
         </tr>
       </thead>
       <tbody>${rollForwardRows}</tbody>
@@ -295,10 +309,10 @@ export function buildStatementHtml(d: StatementPdfData): string {
     <h3 style="font-size:12px;font-weight:600;margin:24px 0 6px;">Commitment summary</h3>
     <table>
       <tbody>
-        ${summary.map(([k, v]) => `
+        ${summary.map(([k, vs]) => `
           <tr>
             <td style="padding:5px 8px;border-top:1px solid #e5e5e5;">${esc(k)}</td>
-            <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${v}</td>
+            ${vs.map(v => `<td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;width:130px;">${v}</td>`).join('')}
           </tr>`).join('')}
       </tbody>
     </table>
@@ -309,9 +323,20 @@ export function buildStatementHtml(d: StatementPdfData): string {
 
   <div style="position:fixed;bottom:0;left:0;right:0;padding:8px 0;border-top:1px solid #e5e5e5;background:white;font-size:9px;color:#888;">
     Capital account statement for ${esc(d.partnerName)} in ${esc(d.vehicle)}. Prepared from the fund's books of account.
-    Figures are stated in ${esc(currency)} and reflect the period shown.${d.dataAsOf ? ` Underlying data for ${esc(d.vehicle)} was last updated ${esc(d.dataAsOf)}.` : ''} This statement is provided to limited partners for informational purposes.
+    Figures are stated in ${esc(currency)} and reflect the period shown.${d.dataAsOf ? ` Underlying data for ${esc(d.vehicle)} was last updated ${esc(d.dataAsOf)}.` : ''} This statement is unaudited and may be subject to further adjustment; it should not be used for tax purposes. It is provided to limited partners for informational purposes.
   </div>
 </body></html>`
+}
+
+/**
+ * The year-to-date window for a statement: January 1 of the period end's year (today's, for an
+ * open-ended period) through the period end. A Q1 statement's YTD column repeats its period column,
+ * as a hand-built statement's does; only a statement that is itself year to date drops it.
+ */
+export function ytdWindow(period: StatementPeriod, today: Date = new Date()): CapitalPeriod | null {
+  if (period.preset === 'ytd') return null
+  const end = period.end ?? today.toISOString().slice(0, 10)
+  return { start: `${end.slice(0, 4)}-01-01`, end }
 }
 
 /**
@@ -325,8 +350,13 @@ export async function generateLpStatementPdf(
   const { fundId, group, lpEntityId, period } = opts
 
   const capitalPeriod: CapitalPeriod = { start: period.start, end: period.end }
-  const [statement, fundRes, settingsRes] = await Promise.all([
+  const ytd = ytdWindow(period)
+  const [statement, ytdStatement, fundRes, settingsRes] = await Promise.all([
     lpStatement(admin, fundId, group, lpEntityId, capitalPeriod),
+    // Same window as the period (a Q1 or full-year statement): no second pass over the ledger.
+    ytd && !(ytd.start === period.start && ytd.end === period.end)
+      ? lpStatement(admin, fundId, group, lpEntityId, ytd)
+      : Promise.resolve(null),
     admin.from('funds' as any).select('name, logo_url, address').eq('id', fundId).maybeSingle(),
     admin.from('fund_settings' as any).select('currency, theme').eq('fund_id', fundId).maybeSingle(),
   ])
@@ -375,6 +405,9 @@ export async function generateLpStatementPdf(
     period,
     row: statement.row,
     periodRollForward: statement.periodRollForward,
+    ytdRollForward: !ytd ? null
+      : ytdStatement ? ('error' in ytdStatement ? null : ytdStatement.periodRollForward)
+      : statement.periodRollForward,
     rollForward: statement.rollForward,
     transactions: statement.transactions,
     ownership,

@@ -17,7 +17,7 @@ export interface ComplianceItemRow extends ScheduleItem {
 export interface ComplianceData {
   items: ComplianceItemRow[]
   profile: ComplianceProfile | null
-  settings: { compliance_item_id: string; portfolio_group: string | null; applies: string | null; dismissed: boolean | null }[]
+  settings: { compliance_item_id: string; portfolio_group: string | null; applies: string | null; dismissed: boolean | null; notes?: string | null }[]
   closed: { compliance_item_id: string; portfolio_group: string; quarter: number; year: number }[]
   portfolioGroups: string[]
   closeDates: Record<string, string[]>
@@ -48,7 +48,7 @@ export function complianceReminders(data: ComplianceData, today: string): Remind
         source: 'compliance',
         keys: crossedThresholds(occ.dueDate, today, BEFORE).map(t => `c:${occ.item.id}:${occ.groupKey}:${occ.dueDate}:${t}`),
         title: occ.item.name,
-        detail: detailFor(occ),
+        detail: detailFor(occ, standingNotes(settingByKey, occ)),
         dueDate: occ.dueDate,
         state: stateFor(occ.dueDate, today),
         href: `/compliance?year=${occ.year}`,
@@ -58,7 +58,19 @@ export function complianceReminders(data: ComplianceData, today: string): Remind
   return out
 }
 
-function detailFor(occ: Occurrence<ComplianceItemRow>): string | undefined {
+/** The fund's standing notes for the item — kept on the vehicle's row (or the firm's), not on one
+ *  quarter's — so a reminder can say, for instance, who the vehicle's statements go to. */
+function standingNotes(
+  settingByKey: Map<string, ComplianceData['settings'][number]>,
+  occ: Occurrence<ComplianceItemRow>,
+): string | undefined {
+  const group = occ.item.scope === 'vehicle' ? occ.portfolioGroup : ''
+  return settingByKey.get(`${occ.item.id}|${group}`)?.notes?.trim() || undefined
+}
+
+function detailFor(occ: Occurrence<ComplianceItemRow>, notes?: string): string | undefined {
   const parts = [occ.portfolioGroup, occ.quarter ? `Q${occ.quarter}` : ''].filter(Boolean)
-  return parts.length ? parts.join(' · ') : undefined
+  const where = parts.length ? parts.join(' · ') : undefined
+  if (!notes) return where
+  return where ? `${where}\n${notes}` : notes
 }

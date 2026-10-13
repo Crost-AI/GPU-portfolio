@@ -188,6 +188,10 @@ const rules: Record<string, Rule> = {
     return { result: 'applies', reason: 'Required for all funds with LP reporting obligations per LPA' }
   },
 
+  'lp-capital-statements': (_p) => {
+    return { result: 'applies', reason: 'Required for all funds that report capital account balances to LPs' }
+  },
+
   'valuations-soi': (_p) => {
     return { result: 'applies', reason: 'Required for all funds that report NAV or FMV to LPs' }
   },
