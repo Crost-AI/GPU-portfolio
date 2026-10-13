@@ -19,6 +19,7 @@ import { ACTUAL_BOOK } from './books'
 import { chartForVehicleKind } from './chart'
 import { intercompanyBalances } from './intercompany'
 import { backfillDerivedEntries } from './investment-backfill'
+import { loadEscrowExits, needsReview } from './escrow-exit-review'
 
 export type IssueLevel = 'blocker' | 'warning' | 'info'
 
@@ -244,6 +245,31 @@ export async function vehicleStatus(
       href: '/funds/schedule-of-investments',
       action: 'Open the schedule',
     })
+  }
+
+  // Exits with escrow booked before proceeds_received had one meaning (lib/portfolio/proceeds.ts).
+  // Each was booked with proceeds_received as the cash received; whether that was right depends on
+  // what was typed, which only the bank statement says. Never re-derived without a person: this
+  // asks. Only looked up when this entity has such an exit, and it never blocks anything.
+  const escrowExits = ((txns as any[]) ?? []).filter(t => t.portfolio_group === group && t.transaction_type === 'proceeds' && Number(t.proceeds_escrow ?? 0) > 0)
+  if (escrowExits.length > 0) {
+    try {
+      const review = (await loadEscrowExits(admin, fundId, { vehicles: [group] })).filter(needsReview)
+      if (review.length > 0) {
+        issues.push({
+          level: 'warning',
+          title: `${review.length} exit${review.length === 1 ? '' : 's'} with escrow to check against the bank`,
+          detail: `${review.slice(0, 3).map(r => r.company).join(', ')}${review.length > 3 ? `, and ${review.length - 3} more` : ''}. `
+            + 'Proceeds is the gross amount, escrow included, and an exit books the gross less the escrow to cash. These were booked '
+            + 'with Proceeds as the cash received. If the bank received that amount, edit Proceeds to add the escrow back; if it '
+            + 'received the escrow less, re-save the exit to book it again.',
+          href: '/investments',
+          action: 'Review the exits',
+        })
+      }
+    } catch (e) {
+      console.error('[status] escrow exit review failed', e instanceof Error ? e.message : e)
+    }
   }
 
   if (Math.abs(bs.partnersCapital.unallocatedEarnings) > 0.004) {

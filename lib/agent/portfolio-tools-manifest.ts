@@ -157,7 +157,9 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
     description:
       'Record a portfolio transaction (investment | unrealized_gain_change | proceeds | round_info). ' +
       'Also books the journal entry it implies in that vehicle\'s ledger: a mark (no cash) posts; a purchase, exit or cash income drafts and posts when matched to its bank transaction. ' +
-      'For an FX revaluation set valuation_change_source="fx" and supply fx_rate/prior_fx_rate/original_position_value.',
+      'For an FX revaluation set valuation_change_source="fx" and supply fx_rate/prior_fx_rate/original_position_value. ' +
+      'For an exit, proceeds_received is the GROSS realized (escrow included) and proceeds_escrow the part of it held back: ' +
+      'the entry books gross − escrow to cash, the escrow to 1350 escrow receivable, and gross − cost_basis_exited as realized gain.',
     scope: 'write',
     domain: 'portfolio',
     accessFeature: 'investments',
@@ -175,7 +177,8 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
         unrealized_value_change: { type: 'number', description: 'unrealized_gain_change: the fund-currency value change' },
         current_share_price: { type: 'number' },
         cost_basis_exited: { type: 'number', description: 'proceeds: cost basis coming off the books' },
-        proceeds_received: { type: 'number', description: 'proceeds: cash received' },
+        proceeds_received: { type: 'number', description: 'proceeds: GROSS proceeds realized at the exit, INCLUDING any amount held back in escrow (not the cash received). Cash booked = proceeds_received − proceeds_escrow' },
+        proceeds_escrow: { type: 'number', description: 'proceeds: the part of proceeds_received held back in escrow (a receivable, booked to 1350). Part of the gross, never added to it; must not exceed proceeds_received' },
         valuation_change_source: { type: 'string', enum: ['mark', 'fx', 'quote', 'nav'], description: "'fx' books the change as a currency translation, not investment performance; 'quote' and 'nav' are a quoted price and a manager's NAV, booked as a mark" },
         original_currency: { type: 'string' },
         fx_rate: { type: 'number' },
@@ -192,6 +195,7 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
       'Correct a recorded portfolio transaction (list_investments gives its id): change only the fields you pass. ' +
       'Its journal entry is retracted and re-derived from the new values, as an edit on the company page does. ' +
       'To turn a mark into an FX revaluation, pass valuation_change_source="fx" with fx_rate/prior_fx_rate/original_position_value/original_currency. ' +
+      'proceeds_received on an exit is the GROSS realized, escrow included; proceeds_escrow is the part of it held back (cash booked = gross − escrow). ' +
       'Refused for a transaction in a closed period or one the fund register owns.',
     scope: 'write',
     domain: 'portfolio',
@@ -212,7 +216,8 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
         unrealized_value_change: { type: 'number', description: 'unrealized_gain_change: the fund-currency value change' },
         current_share_price: { type: 'number' },
         cost_basis_exited: { type: 'number' },
-        proceeds_received: { type: 'number' },
+        proceeds_received: { type: 'number', description: 'proceeds: GROSS proceeds realized at the exit, INCLUDING any amount held back in escrow (not the cash received). Cash booked = proceeds_received − proceeds_escrow' },
+        proceeds_escrow: { type: 'number', description: 'proceeds: the part of proceeds_received held back in escrow (a receivable, booked to 1350). Part of the gross, never added to it; must not exceed proceeds_received' },
         valuation_change_source: { type: 'string', enum: ['mark', 'fx', 'quote', 'nav'] },
         original_currency: { type: 'string' },
         fx_rate: { type: 'number' },

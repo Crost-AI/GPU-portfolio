@@ -26,6 +26,7 @@ import { createCompany } from '@/lib/companies/create'
 import { createCompanyNote } from '@/lib/notes/create'
 import { EDITABLE_TXN_FIELDS, deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { unwrap } from '@/lib/service-outcome'
+import { escrowExceedsGross } from '@/lib/portfolio/proceeds'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -450,7 +451,10 @@ export interface RecordInvestmentInput {
   unrealized_value_change?: number | string | null
   current_share_price?: number | string | null
   cost_basis_exited?: number | string | null
+  /** GROSS proceeds realized at the exit, escrow included (lib/portfolio/proceeds.ts). */
   proceeds_received?: number | string | null
+  /** The part of proceeds_received held back in escrow. */
+  proceeds_escrow?: number | string | null
   valuation_change_source?: string
   original_currency?: string
   fx_rate?: number | string | null
@@ -490,6 +494,8 @@ export async function executeRecordInvestment(
   if (!input?.transaction_date) throw new Error('transaction_date is required (YYYY-MM-DD)')
 
   const num = (v: any) => (v == null || v === '' ? null : Number(v))
+  const escrowProblem = escrowExceedsGross({ transaction_type: input.transaction_type, proceeds_received: num(input.proceeds_received), proceeds_escrow: num(input.proceeds_escrow) })
+  if (escrowProblem) throw new Error(escrowProblem)
 
   // The registry is the source of truth for entity names; a new name is registered before the row
   // that carries it (the company and import routes already do this).
@@ -512,6 +518,7 @@ export async function executeRecordInvestment(
       current_share_price: num(input.current_share_price),
       cost_basis_exited: num(input.cost_basis_exited),
       proceeds_received: num(input.proceeds_received),
+      proceeds_escrow: num(input.proceeds_escrow) ?? 0,
       valuation_change_source: input.valuation_change_source ?? null,
       original_currency: input.original_currency ?? null,
       fx_rate: num(input.fx_rate),

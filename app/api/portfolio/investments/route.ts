@@ -228,7 +228,9 @@ export async function GET(req: NextRequest) {
           const pe = txn.proceeds_escrow ?? 0
           proceedsReceived += pr
           proceedsEscrow += pe
-          const proceedsAmount = pr + pe
+          // proceeds_received is the gross, escrow included; the escrow is a part of it, not an
+          // addition (lib/portfolio/proceeds.ts).
+          const proceedsAmount = pr
           totalRealized += proceedsAmount
           if (txn.cost_basis_exited != null) {
             totalCostBasisExited += Math.abs(txn.cost_basis_exited)

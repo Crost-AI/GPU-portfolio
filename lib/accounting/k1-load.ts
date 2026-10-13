@@ -18,6 +18,7 @@ import { txnsForVehicle } from './soi'
 import { vehicleIdByName } from './vehicle-id'
 import { disposalBasis, isLotMethod, type LotMethod } from '@/lib/portfolio/lots'
 import { splitGains, type DisposalGain, type GainSplit } from './holding-period'
+import { grossProceeds } from '@/lib/portfolio/proceeds'
 import type { FundYearCharacter, PartnerYearActivity } from './k1-allocation'
 import {
   summarizeQualifiedDividends,
@@ -311,7 +312,8 @@ async function loadRealizedGainSplit(
     const proceedsByTxn = new Map<string, number>(
       rows
         .filter(r => r.transaction_type === 'proceeds')
-        .map(r => [r.id as string, Number(r.proceeds_received ?? 0) + Number(r.proceeds_escrow ?? 0)]),
+        // Gross, escrow included (lib/portfolio/proceeds.ts).
+        .map(r => [r.id as string, grossProceeds(r)]),
     )
     for (const b of bases) {
       if (b.date < yearStart || b.date > yearEnd) continue

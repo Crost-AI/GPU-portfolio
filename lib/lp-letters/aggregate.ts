@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { xirr, type CashFlow } from '@/lib/xirr'
+import { grossProceeds } from '@/lib/portfolio/proceeds'
 
 type Admin = ReturnType<typeof createAdminClient>
 
@@ -253,9 +254,8 @@ export async function aggregatePortfolioData(
         }
       }
       if (t.transaction_type === 'proceeds') {
-        const pr = Number(t.proceeds_received ?? 0)
-        const pe = Number(t.proceeds_escrow ?? 0)
-        totalRealized += pr + pe
+        // Gross, escrow included — proceeds_escrow is a part of it, not an addition (lib/portfolio/proceeds.ts).
+        totalRealized += grossProceeds(t)
         if (t.round_name && t.cost_basis_exited != null) {
           const round = roundMap.get(t.round_name)
           if (round) round.costBasisExited += Math.abs(Number(t.cost_basis_exited))

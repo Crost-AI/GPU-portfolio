@@ -12,6 +12,7 @@ import type { ChartAccount } from './investment-accounts'
 import type { JournalEntry, Account } from './types'
 import type { ParsedTxn } from './bank'
 import { isExternalBookSource } from './quickbooks/sources'
+import { proceedsSplit } from '@/lib/portfolio/proceeds'
 
 export interface ImportDifference {
   domain: 'investment' | 'lp'
@@ -107,12 +108,12 @@ export async function reviewImport(admin: SupabaseClient, fundId: string, group:
     const named = companyRows.filter(c => c.name && text.includes(c.name.toLowerCase()) && transactions.some(t => t.company_id === c.id && txnsForVehicle([t], group).length))
     for (const c of named) {
       const matches = candidates.filter(t => t.company_id === c.id && (row.amount < 0 ? t.transaction_type === 'investment' : t.transaction_type === 'proceeds'))
-      const recorded = matches.length ? matches.reduce((n, t) => n + Number(row.amount < 0 ? t.investment_cost ?? 0 : t.proceeds_received ?? 0), 0) : null
+      const recorded = matches.length ? matches.reduce((n, t) => n + Number(row.amount < 0 ? t.investment_cost ?? 0 : proceedsSplit(t).cash), 0) : null
       const imported = Math.abs(row.amount)
       differences.push({ domain: 'investment', name: c.name, date: row.date, metric: 'Cash movement', recorded, imported, difference: recorded == null ? null : roundCents(imported - recorded), message: recorded === imported ? 'Possible existing investment transaction. Link the accounting representation; do not add another investment.' : 'Bank activity names an existing company but differs from nearby investment transactions. Review the date, amount, and company match.' })
     }
     if (!named.length) {
-      const matches = candidates.filter(t => row.amount < 0 ? t.transaction_type === 'investment' && Math.abs(Number(t.investment_cost) + row.amount) < 0.005 : t.transaction_type === 'proceeds' && Math.abs(Number(t.proceeds_received) - row.amount) < 0.005)
+      const matches = candidates.filter(t => row.amount < 0 ? t.transaction_type === 'investment' && Math.abs(Number(t.investment_cost) + row.amount) < 0.005 : t.transaction_type === 'proceeds' && Math.abs(proceedsSplit(t).cash - row.amount) < 0.005)
       if (matches.length) differences.push({ domain: 'investment', name: matches.map(t => companyRows.find(c => c.id === t.company_id)?.name ?? t.company_id).join(', '), date: row.date, metric: 'Possible matching cash movement', recorded: Math.abs(row.amount), imported: Math.abs(row.amount), difference: 0, message: 'Amount and nearby dates match investment activity. Confirm the identity and link the accounting record; this is not proof of a duplicate.' })
     }
     const namedLps = Array.from(latest.values()).filter(p => { const name = nameById.get(p.lpEntityId); return name && text.includes(String(name).toLowerCase()) })

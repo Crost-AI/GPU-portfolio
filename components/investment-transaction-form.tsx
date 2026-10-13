@@ -983,6 +983,9 @@ export function InvestmentTransactionForm({ companyId, editing, transactions, su
                 value={form.proceeds_escrow}
                 onChange={e => setForm(f => ({ ...f, proceeds_escrow: e.target.value }))}
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                The part of the gross proceeds held back. Cash received is proceeds less escrow.
+              </p>
             </div>
             <div>
               <Label>Written Off ({symbol.trim()})</Label>
