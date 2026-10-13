@@ -21,6 +21,8 @@ import {
   type WizardStep,
 } from '@/lib/onboarding/wizard'
 import { VEHICLE_KIND_OPTIONS, type VehicleKind } from '@/lib/vehicle-kinds'
+import { AICapabilitiesList } from '@/components/ai-capabilities-list'
+import { useOrigin } from '@/components/ask-your-assistant'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -430,7 +432,7 @@ function LaterButton({ onClick, busy, children = 'Set up later' }: { onClick: ()
 }
 
 // ---------------------------------------------------------------------------
-// Step: Your fund — name + AI provider key (optional)
+// Step: Your fund — name + how AI works here (a provider key, your own assistant, or decide later)
 // ---------------------------------------------------------------------------
 
 const AI_PROVIDERS: {
@@ -454,6 +456,8 @@ function FundStep({
   onComplete: (fundId: string, webhookToken: string | null, fundName: string) => void
 }) {
   const [fundName, setFundName] = useState(initialName)
+  const [aiChoice, setAIChoice] = useState<'key' | 'assistant'>('key')
+  const origin = useOrigin()
   const [provider, setProvider] = useState<WizardAIProvider>('anthropic')
   const [apiKey, setApiKey] = useState('')
   const [testing, setTesting] = useState(false)
@@ -489,22 +493,24 @@ function FundStep({
     setTesting(false)
   }
 
-  async function submit(withKey: boolean) {
+  async function submit(choice: 'key' | 'assistant' | 'later') {
     if (!fundName.trim()) {
       setError('Give your fund a name.')
       return
     }
-    if (withKey && !apiKey.trim()) {
-      setError('Paste an API key, or choose “Skip — add a key later”.')
+    if (choice === 'key' && !apiKey.trim()) {
+      setError('Paste an API key, choose “Use my own assistant”, or “Skip — decide later”.')
       return
     }
     setError(null)
     setSaving(true)
     try {
       const body: Record<string, string> = { fundName: fundName.trim() }
-      if (withKey) {
+      if (choice === 'key') {
         body.aiProvider = provider
         body.apiKey = apiKey.trim()
+      } else if (choice === 'assistant') {
+        body.aiMode = 'assistant'
       }
       const res = await fetch('/api/onboarding/fund', {
         method: 'POST',
@@ -525,8 +531,8 @@ function FundStep({
       <CardHeader>
         <CardTitle>Your fund</CardTitle>
         <CardDescription>
-          Name it, and connect the AI provider you want to use. Keys are encrypted before storage
-          and never shown again.
+          Name it, and choose how AI works here: with a provider key on the server, or with no key,
+          through your own assistant.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -542,6 +548,33 @@ function FundStep({
           />
         </div>
 
+        <div className="space-y-2">
+          <Label>How should AI work here?</Label>
+          <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="How AI works here">
+            <ChoiceTile
+              selected={aiChoice === 'key'}
+              title="Add a key"
+              description="The app calls Claude, OpenAI or OpenRouter itself: AI buttons, email parsing and background jobs all work."
+              onClick={() => setAIChoice('key')}
+            />
+            <ChoiceTile
+              selected={aiChoice === 'assistant'}
+              title="Use my own assistant"
+              description="No server key. Claude or ChatGPT, connected to this fund, does the AI work when you ask it."
+              onClick={() => setAIChoice('assistant')}
+            />
+          </div>
+        </div>
+
+        {aiChoice === 'assistant' ? (
+          <div className="space-y-3 rounded-card border p-4">
+            <p className="text-sm text-muted-foreground">
+              Connect <span className="font-mono text-foreground">{`${origin}/api/mcp`}</span>{' '}
+              in Claude or ChatGPT after this step. You can add a key later in Settings.
+            </p>
+            <AICapabilitiesList />
+          </div>
+        ) : (<>
         <div className="space-y-2">
           <Label>AI provider</Label>
           <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="AI provider">
@@ -595,19 +628,18 @@ function FundStep({
               {meta.consoleLabel}
             </a>
             {provider === 'openrouter' && '. The model and endpoint can be changed in Settings, where you can also test the connection.'}
+            {'. Keys are encrypted before storage and never shown again.'}
           </p>
         </div>
+        </>)}
 
         <div className="space-y-2">
-          <Button className="w-full" onClick={() => submit(true)} disabled={saving}>
+          <Button className="w-full" onClick={() => submit(aiChoice)} disabled={saving}>
             {saving ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Saving…</> : 'Next →'}
           </Button>
-          <LaterButton onClick={() => submit(false)} busy={saving}>
-            Skip — add a key later
+          <LaterButton onClick={() => submit('later')} busy={saving}>
+            Skip — decide later
           </LaterButton>
-          <p className="text-xs text-muted-foreground text-center">
-            Without a key, AI imports, the Analyst and drafting a forecast stay off until you add one in Settings.
-          </p>
         </div>
       </CardContent>
     </Card>

@@ -15,6 +15,7 @@ import { isLotMethod, LOT_METHODS } from '@/lib/portfolio/lots'
 import { validateBaseUrlResolved } from '@/lib/validate-url'
 import type { FeatureKey, FeatureVisibility, FeatureVisibilityMap } from '@/lib/types/features'
 import { AUTH_TITLE_MAX } from '@/lib/auth-brand-shared'
+import { isAIMode } from '@/lib/ai/capabilities'
 
 // GET — returns fund settings (safe fields only)
 export async function GET() {
@@ -90,6 +91,8 @@ export async function GET() {
     hasOpenAIKey: !!settings?.openai_api_key_encrypted,
     openaiModel: settings?.openai_model ?? 'gpt-4o',
     defaultAIProvider: settings?.default_ai_provider ?? 'anthropic',
+    // Ships in 20261013170000_fund_settings_ai_mode.sql; absent, it reads as not chosen.
+    aiMode: settings?.ai_mode ?? null,
     hasOpenRouterKey: !!settings?.openrouter_api_key_encrypted,
     openrouterModel: settings?.openrouter_model ?? '',
     openrouterBaseUrl: settings?.openrouter_base_url ?? '',
@@ -162,7 +165,7 @@ export async function PATCH(req: NextRequest) {
   if (!membership) return NextResponse.json({ error: 'No fund found' }, { status: 404 })
 
   const body = await req.json()
-  const { fundName, fundLogo, fundAddress, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled, lpAgentEnabled } = body
+  const { fundName, fundLogo, fundAddress, signInLogo, signInTitle, postmarkInboundAddress, claudeApiKey, claudeModel, retainResolvedReviews, resolvedReviewsTtlDays, googleClientId, googleClientSecret, aiSummaryPrompt, displayName, outboundEmailProvider, asksEmailProvider, approvalEmailSubject, approvalEmailBody, systemEmailFromName, systemEmailFromAddress, resendApiKey, postmarkServerToken, inboundEmailProvider, mailgunInboundDomain, mailgunSigningKey, mailgunApiKey, mailgunSendingDomain, fileStorageProvider, openaiApiKey, openaiModel, defaultAIProvider, openrouterApiKey, openrouterModel, openrouterBaseUrl, aiMode, analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript, currency, lotMethod, disableUserTracking, featureVisibility, dealThesis, dealScreeningPrompt, dealIntakeEnabled, dealsDefaultVehicleId, lpPortalEnabled, affinityMcpEnabled, agentApiEnabled, lpAgentEnabled } = body
 
   // Update display name on fund_members (any user can do this)
   if (displayName !== undefined) {
@@ -182,7 +185,7 @@ export async function PATCH(req: NextRequest) {
     fileStorageProvider !== undefined ||
     openaiApiKey !== undefined || openaiModel !== undefined || defaultAIProvider !== undefined ||
     openrouterApiKey !== undefined || openrouterModel !== undefined || openrouterBaseUrl !== undefined ||
-    analyticsFathomSiteId !== undefined || analyticsGaMeasurementId !== undefined ||
+    aiMode !== undefined || analyticsFathomSiteId !== undefined || analyticsGaMeasurementId !== undefined ||
     analyticsCustomHeadScript !== undefined || currency !== undefined || lotMethod !== undefined ||
     disableUserTracking !== undefined || featureVisibility !== undefined ||
     dealThesis !== undefined || dealScreeningPrompt !== undefined ||
@@ -506,6 +509,14 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid AI provider.' }, { status: 400 })
     }
     settingsUpdates.default_ai_provider = defaultAIProvider
+  }
+
+  // How AI runs here: with a server key, or through the admin's own assistant (lib/ai/capabilities.ts).
+  if (aiMode !== undefined) {
+    if (aiMode !== null && !isAIMode(aiMode)) {
+      return NextResponse.json({ error: 'Invalid AI mode.' }, { status: 400 })
+    }
+    settingsUpdates.ai_mode = aiMode
   }
 
   // Update analytics settings

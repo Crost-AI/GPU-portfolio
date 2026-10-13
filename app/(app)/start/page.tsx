@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { useAccess } from '@/components/access-context'
 import { useAnalystContext } from '@/components/analyst-context'
 import { useIsAdmin } from '@/components/feature-visibility-context'
@@ -11,6 +10,7 @@ import { useCompanyCount } from './setup-stage'
 import { QuickActionButtons } from '@/components/quick-action-buttons'
 import { GettingStartedBanner } from '@/components/getting-started-banner'
 import { PendingApprovalsNotice } from '@/components/pending-approvals'
+import { AskYourAssistantBody } from '@/components/ask-your-assistant'
 
 /**
  * Where a signed-in member lands.
@@ -69,17 +69,16 @@ export default function StartPage() {
   )
 
   // No AI key configured means no chat to put front and centre. Rather than render a composer that
-  // will only ever answer with an error, the page keeps its shortcuts and says why.
+  // will only ever answer with an error, the page keeps its shortcuts and says how to ask your own
+  // assistant instead (lib/ai/capabilities.ts).
   if (!hasAIKey) {
     return (
       <div className="w-full px-4 pb-8 pt-4 md:pl-8 md:pr-4 md:pt-8">
         <div className="flex w-full max-w-4xl flex-col gap-6">
         {hero}
-        <p className="text-left text-sm text-muted-foreground">
-          Add an AI provider key in{' '}
-          <Link href="/settings" className="text-brand-700 dark:text-brand-400 hover:underline">Settings</Link>{' '}
-          to ask the Analyst questions from here.
-        </p>
+        <div className="max-w-xl rounded-card border p-4">
+          <AskYourAssistantBody prompt={prompts[0]?.text ?? 'How is the portfolio doing this quarter?'} />
+        </div>
         {shortcuts}
         </div>
       </div>

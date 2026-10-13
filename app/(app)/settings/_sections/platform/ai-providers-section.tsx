@@ -6,9 +6,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { Section } from '@/components/settings/section'
+import { AICapabilitiesList } from '@/components/ai-capabilities-list'
 
 export function AIProvidersSection({
-  hasClaudeKey, claudeModel, hasOpenAIKey, openaiModel, hasOpenRouterKey, openrouterModel, openrouterBaseUrl, defaultAIProvider, onSaved,
+  hasClaudeKey, claudeModel, hasOpenAIKey, openaiModel, hasOpenRouterKey, openrouterModel, openrouterBaseUrl, defaultAIProvider, aiMode, onSaved,
 }: {
   hasClaudeKey: boolean
   claudeModel: string
@@ -18,8 +19,26 @@ export function AIProvidersSection({
   openrouterModel: string
   openrouterBaseUrl: string
   defaultAIProvider: string
+  /** The recorded choice (fund_settings.ai_mode); a saved key overrides it. */
+  aiMode: string | null
   onSaved: () => void
 }) {
+  const hasKey = hasClaudeKey || hasOpenAIKey || hasOpenRouterKey
+  const assistantOnly = !hasKey && aiMode === 'assistant'
+  const [savingMode, setSavingMode] = useState(false)
+  const [showCapabilities, setShowCapabilities] = useState(false)
+
+  const saveAssistantOnly = async (on: boolean) => {
+    setSavingMode(true)
+    const res = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiMode: on ? 'assistant' : null }),
+    })
+    setSavingMode(false)
+    if (res.ok) onSaved()
+  }
+
   const [defaultProvider, setDefaultProvider] = useState(defaultAIProvider)
   const [savingDefault, setSavingDefault] = useState(false)
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set([defaultAIProvider]))
@@ -52,9 +71,31 @@ export function AIProvidersSection({
   return (
     <Section title="AI Providers">
       <p className="text-xs text-muted-foreground mb-3">
-        Choose which AI provider to use by default for report parsing, summaries, and imports.
-        Configure at least one provider below.
+        A key lets the app call a model itself: the AI buttons, report parsing, summaries and imports.
+        Without one, your own assistant (Claude or ChatGPT, connected over MCP) does the AI work when you ask it.
       </p>
+      <div className="rounded-card border p-3 mb-4 space-y-2">
+        <p className="text-sm">
+          {hasKey
+            ? 'This fund uses a server key. Your assistant can still do any of this from chat.'
+            : assistantOnly
+              ? 'This fund runs with no server key: your own assistant does the AI work.'
+              : 'No server key yet. Add one below, or run with no key through your own assistant.'}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {!hasKey && (
+            <Button size="sm" variant="outline" disabled={savingMode} onClick={() => saveAssistantOnly(!assistantOnly)}>
+              {savingMode && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+              {assistantOnly ? 'Undo: decide later' : 'Use my own assistant (no key)'}
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setShowCapabilities(v => !v)}>
+            {showCapabilities ? <ChevronDown className="h-3.5 w-3.5 mr-1" /> : <ChevronRight className="h-3.5 w-3.5 mr-1" />}
+            What works without a key
+          </Button>
+        </div>
+        {showCapabilities && <AICapabilitiesList />}
+      </div>
       <div className="flex items-center gap-2 mb-4">
         <Label className="text-xs text-muted-foreground shrink-0">Default provider</Label>
         <select

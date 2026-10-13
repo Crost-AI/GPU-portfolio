@@ -41,6 +41,7 @@ export const SETUP_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'setup_status',
     description:
       'Where this fund\'s setup stands, for an admin: the products that are on, its entities, the team and their access, ' +
+      'how AI runs here (a server key, or the person\'s own assistant with no key, and what works each way), ' +
       'and the getting-started checklist with each step\'s status. Each open step says which tool does it from chat ' +
       '(often setup_fund, add_partner, record_investment, post_ledger_text or close_period) or links the web page where it lives. ' +
       'Call this first when someone asks to set up the fund, and again after each change.',
@@ -76,6 +77,11 @@ export const SETUP_TOOL_MANIFEST: AgentToolMeta[] = [
           type: 'array',
           description: 'People or addresses allowed to email company updates in.',
           items: { type: 'object', properties: { email: { type: 'string' }, label: { type: 'string' } }, required: ['email'], additionalProperties: false },
+        },
+        aiMode: {
+          type: 'string',
+          enum: ['assistant'],
+          description: 'Record that this fund runs AI through the person\'s own assistant, with no server key. setup_status lists what works that way and what needs a key.',
         },
         finish: { type: 'boolean', description: 'Mark setup as finished, so the web app stops showing the setup wizard.' },
       },

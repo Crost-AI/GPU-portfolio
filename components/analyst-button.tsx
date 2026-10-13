@@ -3,11 +3,12 @@
 import { Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAnalystContext } from '@/components/analyst-context'
+import { AskYourAssistant } from '@/components/ask-your-assistant'
 
 export function AnalystToggleButton() {
   const { open, toggleOpen, hasAIKey } = useAnalystContext()
 
-  if (!hasAIKey) return null
+  if (!hasAIKey) return <AskYourAssistant prompt="How is the portfolio doing this quarter?" />
 
   return (
     <Button

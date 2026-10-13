@@ -20,6 +20,7 @@ import { canSeeVehicle } from '@/lib/access/scope'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 import { isProductActive, PRODUCT_META, orderedProducts } from '@/lib/access/products'
 import type { FeatureVisibilityMap } from '@/lib/types/features'
+import { effectiveAIMode, hasAnyAIKey, type AIMode } from '@/lib/ai/capabilities'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,6 +131,8 @@ export interface SetupFacts {
   /** Admin-only facts; null for everyone else. */
   settings: {
     hasAiKey: boolean
+    /** How AI runs here (lib/ai/capabilities.ts): a saved key, the admin's choice of their own assistant, or not chosen. */
+    aiMode: AIMode | null
     /** The fund has saved a product choice (feature_visibility is not empty). */
     productsChosen: boolean
     activeProducts: string[]
@@ -208,10 +211,14 @@ export function computeSetupProgress(facts: SetupFacts): SetupProgress {
     drafts.push({
       section: 'basics',
       key: 'ai_key',
-      title: 'Add an AI provider key',
-      why: 'The Analyst, imports that read pasted data, and inbound email parsing all need a model to call.',
-      done: settings.hasAiKey,
-      detail: settings.hasAiKey ? 'A provider key is saved.' : 'No Claude, OpenAI or OpenRouter key yet.',
+      title: 'Choose how AI works here',
+      why: 'Add a server key for the web app\'s AI buttons and inbound email parsing, or use your own assistant (Claude, ChatGPT) with no key.',
+      done: settings.aiMode !== null,
+      detail: settings.aiMode === 'server_key'
+        ? 'A provider key is saved.'
+        : settings.aiMode === 'assistant'
+          ? 'No server key: your own assistant does the AI work over MCP.'
+          : 'Not chosen yet.',
       href: '/settings',
       cta: 'Open Settings',
       adminOnly: true,
@@ -526,7 +533,9 @@ export async function loadSetupFacts(
 
   const settingsQ = can.isAdmin
     ? db.from('fund_settings')
-        .select('claude_api_key_encrypted, openai_api_key_encrypted, openrouter_api_key_encrypted, inbound_email_provider, postmark_inbound_address, mailgun_inbound_domain, feature_visibility')
+        // select('*') so `ai_mode`, added by a migration that may not be applied yet, reads as
+        // undefined rather than failing the whole select (and with it every admin fact).
+        .select('*')
         .eq('fund_id', fundId)
         .maybeSingle()
     : Promise.resolve({ data: null })
@@ -555,7 +564,8 @@ export async function loadSetupFacts(
     const stored = (s.feature_visibility ?? null) as Partial<FeatureVisibilityMap> | null
     const provider = s.inbound_email_provider === 'postmark' || s.inbound_email_provider === 'mailgun' ? s.inbound_email_provider : null
     settings = {
-      hasAiKey: !!(s.claude_api_key_encrypted || s.openai_api_key_encrypted || s.openrouter_api_key_encrypted),
+      hasAiKey: hasAnyAIKey(s),
+      aiMode: effectiveAIMode(hasAnyAIKey(s), s.ai_mode),
       productsChosen: !!stored && Object.keys(stored).length > 0,
       activeProducts: orderedProducts().filter(p => isProductActive(p, access.features)).map(p => PRODUCT_META[p].label),
       inboundProvider: provider,

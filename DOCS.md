@@ -18,7 +18,7 @@ Designed as a single-tenant deployment per fund. You control your own data, your
 | Hosting platform | Runs the Next.js app — choose **Netlify** or **Vercel** or other platfoms | Yes |
 | [Supabase](https://supabase.com) | Database (PostgreSQL), authentication, file storage, row-level security | Yes — 500 MB database, 1 GB storage |
 | Inbound email provider | Receives portfolio company emails — choose **Postmark** or **Mailgun** | Postmark: 100 emails/mo. Mailgun: 1,000/mo |
-| AI provider — at least one | AI for email processing, metric extraction, and summaries | See below |
+| AI provider — optional | AI for the web app's AI buttons, email processing and background jobs. Without one, your own assistant does the AI work over MCP: see [AI without a server key](#ai-without-a-server-key) | See below |
 | ↳ [Anthropic](https://console.anthropic.com) | Claude API (default model: `claude-sonnet-4-5`) | Pay-as-you-go |
 | ↳ [OpenAI](https://platform.openai.com) | OpenAI API (default model: `gpt-4o`) | Pay-as-you-go |
 | ↳ [OpenRouter](https://openrouter.ai) | Unified API for many model providers | Pay-as-you-go |
@@ -131,7 +131,7 @@ By default the first signup is the admin, with access to the fund-level and tech
 
 After confirming your email and signing in, the app walks you through a short wizard. Only the fund name is required; everything else can be skipped and finished later in Settings.
 
-1. **Your fund** — the fund name (it appears in the app header) and, optionally, an AI provider key: **Claude** (Anthropic, from [console.anthropic.com](https://console.anthropic.com)), **OpenAI** (from [platform.openai.com](https://platform.openai.com)) or **OpenRouter** (from [openrouter.ai](https://openrouter.ai)). Choose *Skip — add a key later* to go on without one; the Analyst, imports and email parsing need a key, so add one in Settings before using them. You can configure several providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
+1. **Your fund** — the fund name (it appears in the app header) and how AI works here. **Add a key** stores an AI provider key: **Claude** (Anthropic, from [console.anthropic.com](https://console.anthropic.com)), **OpenAI** (from [platform.openai.com](https://platform.openai.com)) or **OpenRouter** (from [openrouter.ai](https://openrouter.ai)). **Use my own assistant** runs with no server key: Claude or ChatGPT, connected over MCP, does the AI work, and the step lists what works that way and what needs a key ([AI without a server key](#ai-without-a-server-key)). *Skip — decide later* leaves it open on the getting-started checklist. You can configure several providers and switch between them. Keys are encrypted and stored in your database, not in environment variables.
 2. **Products** — what you will run here (portfolio tracking, fund operations, LP reporting, and so on), and the first fund entity. Each product can be switched on or off later from its own section in Settings.
 3. **Inbound email** — only when portfolio tracking is on; skippable. See Step 8.
 4. **Senders** — only when portfolio tracking is on; skippable. See Step 9.
@@ -242,6 +242,7 @@ Then ask me, one short question at a time, only for what is missing:
 2. Our entities: each fund, SPV or management company, with its vintage year.
 3. The team: each person's email; whether they are an admin (admins approve deletes, capital calls, distributions, anything sent to LPs, and finalizing K-1s) or a member; which preset fits each member (CFO, fund administrator, tax preparer, auditor, investment team, investor relations); which entities they should see; and an end date for anyone here for one engagement, like an auditor or tax preparer.
 4. Who emails us company updates, so those addresses can be authorized.
+5. How AI should work here. If there is no server AI key, tell me in a few lines what you can do for me in chat without one and what needs a key (setup_status lists both), and ask whether to run without a key.
 
 Then show me the whole plan as a short list. Once I confirm, apply it with one setup_fund call. Tell me what was created and any warnings, call setup_status again, and walk me through the next open steps: partners and commitments (add_partner), investments (record_investment), opening balances (post_ledger_text) and the first close (close_period).
 
@@ -293,6 +294,7 @@ curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: applica
   so only the people granted it gain anything. Admins approve deletes, capital calls, distributions,
   anything sent to LPs and finalizing K-1s, whatever the presets grant.
 - **Authorized senders** may email company updates in.
+- **`aiMode: "assistant"`** records that the fund runs with no server AI key, so the checklist stops asking for one. See [AI without a server key](#ai-without-a-server-key).
 
 AI provider keys and inbound email (Postmark or Mailgun) involve secrets or third-party accounts,
 so they are set in Settings, or for the AI key, by the bootstrap script.
@@ -620,6 +622,32 @@ The platform supports three AI providers. Configure at least one in Settings, th
 | **OpenRouter** | Configurable | API key from [openrouter.ai](https://openrouter.ai) | Unified access to many model providers through one key |
 
 Each provider has a model selector in Settings — after saving your API key, you can fetch the available models and choose which one to use. The **Analyst** panel also has a model dropdown that shows models from all configured providers, with an "Auto" option that uses the fund's default.
+
+### AI without a server key
+
+A server key is optional. Without one, your own assistant does the AI work: connect Claude, ChatGPT or Claude Code to `https://<your-domain>/api/mcp` (see [Connecting Claude, ChatGPT and other agents](#connecting-claude-chatgpt-and-other-agents)) and ask it. It reads the fund's data with the read tools, does the thinking with its own model, and writes the result back with the write tools, so the server needs no AI key at all. What it cannot replace is the web app's own AI buttons, which have no model of their own to borrow, and work that runs with nobody present, like parsing an email as it arrives.
+
+Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI providers, with `npm run bootstrap -- --ai assistant`, or from chat with `setup_fund { "aiMode": "assistant" }`. Adding a key later switches the fund to the server key; your assistant can still do any of this either way. `setup_status` returns the same list as `ai.worksWithoutKey` and `ai.needsKey`.
+
+| Feature | Without a server key | How, or why not |
+|---|---|---|
+| Questions about the fund (the Analyst) | Yes, from your assistant | Your assistant answers from the same data the Analyst reads, through the read tools. (`portfolio_summary`, `company_detail`, `lp_capital_summary`, `fund_performance`) |
+| Drafting a forecast | Yes, from your assistant | Your assistant builds the plan from the forecast tools. (`forecast_create_plan`, `forecast_update_plan`, `forecast_series`) |
+| Writing the quarterly LP letter | Yes, from your assistant | Your assistant reads the quarter's figures and writes the draft back. (`lp_create_letter`, `lp_letter_data`, `lp_write_letter`) |
+| Learning a letter template from an example | Yes, from your assistant | Your assistant reads the example and saves the template. (`document_template_get`, `document_template_save`) |
+| Reading a company update you share in chat | Yes, from your assistant | Your assistant reads the letter, deck or KPI sheet and records each figure. (`company_detail`, `record_metric_value`) |
+| Importing companies, investments and LPs from a paste or spreadsheet | Yes, from your assistant | Your assistant parses the rows and records each one. (`create_company`, `record_metric_value`, `record_investment`, `lp_create_investor`, `lp_record_commitment`) |
+| Categorising bank transactions | Yes, from your assistant | Your assistant matches each transaction to the chart of accounts and sets it. (`list_bank_transactions`, `list_accounts`, `set_bank_transaction_account`) |
+| Analysing an inbound deal against the thesis | Yes, from your assistant | Your assistant reads the deal and writes its analysis back. (`deals_inbound_detail`, `deals_update_inbound`) |
+| Editing an investment memo | Yes, from your assistant | Your assistant reads the memo and evidence and rewrites paragraphs. (`diligence_memo`, `diligence_evidence`, `diligence_write_memo`) |
+| Investor questions in the LP portal | Yes, from your assistant | An investor connects their own assistant to the portal and asks it. |
+| AI buttons in the web app (Analyst panel, Generate letter, AI import, Summarise) | Needs a key | A button in the browser has no model of its own to borrow; without a key, do the same thing from your assistant. |
+| Reading emailed company updates and deals as they arrive | Needs a key | It runs when the email arrives, with nobody present. Without a key, emails still arrive but are not parsed. |
+| Reading scanned PDFs and images in the background | Needs a key | It runs on a schedule with nobody present. Text PDFs are read without a model. |
+| The memo agent (ingest, research, draft, score) | Needs a key | Its stages run as background jobs on the server. |
+| Asking questions of a deal's data room | Needs a key | No tool yet returns a data-room document's text to your assistant. |
+| Saving an AI summary on a company page | Needs a key | Your assistant can write one in chat, but no tool saves it to the company yet. |
+| Web research on inbound deals | Needs a key | It runs as a background job; there is no tool yet to save your assistant's research. |
 
 ### Feature Visibility
 

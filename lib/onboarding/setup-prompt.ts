@@ -12,6 +12,7 @@ export const SETUP_PROMPT = [
   '2. Our entities: each fund, SPV or management company, with its vintage year.',
   '3. The team: each person\'s email; whether they are an admin (admins approve deletes, capital calls, distributions, anything sent to LPs, and finalizing K-1s) or a member; which preset fits each member (CFO, fund administrator, tax preparer, auditor, investment team, investor relations); which entities they should see; and an end date for anyone here for one engagement, like an auditor or tax preparer.',
   '4. Who emails us company updates, so those addresses can be authorized.',
+  '5. How AI should work here. If there is no server AI key, tell me in a few lines what you can do for me in chat without one and what needs a key (setup_status lists both), and ask whether to run without a key.',
   '',
   'Then show me the whole plan as a short list. Once I confirm, apply it with one setup_fund call. Tell me what was created and any warnings, call setup_status again, and walk me through the next open steps: partners and commitments (add_partner), investments (record_investment), opening balances (post_ledger_text) and the first close (close_period).',
   '',

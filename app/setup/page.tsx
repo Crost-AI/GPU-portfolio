@@ -28,7 +28,7 @@ interface SetupStatus {
   } | null
   authentication: { hasUser: boolean } | null
   fund: { hasFund: boolean } | null
-  ai: { hasProvider: boolean } | null
+  ai: { hasProvider: boolean; mode?: 'server_key' | 'assistant' | null } | null
   inboundEmail: { providerConfigured: boolean; keyConfigured: boolean } | null
   outboundEmail: { providerConfigured: boolean; keyConfigured: boolean } | null
   fileStorage: { connected: boolean } | null
@@ -124,7 +124,9 @@ export default function SetupPage() {
       sections.push({
         title: 'AI',
         checks: [
-          { label: 'AI provider key configured', passed: s.ai.hasProvider, required: true, helpLabel: 'Settings', helpUrl: '/settings' },
+          s.ai.mode === 'assistant'
+            ? { label: 'No server key: your own assistant does the AI work over MCP', passed: true, required: false }
+            : { label: 'AI provider key configured, or "Use my own assistant" chosen', passed: s.ai.hasProvider, required: false, helpLabel: 'Settings', helpUrl: '/settings' },
         ],
       })
     }
