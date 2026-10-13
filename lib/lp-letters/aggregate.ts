@@ -18,6 +18,23 @@ export interface CompanyInvestmentSummary {
   unrealizedValue: number
   fmv: number
   moic: number | null
+  /**
+   * Dated price and value moves, oldest first: priced rounds and price marks (company-wide), and
+   * value-change marks without a price (this entity's). What a letter needs to name a down round
+   * or a markdown from the books rather than from prose. Optional: older callers build summaries
+   * without it.
+   */
+  priceEvents?: PriceEvent[]
+}
+
+export interface PriceEvent {
+  date: string
+  /** 'round' = a priced round (investment or round info); 'mark' = a revaluation. */
+  kind: 'round' | 'mark'
+  round: string | null
+  sharePrice: number | null
+  /** A value-change mark with no price: the change in fair value, in fund currency. */
+  valueChange: number | null
 }
 
 export interface CompanyMetricData {
@@ -56,6 +73,12 @@ export interface FundMetrics {
 }
 
 export interface PortfolioPreview {
+  /**
+   * The date the figures are as of: the quarter's last day, or today while the quarter is still
+   * running. Transactions and cash flows after it are left out, so a letter written after the
+   * quarter shows the quarter's values rather than today's.
+   */
+  asOf?: string
   fundName: string
   fundCurrency: string
   periodLabel: string
@@ -139,9 +162,16 @@ export async function aggregatePortfolioData(
       converts_from_txn_id: string | null
     }[] | null }
 
+  // As of the quarter's end (or today, mid-quarter): what happened after it isn't the quarter's.
+  const quarterEnd = new Date(Date.UTC(year, quarter * 3, 0)).toISOString().slice(0, 10)
+  const today = new Date().toISOString().slice(0, 10)
+  const asOf = quarterEnd < today ? quarterEnd : today
+  const inPeriod = (date: string | null) => !date || date <= asOf
+  const periodTransactions = (allTransactions ?? []).filter(t => inPeriod(t.transaction_date))
+
   // Determine which companies belong to this portfolio group
   const companyIdsInGroup = new Set<string>()
-  for (const t of allTransactions ?? []) {
+  for (const t of periodTransactions) {
     if (t.portfolio_group === portfolioGroup) {
       companyIdsInGroup.add(t.company_id)
     }
@@ -172,16 +202,19 @@ export async function aggregatePortfolioData(
     .eq('holding_type', 'company')   // fund holdings have their own surfaces
     .in('status', ['exited', 'written-off']) as { data: typeof allCompanies }
 
+  // A company first invested in after the date wasn't in the portfolio yet.
+  const notYetHeld = (id: string) =>
+    (allTransactions ?? []).some(t => t.company_id === id) && !periodTransactions.some(t => t.company_id === id)
   const allGroupCompanies = [
     ...companies,
     ...(inactiveCompanies ?? []).filter(c => companyIdsInGroup.has(c.id)),
-  ]
+  ].filter(c => !notYetHeld(c.id))
 
   // Compute investment summaries using canonical per-round cost basis logic
   // (matches the portfolio investments API computation)
   const investmentSummaries: CompanyInvestmentSummary[] = []
   for (const c of allGroupCompanies) {
-    const txns = (allTransactions ?? []).filter(t => t.company_id === c.id)
+    const txns = periodTransactions.filter(t => t.company_id === c.id)
 
     // Determine company-wide latest share price from all transaction types
     let latestSharePrice: number | null = null
@@ -213,6 +246,20 @@ export async function aggregatePortfolioData(
             latestSharePriceDate = t.transaction_date
           }
         }
+      }
+    }
+
+    const priceEvents: PriceEvent[] = []
+    for (const t of txns) {
+      if (!t.transaction_date) continue
+      const priced = (t.transaction_type === 'investment' && t.share_price != null && Number(t.share_price) > 0 && !t.converts_from_txn_id)
+        || (t.transaction_type === 'round_info' && t.share_price != null && Number(t.share_price) > 0)
+      if (priced) {
+        priceEvents.push({ date: t.transaction_date, kind: 'round', round: t.round_name ?? null, sharePrice: Number(t.share_price), valueChange: null })
+      } else if (t.transaction_type === 'unrealized_gain_change' && t.current_share_price != null) {
+        priceEvents.push({ date: t.transaction_date, kind: 'mark', round: t.round_name ?? null, sharePrice: Number(t.current_share_price), valueChange: null })
+      } else if (t.transaction_type === 'unrealized_gain_change' && t.unrealized_value_change != null && t.portfolio_group === portfolioGroup) {
+        priceEvents.push({ date: t.transaction_date, kind: 'mark', round: t.round_name ?? null, sharePrice: null, valueChange: Number(t.unrealized_value_change) })
       }
     }
 
@@ -298,10 +345,12 @@ export async function aggregatePortfolioData(
       .filter(m => latestSharePriceDate == null || m.date > latestSharePriceDate)
       .reduce((sum, m) => sum + m.amount, 0))
 
+    // An exit after the date hadn't happened yet: no proceeds by then means still held.
+    const status = c.status === 'exited' && !relevantTxns.some(t => t.transaction_type === 'proceeds') ? 'active' : c.status
     let fmv: number
-    if (c.status === 'exited') {
+    if (status === 'exited') {
       fmv = totalRealized
-    } else if (c.status === 'written-off') {
+    } else if (status === 'written-off') {
       fmv = 0
     } else {
       fmv = unrealizedValue
@@ -311,7 +360,7 @@ export async function aggregatePortfolioData(
     investmentSummaries.push({
       companyId: c.id,
       companyName: c.name,
-      status: c.status,
+      status,
       stage: c.stage,
       industry: c.industry,
       overview: c.overview,
@@ -322,6 +371,7 @@ export async function aggregatePortfolioData(
       unrealizedValue,
       fmv,
       moic,
+      priceEvents,
     })
   }
 
@@ -430,7 +480,8 @@ export async function aggregatePortfolioData(
     .from('fund_cash_flows')
     .select('flow_type, flow_date, amount')
     .eq('fund_id', fundId)
-    .eq('portfolio_group', portfolioGroup) as { data: { flow_type: string; flow_date: string; amount: number }[] | null }
+    .eq('portfolio_group', portfolioGroup)
+    .lte('flow_date', asOf) as { data: { flow_type: string; flow_date: string; amount: number }[] | null }
 
   const { data: groupConfig } = await admin
     .from('fund_group_config')
@@ -475,7 +526,7 @@ export async function aggregatePortfolioData(
       }
     }
     if (netResidual > 0) {
-      xirrFlows.push({ date: new Date(), amount: netResidual })
+      xirrFlows.push({ date: new Date(`${asOf}T00:00:00Z`), amount: netResidual })
     }
     const irr = xirrFlows.length >= 2 ? xirr(xirrFlows) : null
 
@@ -487,6 +538,7 @@ export async function aggregatePortfolioData(
     : `Q${quarter} ${year}`
 
   return {
+    asOf,
     fundName,
     fundCurrency,
     periodLabel,

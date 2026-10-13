@@ -33,7 +33,7 @@ vi.mock('@/lib/lp-report-pdf', () => ({
 }))
 const company = (id: string, name: string) => ({
   investment: { companyId: id, companyName: name, status: 'active', stage: 'Seed', totalInvested: 100, fmv: 200, moic: 2 },
-  metrics: [], notes: [],
+  metrics: [], notes: [], recentNotes: [], latestUpdate: null,
 })
 vi.mock('@/lib/lp-letters/aggregate', () => ({
   aggregatePortfolioData: async () => ({
@@ -43,6 +43,10 @@ vi.mock('@/lib/lp-letters/aggregate', () => ({
     totals: { totalInvested: 200, totalFmv: 400, totalRealized: 0, portfolioMoic: 2, activeCount: 2, exitedCount: 0, writtenOffCount: 0 },
   }),
 }))
+
+const createMessage = vi.fn(async () => ({ text: 'Fund AI letter.\n\nMissing information\n- Birch update.', usage: { inputTokens: 1, outputTokens: 1 } }))
+vi.mock('@/lib/ai', () => ({ createFundAIProvider: async () => ({ provider: { createMessage }, model: 'm', providerType: 'anthropic' }) }))
+vi.mock('@/lib/ai/usage', () => ({ logAIUsage: async () => {} }))
 
 import { LETTER_HANDLERS as H } from '@/lib/agent/letter-tools'
 import { getTool } from '@/lib/accounting/agent-tools'
@@ -70,6 +74,14 @@ beforeEach(() => {
   ]
   store.tables.lp_investors = [{ id: 'inv-1', fund_id: 'fund-1', name: 'Acme' }, { id: 'inv-2', fund_id: 'fund-1', name: 'Birch Family' }]
   store.tables.lp_letter_shares = []
+  store.tables.lp_letter_templates = [
+    { id: 't1', fund_id: 'fund-1', name: 'House style', style_guide: 'Open with three themes.', is_default: true },
+    { id: 't2', fund_id: 'fund-1', name: 'Short', style_guide: 'One page.', is_default: false },
+  ]
+  store.tables.company_updates = [
+    { id: 'u1', fund_id: 'fund-1', company_id: 'c1', received_at: '2026-10-04T10:00:00Z', subject: 'Q3', period_label: 'Q3 2026', period_year: 2026, period_quarter: 3, period_month: null, body_current: 'Acme closed two enterprise pilots. Birch Family visited.', body_original: null, sender_email: 'founder@acme.test' },
+    { id: 'u2', fund_id: 'fund-1', company_id: 'c1', received_at: '2026-07-04T10:00:00Z', subject: 'Q2', period_label: 'Q2 2026', period_year: 2026, period_quarter: 2, period_month: null, body_current: 'Last quarter.', body_original: null },
+  ]
   vi.clearAllMocks()
 })
 
@@ -109,7 +121,77 @@ describe('LP letter tools', () => {
     await expect(H.lp_write_letter(ctx(), { letter_id: 'l1', sections: [{ company_id: 'nope', narrative: 'x' }] })).rejects.toThrow("Not in this letter's portfolio")
   })
 
+  it("briefs the quarter's letter from the stored updates, with investors kept out", async () => {
+    const brief = await H.lp_letter_brief(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 3 }) as any
+    expect(brief.instructions).toContain('drafting the Q3 2026 LP letter for Fund I')
+    expect(brief.template).toBe('House style')
+    expect(brief.instructions).toContain('Open with three themes.')
+    expect(brief.companies[0].updates_this_quarter.map((u: any) => u.text)).toEqual(['Acme closed two enterprise pilots. [investor] visited.'])
+    expect(JSON.stringify(brief)).not.toMatch(/founder@acme\.test|Birch Family/)
+    expect(brief.missing_information).toContain('Birch: no company update or KPI values are stored for Q3 2026.')
+    await expect(H.lp_letter_brief(ctx(member({ lp_relations: 'read' }, false)), { vehicle: 'Fund II', year: 2026, quarter: 3 })).rejects.toThrow()
+  })
+
+  it('drafts as a new unshared draft letter, never staged, and returns review flags', async () => {
+    const tool = getTool('lp_draft_letter')!
+    expect(tool).toMatchObject({ scope: 'write', accessDomain: 'lp_relations', accessFeature: 'lp_letters' })
+    expect(shouldStage(tool, {}, { keyId: 'oauth:x' })).toBe(false)
+    expect(adminOnlyToolLabel('lp_draft_letter', {})).toBeUndefined()
+
+    const out = await H.lp_draft_letter(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 3, text: 'Acme returned a TVPI of 9.9x.' }) as any
+    expect(out.written_by).toBe('assistant')
+    expect(out.letter).toMatchObject({ period: 'Q3 2026', vehicle: 'Fund I', status: 'draft' })
+    expect(out.review_flags).toEqual(expect.arrayContaining([
+      'No "Missing information" section at the end.',
+      '"9.9x" does not appear in the sources.',
+    ]))
+    const row = store.tables.lp_letters.find((l: any) => l.id === out.letter.id)!
+    expect(row.full_draft).toBe('Acme returned a TVPI of 9.9x.')
+    expect(row.portfolio_table_html).toContain('Gross FMV')
+    expect(store.tables.lp_letter_shares).toEqual([])
+    // The existing draft for the quarter is untouched.
+    expect(store.tables.lp_letters.find((l: any) => l.id === 'l1')!.full_draft).toBe('old')
+  })
+
+  it("lets the fund's own AI write it from the brief", async () => {
+    const out = await H.lp_draft_letter(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 3 }) as any
+    expect(out.written_by).toBe('fund AI')
+    expect(out.review_flags).toEqual([])
+    const sent = (createMessage.mock.calls[0] as any[])[0].content as string
+    expect(sent).toContain('<data label="letter-brief" type="reference-only">')
+    expect(sent).toContain('Acme closed two enterprise pilots.')
+    expect(sent).not.toContain('Last quarter.')
+  })
+
+  it('uses the template and guidance asked for, and refuses a template that does not exist', async () => {
+    const out = await H.lp_draft_letter(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 3, template: 'short', guidance: 'Lead with Acme.', text: 'x\nMissing information' }) as any
+    expect(out.template).toBe('Short')
+    const row = store.tables.lp_letters.find((l: any) => l.id === out.letter.id)!
+    expect(row).toMatchObject({ template_id: 't2', generation_prompt: 'Lead with Acme.' })
+    await expect(H.lp_letter_brief(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 3, template: 'Nope' })).rejects.toThrow('No letter template "Nope"')
+  })
+
+  it('reviews any full draft written from chat against the letter\'s sources', async () => {
+    const out = await H.lp_write_letter(ctx(), { letter_id: 'l1', full_draft: 'Our IRR is 40%.\nMissing information' }) as any
+    expect(out.review_flags).toEqual(expect.arrayContaining(['"40%" does not appear in the sources.']))
+    expect(((await H.lp_write_letter(ctx(), { letter_id: 'l1', mark_final: true })) as any).review_flags).toBeUndefined()
+  })
+
+  it('marks a letter final, the only kind that can be shared; unsharing a draft is allowed', async () => {
+    await expect(H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme'] })).rejects.toThrow('Mark the letter final')
+    expect(store.tables.lp_letter_shares).toEqual([])
+    const out = await H.lp_write_letter(ctx(), { letter_id: 'l1', mark_final: true }) as any
+    expect(out.letter.status).toBe('final')
+    // The name the code used before, which the table never allowed, means final.
+    await H.lp_write_letter(ctx(), { letter_id: 'l2', mark_complete: true })
+    expect(store.tables.lp_letters.find((l: any) => l.id === 'l2')!.status).toBe('final')
+    expect(((await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme'] })) as any).shared_with).toEqual(['Acme'])
+    store.tables.lp_letters.find((l: any) => l.id === 'l1')!.status = 'draft'
+    expect(((await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: [] })) as any).shared_with).toEqual([])
+  })
+
   it('shares with investors by name, replacing the list', async () => {
+    store.tables.lp_letters.find((l: any) => l.id === 'l1')!.status = 'final'
     const out = await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme', 'birch'] }) as any
     expect(out.shared_with).toEqual(['Acme', 'Birch Family'])
     await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme'] })
