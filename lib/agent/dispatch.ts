@@ -196,7 +196,7 @@ async function apply(call: AgentCall): Promise<unknown> {
 
 /**
  * Insert a pending_actions row, naming the credential that staged it. Until migration
- * 20261013140000 is pushed the column is missing (Postgres' undefined column); the row is then
+ * 20261013143000 is pushed the column is missing (Postgres' undefined column); the row is then
  * written without it and the service falls back to its channel, so the deploy and the push may
  * land in either order.
  */

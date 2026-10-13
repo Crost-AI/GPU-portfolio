@@ -21,7 +21,7 @@ export interface PendingActionRow {
   status: string
   created_by: string
   created_via: string | null
-  /** The credential that staged it (migration 20261013140000); absent before that column. */
+  /** The credential that staged it (migration 20261013143000); absent before that column. */
   created_credential?: string | null
   approved_by: string | null
   approved_at: string | null
