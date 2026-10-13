@@ -10,6 +10,7 @@ import {
 import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import type { ToolDefinition, ToolExecutor, ToolInvocation } from '@/lib/ai/types'
 import { WRITE_ACTIONS, getWriteAction } from '@/lib/pending-actions/registry'
+import { previewBlockers } from '@/lib/pending-actions/blockers'
 import type { ActionType, PreviewResult } from '@/lib/pending-actions/types'
 import { stagedTarget } from '@/lib/pending-actions/target'
 import { ADMIN_ONLY_ACTIONS } from '@/lib/access/admin-only'
@@ -108,6 +109,8 @@ export function buildAnalystTools(deps: AnalystToolDeps): { tools: ToolDefinitio
           // Pin the entity now, with the stager's access (lib/pending-actions/target.ts).
           const target = await stagedTarget(actionDeps, action, call.input)
           const preview = await action.preview(actionDeps, target.input)
+          const blocked = previewBlockers(preview)
+          if (blocked) return JSON.stringify({ error: blocked })
           const { data, error } = await deps.admin
             .from('pending_actions')
             .insert({

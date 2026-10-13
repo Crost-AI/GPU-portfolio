@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { AGENT_TOOLS, getTool, isLedgerTool } from '@/lib/accounting/agent-tools'
-import { isDraftOnlyCall } from '@/lib/agent/dispatch'
+import { isDraftOnlyCall, shouldStage } from '@/lib/agent/dispatch'
 
 describe('agent tool registry', () => {
   it('every tool has a unique name', () => {
@@ -60,12 +60,17 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('LP writes are the register and letter tools only, each running the web route\'s function', () => {
+  it('LP writes are the register and letter tools, and publishing notices, which is always staged', () => {
     const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
     expect(writable.map(t => t.name).sort()).toEqual([
       'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_record_commitment',
       'lp_share_letter', 'lp_update_entity', 'lp_update_investor', 'lp_update_profile', 'lp_write_letter',
+      'publish_call_notices',
     ])
+    // What goes out to LPs is staged from any credential and approved in the app, gated like the
+    // notices publish route.
+    expect(getTool('publish_call_notices')).toMatchObject({ stagesAs: 'publish_call_notices', accessDomain: 'lp_relations', accessFeature: 'lp_portal' })
+    expect(shouldStage(getTool('publish_call_notices')!, {}, { keyId: 'key_script' })).toBe(true)
     // Letters are the LP Letters pages': LP relations, under their switch.
     for (const t of writable.filter(t => t.name.endsWith('_letter'))) {
       expect(t, t.name).toMatchObject({ accessDomain: 'lp_relations', accessFeature: 'lp_letters' })

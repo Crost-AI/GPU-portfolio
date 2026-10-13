@@ -2,7 +2,7 @@
 // action). Shape checks only: whether the values make a good call is capital-call-check.ts's job,
 // which reports rather than refuses, so a proposal with gaps can still be saved and shown.
 
-import { normalizePurposes, type ProposedCallRequest } from './capital-call-check'
+import { normalizePurposes, normalizeStatedPartners, type ProposedCallRequest } from './capital-call-check'
 
 const pick = (raw: any, camel: string, snake: string) => (raw?.[camel] !== undefined ? raw[camel] : raw?.[snake])
 
@@ -40,6 +40,12 @@ export function proposedCallRequestFrom(
   if (basis !== undefined) {
     if (basis !== null && basis !== 'calendar' && basis !== 'business') return { error: "notice_period_basis must be 'calendar' or 'business'" }
     out.noticePeriodBasis = basis
+  }
+
+  const stated = pick(raw, 'statedPartners', 'stated_partners')
+  if (stated !== undefined) {
+    if (stated !== null && !Array.isArray(stated)) return { error: 'stated_partners must be a list of { lp, commitment?, sharePct? }' }
+    out.statedPartners = normalizeStatedPartners(stated)
   }
 
   return { request: out as ProposedCallRequest }

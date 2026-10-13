@@ -25,6 +25,8 @@ import { resolvePeriod, customPeriod, type PeriodPreset } from '@/lib/accounting
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
 import { CarryRecipientStatementError, carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { siteOrigin } from '@/lib/site-links'
+import { reviewCallNotices } from '@/lib/accounting/call-notice-review'
+import { unwrap } from '@/lib/service-outcome'
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const STATEMENT_PRESETS: PeriodPreset[] = ['this_quarter', 'last_quarter', 'ytd', 'prior_year', 'itd']
@@ -371,6 +373,37 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
         })),
       })),
     }
+  },
+
+  // What publishing a call's notices would do. The first of the two confirmations: the person reads
+  // this, then the chat stages publish_call_notices with its token (lib/pending-actions/call-notices.ts).
+  preview_call_notices: async ({ admin, fundId, access, userId, origin }: AgentToolContext, input: any) => {
+    const vehicle = await resolveVehicle(admin, fundId, String(input?.vehicle ?? ''), access)
+    const callId = String(input?.callId ?? '')
+    const lpEntityIds = Array.isArray(input?.lpEntityIds) ? input.lpEntityIds.map(String) : null
+    const review = unwrap(await reviewCallNotices(admin, { fundId, group: vehicle }, callId, { lpEntityIds }))
+    if (!userId) throw new Error('A preview link names the member who asked; this credential has none.')
+    const base = origin ?? siteOrigin()
+    const blocked = review.flags.some(f => f.severity === 'blocker')
+    return {
+      ...review,
+      partners: review.partners.map(p => {
+        const { token } = signReportLink({ fundId, userId, kind: 'call_notice_preview', args: { vehicle, call: callId, lp: p.lpEntityId } })
+        return { ...p, draftPdf: reportLinkUrl(base, token) }
+      }),
+      next: blocked
+        ? 'Nothing can be published until the blockers in flags are resolved. Tell the user what they are.'
+        : 'Nothing has been published. Show the user every partner, amount and draftPdf link above, and every missing item and flag, ' +
+          'in plain words. Ask them to confirm. Only if they do, call publish_call_notices with this vehicle, callId, the same ' +
+          'lpEntityIds and this previewToken. That stages the request; an admin then approves it in the app and confirms it a second time. ' +
+          'The draftPdf links open for an hour.',
+    }
+  },
+
+  // Always staged as the publish_call_notices pending action (its manifest's `stagesAs`), so this
+  // never runs; it refuses rather than publish without the app's confirmation.
+  publish_call_notices: async () => {
+    throw new Error('publish_call_notices is always staged for approval in the app; it cannot run directly.')
   },
 
   lp_statement: async ({ admin, fundId, access }: AgentToolContext, input: any) => {

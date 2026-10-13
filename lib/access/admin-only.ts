@@ -109,6 +109,7 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */
 export const ADMIN_ONLY_ACTIONS: Record<string, string> = {
   issue_capital_call: 'issue a capital call',
+  publish_call_notices: 'publish notices to LPs',
 }
 
 /** Does this route need the body to decide? Then the middleware has to read it. */

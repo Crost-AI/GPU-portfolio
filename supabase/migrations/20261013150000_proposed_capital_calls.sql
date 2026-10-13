@@ -27,6 +27,9 @@ create table public.proposed_capital_calls (
   -- check, so changing it re-checks every open proposal.
   notice_period_days  int check (notice_period_days between 0 and 365),
   notice_period_basis text check (notice_period_basis in ('calendar', 'business')),
+  -- LP figures the request stated ([{ lp, commitment, sharePct }]). Never used for the split; each
+  -- is checked against the register and a difference is flagged.
+  stated_partners     jsonb not null default '[]'::jsonb,
   -- The last check: per-LP lines, missing items and flags. Recomputed from live commitments on
   -- approval, so a stale proposal can never issue stale amounts.
   checked             jsonb not null default '{}'::jsonb,

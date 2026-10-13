@@ -179,3 +179,22 @@ describe('checkCapitalCall: description', () => {
     expect(r.description).toContain('management fees ($150,000.00)')
   })
 })
+
+describe('LP figures the request stated', () => {
+  it('flags a stated commitment or share that differs from the register, and uses the register', () => {
+    const r = checkCapitalCall(request({
+      statedPartners: [{ lp: 'alpha lp', commitment: 5_000_000, sharePct: 10 }, { lp: 'Nobody LP', commitment: 1 }],
+    }), facts())
+    expect(codes(r)).toEqual(expect.arrayContaining(['stated_commitment_differs', 'stated_share_differs', 'stated_partner_unknown']))
+    expect(r.lines.find(l => l.name === 'Alpha LP')?.commitment).not.toBe(5_000_000)
+  })
+
+  it('says nothing when the stated figures match', () => {
+    const base = checkCapitalCall(request(), facts())
+    const alpha = base.lines[0]
+    const r = checkCapitalCall(request({
+      statedPartners: [{ lp: alpha.lpEntityId, commitment: alpha.commitment, sharePct: Math.round(alpha.share * 10000) / 100 }],
+    }), facts())
+    expect(codes(r).filter(c => c.startsWith('stated_'))).toEqual([])
+  })
+})

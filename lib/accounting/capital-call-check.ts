@@ -51,6 +51,28 @@ export interface ProposedCallRequest {
   noticePeriodBasis?: NoticePeriodBasis | null
   /** A line for the notice body. Built from the purposes when absent. */
   description?: string | null
+  /**
+   * LP figures the request itself stated ("LP commitment: $5M (10% of fund)"). Never used for the
+   * split, which comes from the register; each is compared with it, and a difference is flagged.
+   */
+  statedPartners?: StatedPartner[] | null
+}
+
+/** One LP figure as the user stated it: the LP (entity id or name) and a commitment or share. */
+export interface StatedPartner {
+  lp: string
+  commitment?: number | null
+  /** Percent of the vehicle's total commitments, 0..100. */
+  sharePct?: number | null
+}
+
+/** Stated LP figures as stored: an LP named, and at least one figure that is a number. */
+export function normalizeStatedPartners(raw: unknown): StatedPartner[] {
+  if (!Array.isArray(raw)) return []
+  const num = (v: unknown) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
+  return raw
+    .map((r: any) => ({ lp: String(r?.lp ?? '').trim(), commitment: num(r?.commitment), sharePct: num(r?.sharePct ?? r?.share_pct) }))
+    .filter(r => r.lp && (r.commitment != null || r.sharePct != null))
 }
 
 /** What the fund's records say. Loaded by proposed-calls.ts. */
@@ -292,6 +314,34 @@ export function checkCapitalCall(req: ProposedCallRequest, facts: CallFacts): Ch
       flags.push({
         code: 'exceeds_uncalled_commitment', severity: 'blocker', subject: l.lpEntityId,
         message: `${l.name}'s share (${money(l.amount)}) is more than their uncalled commitment (${money(roundCents(l.commitment - (l.calledToDate ?? 0)))}).`,
+      })
+    }
+  }
+
+  // ── LP figures the request stated, against the register ───────────────────
+  // The split above never reads them. A stale figure in the request is the user's to correct, so
+  // each difference is a warning naming both numbers.
+  for (const stated of normalizeStatedPartners(req.statedPartners)) {
+    const key = stated.lp.toLowerCase()
+    const line = lines.find(l => l.lpEntityId === stated.lp) ?? lines.find(l => l.name.trim().toLowerCase() === key)
+    if (!line) {
+      flags.push({
+        code: 'stated_partner_unknown', severity: 'warning',
+        message: `"${stated.lp}" is not a partner with a commitment in ${facts.vehicle}, so the figures given for them were not used.`,
+      })
+      continue
+    }
+    if (stated.commitment != null && Math.abs(stated.commitment - line.commitment) >= 0.005) {
+      flags.push({
+        code: 'stated_commitment_differs', severity: 'warning', subject: line.lpEntityId,
+        message: `You gave ${line.name}'s commitment as ${money(stated.commitment)}; the register has ${money(line.commitment)}. The split uses the register.`,
+      })
+    }
+    const pct = line.share * 100
+    if (stated.sharePct != null && Math.abs(stated.sharePct - pct) >= 0.005) {
+      flags.push({
+        code: 'stated_share_differs', severity: 'warning', subject: line.lpEntityId,
+        message: `You gave ${line.name} as ${stated.sharePct}% of the fund; recorded commitments make it ${pct.toFixed(2)}%. The split uses the register.`,
       })
     }
   }

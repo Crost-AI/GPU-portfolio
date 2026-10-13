@@ -17,7 +17,7 @@
 // records say and writes the result down.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { checkCapitalCall, normalizePurposes, type CallFacts, type ProposedCallRequest, type CheckedCall, type NoticePeriodBasis } from './capital-call-check'
+import { checkCapitalCall, normalizePurposes, normalizeStatedPartners, type CallFacts, type ProposedCallRequest, type CheckedCall, type NoticePeriodBasis } from './capital-call-check'
 import { approvable, needsAcknowledgement } from '@/lib/drafting/checks'
 import { loadOwnership, loadEntityNames } from './load'
 import { lpCalledTotals, issueCapitalCall } from './capital-calls'
@@ -87,6 +87,7 @@ function requestOf(row: any): ProposedCallRequest {
     noticePeriodDays: row.notice_period_days ?? null,
     noticePeriodBasis: validBasis(row.notice_period_basis),
     description: row.description ?? null,
+    statedPartners: normalizeStatedPartners(row.stated_partners),
   }
 }
 
@@ -130,6 +131,7 @@ function rowFields(req: ProposedCallRequest) {
     due_date: req.dueDate || null,
     notice_period_days: req.noticePeriodDays ?? null,
     notice_period_basis: req.noticePeriodBasis ?? null,
+    stated_partners: normalizeStatedPartners(req.statedPartners),
   }
 }
 

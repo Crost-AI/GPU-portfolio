@@ -2,7 +2,7 @@ import type { ActionDeps, PreviewResult } from './types'
 import { proRataCall, issueCapitalCall } from '@/lib/accounting/capital-calls'
 import { loadOwnership, loadEntityNames } from '@/lib/accounting/load'
 import { resolveVehicle } from '@/lib/accounting/agent-tools'
-import { checkCapitalCall, normalizePurposes, type CallPurpose, type NoticePeriodBasis } from '@/lib/accounting/capital-call-check'
+import { checkCapitalCall, normalizePurposes, type CallPurpose, type NoticePeriodBasis, type StatedPartner } from '@/lib/accounting/capital-call-check'
 import { loadCallFacts } from '@/lib/accounting/proposed-calls'
 
 export interface IssueCapitalCallInput {
@@ -17,6 +17,8 @@ export interface IssueCapitalCallInput {
   /** The LPA notice period as the user stated it. The vehicle's recorded term is checked too. */
   noticePeriodDays?: number | null
   noticePeriodBasis?: NoticePeriodBasis | null
+  /** LP figures the user stated; compared with the register, never used for the split. */
+  statedPartners?: StatedPartner[] | null
 }
 
 /**
@@ -33,6 +35,7 @@ async function checkInput(deps: ActionDeps, group: string, input: IssueCapitalCa
     noticePeriodDays: input.noticePeriodDays ?? null,
     noticePeriodBasis: input.noticePeriodBasis ?? null,
     description: input.description ?? null,
+    statedPartners: input.statedPartners ?? null,
   }, facts)
 }
 

@@ -5,7 +5,7 @@
 // discards it. Both endpoints re-check the caller's WRITE access for the action's domain.
 
 import { useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { AlertTriangle, Check, CircleSlash, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { announceApplied } from '@/lib/pending-actions/applied-event'
 import { isRunResult, RunPreview, RunResultView, type RunResult } from '@/components/agent-run-card'
@@ -28,11 +28,19 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
   // A run's outcome (lib/agent/run-action.ts): each step's result and the checks, shown once applied.
   const [runs, setRuns] = useState<Record<string, RunResult>>({})
 
-  async function act(a: StagedAction, kind: 'approve' | 'reject') {
+  // Publishing to LPs asks twice: the first click only opens the confirmation (CONFIRM_IN_APP).
+  const [confirming, setConfirming] = useState<Record<string, boolean>>({})
+
+  async function act(a: StagedAction, kind: 'approve' | 'reject', confirmed = false) {
     setState(s => ({ ...s, [a.id]: 'busy' }))
     setErrors(e => ({ ...e, [a.id]: '' }))
+    setConfirming(c => ({ ...c, [a.id]: false }))
     try {
-      const res = await fetch(`/api/pending-actions/${a.id}/${kind}`, { method: 'POST' })
+      const res = await fetch(`/api/pending-actions/${a.id}/${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(confirmed ? { confirmed: true } : {}),
+      })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.ok === false) {
         setState(s => ({ ...s, [a.id]: 'error' }))
@@ -64,6 +72,8 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
               runs[a.id]
                 ? <RunResultView id={a.id} result={runs[a.id]} onChange={next => setRuns(r => ({ ...r, [a.id]: next }))} />
                 : <RunPreview details={a.preview.details} />
+            ) : a.actionType === CONFIRM_TWICE ? (
+              <CallNoticesPreview details={a.preview.details} />
             ) : (
               <PreviewDetails details={a.preview.details} />
             )}
@@ -75,10 +85,20 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
               <span className="text-xs text-muted-foreground flex items-center gap-1">
                 <X className="h-3.5 w-3.5" />Rejected.
               </span>
+            ) : a.actionType === CONFIRM_TWICE && confirming[a.id] ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning bg-warning-subtle p-2">
+                <span className="text-xs">{confirmLine(a.preview.details)}</span>
+                <Button size="sm" onClick={() => act(a, 'approve', true)}>Yes, publish</Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirming(c => ({ ...c, [a.id]: false }))}>Cancel</Button>
+              </div>
             ) : (
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => act(a, 'approve')} disabled={st === 'busy'}>
-                  {st === 'busy' ? 'Working…' : 'Approve'}
+                <Button
+                  size="sm" variant="outline"
+                  onClick={() => a.actionType === CONFIRM_TWICE ? setConfirming(c => ({ ...c, [a.id]: true })) : act(a, 'approve')}
+                  disabled={st === 'busy' || (a.actionType === CONFIRM_TWICE && hasBlocker(a.preview.details))}
+                >
+                  {st === 'busy' ? 'Working…' : a.actionType === CONFIRM_TWICE ? 'Approve publishing…' : 'Approve'}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => act(a, 'reject')} disabled={st === 'busy'}>
                   Reject
@@ -89,6 +109,82 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/** Actions that publish to LPs: previewed per partner, and approved with a second confirmation. */
+const CONFIRM_TWICE = 'publish_call_notices'
+
+interface NoticeFlag { code: string; severity: 'blocker' | 'warning'; message: string }
+interface NoticeMissing { field: string; label: string; why: string }
+interface NoticePartner { lpEntityId: string; name: string; amount: number; share: number; alreadyPublished: boolean; portalAccount: string | null }
+
+function hasBlocker(details: Record<string, unknown>): boolean {
+  return ((details.flags as NoticeFlag[] | undefined) ?? []).some(f => f.severity === 'blocker')
+}
+
+function confirmLine(details: Record<string, unknown>): string {
+  const n = Number(details.newNotices ?? 0)
+  return `Publish ${n} notice${n === 1 ? '' : 's'} to partners' LP portals now? Partners can open ${n === 1 ? 'it' : 'them'} as soon as ${n === 1 ? 'it is' : 'they are'} published.`
+}
+
+/** A call's notices before they go out: each partner's figure, a DRAFT PDF of their notice, and the checks. */
+function CallNoticesPreview({ details }: { details: Record<string, unknown> }) {
+  const call = details.call as { id: string; noticeDate: string; dueDate: string | null; total: number } | undefined
+  const partners = (details.partners as NoticePartner[] | undefined) ?? []
+  const missing = (details.missing as NoticeMissing[] | undefined) ?? []
+  const flags = (details.flags as NoticeFlag[] | undefined) ?? []
+  const vehicle = String(details.vehicle ?? '')
+  const pdf = (lp: string) =>
+    `/api/accounting/notices/preview?group=${encodeURIComponent(vehicle)}&id=${encodeURIComponent(call?.id ?? '')}&lp=${encodeURIComponent(lp)}`
+  return (
+    <div className="space-y-2">
+      {call && (
+        <p className="text-xs text-muted-foreground tabular-nums">
+          {vehicle} · dated {call.noticeDate} · due {call.dueDate ?? 'not stated'} · total {formatVal(call.total)}
+        </p>
+      )}
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-muted-foreground">
+            <th className="text-left font-medium py-0.5">Partner</th>
+            <th className="text-right font-medium py-0.5">Amount</th>
+            <th className="text-right font-medium py-0.5">Share</th>
+            <th className="text-left font-medium py-0.5 pl-3">Portal</th>
+            <th className="py-0.5" />
+          </tr>
+        </thead>
+        <tbody>
+          {partners.map(p => (
+            <tr key={p.lpEntityId} className="border-t">
+              <td className="py-0.5">{p.name}</td>
+              <td className="py-0.5 text-right tabular-nums">{formatVal(p.amount)}</td>
+              <td className="py-0.5 text-right tabular-nums">{(p.share * 100).toFixed(2)}%</td>
+              <td className="py-0.5 pl-3 text-muted-foreground">{p.alreadyPublished ? 'already published' : (p.portalAccount ?? 'no account yet')}</td>
+              <td className="py-0.5 text-right">
+                <a href={pdf(p.lpEntityId)} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">Preview</a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {(missing.length > 0 || flags.length > 0) && (
+        <div className="space-y-1 text-xs">
+          {missing.map(m => (
+            <p key={m.field} className="flex items-start gap-1.5">
+              <CircleSlash className="h-3.5 w-3.5 mt-px shrink-0 text-muted-foreground" />
+              <span><span className="font-medium">Missing: {m.label}.</span> <span className="text-muted-foreground">{m.why}</span></span>
+            </p>
+          ))}
+          {flags.map((f, i) => (
+            <p key={`${f.code}-${i}`} className="flex items-start gap-1.5">
+              <AlertTriangle className={`h-3.5 w-3.5 mt-px shrink-0 ${f.severity === 'blocker' ? 'text-destructive' : 'text-warning'}`} />
+              <span>{f.message}</span>
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

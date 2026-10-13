@@ -146,6 +146,49 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: { type: 'object', properties: { vehicle: VEHICLE }, required: ['vehicle'] },
   },
   {
+    name: 'preview_call_notices',
+    description:
+      "What publishing an issued capital call's notices would do, before anything goes out: each partner's amount and share " +
+      'from the register, whether their portal already holds the notice, who can open it, a link to each notice as a DRAFT PDF, ' +
+      'and what is missing or wrong (wire instructions, a due date inside the LPA notice period, partners with no portal account). ' +
+      'Show the user all of it. Only if they confirm, call publish_call_notices with the previewToken.',
+    scope: 'read',
+    domain: 'lp',
+    accessDomain: 'lp_relations',
+    accessFeature: 'lp_portal',
+    inputSchema: {
+      type: 'object',
+      required: ['vehicle', 'callId'],
+      properties: {
+        vehicle: VEHICLE,
+        callId: { type: 'string', description: 'The issued capital call, from lp_capital_calls.' },
+        lpEntityIds: { type: 'array', items: { type: 'string' }, description: 'Only these partners. Omit for every partner on the call.' },
+      },
+    },
+  },
+  {
+    name: 'publish_call_notices',
+    description:
+      "Ask for an issued capital call's notices to be published to the partners' LP portals. Call preview_call_notices first, " +
+      'show the user what it returns, and call this only after they confirm, with its previewToken. Always staged, from any ' +
+      'connection: an admin approves it in the app, opening the notices and confirming twice. It emails no one.',
+    scope: 'write',
+    domain: 'lp',
+    accessDomain: 'lp_relations',
+    accessFeature: 'lp_portal',
+    stagesAs: 'publish_call_notices',
+    inputSchema: {
+      type: 'object',
+      required: ['vehicle', 'callId', 'previewToken'],
+      properties: {
+        vehicle: VEHICLE,
+        callId: { type: 'string', description: 'The issued capital call.' },
+        lpEntityIds: { type: 'array', items: { type: 'string' }, description: 'Only these partners, as previewed. Omit for every partner.' },
+        previewToken: { type: 'string', description: 'The previewToken preview_call_notices returned for exactly these notices.' },
+      },
+    },
+  },
+  {
     name: 'lp_list_investors',
     description:
       'The fund\'s LPs. An investor (a person, family or institution) may hold through several legal entities; the positions are ' +

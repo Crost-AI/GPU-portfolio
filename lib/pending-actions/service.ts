@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordAudit } from '@/lib/audit/events'
 import { isRestrictedCredential, type AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { mayActOn, stagedAction } from './staged'
+import { mayActOn, stagedAction, type StagedAction } from './staged'
+import { CONFIRM_IN_APP_MESSAGE } from './call-notices'
 import { adminOnlyMessage } from '@/lib/access/admin-only'
 import { AGENT_TOOL_CALL } from '@/lib/agent/tool-call-action'
 import { AGENT_RUN, RunStepError, runArgs, type RunResult } from '@/lib/agent/run-action'
@@ -196,10 +197,25 @@ export function stagedBySameCredential(
  * Claim before execute so concurrent retries cannot both run the write. The action id is the
  * durable idempotency boundary: once applied, subsequent approved retries return the stored result.
  */
+export interface ApproveOptions {
+  /**
+   * The second confirmation an action marked `confirmInApp` needs (publishing notices to LPs). Only
+   * the browser's approve route sets it, after the person confirmed the approval a second time.
+   */
+  confirmed?: boolean
+  /**
+   * The executors for `confirmInApp` actions, supplied by the browser's approve route, which is the
+   * only one that ships what they need (headless Chromium, lib/pdf-routes.mjs). Every other door
+   * passes none, and those actions are refused there.
+   */
+  executors?: Partial<Record<string, StagedAction['execute']>>
+}
+
 export async function approvePendingAction(
   admin: SupabaseClient,
   principal: AnalystPrincipal,
   id: string,
+  opts: ApproveOptions = {},
 ) {
   const existing = await loadAction(admin, principal.fundId, id)
   // Another entity's action is not found — checked before anything is claimed or changed.
@@ -212,6 +228,12 @@ export async function approvePendingAction(
   }
   if (existing.status !== 'pending') {
     throw new PendingActionServiceError('Pending action is no longer available.', 409, 'ACTION_NOT_PENDING')
+  }
+  // Checked before anything is claimed, so a refusal leaves the row pending for the app.
+  const execute = action.confirmInApp ? opts.executors?.[existing.action_type] : action.execute
+  if (!execute) throw new PendingActionServiceError(CONFIRM_IN_APP_MESSAGE, 409, 'CONFIRM_IN_APP')
+  if (action.confirmInApp && opts.confirmed !== true) {
+    throw new PendingActionServiceError('Confirm the approval a second time to publish.', 428, 'CONFIRMATION_REQUIRED')
   }
 
   const now = new Date().toISOString()
@@ -236,7 +258,7 @@ export async function approvePendingAction(
   }
 
   try {
-    const result = await action.execute({
+    const result = await execute({
       admin,
       fundId: principal.fundId,
       userId: principal.userId,

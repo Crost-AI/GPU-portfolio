@@ -5,6 +5,7 @@ import type { ActionType, ActionDeps, PreviewResult } from './types'
 import { previewMetricValue, writeMetricValue } from './metric-value'
 import { previewRecordInvestment, executeRecordInvestment } from './investment'
 import { previewIssueCapitalCall, executeIssueCapitalCall } from './capital-call'
+import { previewPublishCallNotices, executePublishCallNoticesElsewhere } from './call-notices'
 import {
   previewUpdatePortfolioConstruction,
   executeUpdatePortfolioConstruction,
@@ -42,6 +43,11 @@ export interface WriteAction {
   managementCompanies?: true
   description: string
   inputSchema: Record<string, unknown>
+  /**
+   * Approved only in the app, with a second confirmation there: the browser's approve route
+   * supplies the real executor and `execute` here refuses (lib/pending-actions/call-notices.ts).
+   */
+  confirmInApp?: true
   preview: (deps: ActionDeps, input: any) => Promise<PreviewResult>
   execute: (deps: ActionDeps, input: any) => Promise<Record<string, unknown>>
 }
@@ -130,10 +136,46 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
         },
         noticePeriodDays: { type: 'number', description: 'The LPA notice period the user stated. The vehicle\'s recorded term is checked as well.' },
         noticePeriodBasis: { type: 'string', enum: ['calendar', 'business'] },
+        statedPartners: {
+          type: 'array',
+          description: 'LP figures the user stated (a commitment, or a % of the fund). Checked against the register and flagged when they differ; never used for the split.',
+          items: {
+            type: 'object',
+            required: ['lp'],
+            properties: {
+              lp: { type: 'string', description: 'LP entity id or name.' },
+              commitment: { type: 'number' },
+              sharePct: { type: 'number', description: 'Percent of the fund, 0 to 100.' },
+            },
+          },
+        },
       },
     },
     preview: previewIssueCapitalCall,
     execute: executeIssueCapitalCall,
+  },
+  publish_call_notices: {
+    entity: 'required',
+    domain: 'lp_relations',
+    accessFeature: 'lp_portal',
+    stageAccess: 'write',
+    confirmInApp: true,
+    description:
+      "Publish an issued capital call's notices to the partners' LP portals. Call preview_call_notices first, show the user " +
+      'every partner and figure it lists, and stage this only once they confirm, passing its previewToken. A person then ' +
+      'approves it in the app, confirming twice; it does not email anyone.',
+    inputSchema: {
+      type: 'object',
+      required: ['callId', 'previewToken'],
+      properties: {
+        vehicle: { type: 'string', description: 'The vehicle (portfolio_group).' },
+        callId: { type: 'string', description: 'The issued capital call (lp_capital_calls lists them).' },
+        lpEntityIds: { type: 'array', items: { type: 'string' }, description: 'Only these partners. Omit for every partner on the call.' },
+        previewToken: { type: 'string', description: 'The previewToken preview_call_notices returned for exactly these notices.' },
+      },
+    },
+    preview: previewPublishCallNotices,
+    execute: executePublishCallNoticesElsewhere,
   },
   update_portfolio_construction: {
     entity: 'required',

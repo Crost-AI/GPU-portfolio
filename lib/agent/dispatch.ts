@@ -34,7 +34,11 @@ import {
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
 import { AGENT_RUN, runAdminOnlyLabel, stageRun, type RunArgs } from './run-action'
 import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
-import { adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
+import { ADMIN_ONLY_ACTIONS, adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
+import { getWriteAction } from '@/lib/pending-actions/registry'
+import { previewBlockers } from '@/lib/pending-actions/blockers'
+import { stagedTarget } from '@/lib/pending-actions/target'
+import type { ActionDeps } from '@/lib/pending-actions/types'
 
 /** Which door a call came through. Recorded on every write, as `source` (lib/audit/source.ts). */
 export type AgentChannel = Extract<ChangeSource, 'mcp' | 'api'>
@@ -97,9 +101,14 @@ export function hasDraftMode(name: string): boolean {
   return name in DRAFT_ONLY
 }
 
-/** Whether this write waits for a person. Reads never do. */
+/**
+ * Whether this write waits for a person. Reads never do. A tool that `stagesAs` a pending action
+ * (what goes out to LPs) always does, from a script's key too: a person confirms it in the app.
+ */
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
-  return tool.scope === 'write' && isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
+  if (tool.scope !== 'write') return false
+  if (tool.stagesAs) return true
+  return isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
 }
 
 /**
@@ -310,15 +319,38 @@ function nextStep(opts: { id: string; approveUrl?: string; adminLabel?: string |
     'If a tool named here is not in your tool list (a stale list), run it through call_tool.'
 }
 
+/**
+ * What a `stagesAs` tool stages: its own pending action, previewed and pinned to its entity the way
+ * the Analyst's are (lib/pending-actions/target.ts), rather than a generic tool call.
+ */
+async function stageAsAction(deps: ActionDeps, actionType: string, input: Record<string, unknown>) {
+  const action = getWriteAction(actionType)
+  if (!action) throw new Error(`Unknown pending action "${actionType}".`)
+  const target = await stagedTarget(deps, action, input)
+  const preview = await action.preview(deps, target.input)
+  const blocked = previewBlockers(preview)
+  if (blocked) throw new AgentCallError(blocked, 'BLOCKED')
+  return {
+    actionType, domain: action.domain, args: target.input as Record<string, unknown>, vehicleId: target.vehicleId,
+    preview, adminLabel: ADMIN_ONLY_ACTIONS[actionType] ?? null, auditArgs: target.input as Record<string, unknown>,
+  }
+}
+
 /** Stage the write as a pending action for a person to approve. Nothing else changes. */
 async function stage(call: AgentCall): Promise<StagedResult> {
   const { admin, tool, input, auth, access, channel, origin } = call
   const deps = { admin, fundId: auth.fundId, userId: auth.userId, access }
-  const { args, vehicleId, preview } = await stageToolCall(deps, tool.name, input)
+  const staged = tool.stagesAs
+    ? await stageAsAction(deps, tool.stagesAs, input)
+    : await stageToolCall(deps, tool.name, input).then(s => ({
+      actionType: AGENT_TOOL_CALL, domain: accessDomainForCall(tool, input), args: s.args as unknown as Record<string, unknown>,
+      vehicleId: s.vehicleId, preview: s.preview, adminLabel: adminOnlyToolLabel(tool.name, input) ?? null, auditArgs: s.args.input,
+    }))
+  const { args, vehicleId, preview } = staged
   const id = await insertStaged(admin, {
     fund_id: auth.fundId,
-    domain: accessDomainForCall(tool, input),
-    action_type: AGENT_TOOL_CALL,
+    domain: staged.domain,
+    action_type: staged.actionType,
     args,
     vehicle_id: vehicleId,
     preview,
@@ -329,10 +361,10 @@ async function stage(call: AgentCall): Promise<StagedResult> {
   await recordAudit(admin, {
     fundId: auth.fundId, vehicleId, actorId: auth.userId, action: 'pending_action.stage',
     subjectType: 'pending_action', subjectId: id, source: channel,
-    details: { actionType: AGENT_TOOL_CALL, args: { tool: tool.name, input: auditInput(args.input) }, credentialId: auth.keyId },
+    details: { actionType: staged.actionType, args: { tool: tool.name, input: auditInput(staged.auditArgs) }, credentialId: auth.keyId },
   })
   // An admin-only change from a member waits on someone outside this conversation: tell them.
-  const adminLabel = adminOnlyToolLabel(tool.name, input)
+  const adminLabel = staged.adminLabel
   const emailed = adminLabel && auth.role !== 'admin'
     ? await notifyAdminsOfStagedChange(admin, { fundId: auth.fundId, label: adminLabel, summary: preview.summary, requesterId: auth.userId, origin })
     : 0
