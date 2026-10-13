@@ -92,6 +92,13 @@ export const HANDLER_CHECKED = {
 export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: any) => boolean }> = {
   add_partner: { label: 'add a partner and commitment' },
   diligence_finalize_memo: { label: 'finalize a memo' },
+  // The Investors page lets only an admin change the register's investors and entities, and the
+  // commitments page only an admin add a commitment (ADMIN_ONLY_ROUTES above).
+  lp_create_investor: { label: 'add an LP investor' },
+  lp_update_investor: { label: 'change an LP investor' },
+  lp_create_entity: { label: 'add an LP entity' },
+  lp_update_entity: { label: 'change an LP entity' },
+  lp_record_commitment: { label: 'add a commitment' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

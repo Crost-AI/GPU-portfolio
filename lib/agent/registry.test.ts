@@ -59,9 +59,12 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('LP records stay read-only from an agent', () => {
+  it('LP record writes are the register tools only, each running the web route\'s function', () => {
     const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
-    expect(writable.map(t => t.name)).toEqual([])
+    expect(writable.map(t => t.name).sort()).toEqual([
+      'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_record_commitment',
+      'lp_update_entity', 'lp_update_investor', 'lp_update_profile',
+    ])
   })
 
   it('deal and diligence writes are named for their stage, and gated like their web routes', () => {

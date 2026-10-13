@@ -36,7 +36,8 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'diligence_deal_detail',
     description:
       'One diligence deal in full: status, sector, stage, lead partner, plus a progress report across the five pipeline stages ' +
-      '(data room, checklist, research, scoring, memo) with what is blocking each.',
+      '(data room, checklist, research, scoring, memo) with what is blocking each, and the memo agent\'s latest job ' +
+      '(running, finished or failed, with its error) — check here after diligence_run_agent.',
     scope: 'read',
     domain: 'diligence',
     inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },

@@ -4,6 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 import { loadLpScopeForUser, lpVisible } from '@/lib/access/lp-scope'
+import { outcomeResponse } from '@/lib/service-outcome'
+import { createInvestor, updateInvestor } from '@/lib/lps/records'
 
 // ---------------------------------------------------------------------------
 // GET — all investors for this fund, with their entities
@@ -53,23 +55,8 @@ export async function POST(req: NextRequest) {
   if (writeCheck instanceof NextResponse) return writeCheck
   if (writeCheck.role !== 'admin') return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
 
-  const body = await req.json()
-  const { name } = body
-
-  if (!name?.trim()) {
-    return NextResponse.json({ error: 'name is required' }, { status: 400 })
-  }
-  if (name.trim().length > 500) return NextResponse.json({ error: 'name too long (max 500 chars)' }, { status: 400 })
-
-  const { data, error } = await admin
-    .from('lp_investors' as any)
-    .insert({ fund_id: writeCheck.fundId, name: name.trim() })
-    .select('*')
-    .single() as { data: any; error: { message: string } | null }
-
-  if (error) return dbError(error, 'lp-investors-create')
-
-  return NextResponse.json(data)
+  const body = await req.json().catch(() => ({}))
+  return outcomeResponse(await createInvestor(admin, writeCheck.fundId, body?.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -104,45 +91,7 @@ export async function PUT(req: NextRequest) {
     id = entity.investor_id
   }
 
-  const updates: Record<string, any> = { updated_at: new Date().toISOString() }
-  if (name !== undefined) {
-    if (!name?.trim()) return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
-    if (name.trim().length > 500) return NextResponse.json({ error: 'name too long (max 500 chars)' }, { status: 400 })
-    updates.name = name.trim()
-  }
-  if (parentId !== undefined) {
-    if (parentId !== null && typeof parentId !== 'string') return NextResponse.json({ error: 'parentId must be a string or null' }, { status: 400 })
-    updates.parent_id = parentId
-  }
-
-  const { data, error } = await admin
-    .from('lp_investors' as any)
-    .update(updates)
-    .eq('id', id)
-    .eq('fund_id', writeCheck.fundId)
-    .select('*')
-    .single() as { data: any; error: { message: string } | null }
-
-  if (error) {
-    if (error.message?.includes('unique') || error.message?.includes('duplicate')) {
-      // Look up the conflicting investor so the client can offer a merge instead of a hard error.
-      let conflictId: string | null = null
-      if (name !== undefined) {
-        const { data: conflict } = await admin
-          .from('lp_investors' as any)
-          .select('id')
-          .eq('fund_id', writeCheck.fundId)
-          .eq('name', name.trim())
-          .neq('id', id)
-          .maybeSingle() as { data: { id: string } | null }
-        conflictId = conflict?.id ?? null
-      }
-      return NextResponse.json({ error: 'duplicate_name', conflictId, sourceId: id }, { status: 409 })
-    }
-    return dbError(error, 'lp-investors-update')
-  }
-
-  return NextResponse.json(data)
+  return outcomeResponse(await updateInvestor(admin, writeCheck.fundId, id, { name, parentId }))
 }
 
 // ---------------------------------------------------------------------------

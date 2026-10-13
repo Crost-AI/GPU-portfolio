@@ -138,4 +138,14 @@ describe('deal and diligence tools', () => {
     const { data: draft } = await (admin as any).from('diligence_memo_drafts').select('*').eq('id', 'md-1').maybeSingle()
     expect(draft.memo_draft_output.paragraphs.find((p: any) => p.id === out.paragraphId)).toMatchObject({ section_id: 'risks', origin: 'partner_drafted' })
   })
+
+  it("reports the memo agent's latest job, so a chat can follow what it started", async () => {
+    const admin = seed()
+    const before = await DILIGENCE_HANDLERS.diligence_deal_detail(ctx(admin), { deal: 'dd-1' }) as any
+    expect(before.agent_job).toBeNull()
+    await (admin as any).from('memo_agent_jobs').insert({ id: 'job-1', fund_id: 'f1', deal_id: 'dd-1', kind: 'draft', status: 'failed', error: 'Over the cap', enqueued_at: '2026-03-01T00:00:00Z' })
+    const after = await DILIGENCE_HANDLERS.diligence_deal_detail(ctx(admin), { deal: 'dd-1' }) as any
+    expect(after.agent_job).toMatchObject({ id: 'job-1', kind: 'draft', status: 'failed', error: 'Over the cap' })
+    expect(after.progress.some((p: any) => p.state === 'failed')).toBe(true)
+  })
 })
