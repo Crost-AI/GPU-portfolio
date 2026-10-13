@@ -68,8 +68,10 @@ See [LICENSE](./LICENSE.md) for full terms.
 - **Generate an encryption key** — openssl rand -hex 32
 - **Deploy to Netlify or Vercel** — One-click deploy buttons available in the full guide
 - **Configure auth and add your first user** — Set Supabase redirect URLs and whitelist your email
-- **Add an AI key and forward your first email** — Anthropic, OpenAI, Gemini, or run your LLM locally
+- **Add an AI key, or skip it and use your own assistant, and forward your first email** — Anthropic, OpenAI or OpenRouter on the server, or Claude or ChatGPT over MCP with no key: [AI without a server key](./DOCS.md#ai-without-a-server-key)
 - **Set up your fund** — entity, LPs, investments, then open the books, with CSV templates: [Setting up a new fund](./DOCS.md#setting-up-a-new-fund)
+
+Or let a script do most of it: after cloning, `npm run setup` creates the database (with the Supabase CLI), deploys (with the Vercel CLI), configures sign-in and creates your fund, offering to install either CLI you don't have and printing the manual step for anything it can't do. It also asks how AI should work: with a server key, or with no key, where your own Claude or ChatGPT does the AI work over MCP. See [The quick way](./DOCS.md#the-quick-way-npm-run-setup).
 
 Or set it up headless. After the database and deploy steps, `npm run bootstrap -- --email you@yourfund.com --fund "Your Fund"` creates your account, the fund and an API key without opening the web app, or add your email to `allowed_signups`, connect Claude or ChatGPT to `https://<your-domain>/api/mcp` and name your fund on the consent screen. Then run the **Set up this fund** prompt: [Setting up a fund with Claude, ChatGPT or a script](./DOCS.md#setting-up-a-fund-with-claude-chatgpt-or-a-script)
 

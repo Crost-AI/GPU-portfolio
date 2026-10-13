@@ -30,6 +30,19 @@ Designed as a single-tenant deployment per fund. You control your own data, your
 | Outbound email provider | Sends quarterly reporting requests and system notifications | If you want to email portfolio companies from the app. Choose **Resend**, **Postmark**, **Mailgun**, or **Gmail**. |
 | [Google Cloud](https://console.cloud.google.com) (OAuth) | Google Drive archiving + Gmail sending | If you want to save emails/attachments to Drive or send via Gmail |
 
+### The quick way: `npm run setup`
+
+After cloning and `npm install`, `npm run setup` walks through Steps 2 to 7 in your terminal and does each one itself where it can:
+
+- **Tools.** If the Supabase CLI or the Vercel CLI is missing, it asks whether to install it (Homebrew or Scoop for Supabase, falling back to `npx`; `npm i -g vercel` for Vercel) and signs you in. Say no and that part becomes printed steps and pasted values.
+- **Database.** With the Supabase CLI it creates a project or uses one of yours, writes the URL and keys to `.env.local`, links it and runs `supabase db push`. Files under `supabase/pending-deploy/` are not applied.
+- **Keys.** It generates `ENCRYPTION_KEY` and `CRON_SECRET` if they are not already set, and never replaces an existing encryption key.
+- **Deploy.** With the Vercel CLI it links a project, sets the environment variables, deploys, and deploys again with `NEXT_PUBLIC_SITE_URL` set (it is baked in at build time). On Netlify or another host it lists the variables and asks for your URL.
+- **Sign-in settings.** Given a Supabase access token, it sets the site URL, redirect URLs, email confirmations and the signup hook (Step 5); otherwise it prints them.
+- **Your fund and AI.** It runs the bootstrap script (Steps 6 and 7) and asks how AI should work here: your own assistant with no server key, or a server key from the environment. See [AI without a server key](#ai-without-a-server-key).
+
+Every question has a flag, so Claude Code or CI can run it without prompts, for example `npm run setup -- --email you@firm.com --fund "Your Fund" --ai assistant --supabase cli --vercel cli --install-clis yes --yes`. The header of `scripts/setup.ts` lists them all. It is safe to re-run: values already in `.env.local` are kept.
+
 ### Step-by-step setup guide
 
 Follow these steps in order. Each step builds on the previous one.
