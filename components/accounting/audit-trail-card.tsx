@@ -25,7 +25,7 @@ const ACTION_LABELS: Record<string, string> = {
   'capital_call.issue': 'Issued a capital call', 'distribution.declare': 'Declared a distribution',
   'k1.generate': 'Generated K-1s', 'k1.finalize': 'Issued K-1s', 'k1.amend': 'Amended K-1s', 'tax.adjustments': 'Posted book-to-tax adjustments',
   'pending_action.approve': 'Approved a staged change', 'pending_action.reject': 'Rejected a staged change',
-  'pending_action.stage': 'Staged a change for approval', 'agent.write': 'Changed through a connected assistant',
+  'pending_action.stage': 'Staged a change for approval', 'pending_action.undo': 'Undid an approved run', 'agent.write': 'Changed through a connected assistant',
 }
 
 // Which door a change came through (lib/audit/source.ts). Older events have none.
@@ -36,6 +36,8 @@ function summary(e: AuditEvent): string | null {
   const d = e.details as Record<string, any>
   const tool = d.tool ?? d.args?.tool
   if (tool) return String(tool)
+  // A run (lib/agent/run-action.ts): its title and size.
+  if (typeof d.args?.title === 'string' && Array.isArray(d.args?.steps)) return `${d.args.title} (${d.args.steps.length} steps)`
   if (d.periodEnd) return `Through ${d.periodEnd}${d.selfApproved ? ' · self-approved (only member who can do the books)' : ''}`
   if (d.reopenedPeriods?.length) return (d.reopenedPeriods as string[]).join(', ')
   if (d.entryDate || d.memo) return [d.entryDate, d.memo, d.reference && `#${d.reference}`].filter(Boolean).join(' · ')

@@ -1,22 +1,30 @@
-// The approval step, in the conversation: list what is waiting, approve it, or reject it.
+// The approval step, from a conversation: stage a run, list what is waiting, approve it, or reject it.
 //
-// A chat assistant's writes are staged (lib/agent/dispatch.ts). These three tools let the person
-// who asked for the change confirm it without leaving the chat. They run through the same service
-// the app's queue and /api/v1 use (lib/pending-actions/service.ts), so who may see and decide an
-// action is answered in one place: the approver's live write access to that action's domain and
-// entity, never the stager's.
+// A chat assistant's writes are staged (lib/agent/dispatch.ts), one per call, or many at once as a
+// run (stage_run, lib/agent/run-action.ts). These tools run through the same service the app's
+// queue and /api/v1 use (lib/pending-actions/service.ts), so who may see and decide an action is
+// answered in one place: the approver's live write access to that action's domain and entity, never
+// the stager's. The service refuses an approval from the credential that staged the change, so a
+// chat hands its own changes to a person (the approveUrl) and approves only what someone else
+// staged — an admin approving a member's proposal from their own chat.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import type { ResolvedKey } from '@/lib/accounting/api-keys'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { approvePendingAction, listPendingActions, rejectPendingAction } from '@/lib/pending-actions/service'
-import { isAssistantCredential } from './dispatch'
+import {
+  approvePendingAction, listPendingActions, PendingActionServiceError, rejectPendingAction,
+} from '@/lib/pending-actions/service'
+import { isAssistantCredential, stageAgentRun } from './dispatch'
+import { MAX_RUN_STEPS } from './run-action'
+import { RUN_CHECK_SCHEMA } from './run-checks'
 
 export interface PendingToolContext {
   admin: SupabaseClient
   auth: ResolvedKey
   access: AccessContext
+  /** The deployment's origin as the caller reached it, for the approval link. */
+  origin?: string
 }
 
 export interface PendingTool {
@@ -33,6 +41,7 @@ function principalOf({ auth, access }: PendingToolContext): AnalystPrincipal {
   return {
     userId: auth.userId, fundId: auth.fundId, role: auth.role, access,
     credentialKind: isAssistantCredential(auth) ? 'oauth' : 'cookie',
+    credentialId: auth.keyId,
   }
 }
 
@@ -48,7 +57,49 @@ function requireId(input: any): string {
   return id
 }
 
+const RUN_SCHEMA = {
+  type: 'object',
+  required: ['title', 'rationale', 'steps'],
+  properties: {
+    title: { type: 'string', description: 'A few words naming the change, e.g. "Correct Acme holdings to the Q3 cap table".' },
+    rationale: { type: 'string', description: 'Why, in a sentence or two: what is wrong now and what the steps do about it.' },
+    steps: {
+      type: 'array',
+      maxItems: MAX_RUN_STEPS,
+      description: 'The write-tool calls, in the order they run. Each is exactly what you would have called directly.',
+      items: {
+        type: 'object',
+        required: ['tool', 'input'],
+        properties: {
+          tool: { type: 'string', description: 'A write tool, e.g. post_entry, record_investment, update_investment, post_drafts.' },
+          input: { type: 'object', description: "That tool's input, matching its schema." },
+        },
+      },
+    },
+    expected: {
+      type: 'array',
+      description: 'Optional. What should be true of the books once every step has applied; checked after the run and shown to the person.',
+      items: RUN_CHECK_SCHEMA,
+    },
+  },
+}
+
 export const PENDING_TOOLS: PendingTool[] = [
+  {
+    name: 'stage_run',
+    description:
+      'Stage several changes as ONE run for a person to approve once, instead of one approval per change. ' +
+      'Give a title, a short rationale, the ordered steps ({ tool, input }, each a write tool you could call directly) ' +
+      'and, where you can, expected checks on the books after it (an account balance, a type total, or the trial balance ' +
+      'balancing, for a vehicle as of a date). Every step is validated now; nothing changes until a person approves the run ' +
+      'in the app. On approval the steps run in order, stop at the first failure, and the checks are reported; what the run ' +
+      'created can be undone from the app where that is safe. A post_drafts step with no ids posts every matching draft. ' +
+      'Returns approveUrl: give it to the user. You cannot approve your own run.',
+    scope: 'write',
+    pendingDecision: true,
+    inputSchema: RUN_SCHEMA,
+    run: async (ctx, input) => stageAgentRun({ admin: ctx.admin, auth: ctx.auth, access: ctx.access, channel: 'mcp', origin: ctx.origin }, input),
+  },
   {
     name: 'list_pending_actions',
     description:
@@ -70,14 +121,25 @@ export const PENDING_TOOLS: PendingTool[] = [
   {
     name: 'approve_action',
     description:
-      'Apply a staged change. ONLY call this after showing the user the change and getting their explicit confirmation ' +
-      'in this conversation. Returns the result of the change.',
+      'Apply a change someone ELSE staged, such as a member\'s proposal waiting for an admin. A change staged from this ' +
+      'connection cannot be approved from it: give the user its approveUrl so they approve it in the app. ' +
+      'Only call this after the user has seen the change and explicitly confirmed it. Returns the result of the change.',
     scope: 'write',
     pendingDecision: true,
     inputSchema: ID_SCHEMA,
     run: async (ctx, input) => {
-      const out = await approvePendingAction(ctx.admin, principalOf(ctx), requireId(input))
-      return { applied: true, replayed: out.replayed, summary: out.action.preview?.summary, result: out.result }
+      const id = requireId(input)
+      try {
+        const out = await approvePendingAction(ctx.admin, principalOf(ctx), id)
+        return { applied: true, replayed: out.replayed, summary: out.action.preview?.summary, result: out.result }
+      } catch (e) {
+        // Hand the chat the link, so the person can approve it where approval means something.
+        if (e instanceof PendingActionServiceError && e.code === 'SELF_APPROVAL') {
+          const url = ctx.origin ? `${ctx.origin}/pending-actions` : null
+          throw new Error(`${e.message}${url ? ` Give the user this link to review and approve it: ${url}` : ''}`)
+        }
+        throw e
+      }
     },
   },
   {

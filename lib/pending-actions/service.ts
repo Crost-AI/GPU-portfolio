@@ -1,10 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordAudit } from '@/lib/audit/events'
-import { hasAccess } from '@/lib/access/effective'
 import { isRestrictedCredential, type AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { stagedAction } from './staged'
+import { mayActOn, stagedAction } from './staged'
 import { adminOnlyMessage } from '@/lib/access/admin-only'
 import { AGENT_TOOL_CALL } from '@/lib/agent/tool-call-action'
+import { AGENT_RUN, RunStepError, runArgs, type RunResult } from '@/lib/agent/run-action'
+import { undoTargets } from '@/lib/agent/run-undo'
 import { canSeeVehicle } from '@/lib/access/scope'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -20,6 +21,8 @@ export interface PendingActionRow {
   status: string
   created_by: string
   created_via: string | null
+  /** The credential that staged it (migration 20261013140000); absent before that column. */
+  created_credential?: string | null
   approved_by: string | null
   approved_at: string | null
   applied_result: Record<string, unknown> | null
@@ -95,7 +98,7 @@ export async function listPendingActions(
   const consumed = rows.slice(0, options.limit)
   const permitted = consumed.filter(row => {
     const action = stagedAction(row.action_type, row.args)
-    return !!action && hasAccess(principal.access, action.domain, 'read', action.accessFeature)
+    return !!action && mayActOn(principal.access, action, 'read')
   })
   // ...and about the caller's entities: a preview names LPs, amounts and companies.
   const inScope = await Promise.all(permitted.map(row => visibleToCaller(admin, principal, row)))
@@ -147,7 +150,7 @@ function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow, d
   }
   const action = stagedAction(row.action_type, row.args)
   if (!action) throw new PendingActionServiceError('Unknown pending-action type.', 400, 'UNKNOWN_ACTION_TYPE')
-  if (!hasAccess(principal.access, action.domain, 'write', action.accessFeature)) {
+  if (!mayActOn(principal.access, action, 'write')) {
     throw new PendingActionServiceError('You do not have current write access for this action.', 403, 'FORBIDDEN')
   }
   // The tier above write (lib/access/admin-only.ts): anyone with write may propose these, and only
@@ -157,7 +160,36 @@ function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow, d
   if (decision === 'approve' && action.adminOnly && principal.role !== 'admin') {
     throw new PendingActionServiceError(adminOnlyMessage(action.adminOnly), 403, 'ADMIN_ONLY')
   }
+  // Approval is a person's, not the proposer's. Rejecting stays open to the stager: withdrawing a
+  // proposal changes nothing.
+  if (decision === 'approve' && stagedBySameCredential(principal, row)) {
+    throw new PendingActionServiceError(SELF_APPROVAL_MESSAGE, 403, 'SELF_APPROVAL')
+  }
   return action
+}
+
+export const SELF_APPROVAL_MESSAGE =
+  'This change was staged from this connection, so this connection cannot approve it. ' +
+  'A person approves it in the app, under Approvals.'
+
+/**
+ * Is the approver the very credential (and person) that staged the action? A chat approving its
+ * own proposal is no approval at all: before this, only tool-description wording stood between an
+ * assistant and calling approve_action on what it had just staged.
+ *
+ * A cookie session carries no credential id, so the app always decides. Another credential — an
+ * admin's own chat, a different connection — may, since that is a separate person or a separate,
+ * deliberate door. Rows staged before `created_credential` existed fall back to their channel:
+ * staged over MCP by this person, approved by any assistant credential of theirs, is refused.
+ */
+export function stagedBySameCredential(
+  principal: Pick<AnalystPrincipal, 'userId' | 'credentialId'>,
+  row: Pick<PendingActionRow, 'created_by' | 'created_via' | 'created_credential'>,
+): boolean {
+  if (!principal.credentialId) return false
+  if (row.created_by !== principal.userId) return false
+  if (row.created_credential) return row.created_credential === principal.credentialId
+  return row.created_via === 'mcp' && principal.credentialId.startsWith('oauth:')
 }
 
 /**
@@ -229,9 +261,11 @@ export async function approvePendingAction(
     return { ok: true, replayed: false, result, action: actionDto(applied as PendingActionRow) }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Action execution failed.'
+    // A run that stopped partway keeps what it did, so the person can see it and undo it.
+    const partial = error instanceof RunStepError ? error.appliedResult : null
     await (admin as any)
       .from('pending_actions')
-      .update({ status: 'failed', error: message, updated_at: new Date().toISOString() })
+      .update({ status: 'failed', error: message, ...(partial ? { applied_result: partial } : {}), updated_at: new Date().toISOString() })
       .eq('id', id)
       .eq('fund_id', principal.fundId)
       .eq('status', 'approved')
@@ -275,4 +309,107 @@ export async function rejectPendingAction(
     },
   })
   return { ok: true, replayed: false, action: actionDto(data as PendingActionRow) }
+}
+
+/**
+ * Runs that have been decided and carry a result: applied, or failed partway. The Approvals page
+ * shows them under the queue with each step's result, the checks' outcomes and Undo. Filtered as
+ * the queue is: every step's domain, and the caller's entities.
+ */
+export async function listAgentRuns(admin: SupabaseClient, principal: AnalystPrincipal, limit = 20) {
+  const { data, error } = await (admin as any)
+    .from('pending_actions')
+    .select('*')
+    .eq('fund_id', principal.fundId)
+    .eq('action_type', AGENT_RUN)
+    .in('status', ['applied', 'failed'])
+    .order('updated_at', { ascending: false })
+    .limit(limit)
+  if (error) throw new Error(error.message)
+  const rows = ((data ?? []) as PendingActionRow[]).filter(row => {
+    const action = stagedAction(row.action_type, row.args)
+    return !!action && mayActOn(principal.access, action, 'read')
+  })
+  const inScope = await Promise.all(rows.map(row => visibleToCaller(admin, principal, row)))
+  return { runs: rows.filter((_, i) => inScope[i]).map(actionDto) }
+}
+
+/**
+ * Take back what an approved (or partly applied) run created, where that is safe
+ * (lib/agent/run-undo.ts). Needs the same right as approving it — write in every step's domain,
+ * from a credential that is not the one that staged it — plus, per entry, whatever voiding or
+ * deleting that thing needs on its own (an admin, for a posted entry).
+ *
+ * Claimed with the row's `updated_at`, so two clicks cannot both run it. A target already undone
+ * reports as such, so a partial undo can be retried.
+ */
+export async function undoAgentRun(admin: SupabaseClient, principal: AnalystPrincipal, id: string) {
+  const existing = await loadAction(admin, principal.fundId, id)
+  if (!existing || !(await visibleToCaller(admin, principal, existing))) {
+    throw new PendingActionServiceError('Pending action not found.', 404, 'NOT_FOUND')
+  }
+  if (existing.action_type !== AGENT_RUN) {
+    throw new PendingActionServiceError('Only a run can be undone here.', 400, 'NOT_A_RUN')
+  }
+  authorizeDecision(principal, existing, 'approve')
+  const prior = existing.applied_result as unknown as RunResult | null
+  if (!prior?.run || (existing.status !== 'applied' && existing.status !== 'failed')) {
+    throw new PendingActionServiceError('This run has not been applied, so there is nothing to undo.', 409, 'NOTHING_TO_UNDO')
+  }
+  if (prior.undo?.status === 'done') return { ok: true, replayed: true, action: actionDto(existing) }
+  if (prior.undo?.status === 'running') {
+    throw new PendingActionServiceError('This run is already being undone.', 409, 'UNDO_IN_PROGRESS')
+  }
+  const steps = prior.run.steps
+    .filter(s => s.status === 'applied' && (s.undo?.length ?? 0) > 0)
+    .map(s => ({ step: s.step, targets: s.undo! }))
+  if (steps.length === 0) {
+    throw new PendingActionServiceError('Nothing this run did can be undone from the app.', 409, 'NOTHING_TO_UNDO')
+  }
+
+  const startedAt = new Date().toISOString()
+  const running: RunResult = { ...prior, undo: { status: 'running', by: principal.userId, at: startedAt } }
+  const { data: claimed, error: claimError } = await (admin as any)
+    .from('pending_actions')
+    .update({ applied_result: running, updated_at: startedAt })
+    .eq('id', id)
+    .eq('fund_id', principal.fundId)
+    .eq('updated_at', existing.updated_at)
+    .select('*')
+    .maybeSingle()
+  if (claimError) throw new Error(claimError.message)
+  if (!claimed) throw new PendingActionServiceError('This run changed while it was being undone. Reload and try again.', 409, 'UNDO_IN_PROGRESS')
+
+  // Targets an earlier, partial undo already took back are skipped.
+  const done = new Set((prior.undo?.outcomes ?? []).filter(o => o.status === 'undone' || o.status === 'already').map(o => `${o.target.kind}:${o.target.id}`))
+  const pending = steps
+    .map(s => ({ step: s.step, targets: s.targets.filter(t => !done.has(`${t.kind}:${t.id}`)) }))
+    .filter(s => s.targets.length > 0)
+  const title = runArgs(existing.args)?.title ?? 'run'
+  const fresh = await undoTargets(
+    { admin, fundId: principal.fundId, userId: principal.userId, access: principal.access, role: principal.role },
+    pending,
+    { runId: id, title },
+  )
+  const outcomes = [...(prior.undo?.outcomes ?? []).filter(o => done.has(`${o.target.kind}:${o.target.id}`)), ...fresh]
+  const complete = outcomes.length > 0 && outcomes.every(o => o.status === 'undone' || o.status === 'already')
+  const finishedAt = new Date().toISOString()
+  const result: RunResult = { ...prior, undo: { status: complete ? 'done' : 'partial', by: principal.userId, at: finishedAt, outcomes } }
+  const { data: saved, error } = await (admin as any)
+    .from('pending_actions')
+    .update({ applied_result: result, updated_at: finishedAt })
+    .eq('id', id)
+    .eq('fund_id', principal.fundId)
+    .select('*')
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  await recordAudit(admin, {
+    fundId: principal.fundId, vehicleId: existing.vehicle_id ?? null, actorId: principal.userId, action: 'pending_action.undo',
+    subjectType: 'pending_action', subjectId: id,
+    details: {
+      actionType: existing.action_type, stagedBy: existing.created_by, args: existing.args,
+      outcomes: fresh.map(o => ({ step: o.step, kind: o.target.kind, id: o.target.id, status: o.status, message: o.message ?? null })),
+    },
+  })
+  return { ok: true, replayed: false, action: actionDto((saved ?? { ...existing, applied_result: result }) as PendingActionRow) }
 }

@@ -19,8 +19,9 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import type { ResolvedKey } from '@/lib/accounting/api-keys'
 import {
-  accessDomainForCall, accessFeatureFor, isLedgerTool, resolveVehicleForTool, type AgentTool,
+  accessDomainForCall, accessFeatureFor, getTool, isLedgerTool, resolveVehicleForTool, type AgentTool,
 } from '@/lib/accounting/agent-tools'
+import { authorizeToolUse } from '@/lib/accounting/api-keys'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { recordAudit } from '@/lib/audit/events'
 import type { ChangeSource } from '@/lib/audit/source'
@@ -29,6 +30,7 @@ import {
   IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyScope,
 } from '@/lib/api-v1/idempotency'
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
+import { AGENT_RUN, runAdminOnlyLabel, stageRun, type RunArgs } from './run-action'
 import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
 import { adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
 
@@ -98,7 +100,7 @@ export function shouldStage(tool: AgentTool, input: Record<string, unknown>, aut
  * it is still staged, so they can propose it and an admin decides; from a key it is refused, since
  * a key has no one to ask.
  */
-function adminOnlyRefusal(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId' | 'role'>): string | null {
+export function adminOnlyRefusal(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId' | 'role'>): string | null {
   const label = adminOnlyToolLabel(tool.name, input)
   if (!label || auth.role === 'admin' || isAssistantCredential(auth)) return null
   return adminOnlyMessage(label)
@@ -192,28 +194,56 @@ async function apply(call: AgentCall): Promise<unknown> {
   return result
 }
 
+/**
+ * Insert a pending_actions row, naming the credential that staged it. Until migration
+ * 20261013140000 is pushed the column is missing (Postgres' undefined column); the row is then
+ * written without it and the service falls back to its channel, so the deploy and the push may
+ * land in either order.
+ */
+async function insertStaged(admin: SupabaseClient, row: Record<string, unknown>, credentialId: string): Promise<string> {
+  const insert = (r: Record<string, unknown>) => (admin as any).from('pending_actions').insert(r).select('id').single()
+  let { data, error } = await insert({ ...row, created_credential: credentialId })
+  if (error?.code === '42703') ({ data, error } = await insert(row))
+  if (error) throw new Error(error.message)
+  return (data as { id: string }).id
+}
+
+/** The app's approvals page, when the request's origin is known. */
+function approveUrlFor(origin: string | undefined): string | undefined {
+  return origin ? `${origin}/pending-actions` : undefined
+}
+
+/**
+ * What the assistant is told to do with a staged change. It cannot approve it itself (the service
+ * refuses an approval from the credential that staged it), so it hands the person the link.
+ */
+function nextStep(opts: { id: string; approveUrl?: string; adminLabel?: string | null; emailed: number; isAdmin: boolean }): string {
+  const inApp = opts.approveUrl ? `in the app at ${opts.approveUrl}` : 'in the app, under Approvals'
+  if (opts.adminLabel && !opts.isAdmin) {
+    return `Nothing has changed yet. ${adminOnlyMessage(opts.adminLabel)}${opts.emailed ? " The fund's admins have been emailed." : ''} ` +
+      `Tell the user it is waiting for an admin, who approves it ${inApp}.`
+  }
+  return 'Nothing has changed yet. Show the user this change in plain words, then give them the link to approve it ' +
+    `${inApp}. This connection cannot approve its own changes: approve_action on id "${opts.id}" from here is refused. ` +
+    'If they decline, call reject_action. When a fix needs several changes, stage them together with stage_run so they are approved once.'
+}
+
 /** Stage the write as a pending action for a person to approve. Nothing else changes. */
 async function stage(call: AgentCall): Promise<StagedResult> {
   const { admin, tool, input, auth, access, channel, origin } = call
   const deps = { admin, fundId: auth.fundId, userId: auth.userId, access }
   const { args, vehicleId, preview } = await stageToolCall(deps, tool.name, input)
-  const { data, error } = await (admin as any)
-    .from('pending_actions')
-    .insert({
-      fund_id: auth.fundId,
-      domain: accessDomainForCall(tool, input),
-      action_type: AGENT_TOOL_CALL,
-      args,
-      vehicle_id: vehicleId,
-      preview,
-      status: 'pending',
-      created_by: auth.userId,
-      created_via: channel,
-    })
-    .select('id')
-    .single()
-  if (error) throw new Error(error.message)
-  const id = (data as { id: string }).id
+  const id = await insertStaged(admin, {
+    fund_id: auth.fundId,
+    domain: accessDomainForCall(tool, input),
+    action_type: AGENT_TOOL_CALL,
+    args,
+    vehicle_id: vehicleId,
+    preview,
+    status: 'pending',
+    created_by: auth.userId,
+    created_via: channel,
+  }, auth.keyId)
   await recordAudit(admin, {
     fundId: auth.fundId, vehicleId, actorId: auth.userId, action: 'pending_action.stage',
     subjectType: 'pending_action', subjectId: id, source: channel,
@@ -224,23 +254,74 @@ async function stage(call: AgentCall): Promise<StagedResult> {
   const emailed = adminLabel && auth.role !== 'admin'
     ? await notifyAdminsOfStagedChange(admin, { fundId: auth.fundId, label: adminLabel, summary: preview.summary, requesterId: auth.userId, origin })
     : 0
-  // A chat whose tool list predates the approval tools (hosts cache it per conversation) is told to
-  // call one it does not have, so the result also carries the page where a person can approve.
-  const approveUrl = origin ? `${origin}/pending-actions` : undefined
-  const inApp = approveUrl ? `in the app at ${approveUrl}` : 'in the app, under Approvals'
+  const approveUrl = approveUrlFor(origin)
   return {
     staged: true,
     pendingActionId: id,
     summary: preview.summary,
     preview: preview.details,
     ...(approveUrl ? { approveUrl } : {}),
-    next: adminLabel && auth.role !== 'admin'
-      ? `Nothing has changed yet. ${adminOnlyMessage(adminLabel)}${emailed ? " The fund's admins have been emailed." : ''} ` +
-        'Tell the user it is waiting for an admin, who can approve it from their own chat ' +
-        '(list_pending_actions, then approve_action) or through the API, without opening the app.'
-      : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
-      `Only after they confirm, call approve_action with id "${id}"; if they decline, call reject_action. ` +
-      'Approving here is the normal path; the app is not needed. ' +
-      `Only if you have no approve_action tool (a stale tool list), tell the user to reconnect, or approve it ${inApp}.`,
+    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin' }),
   }
+}
+
+export interface RunCall {
+  admin: SupabaseClient
+  auth: ResolvedKey
+  access: AccessContext
+  channel: AgentChannel
+  origin?: string
+}
+
+/**
+ * Stage a whole run as ONE pending action (lib/agent/run-action.ts). Every step is checked the way
+ * the same call made directly would be — the credential's scope and the owner's grant for that
+ * call's domain, admin-only rules for a key — before anything is written. Always staged, whatever
+ * the credential: a run exists to be looked at once by a person.
+ */
+export async function stageAgentRun(call: RunCall, input: unknown): Promise<StagedResult & { steps: number }> {
+  const { admin, auth, access, channel, origin } = call
+  const deps = { admin, fundId: auth.fundId, userId: auth.userId, access }
+  const { args, vehicleId, preview } = await stageRun(deps, input, (name, stepInput) => {
+    const tool = getTool(name)!
+    return authorizeToolUse(tool.scope, auth, access, accessDomainForCall(tool, stepInput), accessFeatureFor(tool))
+      ?? adminOnlyRefusal(tool, stepInput, auth)
+  })
+  const first = getTool(args.steps[0].tool)!
+  const id = await insertStaged(admin, {
+    fund_id: auth.fundId,
+    // The column holds one domain; the service gates a run on every step's (lib/pending-actions/staged.ts).
+    domain: accessDomainForCall(first, args.steps[0].input),
+    action_type: AGENT_RUN,
+    args,
+    vehicle_id: vehicleId,
+    preview,
+    status: 'pending',
+    created_by: auth.userId,
+    created_via: channel,
+  }, auth.keyId)
+  await recordAudit(admin, {
+    fundId: auth.fundId, vehicleId, actorId: auth.userId, action: 'pending_action.stage',
+    subjectType: 'pending_action', subjectId: id, source: channel,
+    details: { actionType: AGENT_RUN, args: auditRunArgs(args), credentialId: auth.keyId },
+  })
+  const adminLabel = runAdminOnlyLabel(args)
+  const emailed = adminLabel && auth.role !== 'admin'
+    ? await notifyAdminsOfStagedChange(admin, { fundId: auth.fundId, label: adminLabel, summary: preview.summary, requesterId: auth.userId, origin })
+    : 0
+  const approveUrl = approveUrlFor(origin)
+  return {
+    staged: true,
+    pendingActionId: id,
+    steps: args.steps.length,
+    summary: preview.summary,
+    preview: preview.details,
+    ...(approveUrl ? { approveUrl } : {}),
+    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin' }),
+  }
+}
+
+/** A run's args as the trail keeps them: each step's input whole when small. */
+function auditRunArgs(args: RunArgs): Record<string, unknown> {
+  return { ...args, steps: args.steps.map(s => ({ tool: s.tool, input: auditInput(s.input) })) }
 }
