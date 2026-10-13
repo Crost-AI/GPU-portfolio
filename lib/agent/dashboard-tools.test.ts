@@ -190,7 +190,7 @@ describe('the dashboard tool registry', () => {
 
   it('marks only the saved-dashboard tools as personal, and only save and delete as writes', () => {
     expect(DASHBOARD_TOOLS.filter(t => t.personal).map(t => t.name).sort())
-      .toEqual(['delete_dashboard', 'list_dashboards', 'open_dashboard', 'save_dashboard', 'show_home'])
+      .toEqual(['delete_dashboard', 'list_dashboards', 'open_dashboard', 'save_dashboard', 'show_chart', 'show_home'])
     expect(DASHBOARD_TOOLS.filter(t => t.scope === 'write').map(t => t.name).sort())
       .toEqual(['delete_dashboard', 'save_dashboard'])
   })
@@ -510,5 +510,24 @@ describe('viewDenial', () => {
     // DOMAIN_META.lp_capital.impliedBy: the partner accounts ARE the ledger.
     expect(viewDenial(access('member', { accounting: 'read' }), 'lps')).toBeNull()
     expect(viewDenial(access('member', { portfolio: 'read' }), 'lps')).toMatch(/does not have access/)
+  })
+})
+
+describe('show_chart', () => {
+  const input = { title: 'NAV by quarter', kind: 'line', unit: 'currency', measure: 'NAV', points: [{ label: 'Q1', value: 10 }, { label: 'Q2', value: 12.5 }] }
+
+  it('draws the figures it is given, as they were given, for any member', async () => {
+    const payload = await DASHBOARD_HANDLERS.show_chart(ctx(access('member')).ctx, input) as any
+    expect(payload).toMatchObject({ view: 'chart', title: 'NAV by quarter', data: { kind: 'line', unit: 'currency', measure: 'NAV', points: input.points } })
+    expect(DASHBOARD_TOOLS.find(t => t.name === 'show_chart')).toMatchObject({ ui: true, personal: true, scope: 'read' })
+  })
+
+  it('refuses anything it could not draw honestly', async () => {
+    const c = ctx(access('member')).ctx
+    await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, kind: 'pie' })).rejects.toThrow(/kind must be/)
+    await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, points: [] })).rejects.toThrow(/at least one point/)
+    await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, points: [{ label: 'Q1', value: '10' }] })).rejects.toThrow(/numeric value/)
+    await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, points: [{ label: 'Q1', value: Infinity }] })).rejects.toThrow(/numeric value/)
+    await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, points: Array.from({ length: 61 }, (_, i) => ({ label: `p${i}`, value: i })) })).rejects.toThrow(/At most 60/)
   })
 })

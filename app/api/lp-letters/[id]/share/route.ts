@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
+import { outcomeResponse } from '@/lib/service-outcome'
+import { shareLetter } from '@/lib/lp-letters/service'
 
 /**
  * Admin-only LP letter sharing (Phase 3 of LP reporting).
@@ -54,42 +56,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const { admin, user, fundId, letterId } = ctx
 
   const body = await req.json().catch(() => ({}))
-  const requested: string[] = Array.isArray(body.lp_investor_ids)
-    ? body.lp_investor_ids.filter((x: unknown): x is string => typeof x === 'string')
-    : []
-
-  const { data: validRows } = await (admin as any)
-    .from('lp_investors')
-    .select('id')
-    .eq('fund_id', fundId)
-    .in('id', requested.length ? requested : ['00000000-0000-0000-0000-000000000000'])
-  const valid = new Set((validRows ?? []).map((r: any) => r.id))
-  const target = requested.filter(id => valid.has(id))
-
-  const { data: current } = await (admin as any)
-    .from('lp_letter_shares')
-    .select('lp_investor_id')
-    .eq('letter_id', letterId)
-    .eq('fund_id', fundId)
-  const currentIds = new Set((current ?? []).map((r: any) => r.lp_investor_id))
-  const toRemove = Array.from(currentIds).filter(id => !target.includes(id as string))
-  const toAdd = target.filter(id => !currentIds.has(id))
-
-  if (toRemove.length) {
-    await (admin as any)
-      .from('lp_letter_shares')
-      .delete()
-      .eq('letter_id', letterId)
-      .eq('fund_id', fundId)
-      .in('lp_investor_id', toRemove)
-  }
-  if (toAdd.length) {
-    const rows = toAdd.map(lp_investor_id => ({ letter_id: letterId, lp_investor_id, fund_id: fundId, shared_by: user.id }))
-    const { error: insErr } = await (admin as any).from('lp_letter_shares').insert(rows)
-    if (insErr) return dbError(insErr, 'lp-letters-share')
-  }
-
-  return NextResponse.json({ ok: true, lp_investor_ids: target })
+  const requested: string[] = Array.isArray(body.lp_investor_ids) ? body.lp_investor_ids : []
+  const out = await shareLetter(admin, { fundId, userId: user.id }, letterId, requested)
+  return outcomeResponse(out, v => ({ ok: true, ...v }))
 }
 
 export async function DELETE(req: NextRequest, props: { params: Promise<{ id: string }> }) {

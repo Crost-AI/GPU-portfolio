@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { parseChangeSource } from '@/lib/audit/source-labels'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
@@ -229,6 +230,8 @@ export async function GET() {
     displayName: memberMap[log.user_id] ?? null,
     action: log.action,
     metadata: log.metadata,
+    // Which door it came through (lib/activity.ts); older entries have none.
+    source: parseChangeSource((log.metadata as Record<string, unknown> | null)?.changeSource),
     createdAt: log.created_at,
   }))
 

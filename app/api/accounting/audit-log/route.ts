@@ -9,12 +9,14 @@ import { VehicleResolutionError } from '@/lib/accounting/vehicle-resolver'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 import { canSeeVehicle, visibleVehicleIds } from '@/lib/access/scope'
 import { auditCsv, loadAuditTrail, visibleTo } from '@/lib/audit/read'
+import { parseChangeSource } from '@/lib/audit/source-labels'
 
 // GET — the books' audit trail (accounting_audit_events): voids, unposts, reversals, period closes,
 // reopens and approvals, commitment edits, shared reports, calls, distributions, K-1s.
 //
 //   ?group=<entity>   one entity's events (omit for the whole firm)
 //   ?from=&to=        YYYY-MM-DD bounds
+//   ?source=web|api|mcp  only changes made through that door
 //   ?format=csv       the same rows as a download, for an auditor
 //
 // Gated on accounting read (route-domains.ts). Events carrying partner figures or the carry are
@@ -65,7 +67,7 @@ export async function GET(req: NextRequest) {
     byAction(action, details)
     && (visible === null || (vid != null && visible.includes(vid)))
     && (vid == null || !manco.has(vid))
-  const rows = await loadAuditTrail(admin, gate.fundId, { vehicleId, from: date(sp.get('from')), to: date(sp.get('to')), limit: csv ? undefined : Math.min(500, Number(sp.get('limit')) || 100) }, allowed)
+  const rows = await loadAuditTrail(admin, gate.fundId, { vehicleId, from: date(sp.get('from')), to: date(sp.get('to')), source: parseChangeSource(sp.get('source')), limit: csv ? undefined : Math.min(500, Number(sp.get('limit')) || 100) }, allowed)
 
   if (!csv) return NextResponse.json({ events: rows })
   const names = new Map(vehicleRows.map(v => [v.id as string, v.name as string]))

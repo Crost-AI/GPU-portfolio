@@ -8,7 +8,9 @@ import { assertWriteAccess, assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { loadEntityNames } from '@/lib/accounting/load'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { commitmentsAsOf, recordCommitmentChange } from '@/lib/accounting/terms'
+import { commitmentsAsOf } from '@/lib/accounting/terms'
+import { outcomeResponse } from '@/lib/service-outcome'
+import { addCommitmentChange, correctCommitmentEvent } from '@/lib/lps/records'
 
 // GET ?asOf=YYYY-MM-DD — commitment history, plus each partner's commitment as of a date.
 // Queries commitment_events directly (rather than the loadCommitmentEvents loader) because the
@@ -79,20 +81,13 @@ export async function POST(req: NextRequest) {
   const group = await resolveGroupOr400(admin, gate, body?.group ?? req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
 
-  const result = await recordCommitmentChange(admin, gate.fundId, group, user.id, {
+  return outcomeResponse(await addCommitmentChange(admin, { fundId: gate.fundId, userId: user.id }, group, {
     lpEntityId: body?.lpEntityId,
     effectiveDate: body?.effectiveDate,
     amount: Number(body?.amount),
     counterpartyEntityId: body?.counterpartyEntityId ?? null,
     memo: body?.memo ?? null,
-  })
-  if ('error' in result) return NextResponse.json({ error: result.error }, { status: 400 })
-  await recordAudit(admin, {
-    fundId: gate.fundId, vehicleId: await vehicleIdByName(admin, gate.fundId, group), actorId: user.id,
-    action: 'commitment.create', subjectType: 'lp_entity', subjectId: body?.lpEntityId ?? null, reason: auditReason(body?.memo),
-    details: { effectiveDate: body?.effectiveDate, amount: Number(body?.amount), counterpartyEntityId: body?.counterpartyEntityId ?? null },
-  })
-  return NextResponse.json({ ok: true })
+  }))
 }
 
 // PATCH { id, effectiveDate?, amount?, memo? } — correct a wrong effective date/amount/memo on an
@@ -110,73 +105,9 @@ export async function PATCH(req: NextRequest) {
   const group = await resolveGroupOr400(admin, gate, body?.group ?? req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
 
-  const id = body?.id
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
-
-  const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
-  const { data: existing, error: fetchError } = await admin
-    .from('commitment_events' as any)
-    .select('*')
-    .eq('fund_id', gate.fundId)
-    .eq('vehicle_id', vehicleId)
-    .eq('id', id)
-    .maybeSingle()
-  if (fetchError) return NextResponse.json({ error: fetchError.message }, { status: 500 })
-  const row = existing as any
-  if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-  // A commitment is what every call and fee is computed from. Changing its amount needs a reason,
-  // and every edit is recorded with the event as it was (accounting_audit_events).
-  const reason = auditReason(body?.reason)
-  if (body?.amount !== undefined && Number(body.amount) !== Number(row.amount) && !reason) {
-    return NextResponse.json({ error: 'A reason is required to change a recorded commitment amount.' }, { status: 400 })
-  }
-  const audit = () => recordAudit(admin, {
-    fundId: gate.fundId, vehicleId, actorId: user.id, action: 'commitment.edit', subjectType: 'commitment_event', subjectId: id, reason,
-    details: { before: { effectiveDate: row.effective_date, amount: Number(row.amount), memo: row.memo ?? null, kind: row.kind, lpEntityId: row.lp_entity_id, transferId: row.transfer_id ?? null },
-      after: { effectiveDate: body?.effectiveDate, amount: body?.amount === undefined ? undefined : Number(body.amount), memo: body?.memo } },
-  })
-
-  if (row.transfer_id) {
-    if (body?.amount !== undefined) {
-      return NextResponse.json({ error: 'To change a transfer amount, delete it and re-enter the transfer.' }, { status: 400 })
-    }
-    const update: Record<string, unknown> = {}
-    if (body?.effectiveDate !== undefined) update.effective_date = body.effectiveDate
-    if (body?.memo !== undefined) update.memo = body.memo
-    if (Object.keys(update).length > 0) {
-      const { error } = await admin
-        .from('commitment_events' as any)
-        .update(update)
-        .eq('fund_id', gate.fundId)
-        .eq('transfer_id', row.transfer_id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-      await audit()
-    }
-    return NextResponse.json({ ok: true })
-  }
-
-  const update: Record<string, unknown> = {}
-  if (body?.effectiveDate !== undefined) update.effective_date = body.effectiveDate
-  if (body?.memo !== undefined) update.memo = body.memo
-  if (body?.amount !== undefined) {
-    const amt = Number(body.amount)
-    if (!Number.isFinite(amt) || amt === 0) return NextResponse.json({ error: 'Amount must be a non-zero number' }, { status: 400 })
-    update.amount = amt
-    // Preserve an 'initial' marker; only a plain increase/decrease flips with the sign.
-    update.kind = row.kind === 'initial' ? 'initial' : amt > 0 ? 'increase' : 'decrease'
-  }
-  if (Object.keys(update).length > 0) {
-    const { error } = await admin
-      .from('commitment_events' as any)
-      .update(update)
-      .eq('fund_id', gate.fundId)
-      .eq('vehicle_id', vehicleId)
-      .eq('id', id)
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    await audit()
-  }
-  return NextResponse.json({ ok: true })
+  return outcomeResponse(await correctCommitmentEvent(admin, { fundId: gate.fundId, userId: user.id }, group, body?.id, {
+    effectiveDate: body?.effectiveDate, amount: body?.amount, memo: body?.memo, reason: body?.reason,
+  }))
 }
 
 // DELETE { id } — remove a wrongly-entered event. A transfer leg deletes BOTH legs sharing its

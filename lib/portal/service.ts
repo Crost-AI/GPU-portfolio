@@ -164,14 +164,25 @@ export async function portalLetters(admin: SupabaseClient, p: LpPrincipal) {
 }
 
 /** One shared letter: shared with one of the LP's investors, portal on, past 'generating'. Logs a view. */
-export async function portalLetter(admin: SupabaseClient, p: LpPrincipal, letterId: string) {
-  if (p.investorIds.length === 0) throw notFound()
+/**
+ * A letter shared with one of this LP's investors, in a fund whose portal is on: the fund, and the
+ * investors it was shared with. Throws a 404 otherwise. The web view, its PDF and the connector's
+ * PDF link all check through this.
+ */
+export async function portalLetterShare(admin: SupabaseClient, p: LpPrincipal, letterId: string): Promise<{ fundId: string; sharedInvestorIds: string[] }> {
+  if (p.investorIds.length === 0 || !letterId) throw notFound()
   const db = admin as any
   const { data: shares } = await db.from('lp_letter_shares').select('lp_investor_id, fund_id').eq('letter_id', letterId).in('lp_investor_id', p.investorIds)
   if (!shares || shares.length === 0) throw notFound()
   const sharedInvestorIds = Array.from(new Set((shares as any[]).map(s => s.lp_investor_id as string)))
   const fundId = shares[0].fund_id as string
   if (!(await portalOnFor(db, fundId))) throw notFound()
+  return { fundId, sharedInvestorIds }
+}
+
+export async function portalLetter(admin: SupabaseClient, p: LpPrincipal, letterId: string) {
+  const db = admin as any
+  const { fundId, sharedInvestorIds } = await portalLetterShare(admin, p, letterId)
 
   const { data: letter } = await db
     .from('lp_letters').select('id, period_label, status, full_draft, portfolio_table_html, company_narratives').eq('id', letterId).maybeSingle()

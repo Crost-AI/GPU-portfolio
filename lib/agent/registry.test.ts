@@ -59,9 +59,16 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('LP records stay read-only from an agent', () => {
+  it('LP writes are the register and letter tools only, each running the web route\'s function', () => {
     const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
-    expect(writable.map(t => t.name)).toEqual([])
+    expect(writable.map(t => t.name).sort()).toEqual([
+      'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_record_commitment',
+      'lp_share_letter', 'lp_update_entity', 'lp_update_investor', 'lp_update_profile', 'lp_write_letter',
+    ])
+    // Letters are the LP Letters pages': LP relations, under their switch.
+    for (const t of writable.filter(t => t.name.endsWith('_letter'))) {
+      expect(t, t.name).toMatchObject({ accessDomain: 'lp_relations', accessFeature: 'lp_letters' })
+    }
   })
 
   it('deal and diligence writes are named for their stage, and gated like their web routes', () => {

@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveLpAccess } from '@/lib/api-helpers'
 import { logLpAccessEvent } from '@/lib/lp-access-log'
 import { generateLetterPdf } from '@/lib/lp-report-pdf'
+import { PortalError, portalLetterShare } from '@/lib/portal/service'
 
 export const maxDuration = 120
 
@@ -23,19 +24,14 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
   if (access instanceof NextResponse) return access
   const { investorIds, lpAccountId } = access
   const letterId = params.id
-  if (investorIds.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-  const { data: shares } = await (admin as any)
-    .from('lp_letter_shares')
-    .select('lp_investor_id, fund_id')
-    .eq('letter_id', letterId)
-    .in('lp_investor_id', investorIds)
-  if (!shares || shares.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const fundId = shares[0].fund_id as string
-  const sharedInvestorIds = Array.from(new Set(shares.map((s: any) => s.lp_investor_id as string))) as string[]
-
-  const { data: ef } = await (admin as any).from('fund_settings').select('lp_portal_enabled').eq('fund_id', fundId).maybeSingle()
-  if (!ef?.lp_portal_enabled) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  let share: { fundId: string; sharedInvestorIds: string[] }
+  try {
+    share = await portalLetterShare(admin, { userId: user.id, lpAccountId, investorIds }, letterId)
+  } catch (e) {
+    if (e instanceof PortalError) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    throw e
+  }
+  const { fundId, sharedInvestorIds } = share
 
   const result = await generateLetterPdf(admin, { fundId, letterId })
   if (!result) return NextResponse.json({ error: 'Not found' }, { status: 404 })

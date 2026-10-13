@@ -26,6 +26,7 @@ import {
   updateDiligenceDeal, uploadDiligenceDocument, writeMemoParagraph,
 } from '@/lib/diligence/service'
 import { enqueueMemoStage, MEMO_AGENT_STAGES, type MemoAgentStage } from '@/lib/memo-agent/enqueue'
+import { jobHandle, jobRecordId } from './jobs'
 import { unwrap } from '@/lib/service-outcome'
 import { requireUser } from './deals-tools'
 import { fundMemberId, visibleVehicleId } from './refs'
@@ -118,12 +119,22 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
   diligence_deal_detail: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
     const deal = await resolveDeal(admin, fundId, String(input?.deal ?? ''), access)
 
-    const [{ data: docs }, { data: items }, { data: attn }, draft] = await Promise.all([
+    const [{ data: docs }, { data: items }, { data: attn }, draft, { data: job }] = await Promise.all([
       (admin as any).from('diligence_documents').select('parse_status').eq('deal_id', deal.id).eq('fund_id', fundId),
       (admin as any).from('diligence_checklist_items').select('status').eq('deal_id', deal.id).eq('fund_id', fundId).eq('kind', 'item'),
       (admin as any).from('diligence_attention_items').select('urgency, status').eq('deal_id', deal.id).eq('fund_id', fundId),
       latestDraft(admin, fundId, deal.id),
+      // The memo agent's latest job, as the deal page polls it (app/api/diligence/[id]/agent/status):
+      // what diligence_run_agent started, and whether it is still going or failed.
+      (admin as any).from('memo_agent_jobs')
+        .select('id, kind, status, progress_message, error, enqueued_at, started_at, finished_at')
+        .eq('deal_id', deal.id).eq('fund_id', fundId)
+        .order('enqueued_at', { ascending: false }).limit(1).maybeSingle(),
     ])
+    const runningKind = job && (job.status === 'pending' || job.status === 'running') ? job.kind as string : null
+    const failedKind = job && job.status === 'failed' ? job.kind as string : null
+    // Memo PROSE, not merely a memo_draft_output: scoring parks its scores there without a memo.
+    const hasMemo = Array.isArray(draft?.memo_draft_output?.paragraphs) && draft.memo_draft_output.paragraphs.length > 0
 
     const dataRoom = countDocuments(((docs as any[]) ?? []).map(d => ({ parse_status: d.parse_status })))
     const checklist = countChecklist(((items as any[]) ?? []).map(i => ({ status: i.status })))
@@ -137,7 +148,7 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     const stages = buildStages({
       hasIngestion: !!draft?.ingestion_output,
       hasResearch: !!draft?.research_output,
-      hasMemoDraft: !!draft?.memo_draft_output,
+      hasMemoDraft: hasMemo,
       hasScores: scores.length > 0,
       finalized: !!draft?.finalized_at,
       documentCount: dataRoom.total,
@@ -152,8 +163,8 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
       memoAttentionBlocking: attention.blocking,
       memoAttentionOpen: attention.open,
       memoAttentionTotal: attention.total,
-      runningKind: null,
-      failedKind: null,
+      runningKind,
+      failedKind,
     })
 
     return {
@@ -177,6 +188,10 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
       },
       attention: attention,
       progress: stages.map(s => ({ stage: s.key, state: s.state, percent: Math.round(s.progress * 100), note: s.hint })),
+      agent_job: job ? {
+        id: job.id, kind: job.kind, status: job.status, progress: job.progress_message ?? null, error: job.error ?? null,
+        enqueued_at: job.enqueued_at, started_at: job.started_at ?? null, finished_at: job.finished_at ?? null,
+      } : null,
     }
   },
 
@@ -454,7 +469,27 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     const stage = str(input?.stage) as MemoAgentStage
     if (!MEMO_AGENT_STAGES.includes(stage)) throw new Error(`stage must be one of ${MEMO_AGENT_STAGES.join(', ')}.`)
     const out = unwrap(await enqueueMemoStage(admin, { fundId, userId: requireUser(userId) }, deal.id, stage, { full: input?.full === true }))
-    return { deal: deal.name, stage, ...out }
+    return { deal: deal.name, stage, ...out, job: jobHandle('diligence', String(out.job_id), out.status as string) }
+  },
+
+  diligence_job_status: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const cols = 'id, deal_id, kind, status, progress_message, error, enqueued_at, started_at, finished_at'
+    const view = (j: any) => ({
+      ...jobHandle('diligence', j.id, j.status), stage: j.kind, raw_status: j.status, progress: j.progress_message ?? null, error: j.error ?? null,
+      enqueued_at: j.enqueued_at, started_at: j.started_at ?? null, finished_at: j.finished_at ?? null,
+    })
+    if (input?.job_id) {
+      const id = jobRecordId('diligence', input.job_id)
+      const { data: job } = await (admin as any).from('memo_agent_jobs').select(cols).eq('id', id).eq('fund_id', fundId).maybeSingle()
+      // The deal's own scope: a job on another entity's deal is not found, like the deal.
+      const deal = job ? await resolveDeal(admin, fundId, job.deal_id, access).catch(() => null) : null
+      if (!job || !deal) throw new Error('No diligence job with that id.')
+      return { deal: deal.name, job: view(job) }
+    }
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const { data } = await (admin as any).from('memo_agent_jobs').select(cols).eq('deal_id', deal.id).eq('fund_id', fundId)
+      .order('enqueued_at', { ascending: false }).limit(5)
+    return { deal: deal.name, jobs: ((data ?? []) as any[]).map(view) }
   },
 
   diligence_write_memo: async ({ admin, fundId, access }: AgentToolContext, input: any) => {

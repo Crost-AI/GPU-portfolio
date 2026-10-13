@@ -1,4 +1,4 @@
-// The four dashboard layouts. Each takes a payload and returns the nodes to show.
+// The dashboard layouts, and the chart drawn from the conversation's own figures. Each takes a payload and returns the nodes to show.
 //
 // Every view has two densities. INLINE is a card in the conversation: the host fits it to its
 // content and clips anything too tall, so it carries the headline figures, one chart and a way
@@ -11,7 +11,7 @@ import { DASH, fractionPercent, multiple, percent, share, shortDate, titleCase, 
 import { button, dataTable, empty, note, section, segmented, tiles, type Column, type Tile } from './ui'
 import {
   STATEMENT_PRESETS, STATEMENT_PRESET_LABEL, VIEW_TOOL,
-  type CallLine, type CallLineStatus, type CallSummary, type CallsPayload,
+  type CallLine, type CallLineStatus, type CallSummary, type CallsPayload, type ChartData, type ChartPayload,
   type CompanyMetricSeries, type CompanyPayload, type DashboardPayload, type HomePayload, type LpPayload, type LpRow,
   type PartnerCapitalRow, type PortfolioPayload, type PortfolioPosition, type StatementPreset,
   type StatementsData, type StatementsPayload,
@@ -45,7 +45,66 @@ export function renderView(payload: DashboardPayload, ctx: ViewContext): Node[] 
     case 'lps': return lps(payload, ctx)
     case 'calls': return calls(payload, ctx)
     case 'home': return home(payload, ctx)
+    case 'chart': return chart(payload, ctx)
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Chart — figures from the conversation, drawn with the dashboards' own two chart forms
+// ---------------------------------------------------------------------------------------------
+
+function chartFormat(unit: ChartData['unit'], fmt: Formatters): { value: (v: number) => string; tick: (v: number) => string } {
+  switch (unit) {
+    case 'currency': return { value: v => fmt.money(v), tick: v => fmt.compact(v) }
+    case 'percent': return { value: v => percent(v), tick: v => percent(v, 0) }
+    case 'multiple': return { value: v => multiple(v), tick: v => multiple(v) }
+    default: return { value: v => fmt.number(v), tick: v => fmt.number(v) }
+  }
+}
+
+function chart(payload: ChartPayload, ctx: ViewContext): Node[] {
+  const { kind, unit, measure, points } = payload.data
+  const { value: format, tick } = chartFormat(unit, ctx.fmt)
+  const out: Node[] = []
+  if (points.length === 0) return [empty('Nothing to chart.')]
+
+  if (kind === 'bar') {
+    // A loss is said by colour as well as sign, as on the portfolio chart.
+    const data: BarDatum[] = points.map(p => ({
+      label: p.label,
+      value: Math.max(0, p.value),
+      valueLabel: unit === 'currency' ? ctx.fmt.compact(p.value) : format(p.value),
+      tooltip: [{ value: format(p.value), label: measure }],
+      ...(p.value < 0 ? { tone: 'loss' as const } : {}),
+    }))
+    out.push(barChart(data, { valueName: measure, ariaLabel: `${measure} by ${points.length} categories` }))
+  } else {
+    const plot = h('div', null)
+    const last = points[points.length - 1]
+    out.push(h('div', { class: 'metric-card' },
+      h('div', { class: 'metric-head' },
+        h('p', { class: 'metric-name' }, measure),
+        h('p', { class: 'metric-latest' }, format(last.value))),
+      h('p', { class: 'caption' }, last.label),
+      plot))
+    queueMicrotask(() => ctx.onDispose(lineChart(plot, points, {
+      format,
+      formatTick: tick,
+      ariaLabel: `${measure} over ${points.length} points, latest ${format(last.value)} at ${last.label}. Use the arrow keys to read each point.`,
+    })))
+  }
+
+  // Every value readable without hovering: the table beneath, in the full view.
+  if (!ctx.compact) {
+    out.push(section('Figures', dataTable(points, [
+      { header: kind === 'line' ? 'Period' : 'Item', cell: p => p.label },
+      { header: measure, numeric: true, cell: p => format(p.value), sort: p => p.value },
+    ], { caption: measure })))
+  }
+  // The source is the subtitle, under the title.
+  const more = expandButton(ctx, 'Show the figures')
+  if (more) out.push(more)
+  return out
 }
 
 // ---------------------------------------------------------------------------------------------

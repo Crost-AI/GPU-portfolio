@@ -63,7 +63,7 @@ export function visibleTo(access: AccessContext) {
 export async function loadAuditTrail(
   admin: SupabaseClient,
   fundId: string,
-  opts: { vehicleId?: string | null; from?: string | null; to?: string | null; limit?: number },
+  opts: { vehicleId?: string | null; from?: string | null; to?: string | null; limit?: number; source?: string | null },
   allowed: (action: string, details?: Record<string, unknown> | null, vehicleId?: string | null) => boolean,
 ): Promise<AuditRow[]> {
   const rows = await fetchAllRows<any>((f, t) => {
@@ -73,7 +73,11 @@ export async function loadAuditTrail(
     if (opts.to) q = q.lte('created_at', `${opts.to}T23:59:59.999Z`)
     return q.order('created_at', { ascending: false }).range(f, t)
   })
-  const kept = rows.filter(r => allowed(r.action, r.details ?? null, r.vehicle_id ?? null)).slice(0, opts.limit ?? Infinity)
+  // The column, or `details.source` when it was written before the column existed (events.ts).
+  const sourceOf = (r: any): string | null => r.source ?? (typeof r.details?.source === 'string' ? r.details.source : null)
+  const kept = rows
+    .filter(r => allowed(r.action, r.details ?? null, r.vehicle_id ?? null) && (!opts.source || sourceOf(r) === opts.source))
+    .slice(0, opts.limit ?? Infinity)
   // Names, not ids, for the people — the trail is read by an auditor, not a database.
   const ids = Array.from(new Set(kept.map(r => r.actor_id).filter(Boolean)))
   const names = new Map<string, string>()
@@ -89,8 +93,7 @@ export async function loadAuditTrail(
     id: r.id, createdAt: r.created_at, action: r.action, subjectType: r.subject_type, subjectId: r.subject_id ?? null,
     vehicleId: r.vehicle_id ?? null, actorId: r.actor_id ?? null, actorName: r.actor_id ? names.get(r.actor_id) ?? null : null,
     reason: r.reason ?? null, details: r.details ?? {},
-    // The column, or `details.source` when it was written before the column existed (events.ts).
-    source: r.source ?? (typeof r.details?.source === 'string' ? r.details.source : null),
+    source: sourceOf(r),
   }))
 }
 

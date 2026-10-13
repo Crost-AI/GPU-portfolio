@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useLedgerFetch, useVehicle } from '@/components/accounting-vehicle'
+import { SourceFilter } from '@/components/audit/source-filter'
+import { CHANGE_SOURCE_LABEL, type ChangeSourceKey } from '@/lib/audit/source-labels'
 
 interface AuditEvent {
   id: string; createdAt: string; action: string; subjectType: string; subjectId: string | null
@@ -27,7 +29,7 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 // Which door a change came through (lib/audit/source.ts). Older events have none.
-const SOURCE_LABELS: Record<string, string> = { web: 'Web', api: 'API', mcp: 'MCP' }
+const SOURCE_LABELS: Record<string, string> = CHANGE_SOURCE_LABEL
 
 /** One line of what the event touched: a date, an amount, a period — whatever it carries. */
 function summary(e: AuditEvent): string | null {
@@ -53,21 +55,23 @@ export function AuditTrailCard() {
   const lf = useLedgerFetch()
   const { group } = useVehicle()
   const [events, setEvents] = useState<AuditEvent[] | null>(null)
+  const [source, setSource] = useState<ChangeSourceKey | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    lf('/api/accounting/audit-log?limit=50')
+    lf(`/api/accounting/audit-log?limit=50${source ? `&source=${source}` : ''}`)
       .then(r => (r.ok ? r.json() : { events: [] }))
       .then(d => { if (!cancelled) setEvents(d.events ?? []) })
       .catch(() => { if (!cancelled) setEvents([]) })
     return () => { cancelled = true }
-  }, [lf])
+  }, [lf, source])
 
   if (!events) return <p className="text-sm text-muted-foreground">Loading…</p>
   return (
     <div className="space-y-3">
+      <SourceFilter value={source} onChange={setSource} />
       {events.length === 0
-        ? <p className="text-sm text-muted-foreground">Nothing recorded yet. Voids, reopens, approvals, commitment changes and shared reports appear here as they happen.</p>
+        ? <p className="text-sm text-muted-foreground">{source ? `Nothing recorded through ${SOURCE_LABELS[source]} yet.` : 'Nothing recorded yet. Voids, reopens, approvals, commitment changes and shared reports appear here as they happen.'}</p>
         : (
           <ul className="divide-y rounded-lg border text-sm">
             {events.map(e => (
@@ -83,7 +87,7 @@ export function AuditTrailCard() {
           </ul>
         )}
       <Button size="sm" variant="outline" asChild className="gap-1.5">
-        <a href={`/api/accounting/audit-log?format=csv${group ? `&group=${encodeURIComponent(group)}` : ''}`}><Download className="h-3.5 w-3.5" />Download the full trail (.csv)</a>
+        <a href={`/api/accounting/audit-log?format=csv${group ? `&group=${encodeURIComponent(group)}` : ''}${source ? `&source=${source}` : ''}`}><Download className="h-3.5 w-3.5" />Download the full trail (.csv)</a>
       </Button>
     </div>
   )

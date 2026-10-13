@@ -267,6 +267,15 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'company_update_status',
+    description:
+      'What became of a company update handed over with submit_company_update: still processing, done or failed, the company ' +
+      'it was matched to, the KPIs recorded and anything sent for review. Pass the job_id it returned.',
+    scope: 'read',
+    domain: 'portfolio',
+    inputSchema: { type: 'object', properties: { job_id: { type: 'string', description: 'The job id a tool returned (its job.id).' } }, required: ['job_id'] },
+  },
+  {
     name: 'record_metric_value',
     description:
       "Set one KPI value for a portfolio company for a period, e.g. MRR for Q3 2026. Use company_metrics to see the company's metrics. " +
