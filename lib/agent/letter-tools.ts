@@ -9,8 +9,8 @@ import { unwrap } from '@/lib/service-outcome'
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
 import { siteOrigin } from '@/lib/site-links'
 import { createLetter, getLetter, letterData, listLetters, shareLetter, updateLetter, writeLetterSections } from '@/lib/lp-letters/service'
-import { loadLetterBrief, saveCfoDraft, writeWithFundAI, type LetterPeriod } from '@/lib/lp-letters/cfo-draft'
-import { CFO_DRAFT_LABEL, checkLetterDraft } from '@/lib/lp-letters/cfo-brief'
+import { loadLetterBrief, saveDraftLetter, writeWithFundAI, type LetterPeriod } from '@/lib/lp-letters/draft-from-brief'
+import { checkLetterDraft } from '@/lib/lp-letters/brief'
 import { rateLimit } from '@/lib/rate-limit'
 import { requireUser } from './deals-tools'
 import { resolveInvestor } from './lp-record-tools'
@@ -36,6 +36,11 @@ async function periodOf(ctx: AgentToolContext, input: any): Promise<LetterPeriod
   if (![1, 2, 3, 4].includes(quarter)) throw new Error('quarter must be 1 to 4')
   return { vehicle, year, quarter, yearEnd: !!input?.year_end }
 }
+
+const briefOpts = (input: any) => ({
+  template: typeof input?.template === 'string' ? input.template : null,
+  guidance: typeof input?.guidance === 'string' ? input.guidance.slice(0, 4000) : null,
+})
 
 const summary = (l: any) => ({
   id: l.id, period: l.period_label, vehicle: l.portfolio_group, status: l.status, year_end: !!l.is_year_end, updated_at: l.updated_at,
@@ -65,7 +70,8 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
-    return (await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input))).brief
+    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), briefOpts(input))
+    return { template: template.name, ...brief }
   },
 
   lp_draft_letter: async (ctx: AgentToolContext, input: any) => {
@@ -75,19 +81,23 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     if (!given && await rateLimit({ key: `lp-letter-gen:${userId}`, limit: 5, windowSeconds: 300 })) {
       throw new Error('Too many letters drafted in the last few minutes. Try again shortly.')
     }
-    const { brief, preview, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, p)
+    const opts = briefOpts(input)
+    const loaded = await loadLetterBrief(ctx.admin, ctx.fundId, p, opts)
+    const { brief, investorNames } = loaded
     const text = given ?? await writeWithFundAI(ctx.admin, ctx.fundId, userId, brief)
     if (!text) throw new Error('The draft came back empty. Try again, or write it from lp_letter_brief and pass text.')
-    const row = unwrap(await saveCfoDraft(ctx.admin, { fundId: ctx.fundId, userId, visible: await visible(ctx) }, p, text, preview))
+    const row = unwrap(await saveDraftLetter(ctx.admin, { fundId: ctx.fundId, userId, visible: await visible(ctx) }, p, text, loaded, opts.guidance))
     return {
       letter: summary(row),
+      template: loaded.template.name,
       written_by: given ? 'assistant' : 'fund AI',
       draft: text,
       review_flags: checkLetterDraft(text, brief, investorNames),
       missing_information: brief.missing_information,
       next:
         'This is a new, unshared draft. Show the user the draft and every review flag. Edits go through lp_write_letter ' +
-        '(full_draft); it is reviewed and shared from the LP Letters page or lp_share_letter, by an admin.',
+        '(full_draft). Once a person has reviewed it, it is marked final (lp_write_letter mark_final) and only then can an ' +
+        'admin share it (lp_share_letter).',
     }
   },
 
@@ -119,27 +129,28 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     const v = await visible(ctx)
     const sections = Array.isArray(input?.sections) ? input.sections : null
     const fullDraft = typeof input?.full_draft === 'string' ? input.full_draft : undefined
-    if (!sections && fullDraft === undefined && !input?.mark_complete) throw new Error('Pass sections, full_draft or mark_complete.')
+    const markFinal = !!(input?.mark_final ?? input?.mark_complete)
+    if (!sections && fullDraft === undefined && !markFinal) throw new Error('Pass sections, full_draft or mark_final.')
     if (sections) {
       const clean = sections.map((s: any) => ({ company_id: String(s?.company_id ?? ''), narrative: String(s?.narrative ?? '') }))
       if (clean.some((s: any) => !s.company_id || !s.narrative.trim())) throw new Error('Each section needs a company_id and its text.')
       unwrap(await writeLetterSections(ctx.admin, { fundId: ctx.fundId, userId, visible: v }, id, clean))
     }
     let row: any = null
-    if (fullDraft !== undefined || input?.mark_complete) {
+    if (fullDraft !== undefined || markFinal) {
       row = unwrap(await updateLetter(ctx.admin, { fundId: ctx.fundId, visible: v }, id, {
         ...(fullDraft !== undefined ? { full_draft: fullDraft } : {}),
-        ...(input?.mark_complete ? { status: 'complete' } : {}),
+        ...(markFinal ? { status: 'final' } : {}),
       }))
     } else {
       row = await letterOf(ctx, id)
     }
-    // A CFO draft edited from chat gets the same review as when it was drafted.
+    // A full draft written from chat is reviewed against the letter's sources, as a drafted one is.
     let review_flags: string[] | undefined
-    if (fullDraft !== undefined && row?.generation_prompt === CFO_DRAFT_LABEL) {
+    if (fullDraft !== undefined) {
       const { brief, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, {
         vehicle: row.portfolio_group, year: row.period_year, quarter: row.period_quarter, yearEnd: !!row.is_year_end,
-      })
+      }, { template: row.template_id ?? null })
       review_flags = checkLetterDraft(fullDraft, brief, investorNames)
     }
     return { letter: summary(row), sections_written: sections?.length ?? 0, ...(review_flags ? { review_flags } : {}) }

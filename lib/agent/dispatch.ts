@@ -86,7 +86,7 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   // Filling a saved template makes a draft document for the person to read before sending; it
   // changes nothing else. Saving the template itself still stages.
   document_generate: () => true,
-  // Always a NEW letter, status draft, shared with no one (lib/lp-letters/cfo-draft.ts). Editing,
+  // Always a NEW letter, status draft, shared with no one (lib/lp-letters/draft-from-brief.ts). Editing,
   // completing and sharing a letter still stage.
   lp_draft_letter: () => true,
 }

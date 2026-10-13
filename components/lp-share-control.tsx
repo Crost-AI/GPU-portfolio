@@ -29,6 +29,7 @@ export function LpSharePanel({ shareEndpoint }: { shareEndpoint: string }) {
   const [shared, setShared] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [portalEnabled, setPortalEnabled] = useState<boolean | null>(null)
   const [groups, setGroups] = useState<{ name: string; investor_ids: string[] }[]>([])
 
@@ -50,13 +51,22 @@ export function LpSharePanel({ shareEndpoint }: { shareEndpoint: string }) {
   }, [shareEndpoint])
 
   async function persist(next: Set<string>) {
+    const before = shared
     setShared(new Set(next))
     setSaving(true)
-    await fetch(shareEndpoint, {
+    setError(null)
+    // A refused share (e.g. a letter not yet marked final) puts the boxes back and says why,
+    // rather than showing investors as shared who are not.
+    const res = await fetch(shareEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lp_investor_ids: Array.from(next) }),
-    }).catch(() => {})
+    }).catch(() => null)
+    if (!res?.ok) {
+      setShared(before)
+      const body = res ? await res.json().catch(() => null) : null
+      setError(body?.error ?? 'Sharing failed. Try again.')
+    }
     setSaving(false)
   }
 
@@ -85,6 +95,10 @@ export function LpSharePanel({ shareEndpoint }: { shareEndpoint: string }) {
           The LP portal is off for this fund, shares won&apos;t reach LPs until you enable it in{' '}
           <a href="/settings" className="underline">Settings → LP Portal</a>.
         </div>
+      )}
+
+      {error && (
+        <p className="text-sm text-destructive">{error}</p>
       )}
 
       {loading ? (

@@ -1,8 +1,9 @@
-// The quarterly LP letter, CFO draft: gathering its sources and saving it as a draft.
+// A quarterly LP letter drafted from a brief (brief.ts): gathering its sources and saving the draft.
 //
 // Sources are the entity's portfolio as the letter generator sees it (aggregate.ts) plus the
-// companies' stored updates for the quarter (company_updates). Nothing about the fund's investors
-// is read except their names, and only so they can be kept out (cfo-brief.ts).
+// companies' stored updates for the quarter (company_updates). Structure and style are the fund's
+// letter template (lp_letter_templates). Nothing about the fund's investors is read except their
+// names, and only so they can be kept out.
 //
 // A draft is always a NEW letter, status draft, shared with no one: drafting never overwrites a
 // letter someone has edited, completed or shared. Review, editing and sharing are the LP Letters
@@ -12,14 +13,15 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { aggregatePortfolioData, type PortfolioPreview } from './aggregate'
 import { buildPortfolioTableHtml } from './generate'
 import { createLetter } from './service'
+import { DEFAULT_STYLE_GUIDE } from './default-template'
 import { sanitizeLetterHtml } from '@/lib/sanitize'
 import { done, dbFail, type Outcome } from '@/lib/service-outcome'
 import { createFundAIProvider } from '@/lib/ai'
 import { logAIUsage } from '@/lib/ai/usage'
 import {
-  CFO_DRAFT_LABEL, briefAsPrompt, buildLetterBrief, quarterBounds,
+  briefAsPrompt, buildLetterBrief, quarterBounds,
   type LetterBrief, type StoredUpdate,
-} from './cfo-brief'
+} from './brief'
 
 type Admin = SupabaseClient
 
@@ -74,20 +76,47 @@ async function investorNames(admin: Admin, fundId: string): Promise<string[]> {
   return ((data ?? []) as any[]).map(r => String(r.name ?? '')).filter(Boolean)
 }
 
+export interface LetterTemplate { id: string | null; name: string; styleGuide: string }
+
+/**
+ * The letter template whose style guide sets a letter's structure: the one asked for (by id or
+ * name), else the fund's default, else the built-in default. A name that matches nothing is an
+ * error, so a typo doesn't quietly fall back.
+ */
+export async function resolveTemplate(admin: Admin, fundId: string, ref?: string | null): Promise<LetterTemplate> {
+  const { data } = await (admin as any).from('lp_letter_templates').select('id, name, style_guide, is_default').eq('fund_id', fundId)
+  const rows = ((data ?? []) as any[]).filter(t => t.style_guide)
+  if (ref?.trim()) {
+    const want = ref.trim().toLowerCase()
+    const hit = rows.find(t => t.id === ref.trim() || String(t.name).toLowerCase() === want)
+    if (!hit) throw new Error(`No letter template "${ref}". Templates: ${rows.map(t => t.name).join(', ') || 'none saved yet'}.`)
+    return { id: hit.id, name: hit.name, styleGuide: hit.style_guide }
+  }
+  const def = rows.find(t => t.is_default)
+  return def ? { id: def.id, name: def.name, styleGuide: def.style_guide } : { id: null, name: 'Default', styleGuide: DEFAULT_STYLE_GUIDE }
+}
+
 export interface LoadedBrief {
   brief: LetterBrief
   preview: PortfolioPreview
   investorNames: string[]
+  template: LetterTemplate
 }
 
-export async function loadLetterBrief(admin: Admin, fundId: string, p: LetterPeriod): Promise<LoadedBrief> {
+export async function loadLetterBrief(
+  admin: Admin, fundId: string, p: LetterPeriod, opts: { template?: string | null; guidance?: string | null } = {},
+): Promise<LoadedBrief> {
+  const template = await resolveTemplate(admin, fundId, opts.template)
   const preview = await aggregatePortfolioData(admin as any, fundId, p.year, p.quarter, p.vehicle, !!p.yearEnd)
   const ids = preview.companies.map(c => c.investment.companyId)
   const [updates, names] = await Promise.all([
     quarterUpdates(admin, fundId, ids, p.year, p.quarter),
     investorNames(admin, fundId),
   ])
-  return { brief: buildLetterBrief({ preview, year: p.year, quarter: p.quarter, updates, investorNames: names }), preview, investorNames: names }
+  const brief = buildLetterBrief({
+    preview, year: p.year, quarter: p.quarter, updates, investorNames: names, styleGuide: template.styleGuide, guidance: opts.guidance,
+  })
+  return { brief, preview, investorNames: names, template }
 }
 
 /** The fund's own AI provider writes the letter from the brief, in one call. */
@@ -97,28 +126,29 @@ export async function writeWithFundAI(admin: Admin, fundId: string, userId: stri
     model,
     maxTokens: 4000,
     system:
-      'You are the CFO of a venture fund writing to its limited partners. You write plainly and precisely, state bad news ' +
+      "You write a venture fund's quarterly letter to its limited partners. You write plainly and precisely, state bad news " +
       'directly, and never add a number or claim your sources do not contain. Plain text, no markdown.',
     content: briefAsPrompt(brief),
   })
   await logAIUsage(admin as any, {
-    fundId, userId: userId ?? undefined, provider: providerType, model, feature: 'lp-letter-cfo-draft', usage: result.usage,
+    fundId, userId: userId ?? undefined, provider: providerType, model, feature: 'lp-letter-draft', usage: result.usage,
   })
   return result.text.trim()
 }
 
 /**
- * Save a CFO draft as a new letter: status draft, shared with no one. The portfolio table and
+ * Save a drafted letter as a new letter: status draft, shared with no one. The portfolio table and
  * summary come from the books, as for a generated letter, so the PDF and export carry the same
  * figures the draft was written from.
  */
-export async function saveCfoDraft(
+export async function saveDraftLetter(
   admin: Admin, ctx: { fundId: string; userId: string; visible: string[] | null },
-  p: LetterPeriod, text: string, preview: PortfolioPreview,
+  p: LetterPeriod, text: string, loaded: Pick<LoadedBrief, 'preview' | 'template'>, guidance?: string | null,
 ): Promise<Outcome<any>> {
+  const { preview } = loaded
   const created = await createLetter(admin, ctx, {
     period_year: p.year, period_quarter: p.quarter, portfolio_group: p.vehicle, is_year_end: !!p.yearEnd,
-    generation_prompt: CFO_DRAFT_LABEL,
+    template_id: loaded.template.id, generation_prompt: guidance?.trim() || null,
   })
   if (!created.ok) return created
   const { data, error } = await (admin as any)
@@ -134,6 +164,6 @@ export async function saveCfoDraft(
       updated_at: new Date().toISOString(),
     })
     .eq('id', created.value.id).eq('fund_id', ctx.fundId).select().single()
-  if (error) return dbFail(error, 'lp-letters-cfo-draft')
+  if (error) return dbFail(error, 'lp-letters-draft')
   return done(data)
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLetterBrief, checkLetterDraft, redactor, MISSING_HEADING, type StoredUpdate } from './cfo-brief'
+import { buildLetterBrief, checkLetterDraft, redactor, MISSING_HEADING, type StoredUpdate } from './brief'
 import type { CompanyLetterData, PortfolioPreview } from './aggregate'
 
 const company = (over: Partial<CompanyLetterData['investment']> & { companyId: string; companyName: string }, extra: Partial<CompanyLetterData> = {}): CompanyLetterData => ({
@@ -15,8 +15,10 @@ const company = (over: Partial<CompanyLetterData['investment']> & { companyId: s
   ...extra,
 })
 
+const STYLE = 'Open with the three most important themes. Close with next quarter\'s priorities.'
+
 const preview = (companies: CompanyLetterData[], fundMetrics: PortfolioPreview['fundMetrics'] = null): PortfolioPreview => ({
-  fundName: 'Hemlock Ventures', fundCurrency: 'USD', periodLabel: 'Q3 2026', portfolioGroup: 'Hemlock Fund I',
+  asOf: '2026-09-30', fundName: 'Hemlock Ventures', fundCurrency: 'USD', periodLabel: 'Q3 2026', portfolioGroup: 'Hemlock Fund I',
   companies, fundMetrics,
   totals: { totalInvested: 3_000_000, totalFmv: 2_000_000, totalRealized: 0, portfolioMoic: 0.67, activeCount: 2, exitedCount: 0, writtenOffCount: 1 },
 })
@@ -43,14 +45,23 @@ const updates = new Map<string, StoredUpdate[]>([
 
 const fundMetrics = { committedCapital: 10_000_000, paidInCapital: 6_000_000, distributions: 1_000_000, fmv: 7_000_000, dpi: 0.17, rvpi: 1.17, tvpi: 1.33, irr: 0.124 }
 
-describe('the CFO letter brief', () => {
-  const brief = buildLetterBrief({ preview: preview([acme, birch, cedar], fundMetrics), year: 2026, quarter: 3, updates, investorNames: ['Pat Investor LP', 'Acme'], asOf: '2026-10-13' })
+describe('the letter brief', () => {
+  const brief = buildLetterBrief({ preview: preview([acme, birch, cedar], fundMetrics), year: 2026, quarter: 3, updates, investorNames: ['Pat Investor LP', 'Acme'], styleGuide: STYLE })
 
-  it('writes for the entity, with the CFO instructions', () => {
+  it("takes structure from the fund's template and keeps the rules every letter follows", () => {
     expect(brief.fund).toBe('Hemlock Fund I')
     expect(brief.instructions).toContain('drafting the Q3 2026 LP letter for Hemlock Fund I')
-    expect(brief.instructions).toContain('three most important themes')
+    expect(brief.instructions).toContain(STYLE)
+    expect(brief.instructions).toContain('gross or net')
     expect(brief.instructions).toContain(`"${MISSING_HEADING}"`)
+    expect(brief.instructions).not.toContain('GUIDANCE FOR THIS LETTER')
+    const guided = buildLetterBrief({ preview: preview([acme]), year: 2026, quarter: 3, updates, styleGuide: STYLE, guidance: 'Lead with the Birch news.' })
+    expect(guided.instructions).toContain('GUIDANCE FOR THIS LETTER:\nLead with the Birch news.')
+  })
+
+  it('says what date the figures are as of', () => {
+    expect(brief.as_of).toBe('2026-09-30')
+    expect(brief.basis_notes.join(' ')).toContain('Figures are as of 2026-09-30')
   })
 
   it('labels every performance figure gross or net, and amounts as cost or cash', () => {
@@ -87,13 +98,13 @@ describe('the CFO letter brief', () => {
     expect(brief.missing_information).toContain('Birch: no company update or KPI values are stored for Q3 2026.')
     // A write-off needs no update.
     expect(brief.missing_information.join(' ')).not.toContain('Cedar')
-    const noFlows = buildLetterBrief({ preview: preview([acme]), year: 2026, quarter: 3, updates })
+    const noFlows = buildLetterBrief({ preview: preview([acme]), year: 2026, quarter: 3, updates, styleGuide: STYLE })
     expect(noFlows.missing_information.join(' ')).toContain('no fund cash flows are recorded')
   })
 })
 
 describe('reviewing a draft', () => {
-  const brief = buildLetterBrief({ preview: preview([acme, birch, cedar], fundMetrics), year: 2026, quarter: 3, updates, asOf: '2026-10-13' })
+  const brief = buildLetterBrief({ preview: preview([acme, birch, cedar], fundMetrics), year: 2026, quarter: 3, updates, styleGuide: STYLE })
   const good = [
     'Three themes shaped Q3 2026.',
     'Acme grew ARR to $1.2M, up from $900,000, and holds at a gross MOIC of 2.00x.',

@@ -19,6 +19,8 @@ const PERIOD = {
     year: { type: 'integer' },
     quarter: { type: 'integer', minimum: 1, maximum: 4 },
     year_end: { type: 'boolean', description: 'Also the year-end letter.' },
+    template: { type: 'string', description: "The fund's letter template (name) that sets the structure and style. Default: the fund's default template." },
+    guidance: { type: 'string', description: 'Extra guidance for this letter, e.g. what to open with. Kept with the letter.' },
   } as Record<string, any>,
   required: ['vehicle', 'year', 'quarter'],
 }
@@ -27,7 +29,7 @@ const base = { domain: 'lp' as const, accessDomain: 'lp_relations' as const, acc
 export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'lp_letters',
-    description: 'The fund\'s quarterly LP letters, newest first: period, entity and status (draft, generating, complete).',
+    description: 'The fund\'s quarterly LP letters, newest first: period, entity and status (generating, draft, or final once reviewed).',
     scope: 'read',
     ...base,
     inputSchema: { type: 'object', properties: { vehicle: { type: 'string', description: 'Only this entity\'s letters.' } } },
@@ -52,10 +54,11 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'lp_letter_brief',
     description:
-      'Everything a quarterly LP letter may be written from, for an entity and quarter, and how to write it as a fund CFO ' +
-      'would: each company\'s stored updates, KPI values and team notes for the quarter, its figures from the books labeled ' +
-      'gross, net, cost or cash, the write-offs, down rounds and markdowns the books show, and what is missing. No LP or ' +
-      'investor-level data is included. Follow its instructions exactly when writing; then save with lp_draft_letter (text).',
+      'Everything a quarterly LP letter may be written from, for an entity and quarter, as of the quarter end: each company\'s ' +
+      'stored updates, KPI values and team notes for the quarter, its figures from the books labeled gross, net, cost or cash, ' +
+      'the write-offs, down rounds and markdowns the books show, and what is missing. Its instructions are the fund\'s letter ' +
+      'template plus the rules every letter keeps. No LP or investor-level data is included. Follow the instructions exactly ' +
+      'when writing; then save with lp_draft_letter (text).',
     scope: 'read',
     ...base,
     inputSchema: PERIOD,
@@ -63,11 +66,11 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'lp_draft_letter',
     description:
-      'Draft the quarterly LP letter for an entity and quarter as a NEW unshared draft letter for a person to review. With no ' +
+      'Draft the quarterly LP letter for an entity and quarter, in the fund\'s letter template, as a NEW unshared draft for a person to review. With no ' +
       'text, the fund\'s own AI writes it from lp_letter_brief\'s sources; with text, saves the letter you wrote from that ' +
       'brief. Returns the draft and review flags (numbers not in the sources, performance figures not labeled gross or net, ' +
       'events not stated, a missing "Missing information" section). Show the user the draft and every flag. Never marks a ' +
-      'letter complete or shares it.',
+      'letter final or shares it.',
     scope: 'write',
     ...base,
     inputSchema: {
@@ -109,8 +112,8 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
     description:
       'Write an LP letter. sections replaces those companies\' updates (plain text, ids from lp_letter_data) and rebuilds the ' +
       'portfolio table and the full draft around them, as generating does. full_draft replaces the whole text instead, for ' +
-      'edits such as the market commentary; pass it after sections, since sections rebuild the draft. Show the user the text ' +
-      'before calling.',
+      'edits such as the market commentary; pass it after sections, since sections rebuild the draft. A full_draft comes back ' +
+      'with review flags against the letter\'s sources; show them to the user. Show the user the text before calling.',
     scope: 'write',
     ...base,
     inputSchema: {
@@ -122,7 +125,7 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
           items: { type: 'object', properties: { company_id: { type: 'string' }, narrative: { type: 'string' } }, required: ['company_id', 'narrative'] },
         },
         full_draft: { type: 'string' },
-        mark_complete: { type: 'boolean', description: 'Mark the letter complete.' },
+        mark_final: { type: 'boolean', description: 'Mark the letter final: a person has reviewed it. Only a final letter can be shared.' },
       },
       required: ['letter_id'],
     },
@@ -131,7 +134,7 @@ export const LETTER_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'lp_share_letter',
     description:
       'Set which investors see an LP letter in their portal. The list replaces the current one; an empty list unshares it. ' +
-      'Investors are names or ids. Admin only.',
+      'Investors are names or ids. Only a final letter (lp_write_letter mark_final) can be shared. Admin only.',
     scope: 'write',
     ...base,
     inputSchema: {
