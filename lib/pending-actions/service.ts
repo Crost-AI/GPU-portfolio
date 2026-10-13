@@ -161,17 +161,30 @@ function authorizeDecision(principal: AnalystPrincipal, row: PendingActionRow, d
   if (decision === 'approve' && action.adminOnly && principal.role !== 'admin') {
     throw new PendingActionServiceError(adminOnlyMessage(action.adminOnly), 403, 'ADMIN_ONLY')
   }
-  // Approval is a person's, not the proposer's. Rejecting stays open to the stager: withdrawing a
-  // proposal changes nothing.
-  if (decision === 'approve' && stagedBySameCredential(principal, row)) {
+  // A script's key cannot approve what it staged: no person stands behind that approval. A chat
+  // may, since it asks its person in the conversation and approves only on their yes (the
+  // approve_action tool says so). Rejecting stays open to the stager: withdrawing changes nothing.
+  if (decision === 'approve' && selfApprovalRefused(principal, row)) {
     throw new PendingActionServiceError(SELF_APPROVAL_MESSAGE, 403, 'SELF_APPROVAL')
   }
   return action
 }
 
 export const SELF_APPROVAL_MESSAGE =
-  'This change was staged from this connection, so this connection cannot approve it. ' +
-  'A person approves it in the app, under Approvals.'
+  'This change was staged with this key, so this key cannot approve it. ' +
+  'A person approves it in the app, under Approvals, or from their own chat.'
+
+/**
+ * Whether this approval is the stager approving itself with nothing behind it: a script's key
+ * approving what that key staged. A chat (an `oauth:` credential) approving its own proposal is
+ * allowed, because it acts for a person who confirmed the change in the conversation.
+ */
+export function selfApprovalRefused(
+  principal: Pick<AnalystPrincipal, 'userId' | 'credentialId'>,
+  row: Pick<PendingActionRow, 'created_by' | 'created_via' | 'created_credential'>,
+): boolean {
+  return stagedBySameCredential(principal, row) && !principal.credentialId?.startsWith('oauth:')
+}
 
 /**
  * Is the approver the very credential (and person) that staged the action? A chat approving its
@@ -278,7 +291,11 @@ export async function approvePendingAction(
     await recordAudit(admin, {
       fundId: principal.fundId, vehicleId: existing.vehicle_id ?? null, actorId: principal.userId, action: 'pending_action.approve',
       subjectType: 'pending_action', subjectId: id,
-      details: { actionType: existing.action_type, stagedBy: existing.created_by, stagedVia: existing.created_via ?? null, args: existing.args },
+      details: {
+        actionType: existing.action_type, stagedBy: existing.created_by, stagedVia: existing.created_via ?? null, args: existing.args,
+        // The chat that staged it approved it, on its person's word in the conversation.
+        ...(stagedBySameCredential(principal, existing) ? { approvedFromChat: true, credentialId: principal.credentialId } : {}),
+      },
     })
     return { ok: true, replayed: false, result, action: actionDto(applied as PendingActionRow) }
   } catch (error) {

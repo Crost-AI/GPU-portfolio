@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Approve a chat's changes in the chat
+- **Say yes in the chat that staged it.** A change Claude or ChatGPT stages can now be approved in the same conversation: the assistant shows the change, asks, and calls `approve_action` only on the person's explicit yes. Before, `approve_action` refused any change the same credential staged, so every change needed a click under Approvals and a fund could not run from chat. A script's key still cannot approve what it staged, approvals still re-check the approver's write access and admin-only rules, and changes marked confirm-in-app (publishing to LPs) still go through the browser. The audit trail marks an approval made by the staging chat (`approvedFromChat`).
+
 ### Capital statement: pick any year or quarter, no repeated columns, Edit Details
 - **Pick any year and quarter.** A partner's capital statement now has a year picker (every year back to the partner's first capital movement, plus Inception to date and Custom dates) and, within a year, Year to date or Full year and Q1–Q4. A calendar quarter or year is named on the statement ("Q1 2026", "FY 2025") instead of printed as two dates.
 - **No repeated columns.** An inception-to-date statement drops the Statement period column, and a statement whose period is year to date (the YTD view, or Q1) drops the Year to date column, on the web, in the PDF and in the `lp_statement` tool.
