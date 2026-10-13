@@ -9,6 +9,7 @@ import { serializeLedger, parseLedgerText, resolvePostingAccounts, type TextEntr
 import { persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
 import { isBalanced } from './ledger'
+import { closedPeriodRanges, dateInAnyClosedPeriod } from './periods'
 import { reviewImport, type ImportReview } from './import-review'
 import { ACTUAL_BOOK } from './books'
 import { adoptedEntryIds } from './adoption'
@@ -57,6 +58,8 @@ export interface PostTextResult {
   importReview?: ImportReview
   reviewRequired?: boolean
   posted: number
+  /** The entries this call wrote, in text order. On a failure part-way, the ones already in. */
+  entryIds?: string[]
   errors: string[]
   unknownAccounts: string[]
 }
@@ -64,6 +67,16 @@ export interface PostTextResult {
 /**
  * Parse authored text and persist each balanced entry. Default status is 'posted'
  * unless the entry's flag is '!' (draft) or `defaultStatus` overrides.
+ *
+ * An entry's `ref:` is checked against the books AND written as its source_ref, so sending the
+ * same text twice refuses the second time instead of booking it again. (It used to be checked and
+ * then dropped, so a re-send — or a second chat with the same text — posted every entry twice.)
+ *
+ * Nearly all-or-nothing: every refusal that can be known up front (parse, accounts, balance, refs
+ * already in the books, the import review, a closed period) refuses the whole text before anything
+ * is written. Entries are still persisted one at a time — there is no multi-entry transaction to
+ * put them in — so a failure while writing (adoption refused, a partner allocation failing, the
+ * database) stops there and reports which entries are already in and which were not attempted.
  */
 export async function postLedgerText(
   admin: SupabaseClient,
@@ -85,7 +98,7 @@ export async function postLedgerText(
   for (const e of entries) {
     const { postings, unknown } = resolvePostingAccounts(accounts, e.postings)
     if (unknown.length) { unknown.forEach(u => unknownAccounts.add(u)); continue }
-    const entry: JournalEntry = { fundId, entryDate: e.date, memo: e.narration, sourceType: e.sourceType ?? 'manual', postings }
+    const entry: JournalEntry = { fundId, entryDate: e.date, memo: e.narration, sourceType: e.sourceType ?? 'manual', sourceRef: e.ref ?? null, postings }
     if (!isBalanced(entry)) { errors.push(`Entry ${e.date} does not balance after resolving accounts`); continue }
     prepared.push({ entry, status: defaultStatus ?? (e.flag === '!' ? 'draft' : 'posted') })
   }
@@ -99,7 +112,9 @@ export async function postLedgerText(
     const already = new Set<string>()
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     const adoptedIds = refs.filter(r => r.startsWith(ADOPTED)).map(r => r.slice(ADOPTED.length)).filter(id => UUID.test(id))
-    const sourceRefs = refs.filter(r => !r.startsWith(ADOPTED))
+    // Every ref, `adopted:` ones included: a re-import now writes the ref it came with, so a
+    // second send of the same text finds the first one's entries by their source_ref.
+    const sourceRefs = refs
     try {
       for (let i = 0; i < sourceRefs.length; i += CHUNK) {
         const { data, error } = await admin.from('journal_entries' as any).select('source_ref')
@@ -122,11 +137,31 @@ export async function postLedgerText(
   }
   const importReview = await reviewImport(admin, fundId, group, { entries: prepared.map(p => p.entry), includeLp })
   if (importReview.differences.length && reviewToken !== importReview.token) return { posted: 0, errors: [], unknownAccounts: [], importReview, reviewRequired: true }
-  for (const { entry, status } of prepared) {
+  // A closed period would refuse its entry mid-way through; find it before anything is written.
+  const closed = await closedPeriodRanges(admin, fundId, group)
+  for (const { entry } of prepared) {
+    if (dateInAnyClosedPeriod(closed, entry.entryDate)) errors.push(`Entry ${entry.entryDate} "${entry.memo ?? ''}" falls in a closed period — reopen it to post there.`)
+  }
+  if (errors.length) return { importReview, posted: 0, errors, unknownAccounts: [] }
+
+  const entryIds: string[] = []
+  for (let i = 0; i < prepared.length; i++) {
+    const { entry, status } = prepared[i]
     const result = await persistEntry(admin, fundId, group, userId, entry, status)
-    if ('error' in result) errors.push(`Entry ${entry.entryDate}: ${result.error}`)
-    else posted++
+    if ('error' in result) {
+      // Stop: the rest were not attempted, so what is in the books is exactly the entries before
+      // this one. Say so, so nobody re-sends the whole text and doubles them.
+      const left = prepared.length - i - 1
+      errors.push(`Entry ${entry.entryDate} "${entry.memo ?? ''}": ${result.error}`)
+      if (posted > 0 || left > 0) {
+        errors.push(`Stopped: ${posted} earlier ${posted === 1 ? 'entry was' : 'entries were'} written${posted ? ` (${entryIds.join(', ')})` : ''} and stay in the books; ` +
+          `this one and the ${left} after it were not. Send only the entries from this one on — not the whole text again.`)
+      }
+      break
+    }
+    entryIds.push(result.entryId)
+    posted++
   }
 
-  return { importReview, posted, errors, unknownAccounts: Array.from(unknownAccounts) }
+  return { importReview, posted, entryIds, errors, unknownAccounts: Array.from(unknownAccounts) }
 }
