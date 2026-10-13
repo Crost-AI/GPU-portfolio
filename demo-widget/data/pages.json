@@ -1,6 +1,6 @@
 {
  "schemaVersion": 2,
- "generatedAt": "2026-10-10",
+ "generatedAt": "2026-10-13",
  "pages": {
   "/dashboard": {
    "companies": [
@@ -17,7 +17,7 @@
      "portfolioGroup": [
       "Fund I"
      ],
-     "lastReportAt": "Jan 2026",
+     "lastReportAt": "Sep 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -58,7 +58,7 @@
      "portfolioGroup": [
       "Fund II"
      ],
-     "lastReportAt": "Q1 2026",
+     "lastReportAt": "Q3 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -94,7 +94,7 @@
        "currency": null
       }
      ],
-     "latestCash": 14000000,
+     "latestCash": 13100000,
      "firstInvestmentDate": "2022-01-15",
      "moic": null,
      "grossIrr": null,
@@ -115,7 +115,7 @@
      "portfolioGroup": [
       "Fund I"
      ],
-     "lastReportAt": "Q4 2025",
+     "lastReportAt": "Q2 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -135,7 +135,7 @@
        "currency": null
       }
      ],
-     "latestCash": 1500000,
+     "latestCash": 1200000,
      "firstInvestmentDate": "2024-01-10",
      "moic": null,
      "grossIrr": null,
@@ -156,7 +156,7 @@
      "portfolioGroup": [
       "Fund II"
      ],
-     "lastReportAt": "Q4 2025",
+     "lastReportAt": "Q2 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -176,7 +176,7 @@
        "currency": null
       }
      ],
-     "latestCash": 520000,
+     "latestCash": 410000,
      "firstInvestmentDate": "2024-08-15",
      "moic": null,
      "grossIrr": null,
@@ -197,7 +197,7 @@
      "portfolioGroup": [
       "Fund I"
      ],
-     "lastReportAt": "Dec 2025",
+     "lastReportAt": "Sep 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -233,7 +233,7 @@
        "currency": null
       }
      ],
-     "latestCash": 2400000,
+     "latestCash": 4400000,
      "firstInvestmentDate": "2023-06-15",
      "moic": null,
      "grossIrr": null,
@@ -255,7 +255,7 @@
      "portfolioGroup": [
       "Fund I"
      ],
-     "lastReportAt": "Q1 2026",
+     "lastReportAt": "Q3 2026",
      "openReviews": 1,
      "activeMetrics": [
       {
@@ -304,7 +304,7 @@
      "portfolioGroup": [
       "Fund II"
      ],
-     "lastReportAt": "Jan 2026",
+     "lastReportAt": "Sep 2026",
      "openReviews": 1,
      "activeMetrics": [
       {
@@ -340,7 +340,7 @@
        "currency": null
       }
      ],
-     "latestCash": 3200000,
+     "latestCash": 2200000,
      "firstInvestmentDate": "2023-09-01",
      "moic": null,
      "grossIrr": null,
@@ -361,7 +361,7 @@
      "portfolioGroup": [
       "Fund II"
      ],
-     "lastReportAt": "Q4 2025",
+     "lastReportAt": "Q3 2026",
      "openReviews": 0,
      "activeMetrics": [
       {
@@ -389,7 +389,7 @@
        "currency": null
       }
      ],
-     "latestCash": 1100000,
+     "latestCash": 1000000,
      "firstInvestmentDate": "2024-04-15",
      "moic": null,
      "grossIrr": null,
@@ -479,8 +479,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -553,8 +553,8 @@
     }
    ],
    "latestMrr": {
-    "value": 258000,
-    "period": "Dec 2025",
+    "value": 371000,
+    "period": "Sep 2026",
     "metric": {
      "id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6",
      "company_id": "a67954cb-474b-404b-858b-49c240c22027",
@@ -573,8 +573,8 @@
     }
    },
    "latestCash": {
-    "value": 2400000,
-    "period": "Q4 2025",
+    "value": 3800000,
+    "period": "Q3 2026",
     "metric": {
      "id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4",
      "company_id": "a67954cb-474b-404b-858b-49c240c22027",
@@ -592,7 +592,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/d4fef540-f26b-426f-9aef-96144a6579ce": {
    "company": {
@@ -653,8 +653,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -696,8 +696,8 @@
    ],
    "latestMrr": null,
    "latestCash": {
-    "value": 1500000,
-    "period": "Q4 2025",
+    "value": 950000,
+    "period": "Q2 2026",
     "metric": {
      "id": "9b9b877d-70dd-4a43-a213-3d2c6c169a68",
      "company_id": "d4fef540-f26b-426f-9aef-96144a6579ce",
@@ -715,7 +715,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/b4870bad-ddd4-42d1-a300-7111899cf154": {
    "company": {
@@ -778,8 +778,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -837,7 +837,7 @@
    ],
    "latestMrr": null,
    "latestCash": null,
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/d08a27bc-39e4-4fb1-a624-7a286d83e929": {
    "company": {
@@ -898,8 +898,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -940,8 +940,8 @@
     }
    ],
    "latestMrr": {
-    "value": 348000,
-    "period": "Jan 2026",
+    "value": 421000,
+    "period": "Sep 2026",
     "metric": {
      "id": "70de331d-9a0f-4056-834e-06cb613b7409",
      "company_id": "d08a27bc-39e4-4fb1-a624-7a286d83e929",
@@ -960,7 +960,7 @@
     }
    },
    "latestCash": null,
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/35dea40d-dd6f-4916-b566-deb40872d579": {
    "company": {
@@ -1021,8 +1021,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -1080,8 +1080,8 @@
    ],
    "latestMrr": null,
    "latestCash": {
-    "value": 1100000,
-    "period": "Q4 2025",
+    "value": 1000000,
+    "period": "Q3 2026",
     "metric": {
      "id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7",
      "company_id": "35dea40d-dd6f-4916-b566-deb40872d579",
@@ -1099,7 +1099,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/2231479f-1bf3-4646-9173-abc5d31fd515": {
    "company": {
@@ -1160,8 +1160,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -1235,8 +1235,8 @@
    ],
    "latestMrr": null,
    "latestCash": {
-    "value": 3200000,
-    "period": "Q4 2025",
+    "value": 2200000,
+    "period": "Q3 2026",
     "metric": {
      "id": "5cb4ee19-b309-4c58-a811-f6028597850b",
      "company_id": "2231479f-1bf3-4646-9173-abc5d31fd515",
@@ -1254,7 +1254,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/d1263d61-e648-4906-b991-f831fb74a186": {
    "company": {
@@ -1316,8 +1316,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -1391,8 +1391,8 @@
    ],
    "latestMrr": null,
    "latestCash": {
-    "value": 14000000,
-    "period": "Q4 2025",
+    "value": 11200000,
+    "period": "Q3 2026",
     "metric": {
      "id": "d36210a6-ca19-41dd-80d9-86d6493185c9",
      "company_id": "d1263d61-e648-4906-b991-f831fb74a186",
@@ -1410,7 +1410,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/companies/8b396e22-1612-4737-8d09-5dbf593bb08f": {
    "company": {
@@ -1471,8 +1471,8 @@
     "gp_economics": "everyone",
     "tax_reporting": "off",
     "management_company": "off",
-    "budgeting": "everyone",
     "funds": "everyone",
+    "budgeting": "everyone",
     "lp_portal_access": "everyone"
    },
    "showNotes": true,
@@ -1514,8 +1514,8 @@
    ],
    "latestMrr": null,
    "latestCash": {
-    "value": 520000,
-    "period": "Q4 2025",
+    "value": 1600000,
+    "period": "Q2 2026",
     "metric": {
      "id": "d5f9be47-dac2-407f-b1b3-1e1ae0da9c3e",
      "company_id": "8b396e22-1612-4737-8d09-5dbf593bb08f",
@@ -1533,7 +1533,7 @@
      "currency": null
     }
    },
-   "hasCapturedUpdates": false
+   "hasCapturedUpdates": true
   },
   "/company-updates": {
    "companies": [
@@ -1570,6 +1570,1264 @@
      "name": "Verdant"
     }
    ]
+  },
+  "/emails/e06d89ba-edd7-5083-8e6c-2369b9d0eb5d": {
+   "email": {
+    "id": "e06d89ba-edd7-5083-8e6c-2369b9d0eb5d",
+    "subject": "Verdant Q3 2026 report",
+    "from_address": "anna@verdant.earth",
+    "received_at": "2026-10-13T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "35dea40d-dd6f-4916-b566-deb40872d579",
+    "name": "Verdant"
+   },
+   "metricValues": [
+    {
+     "id": "b73915ca-2dff-52f5-9717-3ffe6385d0f9",
+     "period_label": "Q3 2026",
+     "value_number": 1000000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7"
+    },
+    {
+     "id": "5fe272a7-4dd6-5718-891c-4d65994f0259",
+     "period_label": "Q3 2026",
+     "value_number": 84000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "6aca3122-f86b-4374-b3b8-7f9c80daf173"
+    },
+    {
+     "id": "6c7154dc-9617-5e27-bcca-028377d2215f",
+     "period_label": "Q3 2026",
+     "value_number": 400000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "78d59428-5128-4861-8e2f-f9e9d1aabc7b"
+    }
+   ],
+   "metricsById": {
+    "8596acff-4ef3-4c97-97f7-2424d73d5ec7": {
+     "id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "6aca3122-f86b-4374-b3b8-7f9c80daf173": {
+     "id": "6aca3122-f86b-4374-b3b8-7f9c80daf173",
+     "name": "Monthly Burn",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "78d59428-5128-4861-8e2f-f9e9d1aabc7b": {
+     "id": "78d59428-5128-4861-8e2f-f9e9d1aabc7b",
+     "name": "Grant Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hello,\n\nA second grant of $400K arrived in August and burn came down to $84K. Cash was $1.0M at the end of September. The equity round is still open.\n\nAnna",
+   "attachments": []
+  },
+  "/emails/61909565-edfd-5679-a1b9-ce653bc02a6d": {
+   "email": {
+    "id": "61909565-edfd-5679-a1b9-ce653bc02a6d",
+    "subject": "TapFin update — Q3 2026",
+    "from_address": "kemi@tapfin.ng",
+    "received_at": "2026-10-12T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "2231479f-1bf3-4646-9173-abc5d31fd515",
+    "name": "TapFin"
+   },
+   "metricValues": [
+    {
+     "id": "0992e450-2db5-53f6-838b-4d43b040b5c5",
+     "period_label": "Jul 2026",
+     "value_number": 24800000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "051bcddd-c92a-5ef0-b11e-6d8d83618d80",
+     "period_label": "Aug 2026",
+     "value_number": 25300000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "b2f274e2-e99b-518b-8bb9-d8e6058350bb",
+     "period_label": "Sep 2026",
+     "value_number": 26900000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "08d7d6d0-e9f0-5f04-ad5b-36df14427c5e",
+     "period_label": "Jul 2026",
+     "value_number": 372000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "8337bdaf-fd63-5388-80e9-b04f8949efad",
+     "period_label": "Aug 2026",
+     "value_number": 379500,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "98f509a1-92fd-5e97-8583-03a5efa290ab",
+     "period_label": "Sep 2026",
+     "value_number": 403500,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "360fa280-2700-5250-a767-c2ceb1462241",
+     "period_label": "Q3 2026",
+     "value_number": 1.5,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "cdf766ee-c094-42d2-9061-67f9356fb68c"
+    },
+    {
+     "id": "52141365-3435-5f38-968a-1e0a411dcb60",
+     "period_label": "Q3 2026",
+     "value_number": 2200000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "5cb4ee19-b309-4c58-a811-f6028597850b"
+    }
+   ],
+   "metricsById": {
+    "63cba462-17f1-456e-8fd6-ca18bb3b0a4a": {
+     "id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a",
+     "name": "Gross Merchandise Volume",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "65345f9f-15e7-4199-8d45-ce44af7bf54f": {
+     "id": "65345f9f-15e7-4199-8d45-ce44af7bf54f",
+     "name": "Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "cdf766ee-c094-42d2-9061-67f9356fb68c": {
+     "id": "cdf766ee-c094-42d2-9061-67f9356fb68c",
+     "name": "Take Rate",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "5cb4ee19-b309-4c58-a811-f6028597850b": {
+     "id": "5cb4ee19-b309-4c58-a811-f6028597850b",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi all,\n\nSeptember GMV reached $26.9M and revenue $403.5K. Ghana is growing faster than Nigeria did in its first quarter.\n\nCash is $2.2M, which is tighter than we planned because of FX losses on naira balances. We have started the fundraise early.\n\nKemi",
+   "attachments": []
+  },
+  "/emails/412f007f-3588-5728-8d02-a5d1e9991f6c": {
+   "email": {
+    "id": "412f007f-3588-5728-8d02-a5d1e9991f6c",
+    "subject": "AdVantage — Q3 2026 update",
+    "from_address": "jamie@advantage.io",
+    "received_at": "2026-10-10T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "d08a27bc-39e4-4fb1-a624-7a286d83e929",
+    "name": "AdVantage"
+   },
+   "metricValues": [
+    {
+     "id": "4f2c1a56-d8d4-5e0f-96b3-f3c2bb811ff9",
+     "period_label": "Jul 2026",
+     "value_number": 402000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "27dfd858-e21c-5983-9cab-a3cbd9ed2be8",
+     "period_label": "Aug 2026",
+     "value_number": 409000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "d04e3e16-ad47-5f41-b845-082fbff73cc8",
+     "period_label": "Sep 2026",
+     "value_number": 421000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "5c411bb8-d82f-5779-8f85-e5461f3fcf5e",
+     "period_label": "Q3 2026",
+     "value_number": 2.5,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "01ccbf1a-b970-41d6-91a2-50525cba6745"
+    }
+   ],
+   "metricsById": {
+    "70de331d-9a0f-4056-834e-06cb613b7409": {
+     "id": "70de331d-9a0f-4056-834e-06cb613b7409",
+     "name": "Monthly Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "01ccbf1a-b970-41d6-91a2-50525cba6745": {
+     "id": "01ccbf1a-b970-41d6-91a2-50525cba6745",
+     "name": "Logo Churn",
+     "unit": "%",
+     "unit_position": "suffix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Team,\n\nMRR closed September at $421K, up 8% on June, and churn was 2.5%. Programmatic TV now has nine paying retailers.\n\nOne miss: the DSP partnership we flagged last quarter did not close; they chose to build in-house.\n\nJamie",
+   "attachments": []
+  },
+  "/emails/21445251-019b-5a20-9e59-f511ec520030": {
+   "email": {
+    "id": "21445251-019b-5a20-9e59-f511ec520030",
+    "subject": "NovaTech Q3 2026 update",
+    "from_address": "sarah@novatech.io",
+    "received_at": "2026-10-09T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "a67954cb-474b-404b-858b-49c240c22027",
+    "name": "NovaTech"
+   },
+   "metricValues": [
+    {
+     "id": "71879fcc-1e71-57b6-9074-9c8f4192b8ea",
+     "period_label": "Jul 2026",
+     "value_number": 342000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "7966f2fc-9232-590e-860c-d23d2089922f",
+     "period_label": "Aug 2026",
+     "value_number": 356000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "6dc9929d-50d5-5cb7-afd3-d7dbd479e7d4",
+     "period_label": "Sep 2026",
+     "value_number": 371000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "72235e51-2529-5d26-abf4-96c0b518cde2",
+     "period_label": "Q3 2026",
+     "value_number": 101000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "acd546b6-43da-410e-8ccb-76b6eaa7e1af"
+    },
+    {
+     "id": "095fd31d-9f38-5067-9114-ee2418de764f",
+     "period_label": "Q3 2026",
+     "value_number": 124,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef"
+    },
+    {
+     "id": "96b3cdfd-45c9-5746-9f4a-1b02c7cc0658",
+     "period_label": "Q3 2026",
+     "value_number": 3800000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4"
+    }
+   ],
+   "metricsById": {
+    "b5c80d5e-699a-44d9-b299-9a685efd6dd6": {
+     "id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6",
+     "name": "Monthly Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "acd546b6-43da-410e-8ccb-76b6eaa7e1af": {
+     "id": "acd546b6-43da-410e-8ccb-76b6eaa7e1af",
+     "name": "Burn Rate",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef": {
+     "id": "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef",
+     "name": "Net Revenue Retention",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "11a8a6a4-657f-42e2-9bfe-192adac70fa4": {
+     "id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi all,\n\nMRR was $371K in September, up 12% on June. Net revenue retention is 124% and burn held at $101K a month, leaving $3.8M of cash at quarter end.\n\nWe hired a new VP Sales (starts November) and opened a small team in Austin. Pipeline for Q4 is the largest we have had, though two of the bigger deals have slipped to January.\n\nSarah",
+   "attachments": []
+  },
+  "/emails/10081b33-d60d-5ced-8d64-bb3720e58435": {
+   "email": {
+    "id": "10081b33-d60d-5ced-8d64-bb3720e58435",
+    "subject": "RouteWise Q3 2026 Quarterly Report",
+    "from_address": "james@routewise.co",
+    "received_at": "2026-10-08T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "b4870bad-ddd4-42d1-a300-7111899cf154",
+    "name": "RouteWise"
+   },
+   "metricValues": [
+    {
+     "id": "de0553a5-bdd4-582f-a712-703c42ca6459",
+     "period_label": "Q3 2026",
+     "value_number": 7200000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "e6e9c340-1975-4a89-8905-891e6a6dbca1"
+    },
+    {
+     "id": "d7262224-b0db-5d44-a480-c0a28e5a093a",
+     "period_label": "Q3 2026",
+     "value_number": 70,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "0c3488a9-cf46-4b72-8701-7b8e931d3e9a"
+    },
+    {
+     "id": "3cd779d0-0931-5809-a46d-343045e9ea77",
+     "period_label": "Q3 2026",
+     "value_number": 88,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d70800bd-c2cc-4882-a455-fa8c635c3b38"
+    }
+   ],
+   "metricsById": {
+    "e6e9c340-1975-4a89-8905-891e6a6dbca1": {
+     "id": "e6e9c340-1975-4a89-8905-891e6a6dbca1",
+     "name": "Annual Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "0c3488a9-cf46-4b72-8701-7b8e931d3e9a": {
+     "id": "0c3488a9-cf46-4b72-8701-7b8e931d3e9a",
+     "name": "Gross Margin",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "d70800bd-c2cc-4882-a455-fa8c635c3b38": {
+     "id": "d70800bd-c2cc-4882-a455-fa8c635c3b38",
+     "name": "Customer Count",
+     "unit": null,
+     "unit_position": "suffix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi Hemrock team,\n\nARR was $7.2M at the end of September with 88 customers and 70% gross margin. Europe is now 9% of new ARR.\n\nWe have term sheet interest for a Series C at a higher valuation and expect to close in Q4. We would like Hemrock's follow-on decision by the end of October.\n\nJames",
+   "attachments": []
+  },
+  "/emails/97126db6-7bad-53cd-a263-a99cf125f4bb": {
+   "email": {
+    "id": "97126db6-7bad-53cd-a263-a99cf125f4bb",
+    "subject": "Benchline Q3 2026",
+    "from_address": "emily@benchline.com",
+    "received_at": "2026-10-07T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "d1263d61-e648-4906-b991-f831fb74a186",
+    "name": "Benchline"
+   },
+   "metricValues": [
+    {
+     "id": "ae9b3caa-c0a0-5034-9900-2b5312f912be",
+     "period_label": "Q3 2026",
+     "value_number": 12300000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "eef2323e-3374-4a17-9017-0df8dc10f898"
+    },
+    {
+     "id": "7db0a441-b5c1-5cd0-8fe3-01f77fb2c8ec",
+     "period_label": "Q3 2026",
+     "value_number": 123,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "7202c8ed-060b-439e-8f11-53b46a1b7de3"
+    },
+    {
+     "id": "07051a14-005b-5580-9b38-f236737cb58a",
+     "period_label": "Q3 2026",
+     "value_number": 74,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "21f641a6-23e2-42be-af21-744899d210f8"
+    },
+    {
+     "id": "fa399d7c-e4ad-59b4-b0a3-dc0624290b8d",
+     "period_label": "Q3 2026",
+     "value_number": 11200000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d36210a6-ca19-41dd-80d9-86d6493185c9"
+    }
+   ],
+   "metricsById": {
+    "eef2323e-3374-4a17-9017-0df8dc10f898": {
+     "id": "eef2323e-3374-4a17-9017-0df8dc10f898",
+     "name": "Annual Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "7202c8ed-060b-439e-8f11-53b46a1b7de3": {
+     "id": "7202c8ed-060b-439e-8f11-53b46a1b7de3",
+     "name": "Net Dollar Retention",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "21f641a6-23e2-42be-af21-744899d210f8": {
+     "id": "21f641a6-23e2-42be-af21-744899d210f8",
+     "name": "Headcount",
+     "unit": null,
+     "unit_position": "suffix"
+    },
+    "d36210a6-ca19-41dd-80d9-86d6493185c9": {
+     "id": "d36210a6-ca19-41dd-80d9-86d6493185c9",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hello,\n\nARR is $12.3M, NDR 123%, headcount 74 and cash $11.2M. We are slowing hiring for the rest of the year to keep runway above 30 months.\n\nEmily and Tom",
+   "attachments": []
+  },
+  "/emails/944c3b08-6569-58ce-8cda-77b49746091c": {
+   "email": {
+    "id": "944c3b08-6569-58ce-8cda-77b49746091c",
+    "subject": "Verdant Q2 2026 report",
+    "from_address": "anna@verdant.earth",
+    "received_at": "2026-07-22T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "35dea40d-dd6f-4916-b566-deb40872d579",
+    "name": "Verdant"
+   },
+   "metricValues": [
+    {
+     "id": "4ddd4eb2-3cb3-52fd-a944-27963f66be9a",
+     "period_label": "Q1 2026",
+     "value_number": 900000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7"
+    },
+    {
+     "id": "3b933d1c-baae-51e3-97bc-1b461092db92",
+     "period_label": "Q2 2026",
+     "value_number": 700000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7"
+    },
+    {
+     "id": "8c003277-7276-55e6-9031-b82b0531c96e",
+     "period_label": "Q1 2026",
+     "value_number": 86000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "6aca3122-f86b-4374-b3b8-7f9c80daf173"
+    },
+    {
+     "id": "c4aa7394-145c-580e-9a73-f8512e68c9fb",
+     "period_label": "Q2 2026",
+     "value_number": 88000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "6aca3122-f86b-4374-b3b8-7f9c80daf173"
+    },
+    {
+     "id": "07600258-7198-5cc8-8b0a-f6f3dc0a50a1",
+     "period_label": "Q2 2026",
+     "value_number": 250000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "78d59428-5128-4861-8e2f-f9e9d1aabc7b"
+    }
+   ],
+   "metricsById": {
+    "8596acff-4ef3-4c97-97f7-2424d73d5ec7": {
+     "id": "8596acff-4ef3-4c97-97f7-2424d73d5ec7",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "6aca3122-f86b-4374-b3b8-7f9c80daf173": {
+     "id": "6aca3122-f86b-4374-b3b8-7f9c80daf173",
+     "name": "Monthly Burn",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "78d59428-5128-4861-8e2f-f9e9d1aabc7b": {
+     "id": "78d59428-5128-4861-8e2f-f9e9d1aabc7b",
+     "name": "Grant Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hello,\n\nWe received a $250K state climate grant in June. Cash was $700K at quarter end with burn at $88K a month, which is too little runway; we are raising now.\n\nAnna",
+   "attachments": []
+  },
+  "/emails/b1820126-b5ac-59e1-963d-24949dfa0db8": {
+   "email": {
+    "id": "b1820126-b5ac-59e1-963d-24949dfa0db8",
+    "subject": "GreenLeaf Bio Q2 update",
+    "from_address": "priya@greenleafbio.com",
+    "received_at": "2026-07-21T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "d4fef540-f26b-426f-9aef-96144a6579ce",
+    "name": "GreenLeaf Bio"
+   },
+   "metricValues": [
+    {
+     "id": "83721939-8fe4-5115-80b0-3fe74f78ff6b",
+     "period_label": "Q1 2026",
+     "value_number": 1200000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "9b9b877d-70dd-4a43-a213-3d2c6c169a68"
+    },
+    {
+     "id": "b298538e-f43f-54ec-9cfa-5f24515953cf",
+     "period_label": "Q2 2026",
+     "value_number": 950000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "9b9b877d-70dd-4a43-a213-3d2c6c169a68"
+    },
+    {
+     "id": "b566731b-14f4-50ec-a1c9-5148c94de458",
+     "period_label": "Q1 2026",
+     "value_number": 14,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "cbc581d4-295c-4b83-867e-bdc62e45f4ff"
+    },
+    {
+     "id": "0bdb2a5d-bac3-5883-b253-f0b10a4f218d",
+     "period_label": "Q2 2026",
+     "value_number": 15,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "cbc581d4-295c-4b83-867e-bdc62e45f4ff"
+    }
+   ],
+   "metricsById": {
+    "9b9b877d-70dd-4a43-a213-3d2c6c169a68": {
+     "id": "9b9b877d-70dd-4a43-a213-3d2c6c169a68",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "cbc581d4-295c-4b83-867e-bdc62e45f4ff": {
+     "id": "cbc581d4-295c-4b83-867e-bdc62e45f4ff",
+     "name": "Headcount",
+     "unit": null,
+     "unit_position": "suffix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Dear investors,\n\nPlainly: the EPA has asked for an additional field season of data, so approval moves from Q2 2026 to the second half of 2027. Pilot revenue is unchanged.\n\nCash was $950K at the end of June, about five months of runway. We are raising a bridge and have $600K of soft commitments; we would welcome the fund's participation.\n\nHeadcount is 15.\n\nPriya",
+   "attachments": []
+  },
+  "/emails/634c2d8e-6230-5f2a-b60d-c32a8cb86bac": {
+   "email": {
+    "id": "634c2d8e-6230-5f2a-b60d-c32a8cb86bac",
+    "subject": "Lattis Q2",
+    "from_address": "elena@lattis.dev",
+    "received_at": "2026-07-18T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "8b396e22-1612-4737-8d09-5dbf593bb08f",
+    "name": "Lattis"
+   },
+   "metricValues": [
+    {
+     "id": "416795a4-3c4e-5c76-b926-8c112eb42ba1",
+     "period_label": "Q1 2026",
+     "value_number": 410000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d5f9be47-dac2-407f-b1b3-1e1ae0da9c3e"
+    },
+    {
+     "id": "e5cf97ac-4efd-560a-8d5d-29b020e571ba",
+     "period_label": "Q2 2026",
+     "value_number": 1600000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d5f9be47-dac2-407f-b1b3-1e1ae0da9c3e"
+    },
+    {
+     "id": "1cb56307-5f06-5d8a-abc5-461507c11fe0",
+     "period_label": "Q1 2026",
+     "value_number": 50000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "4991f311-515d-4573-936f-c630fa4baecd"
+    },
+    {
+     "id": "918d6cbc-26b5-5827-885d-95c1504603c6",
+     "period_label": "Q2 2026",
+     "value_number": 52000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "4991f311-515d-4573-936f-c630fa4baecd"
+    }
+   ],
+   "metricsById": {
+    "d5f9be47-dac2-407f-b1b3-1e1ae0da9c3e": {
+     "id": "d5f9be47-dac2-407f-b1b3-1e1ae0da9c3e",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "4991f311-515d-4573-936f-c630fa4baecd": {
+     "id": "4991f311-515d-4573-936f-c630fa4baecd",
+     "name": "Monthly Burn",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi,\n\nWe closed a $1.5M seed extension in May, so cash was $1.6M at the end of June. Burn is $52K a month. Design partners: 6, of which 2 have converted to paid.\n\nElena",
+   "attachments": []
+  },
+  "/emails/05c4eed5-f90c-5e80-a085-1eb8427d5011": {
+   "email": {
+    "id": "05c4eed5-f90c-5e80-a085-1eb8427d5011",
+    "subject": "TapFin update — Q2 2026",
+    "from_address": "kemi@tapfin.ng",
+    "received_at": "2026-07-17T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "2231479f-1bf3-4646-9173-abc5d31fd515",
+    "name": "TapFin"
+   },
+   "metricValues": [
+    {
+     "id": "ea35a52a-40df-50e2-98db-ca96afdd8d64",
+     "period_label": "Feb 2026",
+     "value_number": 18900000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "0212407e-594c-5011-9cc3-534504c07f39",
+     "period_label": "Mar 2026",
+     "value_number": 20100000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "7166e733-bc1b-562c-a4db-b4e25e94b22b",
+     "period_label": "Apr 2026",
+     "value_number": 21400000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "43b8d2c0-0b6b-5f37-9a4b-896dd48f0e08",
+     "period_label": "May 2026",
+     "value_number": 22000000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "df63eeb9-69d1-5643-9dbb-9474fbf7785f",
+     "period_label": "Jun 2026",
+     "value_number": 23500000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a"
+    },
+    {
+     "id": "45266d4a-2cc2-5e25-a55c-63b9bc298c5c",
+     "period_label": "Feb 2026",
+     "value_number": 283500,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "1afae1f8-4437-5ffd-98c9-3de004525b2a",
+     "period_label": "Mar 2026",
+     "value_number": 301500,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "9e50b0e7-063e-52b3-a962-76c0592c1580",
+     "period_label": "Apr 2026",
+     "value_number": 321000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "49bd6f95-f5c8-53e9-a33a-26baf060a21a",
+     "period_label": "May 2026",
+     "value_number": 330000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "03d6fa6c-db86-53e4-9a0d-5d2fbace99da",
+     "period_label": "Jun 2026",
+     "value_number": 352500,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "65345f9f-15e7-4199-8d45-ce44af7bf54f"
+    },
+    {
+     "id": "c92fe823-9a80-5f18-b250-f9506ff92fc5",
+     "period_label": "Q1 2026",
+     "value_number": 1.5,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "cdf766ee-c094-42d2-9061-67f9356fb68c"
+    },
+    {
+     "id": "1bf0f860-b4c4-5ccf-a357-c5d1a71f8ee4",
+     "period_label": "Q2 2026",
+     "value_number": 1.5,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "cdf766ee-c094-42d2-9061-67f9356fb68c"
+    },
+    {
+     "id": "bcbdf8e3-033c-560d-a421-1ad9e46beef9",
+     "period_label": "Q1 2026",
+     "value_number": 2900000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "5cb4ee19-b309-4c58-a811-f6028597850b"
+    },
+    {
+     "id": "a1c6b3f9-1d45-5891-93a5-a47b0c04138a",
+     "period_label": "Q2 2026",
+     "value_number": 2600000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "5cb4ee19-b309-4c58-a811-f6028597850b"
+    }
+   ],
+   "metricsById": {
+    "63cba462-17f1-456e-8fd6-ca18bb3b0a4a": {
+     "id": "63cba462-17f1-456e-8fd6-ca18bb3b0a4a",
+     "name": "Gross Merchandise Volume",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "65345f9f-15e7-4199-8d45-ce44af7bf54f": {
+     "id": "65345f9f-15e7-4199-8d45-ce44af7bf54f",
+     "name": "Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "cdf766ee-c094-42d2-9061-67f9356fb68c": {
+     "id": "cdf766ee-c094-42d2-9061-67f9356fb68c",
+     "name": "Take Rate",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "5cb4ee19-b309-4c58-a811-f6028597850b": {
+     "id": "5cb4ee19-b309-4c58-a811-f6028597850b",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi all,\n\nGMV was $23.5M in June and revenue $352K at a steady 1.5% take rate. We launched in Ghana in May.\n\nCash was $2.6M at quarter end. We plan to raise in Q1 2027.\n\nKemi",
+   "attachments": []
+  },
+  "/emails/a6a0cd45-77ae-5c7b-8fce-6a2bc82b6966": {
+   "email": {
+    "id": "a6a0cd45-77ae-5c7b-8fce-6a2bc82b6966",
+    "subject": "AdVantage — Q2 2026 update",
+    "from_address": "jamie@advantage.io",
+    "received_at": "2026-07-16T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "d08a27bc-39e4-4fb1-a624-7a286d83e929",
+    "name": "AdVantage"
+   },
+   "metricValues": [
+    {
+     "id": "b2dfbd5b-7254-5509-b46d-4139d09fe643",
+     "period_label": "Feb 2026",
+     "value_number": 355000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "4a691102-3681-5c35-92f0-c7f6244247e1",
+     "period_label": "Mar 2026",
+     "value_number": 362000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "3c03269d-02e4-536a-8f75-ae5d84526382",
+     "period_label": "Apr 2026",
+     "value_number": 370000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "f3bdcb74-978c-5bb8-b98d-ac38b3196860",
+     "period_label": "May 2026",
+     "value_number": 381000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "8ec257a1-627d-5580-b05d-50cac30c8851",
+     "period_label": "Jun 2026",
+     "value_number": 390000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "70de331d-9a0f-4056-834e-06cb613b7409"
+    },
+    {
+     "id": "1f0e7401-a9b8-5234-8203-ab2a4408e20a",
+     "period_label": "Q1 2026",
+     "value_number": 2.9,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "01ccbf1a-b970-41d6-91a2-50525cba6745"
+    },
+    {
+     "id": "edff4dc5-4e98-506e-bdb5-66895aa7beb5",
+     "period_label": "Q2 2026",
+     "value_number": 2.6,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "01ccbf1a-b970-41d6-91a2-50525cba6745"
+    }
+   ],
+   "metricsById": {
+    "70de331d-9a0f-4056-834e-06cb613b7409": {
+     "id": "70de331d-9a0f-4056-834e-06cb613b7409",
+     "name": "Monthly Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "01ccbf1a-b970-41d6-91a2-50525cba6745": {
+     "id": "01ccbf1a-b970-41d6-91a2-50525cba6745",
+     "name": "Logo Churn",
+     "unit": "%",
+     "unit_position": "suffix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Team,\n\nMRR reached $390K in June, up 8% on March. Logo churn improved to 2.6% for the quarter after we moved our smallest accounts to annual contracts.\n\nThe programmatic TV beta is live with four retailers. We expect to price it in Q4.\n\nCash is comfortable; we are not raising this year.\n\nJamie",
+   "attachments": []
+  },
+  "/emails/d66bbc56-cb06-5d70-be22-0325e2c9b300": {
+   "email": {
+    "id": "d66bbc56-cb06-5d70-be22-0325e2c9b300",
+    "subject": "Benchline Q2 2026",
+    "from_address": "emily@benchline.com",
+    "received_at": "2026-07-15T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "d1263d61-e648-4906-b991-f831fb74a186",
+    "name": "Benchline"
+   },
+   "metricValues": [
+    {
+     "id": "b51d8cae-a96e-54cf-a4da-7e4f547b3996",
+     "period_label": "Q2 2026",
+     "value_number": 11600000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "eef2323e-3374-4a17-9017-0df8dc10f898"
+    },
+    {
+     "id": "938de603-44db-58e9-bd80-fde2a1275578",
+     "period_label": "Q1 2026",
+     "value_number": 126,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "7202c8ed-060b-439e-8f11-53b46a1b7de3"
+    },
+    {
+     "id": "cbc19539-caf7-5ab8-9d62-9d224097a4bb",
+     "period_label": "Q2 2026",
+     "value_number": 124,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "7202c8ed-060b-439e-8f11-53b46a1b7de3"
+    },
+    {
+     "id": "4babcf8a-7b01-5163-bb77-7638c1369d65",
+     "period_label": "Q1 2026",
+     "value_number": 66,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "21f641a6-23e2-42be-af21-744899d210f8"
+    },
+    {
+     "id": "f725a06d-e288-51a3-b108-1e7fd5847a67",
+     "period_label": "Q2 2026",
+     "value_number": 71,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "21f641a6-23e2-42be-af21-744899d210f8"
+    },
+    {
+     "id": "b64837f0-77e0-5a4b-9e99-8e7df46b512d",
+     "period_label": "Q1 2026",
+     "value_number": 13100000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d36210a6-ca19-41dd-80d9-86d6493185c9"
+    },
+    {
+     "id": "3697f342-933a-5ae2-b57b-cd971b29cb6c",
+     "period_label": "Q2 2026",
+     "value_number": 12000000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d36210a6-ca19-41dd-80d9-86d6493185c9"
+    }
+   ],
+   "metricsById": {
+    "eef2323e-3374-4a17-9017-0df8dc10f898": {
+     "id": "eef2323e-3374-4a17-9017-0df8dc10f898",
+     "name": "Annual Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "7202c8ed-060b-439e-8f11-53b46a1b7de3": {
+     "id": "7202c8ed-060b-439e-8f11-53b46a1b7de3",
+     "name": "Net Dollar Retention",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "21f641a6-23e2-42be-af21-744899d210f8": {
+     "id": "21f641a6-23e2-42be-af21-744899d210f8",
+     "name": "Headcount",
+     "unit": null,
+     "unit_position": "suffix"
+    },
+    "d36210a6-ca19-41dd-80d9-86d6493185c9": {
+     "id": "d36210a6-ca19-41dd-80d9-86d6493185c9",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hello,\n\nARR grew to $11.6M (Q1: $10.8M). Net dollar retention eased to 124% as two large customers renewed flat. Headcount is 71 and cash $12.0M.\n\nEmily and Tom",
+   "attachments": []
+  },
+  "/emails/327e8625-f246-544e-bcca-3c295aa4cadf": {
+   "email": {
+    "id": "327e8625-f246-544e-bcca-3c295aa4cadf",
+    "subject": "NovaTech Q2 2026 investor update",
+    "from_address": "sarah@novatech.io",
+    "received_at": "2026-07-14T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "a67954cb-474b-404b-858b-49c240c22027",
+    "name": "NovaTech"
+   },
+   "metricValues": [
+    {
+     "id": "38131239-e04c-50a0-bcfa-636d41652409",
+     "period_label": "Jan 2026",
+     "value_number": 270000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "fc813ad9-d2ac-56ab-a12b-2c89bd0f9a96",
+     "period_label": "Feb 2026",
+     "value_number": 282000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "f8643162-5f9a-5683-b33d-a66b14027ceb",
+     "period_label": "Mar 2026",
+     "value_number": 295000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "c25c9f06-90b9-5bcf-b2c1-2ae1cf329793",
+     "period_label": "Apr 2026",
+     "value_number": 306000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "6bc628c1-51a5-5a3f-854f-e8c2f1c077ef",
+     "period_label": "May 2026",
+     "value_number": 318000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "4b3f1b02-36e4-594a-a7e7-4dc3711a8c11",
+     "period_label": "Jun 2026",
+     "value_number": 331000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6"
+    },
+    {
+     "id": "b73661ed-701b-514e-a804-cc020d334dbc",
+     "period_label": "Q1 2026",
+     "value_number": 96000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "acd546b6-43da-410e-8ccb-76b6eaa7e1af"
+    },
+    {
+     "id": "27b90557-2ee8-558f-8e0f-4d6bbd6c91e3",
+     "period_label": "Q2 2026",
+     "value_number": 98000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "acd546b6-43da-410e-8ccb-76b6eaa7e1af"
+    },
+    {
+     "id": "eef8f03f-23cb-5ef5-b0ae-8c8dd3d7939d",
+     "period_label": "Q1 2026",
+     "value_number": 121,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef"
+    },
+    {
+     "id": "87d2a2b7-d7b9-5952-9ab4-2864c404e66d",
+     "period_label": "Q2 2026",
+     "value_number": 122,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef"
+    },
+    {
+     "id": "7cfe2e44-375f-53b6-abc4-a5c3718533b8",
+     "period_label": "Q1 2026",
+     "value_number": 4400000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4"
+    },
+    {
+     "id": "d9030404-8aec-5318-bdf9-f87f3bff0a33",
+     "period_label": "Q2 2026",
+     "value_number": 4100000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4"
+    }
+   ],
+   "metricsById": {
+    "b5c80d5e-699a-44d9-b299-9a685efd6dd6": {
+     "id": "b5c80d5e-699a-44d9-b299-9a685efd6dd6",
+     "name": "Monthly Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "acd546b6-43da-410e-8ccb-76b6eaa7e1af": {
+     "id": "acd546b6-43da-410e-8ccb-76b6eaa7e1af",
+     "name": "Burn Rate",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef": {
+     "id": "c78dbad1-2eb6-48b2-9b69-fc4ac1922bef",
+     "name": "Net Revenue Retention",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "11a8a6a4-657f-42e2-9bfe-192adac70fa4": {
+     "id": "11a8a6a4-657f-42e2-9bfe-192adac70fa4",
+     "name": "Cash on Hand",
+     "unit": "$",
+     "unit_position": "prefix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi all,\n\nQ2 was our strongest quarter yet. MRR reached $331K in June, up 12% on March, and net revenue retention rose to 122%. The Series B extension we closed in February is mostly in the bank: cash was $4.1M at the end of June against a monthly burn of $98K.\n\nHighlights\n- Signed our two largest enterprise contracts to date, both multi-year.\n- Shipped the churn-prediction module to every customer on the Growth plan.\n\nLowlights\n- Our VP Sales left in May. Sarah is covering the role while we hire.\n\nAsks: introductions to heads of customer success at mid-market SaaS companies.\n\nSarah",
+   "attachments": []
+  },
+  "/emails/3d2e724e-4360-50e7-be92-c68788582a0a": {
+   "email": {
+    "id": "3d2e724e-4360-50e7-be92-c68788582a0a",
+    "subject": "RouteWise Q2 2026 Quarterly Report",
+    "from_address": "james@routewise.co",
+    "received_at": "2026-07-11T16:30:00+00:00",
+    "processing_status": "success",
+    "processing_error": null,
+    "claude_response": null
+   },
+   "company": {
+    "id": "b4870bad-ddd4-42d1-a300-7111899cf154",
+    "name": "RouteWise"
+   },
+   "metricValues": [
+    {
+     "id": "b9730880-42f2-58dc-a6d5-62ae66059b25",
+     "period_label": "Q2 2026",
+     "value_number": 6600000,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "e6e9c340-1975-4a89-8905-891e6a6dbca1"
+    },
+    {
+     "id": "19556c66-295f-5ca2-8e75-55915b060328",
+     "period_label": "Q2 2026",
+     "value_number": 69,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "0c3488a9-cf46-4b72-8701-7b8e931d3e9a"
+    },
+    {
+     "id": "c4ebcff5-c2e8-5a9a-8c20-87abde79edcd",
+     "period_label": "Q2 2026",
+     "value_number": 81,
+     "value_text": null,
+     "confidence": "high",
+     "metric_id": "d70800bd-c2cc-4882-a455-fa8c635c3b38"
+    }
+   ],
+   "metricsById": {
+    "e6e9c340-1975-4a89-8905-891e6a6dbca1": {
+     "id": "e6e9c340-1975-4a89-8905-891e6a6dbca1",
+     "name": "Annual Recurring Revenue",
+     "unit": "$",
+     "unit_position": "prefix"
+    },
+    "0c3488a9-cf46-4b72-8701-7b8e931d3e9a": {
+     "id": "0c3488a9-cf46-4b72-8701-7b8e931d3e9a",
+     "name": "Gross Margin",
+     "unit": "%",
+     "unit_position": "suffix"
+    },
+    "d70800bd-c2cc-4882-a455-fa8c635c3b38": {
+     "id": "d70800bd-c2cc-4882-a455-fa8c635c3b38",
+     "name": "Customer Count",
+     "unit": null,
+     "unit_position": "suffix"
+    }
+   },
+   "hasReviews": false,
+   "hasFileStorage": false,
+   "textBody": "Hi Hemrock team,\n\nARR reached $6.6M at the end of June, up from $6.1M in March. We added 7 customers (81 total) and gross margin improved to 69%.\n\nThe London office opened in April and has signed its first two UK customers. We are planning a Series C process for early 2027 and would welcome the fund's view on a pro-rata follow-on.\n\nJames",
+   "attachments": []
   },
   "/emails/0d576326-16f6-4292-87a0-619780395f3a": {
    "email": {
