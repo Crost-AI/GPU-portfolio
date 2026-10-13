@@ -133,7 +133,7 @@ async function main() {
 function printKeylessSummary(chosen: boolean) {
   console.log(chosen ? '\nWith no server AI key:' : '\nNo server AI key is stored. Without one (pass --ai assistant to make it the plan):')
   console.log('  Works from your assistant over MCP:')
-  for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'assistant')) console.log(`    - ${c.label}`)
+  for (const c of AI_CAPABILITIES.filter(c => c.keyless !== 'needs_key')) console.log(`    - ${c.label}${c.keyless === 'on_demand' ? ' (waits until you ask)' : ''}`)
   console.log('  Needs a server key (add one in Settings → AI providers):')
   for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'needs_key')) console.log(`    - ${c.label}: ${c.why}`)
   console.log('')

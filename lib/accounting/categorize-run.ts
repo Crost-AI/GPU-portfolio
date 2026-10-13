@@ -3,6 +3,7 @@
 // the agent tool. Only touches simple two-line bank drafts — an entry that's
 // been turned into an allocated capital call (many postings) is left alone.
 
+import { fundHasAIKey, noKeyMessage } from '@/lib/ai/keyless'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createFundAIProviderWithOverride } from '@/lib/ai'
 import { loadPostedLedger } from './load'
@@ -70,6 +71,7 @@ export async function runCategorization(
     counterparty: t.counterparty ?? null, activity: t.raw?.activity ?? null,
   }))
 
+  if (!(await fundHasAIKey(admin, fundId))) return { error: noKeyMessage('bank_categorize', 'categorise transactions') }
   let provider
   try {
     provider = await createFundAIProviderWithOverride(admin, fundId)

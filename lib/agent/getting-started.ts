@@ -159,6 +159,17 @@ export const PROMPT_TEMPLATES: PromptTemplate[] = [
     text: a => `Open the dashboard for ${a.company || 'the company'}. Summarize its performance since our first investment, the trend in its KPIs, and any risks or open questions in its latest updates.`,
   },
   {
+    name: 'process_inbox',
+    title: 'Process my inbox',
+    description: 'Company updates waiting for you because the fund has no server AI key: read each, record its figures, file it.',
+    arguments: [],
+    domain: 'portfolio',
+    text: () => 'Call inbox_waiting. For each update, oldest first: read it with inbox_read, work out which company it is from ' +
+      '(list_companies if unsure), record each figure for the right period with record_metric_value (company_metrics lists the ' +
+      'company\'s metrics; ask me before adding a new one), add anything notable with add_company_note, then call inbox_done. ' +
+      'Skip any you cannot attribute and tell me which. Finish with a short list of what you recorded.',
+  },
+  {
     name: 'quarter_end_review',
     title: 'Quarter-end review',
     description: "A vehicle's statements and LP capital for the quarter, and what needs attention before reporting.",

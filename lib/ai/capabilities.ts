@@ -17,6 +17,11 @@
 export type KeylessSupport =
   /** Works with no server key: ask your assistant, and it uses the tools listed. */
   | 'assistant'
+  /**
+   * Runs unattended with a key. With none, the work is saved and waits until you ask your
+   * assistant to do it (the prompt), instead of failing.
+   */
+  | 'on_demand'
   /** Needs a server AI key today. `why` says what is missing. */
   | 'needs_key'
 
@@ -26,9 +31,9 @@ export interface AICapability {
   keyless: KeylessSupport
   /** One line. For `assistant`: how it works without a key. For `needs_key`: why it can't. */
   why: string
-  /** For `assistant`: what to type into your assistant. */
+  /** For `assistant` and `on_demand`: what to type into your assistant. */
   prompt?: string
-  /** For `assistant`: the MCP tools it uses. */
+  /** For `assistant` and `on_demand`: the MCP tools it uses. */
   tools?: string[]
 }
 
@@ -91,11 +96,11 @@ export const AI_CAPABILITIES: AICapability[] = [
   },
   {
     key: 'deal_analysis',
-    label: 'Analysing an inbound deal against the thesis',
+    label: 'Adding and analysing a deal against the thesis',
     keyless: 'assistant',
-    why: 'Your assistant reads the deal and writes its analysis back.',
-    prompt: 'Review the new inbound deals against our thesis.',
-    tools: ['deals_inbound_detail', 'deals_update_inbound'],
+    why: 'A deal added from chat is saved unanalysed; your assistant reads it and the thesis and writes the analysis back.',
+    prompt: 'Add this pitch to deal flow and analyse it against our thesis.',
+    tools: ['deals_create_inbound', 'deals_inbound_detail', 'deals_update_inbound'],
   },
   {
     key: 'memo_edit',
@@ -119,9 +124,17 @@ export const AI_CAPABILITIES: AICapability[] = [
   },
   {
     key: 'inbound_email',
-    label: 'Reading emailed company updates and deals as they arrive',
+    label: 'Reading emailed company updates',
+    keyless: 'on_demand',
+    why: 'With a key it runs as each email arrives. Without one, each update is saved and waits in an inbox your assistant clears when you ask.',
+    prompt: 'Process my inbox.',
+    tools: ['inbox_waiting', 'inbox_read', 'record_metric_value', 'inbox_done'],
+  },
+  {
+    key: 'inbound_routing',
+    label: 'Sorting inbound email into deals, diligence and updates',
     keyless: 'needs_key',
-    why: 'It runs when the email arrives, with nobody present. Without a key, emails still arrive but are not parsed.',
+    why: 'It runs as each email arrives, with nobody present. Without a key, everything is treated as a company update.',
   },
   {
     key: 'ocr',
@@ -183,6 +196,8 @@ export interface AIStatus {
   hasKey: boolean
   /** What your assistant can do without a server key. */
   worksWithoutKey: { feature: string; how: string; ask?: string }[]
+  /** Unattended work that, without a key, is saved and waits until you ask your assistant. */
+  waitsForYou: { feature: string; how: string; ask?: string }[]
   /** What needs a server key, and why. */
   needsKey: { feature: string; why: string }[]
 }
@@ -194,6 +209,8 @@ export function aiStatus(hasKey: boolean, stored: unknown): AIStatus {
     hasKey,
     worksWithoutKey: AI_CAPABILITIES.filter(c => c.keyless === 'assistant')
       .map(c => ({ feature: c.label, how: c.why, ...(c.prompt ? { ask: c.prompt } : {}) })),
+    waitsForYou: AI_CAPABILITIES.filter(c => c.keyless === 'on_demand')
+      .map(c => ({ feature: c.label, how: c.why, ...(c.prompt ? { ask: c.prompt } : {}) })),
     needsKey: AI_CAPABILITIES.filter(c => c.keyless === 'needs_key').map(c => ({ feature: c.label, why: c.why })),
   }
 }
@@ -202,7 +219,8 @@ export function aiStatus(hasKey: boolean, stored: unknown): AIStatus {
 export function aiCapabilityTable(): string {
   const rows = AI_CAPABILITIES.map(c => {
     const tools = c.tools?.length ? ` (${c.tools.map(t => `\`${t}\``).join(', ')})` : ''
-    return `| ${c.label} | ${c.keyless === 'assistant' ? 'Yes, from your assistant' : 'Needs a key'} | ${c.why}${tools} |`
+    const support = c.keyless === 'assistant' ? 'Yes, from your assistant' : c.keyless === 'on_demand' ? 'Waits for your assistant' : 'Needs a key'
+    return `| ${c.label} | ${support} | ${c.why}${tools} |`
   })
   return ['| Feature | Without a server key | How, or why not |', '|---|---|---|', ...rows].join('\n')
 }

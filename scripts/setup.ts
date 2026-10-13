@@ -312,7 +312,7 @@ async function chooseAI(): Promise<'assistant' | 'key' | null> {
   console.log(`  2. Add a server key${hasEnvKey ? ' (found one in your environment)' : ' (put ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY in the environment first)'}.`)
   console.log('     The app then calls the model itself: the web app\'s AI buttons, email parsing and background jobs.')
   console.log('  Works from your assistant without a key:')
-  for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'assistant')) console.log(`    - ${c.label}`)
+  for (const c of AI_CAPABILITIES.filter(c => c.keyless !== 'needs_key')) console.log(`    - ${c.label}${c.keyless === 'on_demand' ? ' (waits until you ask)' : ''}`)
   console.log('  Needs a server key:')
   for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'needs_key')) console.log(`    - ${c.label}`)
   if (!rl) return null // Not asked: --ai decides, or the checklist asks later.

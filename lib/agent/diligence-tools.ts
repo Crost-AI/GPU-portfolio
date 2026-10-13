@@ -11,6 +11,7 @@
 // named for what they change. From a connected chat each is staged for the person to approve, so
 // spending on the memo agent or editing the memo is always a decision someone confirmed.
 
+import { fundHasAIKey, noKeyMessage } from '@/lib/ai/keyless'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { answerDealQuestion } from '@/lib/diligence/qa-answer'
@@ -199,6 +200,7 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     const deal = await resolveDeal(admin, fundId, String(input?.deal ?? ''), access)
     const question = String(input?.question ?? '').trim()
     if (!question) throw new Error('A question is required')
+    if (!(await fundHasAIKey(admin, fundId))) throw new Error(noKeyMessage('diligence_qa', 'answer from the data room'))
 
     const result = await answerDealQuestion({
       admin,

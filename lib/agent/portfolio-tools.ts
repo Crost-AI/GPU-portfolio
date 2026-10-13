@@ -5,6 +5,7 @@
 // Fund-scoped by design. `vehicle` is a FILTER here, never a required scope: a company
 // can be held by more than one vehicle, and portfolio-level questions span all of them.
 
+import { INBOX_HANDLERS } from './inbox-tools'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { PORTFOLIO_TOOL_MANIFEST } from './portfolio-tools-manifest'
 import { computeSummary } from '@/lib/investments'
@@ -99,6 +100,7 @@ async function companiesIn(admin: SupabaseClient, fundId: string, vehicle: strin
 }
 
 export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
+  ...INBOX_HANDLERS,
   // Company Updates retrieval. Fund-scoped in SQL; the company reference resolves through the
   // same resolver as every other portfolio tool so a name never silently picks the wrong company.
   get_updates: async ({ admin, fundId, access }: AgentToolContext, input: any) =>

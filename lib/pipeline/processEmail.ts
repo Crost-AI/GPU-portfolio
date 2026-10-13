@@ -10,6 +10,7 @@ import {
   type ExtractMetricsResult,
 } from '@/lib/claude/extractMetrics'
 import { getFeatureProvider } from '@/lib/ai/feature-provider'
+import { AWAITING_ASSISTANT, fundHasAIKey } from '@/lib/ai/keyless'
 import { decryptApiKey, decrypt } from '@/lib/crypto'
 import { getAccessToken as getGoogleAccessToken, findOrCreateFolder as findOrCreateGoogleFolder, uploadFile as uploadGoogleFile } from '@/lib/google/drive'
 import { getGoogleCredentials } from '@/lib/google/credentials'
@@ -177,6 +178,13 @@ export async function runPipeline(
     .eq('id', emailId)
     .eq('fund_id', fundId)
   if (routeUpdateError) throw new Error(`Could not persist email route: ${routeUpdateError.message}`)
+
+  // No server key: nothing can read it now, so it is saved and left `pending` for the person's own
+  // assistant (inbox_waiting / inbox_read / inbox_done) rather than failed (lib/ai/keyless.ts).
+  if (!(await fundHasAIKey(supabase as any, fundId))) {
+    await finalizeEmail(supabase, emailId, { status: 'pending', warnings: [AWAITING_ASSISTANT] })
+    return
+  }
 
   // Inbound analysis / portfolio tracking runs on the 'portfolio' feature model
   // (company identification, metric extraction, interaction extraction).

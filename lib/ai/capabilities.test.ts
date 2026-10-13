@@ -7,7 +7,7 @@ describe('the AI capabilities list', () => {
   it('has unique keys, and every keyless feature says how and which tools', () => {
     const keys = AI_CAPABILITIES.map(c => c.key)
     expect(new Set(keys).size).toBe(keys.length)
-    for (const c of AI_CAPABILITIES.filter(c => c.keyless === 'assistant' && c.key !== 'portal_analyst')) {
+    for (const c of AI_CAPABILITIES.filter(c => c.keyless !== 'needs_key' && c.key !== 'portal_analyst')) {
       expect(c.tools?.length, c.key).toBeGreaterThan(0)
       expect(c.prompt, c.key).toBeTruthy()
     }
@@ -40,6 +40,6 @@ describe('effectiveAIMode', () => {
   it('setup_status splits the list into what works and what needs a key', () => {
     const s = aiStatus(false, 'assistant')
     expect(s.mode).toBe('assistant')
-    expect(s.worksWithoutKey.length + s.needsKey.length).toBe(AI_CAPABILITIES.length)
+    expect(s.worksWithoutKey.length + s.waitsForYou.length + s.needsKey.length).toBe(AI_CAPABILITIES.length)
   })
 })

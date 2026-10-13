@@ -56,7 +56,8 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'deals_create_inbound',
     description:
       'Add a deal to INBOUND deal flow by hand: a pitch the user heard about outside the fund\'s inbox. It runs through the same ' +
-      'analyzer as an emailed pitch, so it lands on the Deals page scored against the thesis. Attach the deck as files if the user ' +
+      'analyzer as an emailed pitch, so it lands on the Deals page scored against the thesis (with no server AI key it is saved ' +
+      'unanalysed, and you write the analysis with deals_update_inbound). Attach the deck as files if the user ' +
       'has it. Confirm the company, founder and pitch with the user first.',
     scope: 'write',
     domain: 'deals',
@@ -85,7 +86,9 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'deals_update_inbound',
     description:
       'Move an INBOUND deal: change its pipeline status (new, reviewing, advancing, met, diligence, invested, passed), ' +
-      'the entity it belongs to, or who it is assigned to. To open a deal room for it, use deals_promote_to_diligence instead.',
+      'the entity it belongs to, or who it is assigned to. Also writes its analysis (summary, thesis fit, stage, industry, raise): ' +
+      'how an assistant analyses a deal when the fund has no server AI key, or corrects the model\'s. ' +
+      'To open a deal room for it, use deals_promote_to_diligence instead.',
     scope: 'write',
     domain: 'deals',
     inputSchema: {
@@ -95,6 +98,12 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
         status: { type: 'string', description: 'new | reviewing | advancing | met | diligence | invested | passed' },
         vehicle: { type: 'string', description: 'Move it to this entity (name or id).' },
         assigned_to: { type: 'string', description: 'A team member\'s email or name. An empty string unassigns it.' },
+        company_summary: { type: 'string', description: 'What the company does, in a few sentences.' },
+        thesis_fit_analysis: { type: 'string', description: 'Why it does or does not fit the fund\'s thesis.' },
+        thesis_fit_score: { type: 'string', enum: ['strong', 'moderate', 'weak', 'out_of_thesis', 'spam'] },
+        stage: { type: 'string' },
+        industry: { type: 'string' },
+        raise_amount: { type: 'string', description: 'As stated, e.g. "$3M seed".' },
       },
       required: ['deal'],
     },

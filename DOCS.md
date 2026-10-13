@@ -640,7 +640,9 @@ Each provider has a model selector in Settings — after saving your API key, yo
 
 A server key is optional. Without one, your own assistant does the AI work: connect Claude, ChatGPT or Claude Code to `https://<your-domain>/api/mcp` (see [Connecting Claude, ChatGPT and other agents](#connecting-claude-chatgpt-and-other-agents)) and ask it. It reads the fund's data with the read tools, does the thinking with its own model, and writes the result back with the write tools, so the server needs no AI key at all. What it cannot replace is the web app's own AI buttons, which have no model of their own to borrow, and work that runs with nobody present, like parsing an email as it arrives.
 
-Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI providers, with `npm run bootstrap -- --ai assistant`, or from chat with `setup_fund { "aiMode": "assistant" }`. Adding a key later switches the fund to the server key; your assistant can still do any of this either way. `setup_status` returns the same list as `ai.worksWithoutKey` and `ai.needsKey`.
+Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI providers, with `npm run bootstrap -- --ai assistant`, or from chat with `setup_fund { "aiMode": "assistant" }`. Adding a key later switches the fund to the server key; your assistant can still do any of this either way. `setup_status` returns the same list as `ai.worksWithoutKey`, `ai.waitsForYou` and `ai.needsKey`.
+
+**Inbound email without a key.** Updates still arrive and are saved, but nothing reads them as they come in. Each waits on the Emails page as pending until you ask your assistant to **Process my inbox** (a prompt in the connector's menu): it lists them with `inbox_waiting`, reads each with `inbox_read`, records the figures with `record_metric_value` and files it under the company with `inbox_done`. A deal you add from chat (`deals_create_inbound`) is saved unanalysed, and `deals_inbound_detail` hands your assistant the pitch and the fund's thesis to write the analysis back with `deals_update_inbound`.
 
 | Feature | Without a server key | How, or why not |
 |---|---|---|
@@ -651,11 +653,12 @@ Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI p
 | Reading a company update you share in chat | Yes, from your assistant | Your assistant reads the letter, deck or KPI sheet and records each figure. (`company_detail`, `record_metric_value`) |
 | Importing companies, investments and LPs from a paste or spreadsheet | Yes, from your assistant | Your assistant parses the rows and records each one. (`create_company`, `record_metric_value`, `record_investment`, `lp_create_investor`, `lp_record_commitment`) |
 | Categorising bank transactions | Yes, from your assistant | Your assistant matches each transaction to the chart of accounts and sets it. (`list_bank_transactions`, `list_accounts`, `set_bank_transaction_account`) |
-| Analysing an inbound deal against the thesis | Yes, from your assistant | Your assistant reads the deal and writes its analysis back. (`deals_inbound_detail`, `deals_update_inbound`) |
+| Adding and analysing a deal against the thesis | Yes, from your assistant | A deal added from chat is saved unanalysed; your assistant reads it and the thesis and writes the analysis back. (`deals_create_inbound`, `deals_inbound_detail`, `deals_update_inbound`) |
 | Editing an investment memo | Yes, from your assistant | Your assistant reads the memo and evidence and rewrites paragraphs. (`diligence_memo`, `diligence_evidence`, `diligence_write_memo`) |
 | Investor questions in the LP portal | Yes, from your assistant | An investor connects their own assistant to the portal and asks it. |
 | AI buttons in the web app (Analyst panel, Generate letter, AI import, Summarise) | Needs a key | A button in the browser has no model of its own to borrow; without a key, do the same thing from your assistant. |
-| Reading emailed company updates and deals as they arrive | Needs a key | It runs when the email arrives, with nobody present. Without a key, emails still arrive but are not parsed. |
+| Reading emailed company updates | Waits for your assistant | With a key it runs as each email arrives. Without one, each update is saved and waits in an inbox your assistant clears when you ask. (`inbox_waiting`, `inbox_read`, `record_metric_value`, `inbox_done`) |
+| Sorting inbound email into deals, diligence and updates | Needs a key | It runs as each email arrives, with nobody present. Without a key, everything is treated as a company update. |
 | Reading scanned PDFs and images in the background | Needs a key | It runs on a schedule with nobody present. Text PDFs are read without a model. |
 | The memo agent (ingest, research, draft, score) | Needs a key | Its stages run as background jobs on the server. |
 | Asking questions of a deal's data room | Needs a key | No tool yet returns a data-room document's text to your assistant. |

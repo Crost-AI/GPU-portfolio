@@ -6,7 +6,7 @@ import { AI_CAPABILITIES } from '@/lib/ai/capabilities'
  * lib/ai/capabilities.ts. Shown in the onboarding wizard and in Settings → AI providers.
  */
 export function AICapabilitiesList() {
-  const works = AI_CAPABILITIES.filter(c => c.keyless === 'assistant')
+  const works = AI_CAPABILITIES.filter(c => c.keyless !== 'needs_key')
   const needs = AI_CAPABILITIES.filter(c => c.keyless === 'needs_key')
   return (
     <div className="grid gap-4 sm:grid-cols-2 text-sm">
@@ -16,7 +16,7 @@ export function AICapabilitiesList() {
           {works.map(c => (
             <li key={c.key} className="flex gap-2" title={c.why}>
               <Check className="h-3.5 w-3.5 mt-0.5 shrink-0 text-success" aria-hidden />
-              <span>{c.label}</span>
+              <span>{c.label}{c.keyless === 'on_demand' && <span className="text-muted-foreground"> (waits until you ask)</span>}</span>
             </li>
           ))}
         </ul>
