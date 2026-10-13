@@ -13,8 +13,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
-  acknowledgeCapitalCall, portalDocumentUrl, portalDocuments, portalLetter, portalLetters, portalMessages,
-  portalNotices, portalOnboarding, portalOverview, portalStatementFunds, sendPortalMessage, type LpPrincipal,
+  acknowledgeCapitalCall, portalDocumentUrl, portalLetterShare, portalDocuments, portalLetter, portalLetters, portalMessages,
+  portalNotices, portalOnboarding, portalOverview, portalStatementFunds, PortalError, sendPortalMessage, type LpPrincipal,
 } from './service'
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
 import { loadBranding } from '@/lib/mcp-apps/branding'
@@ -103,7 +103,7 @@ export const PORTAL_TOOLS: PortalTool[] = [
         youCanAsk: [
           'How is my investment doing? (portal_overview, or show_my_position for a dashboard)',
           'Get my capital account statement (statement_pdf)',
-          'Show me the latest letter (list_letters, read_letter)',
+          'Show me the latest letter (list_letters, read_letter, letter_pdf)',
           'What documents has the fund shared? (list_documents, get_document)',
           'Do I owe a capital call? (list_capital_notices)',
           "Tell the fund I've wired it (acknowledge_capital_call)",
@@ -171,6 +171,21 @@ export const PORTAL_TOOLS: PortalTool[] = [
         portfolioTable: htmlToText(letter.portfolio_table_html),
         companyNarratives: letter.company_narratives,
       }
+    },
+  },
+  {
+    name: 'letter_pdf',
+    title: 'Letter (PDF)',
+    description: 'A download link for one shared letter as a PDF, by the id from list_letters. The link works for one hour.',
+    scope: 'read',
+    inputSchema: { type: 'object', properties: { letter_id: { type: 'string', description: 'From list_letters.' } }, required: ['letter_id'], additionalProperties: false },
+    async run(ctx, args) {
+      const letterId = String(args.letter_id ?? '')
+      // Checked now so the assistant hears "not shared" in the conversation, and again at the click.
+      const share = await portalLetterShare(ctx.admin, ctx.principal, letterId)
+      if (share.fundId !== ctx.fundId) throw new PortalError(404, 'Not found')
+      const { token, expiresAt } = signReportLink({ fundId: ctx.fundId, userId: ctx.principal.userId, kind: 'portal_letter', args: { letter: letterId } })
+      return { url: reportLinkUrl(ctx.origin, token), expiresAt }
     },
   },
   {

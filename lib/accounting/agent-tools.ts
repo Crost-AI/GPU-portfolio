@@ -51,6 +51,8 @@ import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
 import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
 import { REPORT_TOOL_MANIFEST } from '@/lib/agent/report-tools-manifest'
 import { REPORT_HANDLERS } from '@/lib/agent/report-tools'
+import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
+import { LETTER_HANDLERS } from '@/lib/agent/letter-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -352,6 +354,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(FORECAST_TOOL_MANIFEST, FORECAST_HANDLERS),
   ...bind(SETUP_TOOL_MANIFEST, SETUP_HANDLERS),
   ...bind(REPORT_TOOL_MANIFEST, REPORT_HANDLERS),
+  ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

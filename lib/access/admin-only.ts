@@ -99,6 +99,8 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_create_entity: { label: 'add an LP entity' },
   lp_update_entity: { label: 'change an LP entity' },
   lp_record_commitment: { label: 'add a commitment' },
+  // As the letter's share route (ADMIN_ONLY_ROUTES above): what an LP sees in their portal.
+  lp_share_letter: { label: 'share an LP letter' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

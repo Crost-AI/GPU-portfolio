@@ -1,0 +1,142 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { NextRequest } from 'next/server'
+import type { AccessContext, AccessLevel } from '@/lib/access/effective'
+import type { Domain } from '@/lib/access/domains'
+import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+import { memoryAdmin } from './helpers/memory-admin'
+
+/**
+ * LP letters from chat and the API: listed, read, written and shared through the LP Letters
+ * pages' own functions, each within the caller's entities. The assistant can be the writer.
+ */
+
+process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-key-for-report-links'
+
+let access: AccessContext
+const store = memoryAdmin()
+const letterPdf = vi.fn(async () => ({ pdf: Buffer.from('%PDF-letter'), fileName: 'Q3 2026.pdf' }))
+
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => store.admin }))
+vi.mock('@/lib/oauth/enabled', () => ({ agentApiEnabled: async () => true }))
+vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => null }))
+vi.mock('@/lib/access/effective', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/access/effective')>()),
+  loadAccessContext: async () => access,
+}))
+vi.mock('@/lib/access/entity-scope', () => ({
+  entityScopeFor: async (_: unknown, a: AccessContext) => ({ access: a, vehicleNames: a.vehicles.all ? null : ['Fund I'], companyIds: null }),
+}))
+vi.mock('@/lib/lp-report-pdf', () => ({
+  generateLetterPdf: (...a: unknown[]) => (letterPdf as any)(...a),
+  generateInvestorReportPdf: async () => null,
+  generateLiveInvestorReportPdf: async () => null,
+}))
+const company = (id: string, name: string) => ({
+  investment: { companyId: id, companyName: name, status: 'active', stage: 'Seed', totalInvested: 100, fmv: 200, moic: 2 },
+  metrics: [], notes: [],
+})
+vi.mock('@/lib/lp-letters/aggregate', () => ({
+  aggregatePortfolioData: async () => ({
+    fundName: 'Hemlock Fund I', fundCurrency: 'USD', periodLabel: 'Q3 2026', portfolioGroup: 'Fund I',
+    companies: [company('c1', 'Acme'), company('c2', 'Birch')],
+    fundMetrics: null,
+    totals: { totalInvested: 200, totalFmv: 400, totalRealized: 0, portfolioMoic: 2, activeCount: 2, exitedCount: 0, writtenOffCount: 0 },
+  }),
+}))
+
+import { LETTER_HANDLERS as H } from '@/lib/agent/letter-tools'
+import { getTool } from '@/lib/accounting/agent-tools'
+import { shouldStage } from '@/lib/agent/dispatch'
+import { adminOnlyToolLabel } from '@/lib/access/admin-only'
+import { GET } from '@/app/api/agent/reports/[token]/route'
+
+const member = (grants: Partial<Record<Domain, AccessLevel>>, all = true): AccessContext => ({
+  fundId: 'fund-1', userId: 'user-me', vehicles: { all, ids: all ? [] : ['v1'] }, role: 'member',
+  features: Object.fromEntries(Object.keys(DEFAULT_FEATURE_VISIBILITY).map(k => [k, 'everyone'])) as FeatureVisibilityMap,
+  grants, defaults: {},
+})
+const ctx = (a = member({ lp_relations: 'write' })) => ({ admin: store.admin, fundId: 'fund-1', portfolioGroup: '', userId: 'user-me', access: a, origin: 'https://fund.test' }) as any
+
+beforeEach(() => {
+  access = member({ lp_relations: 'read' })
+  store.tables.fund_members = [{ fund_id: 'fund-1', user_id: 'user-me', role: 'member' }]
+  store.tables.fund_vehicles = [
+    { id: 'v1', fund_id: 'fund-1', name: 'Fund I', active: true, kind: 'fund', aliases: null },
+    { id: 'v2', fund_id: 'fund-1', name: 'Fund II', active: true, kind: 'fund', aliases: null },
+  ]
+  store.tables.lp_letters = [
+    { id: 'l1', fund_id: 'fund-1', period_year: 2026, period_quarter: 3, period_label: 'Q3 2026', portfolio_group: 'Fund I', status: 'draft', is_year_end: false, company_narratives: [{ company_id: 'c2', company_name: 'Birch', narrative: 'Old Birch text', updated_by: null, updated_at: '' }], full_draft: 'old' },
+    { id: 'l2', fund_id: 'fund-1', period_year: 2026, period_quarter: 3, period_label: 'Q3 2026', portfolio_group: 'Fund II', status: 'draft', is_year_end: false },
+  ]
+  store.tables.lp_investors = [{ id: 'inv-1', fund_id: 'fund-1', name: 'Acme' }, { id: 'inv-2', fund_id: 'fund-1', name: 'Birch Family' }]
+  store.tables.lp_letter_shares = []
+  vi.clearAllMocks()
+})
+
+describe('LP letter tools', () => {
+  it('are LP relations tools under the letters switch; writes are staged from a chat, sharing needs an admin', () => {
+    for (const name of ['lp_create_letter', 'lp_write_letter', 'lp_share_letter']) {
+      const tool = getTool(name)!
+      expect(tool, name).toMatchObject({ scope: 'write', accessDomain: 'lp_relations', accessFeature: 'lp_letters' })
+      expect(shouldStage(tool, {}, { keyId: 'oauth:x' }), name).toBe(true)
+    }
+    expect(adminOnlyToolLabel('lp_share_letter', {})).toBe('share an LP letter')
+    expect(adminOnlyToolLabel('lp_write_letter', {})).toBeUndefined()
+  })
+
+  it("lists and reads only the caller's entities' letters", async () => {
+    expect(((await H.lp_letters(ctx(), {})) as any).letters.map((l: any) => l.id)).toEqual(['l1', 'l2'])
+    const scoped = ctx(member({ lp_relations: 'read' }, false))
+    expect(((await H.lp_letters(scoped, {})) as any).letters.map((l: any) => l.id)).toEqual(['l1'])
+    await expect(H.lp_letter(scoped, { letter_id: 'l2' })).rejects.toThrow('No letter')
+    await expect(H.lp_write_letter(scoped, { letter_id: 'l2', full_draft: 'x' })).rejects.toThrow('Not found')
+  })
+
+  it('starts a letter only for an entity the caller can see', async () => {
+    const out = await H.lp_create_letter(ctx(), { vehicle: 'Fund I', year: 2026, quarter: 4 }) as any
+    expect(out.letter).toMatchObject({ period: 'Q4 2026', vehicle: 'Fund I', status: 'draft' })
+    await expect(H.lp_create_letter(ctx(member({ lp_relations: 'write' }, false)), { vehicle: 'Fund II', year: 2026, quarter: 4 })).rejects.toThrow()
+  })
+
+  it("writes the assistant's sections, keeping the others, and rebuilds the table and draft", async () => {
+    const data = await H.lp_letter_data(ctx(), { letter_id: 'l1' }) as any
+    expect(data.companies.map((c: any) => c.investment.companyId)).toEqual(['c1', 'c2'])
+    await H.lp_write_letter(ctx(), { letter_id: 'l1', sections: [{ company_id: 'c1', narrative: 'Acme grew revenue 40%.' }] })
+    const row = store.tables.lp_letters.find((l: any) => l.id === 'l1')!
+    expect(row.company_narratives.map((n: any) => [n.company_name, n.narrative])).toEqual([['Acme', 'Acme grew revenue 40%.'], ['Birch', 'Old Birch text']])
+    expect(row.full_draft).toContain('Acme grew revenue 40%.')
+    expect(row.portfolio_table_html).toContain('Acme')
+    await expect(H.lp_write_letter(ctx(), { letter_id: 'l1', sections: [{ company_id: 'nope', narrative: 'x' }] })).rejects.toThrow("Not in this letter's portfolio")
+  })
+
+  it('shares with investors by name, replacing the list', async () => {
+    const out = await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme', 'birch'] }) as any
+    expect(out.shared_with).toEqual(['Acme', 'Birch Family'])
+    await H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme'] })
+    expect(store.tables.lp_letter_shares.map((s: any) => s.lp_investor_id)).toEqual(['inv-1'])
+  })
+})
+
+describe('the letter PDF link', () => {
+  const open = (token: string) => GET(new NextRequest(`https://fund.test/api/agent/reports/${token}`), { params: Promise.resolve({ token }) })
+  const tokenOf = (url: string) => url.split('/').pop()!
+
+  it('opens for a member who can still read letters and see the entity', async () => {
+    const { url } = await H.lp_letter_pdf(ctx(), { letter_id: 'l1' }) as any
+    const res = await open(tokenOf(url))
+    expect(res.status).toBe(200)
+    expect(letterPdf).toHaveBeenCalledWith(store.admin, { fundId: 'fund-1', letterId: 'l1' })
+  })
+
+  it('opens nothing once the grant, the switch or the entity is gone', async () => {
+    const { url } = await H.lp_letter_pdf(ctx(), { letter_id: 'l1' }) as any
+    access = member({})
+    expect((await open(tokenOf(url))).status).toBe(404)
+    access = { ...member({ lp_relations: 'read' }), features: { ...member({}).features, lp_letters: 'off' } }
+    expect((await open(tokenOf(url))).status).toBe(404)
+    const other = await H.lp_letter_pdf(ctx(), { letter_id: 'l2' }) as any
+    access = member({ lp_relations: 'read' }, false)
+    expect((await open(tokenOf(other.url))).status).toBe(404)
+    expect(letterPdf).not.toHaveBeenCalled()
+  })
+})

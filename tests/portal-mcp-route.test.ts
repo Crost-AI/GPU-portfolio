@@ -34,6 +34,11 @@ vi.mock('@/lib/portal/service', async importOriginal => {
     portalLetter: () => portalLetter(),
     acknowledgeCapitalCall: (...a: unknown[]) => (acknowledgeCapitalCall as any)(...a),
     portalDocumentUrl: async () => { throw new real.PortalError(404, 'Not found') },
+    portalLetterShare: async (_a: unknown, _p: unknown, id: string) => {
+      if (id === 'l1') return { fundId: 'fund-1', sharedInvestorIds: ['inv-1'] }
+      if (id === 'l-other-fund') return { fundId: 'fund-2', sharedInvestorIds: ['inv-1'] }
+      throw new real.PortalError(404, 'Not found')
+    },
   }
 })
 
@@ -107,6 +112,17 @@ describe('tools', () => {
     const res = await (await call('read_letter', { letter_id: 'l1' })).json()
     expect(res.result.structuredContent.portfolioTable).toContain('Acme')
     expect(res.result.structuredContent.portfolioTable).not.toContain('<')
+  })
+
+  it('gives a letter PDF as a link, only for a letter shared in this fund', async () => {
+    process.env.ENCRYPTION_KEY ??= 'test-key-for-report-links'
+    const res = await (await call('letter_pdf', { letter_id: 'l1' })).json()
+    expect(res.result.structuredContent.url).toContain('/api/agent/reports/')
+    for (const id of ['l-other-fund', 'l-nope']) {
+      const refused = await (await call('letter_pdf', { letter_id: id })).json()
+      expect(refused.result.isError).toBe(true)
+      expect(refused.result.content[0].text).toMatch(/not shared with you/)
+    }
   })
 
   it('answers "not yours" without detail', async () => {

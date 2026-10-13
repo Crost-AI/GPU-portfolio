@@ -14,12 +14,13 @@
 
 import { createHmac, hkdfSync, timingSafeEqual } from 'crypto'
 
-// `portal_statement` is the investor connector's (app/api/portal/mcp): the LP's own live statement.
+// `portal_statement` and `portal_letter` are the investor connector's (app/api/portal/mcp): the LP's
+// own live statement, and a letter shared with them.
 // The rest are the fund's own documents (lib/reports/documents.ts), each re-gated at the click
 // exactly as its web route gates it.
 export const REPORT_KINDS = [
-  'lp_statement', 'lp_report_card', 'portal_statement',
-  'fund_performance', 'financial_statements', 'k1', 'lp_snapshot', 'tax_package',
+  'lp_statement', 'lp_report_card', 'portal_statement', 'portal_letter',
+  'fund_performance', 'financial_statements', 'k1', 'lp_snapshot', 'tax_package', 'lp_letter',
 ] as const
 export type ReportKind = typeof REPORT_KINDS[number]
 

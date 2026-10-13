@@ -8,7 +8,7 @@ import { visibleLpEntityIds } from '@/lib/access/lp-scope'
 import { resolveVehicle, VehicleResolutionError } from '@/lib/accounting/vehicle-resolver'
 import { customPeriod } from '@/lib/accounting/statement-period'
 import { generateLpStatementPdf } from '@/lib/accounting/lp-statement-pdf'
-import { generateInvestorReportPdf, generateLiveInvestorReportPdf } from '@/lib/lp-report-pdf'
+import { generateInvestorReportPdf, generateLetterPdf, generateLiveInvestorReportPdf } from '@/lib/lp-report-pdf'
 import { isExpiredReportLink, verifyReportLink, type ReportLinkClaims } from '@/lib/agent/report-links'
 import { PERFORMANCE_GROUPINGS, type PerformanceGrouping } from '@/lib/accounting/fund-performance'
 import {
@@ -20,7 +20,8 @@ import { rateLimit } from '@/lib/rate-limit'
 import { withChangeSource } from '@/lib/audit/source'
 import { logLpAccessEvent } from '@/lib/lp-access-log'
 import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
-import { PortalError, portalStatementInvestors } from '@/lib/portal/service'
+import { PortalError, portalLetterShare, portalStatementInvestors } from '@/lib/portal/service'
+import { getLetter } from '@/lib/lp-letters/service'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -47,6 +48,7 @@ export async function GET(req: NextRequest, props: { params: Promise<{ token: st
   // The investor connector's link: an LP's own statement. Re-checked as an investor, never as a
   // fund member, and recorded in the LP access log as a download through MCP.
   if (claims.kind === 'portal_statement') return withChangeSource('mcp', () => portalStatement(admin, claims.fundId, claims.userId))
+  if (claims.kind === 'portal_letter') return withChangeSource('mcp', () => portalLetterDocument(admin, claims.fundId, claims.userId, String(claims.args.letter ?? '')))
 
   const { data: membership } = await admin
     .from('fund_members')
@@ -162,6 +164,16 @@ async function fundDocument(admin: ReturnType<typeof createAdminClient>, claims:
         doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
         break
       }
+      // An LP letter, as the fund sees it — lp_relations (lp_letters), and the letter's entity.
+      case 'lp_letter': {
+        if (!hasAccess(access, 'lp_relations', 'read', 'lp_letters')) return notFound()
+        const scope = await entityScopeFor(admin, access)
+        const letter = await getLetter(admin, fundId, scope.vehicleNames, a.letter ?? '')
+        if (!letter.ok || !letter.value || letter.value.status === 'generating') return notFound()
+        const result = await generateLetterPdf(admin, { fundId, letterId: letter.value.id })
+        doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
+        break
+      }
       default:
         return notFound()
     }
@@ -210,6 +222,36 @@ async function portalStatement(admin: ReturnType<typeof createAdminClient>, fund
   await logLpAccessEvent(admin, {
     fundId, lpAccountId: principal.lpAccountId, authUserId: userId, lpInvestorId: investorIds[0] ?? null,
     eventType: 'download', targetType: 'snapshot', targetTitle: result.fileName, metadata: { investor_ids: investorIds, format: 'pdf', live: true },
+  })
+  return documentResponse({ body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' })
+}
+
+/** A letter shared with the investor, checked as the portal's own letter PDF route checks it, at the click. */
+async function portalLetterDocument(admin: ReturnType<typeof createAdminClient>, fundId: string, userId: string, letterId: string) {
+  if (!(await lpConnectorEnabled(admin, fundId))) return notFound()
+  const principal = await connectorPrincipal(admin, userId, fundId)
+  if (!principal) return notFound()
+  let share: { fundId: string; sharedInvestorIds: string[] }
+  try {
+    share = await portalLetterShare(admin, principal, letterId)
+  } catch (e) {
+    if (e instanceof PortalError) return notFound()
+    throw e
+  }
+  // The connection is bound to one fund; a letter from another fund the LP holds is not this link's.
+  if (share.fundId !== fundId) return notFound()
+  let result: { pdf: Buffer; fileName: string } | null
+  try {
+    result = await generateLetterPdf(admin, { fundId, letterId })
+  } catch (e) {
+    console.error('[agent/reports] portal_letter', e)
+    return NextResponse.json({ error: 'This document could not be generated. Try again, or ask for a new link.' }, { status: 500 })
+  }
+  if (!result) return notFound()
+  await logLpAccessEvent(admin, {
+    fundId, lpAccountId: principal.lpAccountId, authUserId: userId, lpInvestorId: share.sharedInvestorIds[0] ?? null,
+    eventType: 'download', targetType: 'letter', targetId: letterId, targetTitle: result.fileName,
+    metadata: { investor_ids: share.sharedInvestorIds, format: 'pdf' },
   })
   return documentResponse({ body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' })
 }

@@ -18,7 +18,7 @@ import { requireUser } from './deals-tools'
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 /** One investor of this fund, by id or name. */
-async function resolveInvestor(admin: SupabaseClient, fundId: string, ref: string): Promise<{ id: string; name: string }> {
+export async function resolveInvestor(admin: SupabaseClient, fundId: string, ref: string): Promise<{ id: string; name: string }> {
   const needle = ref.trim().toLowerCase()
   if (!needle) throw new Error('Name the investor.')
   const { data } = await (admin as any).from('lp_investors').select('id, name').eq('fund_id', fundId)
