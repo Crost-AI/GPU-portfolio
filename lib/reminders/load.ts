@@ -1,11 +1,10 @@
 // Every DB read the reminder sources need, for one fund. Kept apart from the sources so those
 // stay pure and testable over fixtures.
 
-import { loadCloseDates } from '@/lib/compliance/closes'
+import { loadComplianceData } from '@/lib/compliance/calendar'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { lastEndedQuarter, metricQuarter, responseKey } from '@/lib/requests/response-status'
 import type { FundReminderData } from './collect'
-import type { ComplianceItemRow } from './sources/compliance'
 import type { OpenCall } from './sources/calls'
 import { loadOnboardingReminderData } from './sources/onboarding-load'
 import { fromHeader } from './settings'
@@ -71,19 +70,10 @@ export async function loadFundReminderData(
   const rq = lastEndedQuarter(today)
   const db = admin as any
 
-  const [itemsRes, profileRes, settingsRes, closed, vehiclesRes, closes, requestsRes, companiesRes, metrics, overridesRes, dueCallsRes, currencyRes] = await Promise.all([
-    db.from('compliance_items')
-      .select('id, name, short_name, frequency, scope, deadline_month, deadline_day, rolling_days')
-      .order('sort_order'),
-    db.from('fund_compliance_profile').select('*').eq('fund_id', fundId).maybeSingle(),
-    db.from('compliance_fund_settings').select('compliance_item_id, portfolio_group, applies, dismissed, notes').eq('fund_id', fundId),
-    allRows<{ compliance_item_id: string; portfolio_group: string; quarter: number; year: number }>('compliance_deadlines', (from, to) =>
-      db.from('compliance_deadlines').select('compliance_item_id, portfolio_group, quarter, year')
-        .eq('fund_id', fundId).in('status', ['filed', 'not_applicable']).gte('year', y - 1)
-        .order('id').range(from, to)),
-    db.from('fund_vehicles').select('name').eq('fund_id', fundId),
-    // Each vehicle's closes (closings, plus legacy commitment rows), for Form D and Blue Sky.
-    loadCloseDates(admin, fundId, `${y - 1}-01-01`, `${y + 1}-12-31`, { errorPrefix: 'reminders: ' }),
+  const [compliance, requestsRes, companiesRes, metrics, overridesRes, dueCallsRes, currencyRes] = await Promise.all([
+    // Filings from last year through next (a Q4 item stays visible into January), with each
+    // vehicle's closes for Form D and Blue Sky.
+    loadComplianceData(admin, fundId, y - 1, y + 1, 'reminders: '),
     db.from('email_requests').select('quarter, year, due_date, status')
       .eq('fund_id', fundId).not('quarter', 'is', null).gte('year', rq.year - 1),
     db.from('companies').select('id, name')
@@ -99,17 +89,11 @@ export async function loadFundReminderData(
     db.from('capital_calls').select('id, vehicle_id').eq('fund_id', fundId).not('due_date', 'is', null),
     db.from('fund_settings').select('currency').eq('fund_id', fundId).maybeSingle(),
   ])
-  const items = rowsOf('compliance_items', itemsRes) ?? []
-  const profile = rowsOf('fund_compliance_profile', profileRes)
-  const settings = rowsOf('compliance_fund_settings', settingsRes) ?? []
-  const vehicles = rowsOf('fund_vehicles', vehiclesRes) ?? []
   const requests = rowsOf('email_requests', requestsRes) ?? []
   const companies = rowsOf('companies', companiesRes) ?? []
   const overrides = rowsOf('ask_response_overrides', overridesRes) ?? []
   const dueCalls = rowsOf<{ id: string; vehicle_id: string | null }[]>('capital_calls', dueCallsRes) ?? []
   const currency = (rowsOf<{ currency?: string }>('fund_settings', currencyRes)?.currency as string | undefined) ?? 'USD'
-
-  const closeDates = closes
 
   const hasData = new Set<string>()
   for (const mv of metrics) {
@@ -147,14 +131,7 @@ export async function loadFundReminderData(
   return {
     calls: { openCalls },
     onboarding,
-    compliance: {
-      items: items as ComplianceItemRow[],
-      profile: profile ?? null,
-      settings,
-      closed,
-      portfolioGroups: (vehicles as { name: string }[]).map(v => v.name).sort(),
-      closeDates,
-    },
+    compliance,
     asks: {
       sendOffsetDays: asksSendOffsetDays,
       requests,

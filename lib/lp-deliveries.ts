@@ -74,7 +74,31 @@ export async function listDeliveries(
     .eq('kind', kind)
     .in('item_id', itemIds)
     .order('sent_at', { ascending: false })
-  return ((data as any[]) ?? []).map(r => ({
+  return ((data as any[]) ?? []).map(toRow)
+}
+
+/**
+ * Every delivery since `since` (an ISO date), newest first, optionally of one kind: "what went
+ * to the LPs this quarter". Throws on a failed read, since an empty log reads as "nothing was sent".
+ */
+export async function listRecentDeliveries(
+  admin: SupabaseClient,
+  fundId: string,
+  opts: { since: string; kind?: DeliveryKind; limit: number },
+): Promise<DeliveryRow[]> {
+  let q = (admin as any)
+    .from('lp_deliveries')
+    .select('id, kind, item_id, lp_investor_id, lp_entity_id, to_email, cc_emails, subject, status, error, sent_at')
+    .eq('fund_id', fundId)
+    .gte('sent_at', opts.since)
+  if (opts.kind) q = q.eq('kind', opts.kind)
+  const { data, error } = await q.order('sent_at', { ascending: false }).limit(opts.limit)
+  if (error) throw new Error(`lp_deliveries read failed: ${error.message}`)
+  return ((data as any[]) ?? []).map(toRow)
+}
+
+function toRow(r: any): DeliveryRow {
+  return {
     id: r.id,
     kind: r.kind,
     itemId: r.item_id ?? null,
@@ -86,7 +110,7 @@ export async function listDeliveries(
     status: r.status,
     error: r.error ?? null,
     sentAt: r.sent_at,
-  }))
+  }
 }
 
 /** The most recent SUCCESSFUL delivery per item, for a "sent on" note beside each line. */

@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { VEHICLE_KIND_OPTIONS } from '@/lib/vehicle-kinds'
+import { STRATEGIES, STRATEGY_LABELS } from '@/lib/vehicle-profile'
 
 const KINDS = VEHICLE_KIND_OPTIONS
 
@@ -56,6 +57,28 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
   const [letterheadAddress, setLetterheadAddress] = useState('')
   const [logoBusy, setLogoBusy] = useState(false)
   const [logoErr, setLogoErr] = useState<string | null>(null)
+
+  // The reporting profile (lib/vehicle-profile.ts): strategy, administrator and when LP reporting
+  // is due. Loaded on its own like the letterhead, and only saved once loaded, so a slow fetch
+  // can't save blanks over a profile that exists. Hidden until its migration is pushed.
+  const [profileAvailable, setProfileAvailable] = useState(false)
+  const [strategy, setStrategy] = useState('')
+  const [administrator, setAdministrator] = useState('')
+  const [daysQuarterly, setDaysQuarterly] = useState('')
+  const [daysAnnual, setDaysAnnual] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/vehicles?profile=${encodeURIComponent(vehicle.id)}`).then(r => r.ok ? r.json() : null).then(data => {
+      if (cancelled || !data) return
+      setProfileAvailable(!!data.available)
+      setStrategy(data.strategy ?? '')
+      setAdministrator(data.administrator ?? '')
+      setDaysQuarterly(data.lpReportDaysQuarterly != null ? String(data.lpReportDaysQuarterly) : '')
+      setDaysAnnual(data.lpReportDaysAnnual != null ? String(data.lpReportDaysAnnual) : '')
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [vehicle.id])
 
   useEffect(() => {
     let cancelled = false
@@ -134,6 +157,7 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
         aliases,
         // Only once loaded, so a slow fetch can't save blanks over a letterhead that exists.
         ...(logoAvailable ? { letterheadName, letterheadAddress } : {}),
+        ...(profileAvailable ? { profile: { strategy: strategy || null, administrator: administrator.trim() || null, lpReportDaysQuarterly: daysQuarterly.trim() || null, lpReportDaysAnnual: daysAnnual.trim() || null } } : {}),
       }),
     })
     setBusy(false)
@@ -165,6 +189,28 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
             <label className="text-xs text-muted-foreground">Vintage year</label>
             <Input value={vintage} onChange={e => setVintage(e.target.value)} inputMode="numeric" placeholder="e.g. 2021" className="w-32" />
           </div>
+          {profileAvailable && (
+            <div className="space-y-2">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Strategy</label>
+                <select value={strategy} onChange={e => setStrategy(e.target.value)} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm">
+                  <option value="">Not set</option>
+                  {STRATEGIES.map(k => <option key={k} value={k}>{STRATEGY_LABELS[k]}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Administrator</label>
+                <Input value={administrator} onChange={e => setAdministrator(e.target.value)} placeholder="The administrator's name, or In-house" className="h-8" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">LP reporting due, days after period end</label>
+                <div className="flex gap-2">
+                  <Input value={daysQuarterly} onChange={e => setDaysQuarterly(e.target.value)} inputMode="numeric" placeholder="Quarter, e.g. 45" className="h-8 w-32 tabular-nums" aria-label="Days after a quarter-end" />
+                  <Input value={daysAnnual} onChange={e => setDaysAnnual(e.target.value)} inputMode="numeric" placeholder="Year-end, e.g. 90" className="h-8 w-32 tabular-nums" aria-label="Days after the year-end" />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Also known as (aliases)</label>
             <p className="text-[11px] text-muted-foreground">Other names/portfolio-group strings that map to this vehicle (e.g. from imports).</p>
