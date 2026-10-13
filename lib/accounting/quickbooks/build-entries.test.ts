@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildEntries, qbSourceRef, qbVendorName } from './build-entries'
+import { createHash } from 'crypto'
+import { buildEntries, qbLegacySourceRef, qbSourceRef, qbSourceRefs, qbVendorName } from './build-entries'
 import type { QbTransaction } from './parse-journal'
 
 const txn: QbTransaction = {
@@ -16,7 +17,7 @@ const IDS = new Map([['1100', 'acct-1100'], ['1000', 'acct-1000']])
 describe('qbSourceRef', () => {
   it('is stable across runs for the same transaction', () => {
     expect(qbSourceRef(txn)).toBe(qbSourceRef({ ...txn, lines: [...txn.lines] }))
-    expect(qbSourceRef(txn)).toMatch(/^qb:[0-9a-f]+$/)
+    expect(qbSourceRef(txn)).toMatch(/^qb:v2:[0-9a-f]{32}$/)
   })
 
   it('changes when an amount changes, so a corrected export re-imports', () => {
@@ -31,6 +32,43 @@ describe('qbSourceRef', () => {
 
   it('distinguishes two same-day transactions with different numbers', () => {
     expect(qbSourceRef({ ...txn, num: 'JE-2' })).not.toBe(qbSourceRef(txn))
+  })
+
+  // Two LPs wiring the same amount on the same day, no number: the first version hashed these
+  // identically and skipped every one after the first.
+  const deposit = (name: string, memo: string | null = null): QbTransaction => ({
+    date: '2024-03-01', type: 'Deposit', num: null, memo,
+    lines: [
+      { account: 'Bank:Operating', name, memo: null, debit: 25_000, credit: 0 },
+      { account: 'Partner investments', name: null, memo: null, debit: 0, credit: 25_000 },
+    ],
+  })
+
+  it('distinguishes same-day, same-amount transactions from different payees', () => {
+    expect(qbSourceRef(deposit('Paul Sethi'))).not.toBe(qbSourceRef(deposit('Ann Lee')))
+    expect(qbLegacySourceRef(deposit('Paul Sethi'))).toBe(qbLegacySourceRef(deposit('Ann Lee')))
+  })
+
+  it('distinguishes them by memo, and ignores whitespace noise in names', () => {
+    expect(qbSourceRef(deposit('Paul Sethi', 'Call 1'))).not.toBe(qbSourceRef(deposit('Paul Sethi', 'Call 2')))
+    expect(qbSourceRef(deposit(' Paul  Sethi '))).toBe(qbSourceRef(deposit('Paul Sethi')))
+  })
+
+  it('keeps the first-version ref byte-for-byte, so entries already imported are still recognised', () => {
+    expect(qbLegacySourceRef(txn)).toBe('qb:' + createHash('sha256')
+      .update('2024-01-15|Journal Entry|JE-1|Bank:Operating|0.00|1000000.00;Investments:Acme Ventures III|1000000.00|0.00')
+      .digest('hex').slice(0, 32))
+  })
+
+  it('numbers identical transactions within a batch instead of colliding them', () => {
+    const refs = qbSourceRefs([deposit('Paul Sethi'), deposit('Ann Lee'), deposit('Paul Sethi'), deposit('Paul Sethi')])
+    const base = qbSourceRef(deposit('Paul Sethi'))
+    expect(refs.map(r => r.ref)).toEqual([base, qbSourceRef(deposit('Ann Lee')), `${base}:2`, `${base}:3`])
+    expect(new Set(refs.map(r => r.legacyRef)).size).toBe(1)
+    const { entries, origins } = buildEntries([deposit('Paul Sethi'), deposit('Paul Sethi')],
+      new Map([['Bank:Operating', '1000'], ['Partner investments', '3100']]), new Map([['1000', 'cash'], ['3100', 'lp']]), 'f')
+    expect(entries.map(e => e.sourceRef)).toEqual([base, `${base}:2`])
+    expect(origins.map(o => o.legacyRef)).toEqual([qbLegacySourceRef(deposit('Paul Sethi')), qbLegacySourceRef(deposit('Paul Sethi'))])
   })
 })
 
@@ -166,11 +204,12 @@ describe('journal sources', () => {
   it('tags a Carta import with its own provenance and idempotency prefix', () => {
     const [e] = buildEntries([txn], MAPPING, IDS, 'fund-1', undefined, undefined, 'carta').entries
     expect(e.sourceType).toBe('carta')
-    expect(e.sourceRef).toMatch(/^carta:[0-9a-f]+$/)
+    expect(e.sourceRef).toMatch(/^carta:v2:[0-9a-f]{32}$/)
   })
 
   it('never matches the same transaction across sources as a re-import', () => {
     expect(qbSourceRef(txn, 'carta').slice(6)).toBe(qbSourceRef(txn).slice(3))
+    expect(qbLegacySourceRef(txn, 'carta')).not.toBe(qbLegacySourceRef(txn))
     expect(qbSourceRef(txn, 'carta')).not.toBe(qbSourceRef(txn))
   })
 

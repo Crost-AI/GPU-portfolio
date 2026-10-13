@@ -24,6 +24,8 @@ interface Proposal {
   excluded?: boolean
 }
 
+interface DedupeNote { entryDate: string; memo: string | null; reason: string }
+
 interface ParseResult {
   group: string
   transactionCount: number
@@ -57,6 +59,7 @@ export function MigrateView({ group }: { group: string }) {
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
 
   const [capitalWarnings, setCapitalWarnings] = useState<string[]>([])
+  const [matches, setMatches] = useState<{ duplicates: DedupeNote[]; recovered: DedupeNote[] }>({ duplicates: [], recovered: [] })
   const [journalText, setJournalText] = useState('')
   const [parsed, setParsed] = useState<ParseResult | null>(null)
   const [mapping, setMapping] = useState<Record<string, string>>({})
@@ -196,6 +199,7 @@ export function MigrateView({ group }: { group: string }) {
       setImportReview(json.importReview ?? null)
       if (!ok) { setStatus(json?.error ?? 'Import failed.'); return }
       setCapitalWarnings(json.capitalWarnings ?? [])
+      setMatches({ duplicates: json.duplicates ?? [], recovered: json.recovered ?? [] })
       if (isDry) { setDryRun(json); return }
       setDryRun(null)
       setStatus(`Created ${json.created} draft entr${json.created === 1 ? 'y' : 'ies'}; ${json.alreadyPresent} already present; ${json.skipped} skipped.`)
@@ -419,6 +423,25 @@ export function MigrateView({ group }: { group: string }) {
                 Would create {dryRun.wouldCreate}; {dryRun.alreadyPresent} already present;
                 {' '}{dryRun.skipped} skipped.
               </p>
+            )}
+
+            {matches.recovered.length > 0 && (
+              <details className="rounded border border-warning p-3 text-sm">
+                <summary>{matches.recovered.length} transactions an earlier import skipped as duplicates</summary>
+                <p className="my-2 text-muted-foreground">They share a date, accounts and amounts with an entry already imported, and differ only in payee or memo. Earlier imports did not compare payees; these are the ones missing from the book.</p>
+                <ul className="max-h-64 overflow-y-auto space-y-1">
+                  {matches.recovered.map((m, index) => <li key={index}>{m.entryDate} {m.memo ?? ''} — {m.reason}</li>)}
+                </ul>
+              </details>
+            )}
+
+            {matches.duplicates.length > 0 && (
+              <details className="rounded border p-3 text-sm">
+                <summary>{matches.duplicates.length} already present — why each was matched</summary>
+                <ul className="mt-2 max-h-64 overflow-y-auto space-y-1">
+                  {matches.duplicates.map((m, index) => <li key={index}>{m.entryDate} {m.memo ?? ''} — {m.reason}</li>)}
+                </ul>
+              </details>
             )}
 
             <ImportReviewPanel review={importReview} />
