@@ -43,6 +43,9 @@ export const QUARTERLY_DUE: Record<string, [number, number][]> = {
   'quarterly-disclosures': [[1, 30], [4, 30], [7, 30], [10, 30]],
   // 45 days after quarter end.
   'form-13f': [[2, 14], [5, 15], [8, 14], [11, 14]],
+  // Investor capital account statements: 45 days after quarter end. Like 13F, the Q1 slot (Feb 14)
+  // is the prior year's Q4 statements; Q1's statements are the May 15 occurrence.
+  'lp-capital-statements': [[2, 14], [5, 15], [8, 14], [11, 14]],
 }
 
 const DEFAULT_QUARTERLY_DUE: [number, number][] = [[1, 31], [4, 30], [7, 31], [10, 31]]

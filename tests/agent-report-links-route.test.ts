@@ -39,6 +39,9 @@ vi.mock('@/lib/access/lp-scope', () => ({
 }))
 vi.mock('@/lib/accounting/lp-statement-pdf', () => ({ generateLpStatementPdf: (...a: unknown[]) => (statementPdf as any)(...a) }))
 vi.mock('@/lib/lp-report-pdf', () => ({ generateLiveInvestorReportPdf: (...a: unknown[]) => (cardPdf as any)(...a) }))
+const documentPdf = vi.fn(async (_admin: unknown, fundId: string, id: string) =>
+  fundId === 'fund-1' && id === 'render-1' ? { pdf: Buffer.from('%PDF-letter'), fileName: 'Fund II Letter Q1 2026.pdf' } : null)
+vi.mock('@/lib/document-templates/pdf', () => ({ renderPdf: (...a: unknown[]) => (documentPdf as any)(...a) }))
 
 import { GET } from '@/app/api/agent/reports/[token]/route'
 import { signReportLink } from '@/lib/agent/report-links'
@@ -54,6 +57,8 @@ const statement = (lp = 'ent-1', vehicle = 'Fund I') => signReportLink({
   args: { vehicle, lp, start: '2026-07-01', end: '2026-09-30', label: 'Q3 2026' },
 }).token
 const card = () => signReportLink({ fundId: 'fund-1', userId: 'user-me', kind: 'lp_report_card', args: { investor: 'inv-1' } }).token
+
+const letter = (render = 'render-1') => signReportLink({ fundId: 'fund-1', userId: 'user-me', kind: 'template_document', args: { render } }).token
 
 const open = (token: string) => GET(new NextRequest(`https://fund.test/api/agent/reports/${token}`), { params: Promise.resolve({ token }) })
 
@@ -125,3 +130,26 @@ describe('a document link', () => {
     expect((await open(`${statement()}x`)).status).toBe(404)
   })
 })
+
+describe('a link to a document generated from a fund template', () => {
+  it('opens for a member with the LP letters grant, without needing LP capital', async () => {
+    access = member({ lp_relations: 'read' })
+    const res = await open(letter())
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/pdf')
+    expect(documentPdf).toHaveBeenCalledWith(store.admin, 'fund-1', 'render-1')
+  })
+
+  it('refuses without the letters grant, with letters switched off, or for a render that is not there', async () => {
+    access = member({ lp_capital: 'read' })
+    expect((await open(letter())).status).toBe(404)
+
+    access = member({ lp_relations: 'read' })
+    access.features = { ...access.features, lp_letters: 'off' } as FeatureVisibilityMap
+    expect((await open(letter())).status).toBe(404)
+
+    access = member({ lp_relations: 'read' })
+    expect((await open(letter('render-other'))).status).toBe(404)
+  })
+})
+

@@ -76,7 +76,7 @@ export async function loadFundReminderData(
       .select('id, name, short_name, frequency, scope, deadline_month, deadline_day, rolling_days')
       .order('sort_order'),
     db.from('fund_compliance_profile').select('*').eq('fund_id', fundId).maybeSingle(),
-    db.from('compliance_fund_settings').select('compliance_item_id, portfolio_group, applies, dismissed').eq('fund_id', fundId),
+    db.from('compliance_fund_settings').select('compliance_item_id, portfolio_group, applies, dismissed, notes').eq('fund_id', fundId),
     allRows<{ compliance_item_id: string; portfolio_group: string; quarter: number; year: number }>('compliance_deadlines', (from, to) =>
       db.from('compliance_deadlines').select('compliance_item_id, portfolio_group, quarter, year')
         .eq('fund_id', fundId).in('status', ['filed', 'not_applicable']).gte('year', y - 1)

@@ -365,7 +365,21 @@ export async function runPool<T>(items: T[], concurrency: number, fn: (item: T) 
 // Render one HTML report to a single PDF (LP portal + preview single download)
 // ---------------------------------------------------------------------------
 
-export async function renderHtmlToPdf(html: string): Promise<Buffer> {
+export interface RenderPdfOptions {
+  /** Honour the document's own @page rules (sizes, margins, named landscape pages) instead of
+   *  letter with fixed margins. */
+  cssPageSize?: boolean
+  /** A page number at the foot of each page. */
+  pageNumbers?: boolean
+  /**
+   * Refuse every request the page makes except inline data. For HTML a fund wrote itself (a stored
+   * document template): with JavaScript off it cannot run code, and with this it cannot make the
+   * server's browser fetch anything — an <img src> pointed at an internal address included.
+   */
+  offline?: boolean
+}
+
+export async function renderHtmlToPdf(html: string, opts: RenderPdfOptions = {}): Promise<Buffer> {
   const chrome = await getChromeConfig()
   const browser = await puppeteer.launch({
     args: chrome.args,
@@ -379,11 +393,24 @@ export async function renderHtmlToPdf(html: string): Promise<Buffer> {
     // neutralizes any markup that slips past sanitization from executing inside
     // the (sandbox-less) render browser.
     await page.setJavaScriptEnabled(false)
+    if (opts.offline) {
+      await page.setRequestInterception(true)
+      page.on('request', request => {
+        if (request.url().startsWith('data:')) request.continue()
+        else request.abort()
+      })
+    }
     await page.setContent(html, { waitUntil: 'load' })
     const pdf = await page.pdf({
       format: 'letter',
       margin: { top: '0.5in', right: '0.6in', bottom: '0.5in', left: '0.6in' },
       printBackground: true,
+      ...(opts.cssPageSize ? { preferCSSPageSize: true } : {}),
+      ...(opts.pageNumbers ? {
+        displayHeaderFooter: true,
+        headerTemplate: '<span></span>',
+        footerTemplate: '<div style="width:100%;font-size:8px;text-align:right;padding-right:0.6in;color:#76756f;"><span class="pageNumber"></span></div>',
+      } : {}),
     })
     return Buffer.from(pdf)
   } finally {

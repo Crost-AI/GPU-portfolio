@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { AGENT_TOOLS, getTool, isLedgerTool } from '@/lib/accounting/agent-tools'
+import { isDraftOnlyCall } from '@/lib/agent/dispatch'
 
 describe('agent tool registry', () => {
   it('every tool has a unique name', () => {
@@ -69,6 +70,19 @@ describe('agent tool registry', () => {
     for (const t of writable.filter(t => t.name.endsWith('_letter'))) {
       expect(t, t.name).toMatchObject({ accessDomain: 'lp_relations', accessFeature: 'lp_letters' })
     }
+  })
+
+  it('document templates are fund-scoped, gated on LP letters, and only generating skips staging', () => {
+    for (const name of ['document_template_get', 'document_template_save', 'document_generate']) {
+      const tool = getTool(name)!
+      expect(tool.domain, name).toBe('portfolio')
+      expect(tool.accessDomain, name).toBe('lp_relations')
+      expect(tool.accessFeature, name).toBe('lp_letters')
+      expect(isLedgerTool(tool), name).toBe(false)
+    }
+    expect(getTool('document_template_get')!.scope).toBe('read')
+    expect(isDraftOnlyCall(getTool('document_template_save')!, {})).toBe(false)
+    expect(isDraftOnlyCall(getTool('document_generate')!, {})).toBe(true)
   })
 
   it('deal and diligence writes are named for their stage, and gated like their web routes', () => {

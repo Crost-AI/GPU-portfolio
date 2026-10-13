@@ -22,6 +22,7 @@ import { logLpAccessEvent } from '@/lib/lp-access-log'
 import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
 import { PortalError, portalLetterShare, portalStatementInvestors } from '@/lib/portal/service'
 import { getLetter } from '@/lib/lp-letters/service'
+import { renderPdf as renderTemplateDocumentPdf } from '@/lib/document-templates/pdf'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -171,6 +172,15 @@ async function fundDocument(admin: ReturnType<typeof createAdminClient>, claims:
         const letter = await getLetter(admin, fundId, scope.vehicleNames, a.letter ?? '')
         if (!letter.ok || !letter.value || letter.value.status === 'generating') return notFound()
         const result = await generateLetterPdf(admin, { fundId, letterId: letter.value.id })
+        doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
+        break
+      }
+      // A document filled from one of the fund's own templates (document_generate) — an LP letter, so
+      // lp_relations (lp_letters). It prints the render stored when it was generated.
+      case 'template_document': {
+        if (!hasAccess(access, 'lp_relations', 'read', 'lp_letters')) return notFound()
+        if (!a.render) return notFound()
+        const result = await renderTemplateDocumentPdf(admin, fundId, a.render)
         doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
         break
       }

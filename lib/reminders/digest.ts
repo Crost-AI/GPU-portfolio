@@ -34,7 +34,7 @@ export function renderDigest(
     const rows = group.map(i => `
       <li style="margin: 0 0 12px 0;">
         <strong>${escapeHtml(i.title)}</strong><br/>
-        ${i.detail ? `<span style="color:#555; font-size: 13px;">${escapeHtml(i.detail)}</span><br/>` : ''}
+        ${i.detail ? `<span style="color:#555; font-size: 13px; white-space: pre-line;">${escapeHtml(i.detail)}</span><br/>` : ''}
         <span style="color:#555; font-size: 13px;">${escapeHtml(dueLine(i, opts.today))}</span>
         · <a href="${opts.baseUrl}${i.href}" style="font-size: 13px;">Open →</a>
       </li>`).join('')

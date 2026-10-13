@@ -83,6 +83,17 @@ describe('complianceReminders', () => {
     expect(items.map(i => i.detail)).toEqual(['Fund II · Q3'])
   })
 
+  it("carries the vehicle's standing notes into every quarter's reminder", () => {
+    const item = { ...soi, scope: 'vehicle' as const }
+    const settings = [
+      { compliance_item_id: 'valuations-soi', portfolio_group: 'Fund II::Q3', applies: 'yes', dismissed: false },
+      // Saved once on the vehicle row, no quarter — a distribution list, say.
+      { compliance_item_id: 'valuations-soi', portfolio_group: 'Fund II', applies: null, dismissed: false, notes: 'Send to: A, B\n' },
+    ]
+    const items = complianceReminders(data({ items: [item], settings, portfolioGroups: ['Fund II'] }), '2026-09-20')
+    expect(items.map(i => i.detail)).toEqual(['Fund II · Q3\nSend to: A, B'])
+  })
+
   // Keys embed the due date, so a deadline that moves re-arms its reminders instead of being
   // treated as already delivered.
   it('moved due date produces new keys', () => {

@@ -10,6 +10,7 @@ import { DEALS_TOOL_MANIFEST } from '@/lib/agent/deals-tools-manifest'
 import { LP_TOOL_MANIFEST } from '@/lib/agent/lp-tools-manifest'
 import { REPORT_TOOL_MANIFEST } from '@/lib/agent/report-tools-manifest'
 import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
+import { DOCUMENT_TOOL_MANIFEST } from '@/lib/agent/document-tools-manifest'
 import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { DASHBOARD_TOOL_MANIFEST } from '@/lib/agent/dashboard-tools-manifest'
 import { areasFor, DASHBOARD_TIPS, promptsFor } from '@/lib/agent/getting-started'
@@ -25,6 +26,7 @@ const TOOL_GROUPS = [
   { label: 'Portfolio, companies and performance', tools: PORTFOLIO_TOOL_MANIFEST },
   { label: 'LP reporting and capital accounts', tools: LP_TOOL_MANIFEST },
   { label: 'LP letters', tools: LETTER_TOOL_MANIFEST },
+  { label: "LP letters from the fund's own templates", tools: DOCUMENT_TOOL_MANIFEST },
   { label: 'Ledger and accounting', tools: AGENT_TOOL_MANIFEST },
   { label: 'Documents (PDF and ZIP links)', tools: REPORT_TOOL_MANIFEST },
   { label: 'Questions across the data (query)', tools: QUERY_TOOL_MANIFEST },
