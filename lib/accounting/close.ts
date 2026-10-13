@@ -54,7 +54,8 @@ import { loadNotes, noteAccruals } from './note-interest'
 import { ensureInvestmentAccounts } from './investments'
 import { accountBalances } from './ledger'
 import { balanceSheet, keepsRetainedEarnings, trialBalance } from './statements'
-import { setGeneratedAllocationStatus } from './continuous-allocation'
+import { carriesOwnAllocation, loadAllocationSkips, setGeneratedAllocationStatus } from './continuous-allocation'
+import { isExternalBookSource } from './quickbooks/sources'
 import { loadCloseEntrySuggestions, type CloseEntrySuggestion } from './close-suggestions'
 
 const NOTE_INTEREST_INCOME = '4110'
@@ -120,21 +121,31 @@ async function allocationResiduals(
   vehicleId: string,
   beforeDate: string,
 ): Promise<Map<string, number>> {
-  const { data: periods } = await admin.from('fiscal_periods' as any)
+  // Paged, both: a monthly close writes a row per category per partner, so the rounding history
+  // passes PostgREST's 1000-row cap quickly, and a truncated read carries the wrong residuals.
+  const periods = await fetchAllRows<any>((from, to) => admin.from('fiscal_periods' as any)
     .select('id')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .eq('status', 'closed')
     .lt('period_end', beforeDate)
-  const periodIds = ((periods as any[]) ?? []).map(period => period.id as string)
+    .order('id', { ascending: true })
+    .range(from, to))
+  const periodIds = periods.map(period => period.id as string)
   if (periodIds.length === 0) return new Map()
-  const { data: rows } = await admin.from('close_allocation_rounding' as any)
-    .select('source_type, lp_entity_id, exact_amount, posted_amount')
-    .eq('fund_id', fundId)
-    .eq('vehicle_id', vehicleId)
-    .in('fiscal_period_id', periodIds)
+  const rows: any[] = []
+  for (let i = 0; i < periodIds.length; i += 200) {
+    const chunk = periodIds.slice(i, i + 200)
+    rows.push(...await fetchAllRows<any>((from, to) => admin.from('close_allocation_rounding' as any)
+      .select('id, source_type, lp_entity_id, exact_amount, posted_amount')
+      .eq('fund_id', fundId)
+      .eq('vehicle_id', vehicleId)
+      .in('fiscal_period_id', chunk)
+      .order('id', { ascending: true })
+      .range(from, to)))
+  }
   const residuals = new Map<string, number>()
-  for (const row of ((rows as any[]) ?? [])) {
+  for (const row of rows) {
     const key = `${row.source_type}:${row.lp_entity_id}`
     residuals.set(key, (residuals.get(key) ?? 0) + Number(row.exact_amount) - Number(row.posted_amount))
   }
@@ -218,9 +229,14 @@ export async function previewClose(
   // loaded into anything and its "nobody to allocate to" refusal does not apply.
   const ownerMode = closesToOwnerEquity(kind)
   const vehicleId = await vehicleIdByName(admin, fundId, group)
-  const priorResiduals = shadowResiduals ?? (ownerMode || !vehicleId
-    ? new Map<string, number>()
-    : await allocationResiduals(admin, fundId, vehicleId, periodStart))
+  let priorResiduals: Map<string, number>
+  try {
+    priorResiduals = shadowResiduals ?? (ownerMode || !vehicleId
+      ? new Map<string, number>()
+      : await allocationResiduals(admin, fundId, vehicleId, periodStart))
+  } catch (error) {
+    return { error: `Could not read the rounding carried from earlier closes: ${(error as any)?.message ?? String(error)}` }
+  }
 
   // The basis amount per partner, as of the PERIOD END — not today. Closing an old
   // period must use the commitments (or balances) that were in force then.
@@ -250,13 +266,59 @@ export async function previewClose(
 
   // New entries are allocated when posted. Close only catches legacy/unallocated P&L, making
   // the migration safe for existing books while preventing a second allocation.
-  const { data: allocatedRows } = await admin.from('journal_entry_allocations' as any)
-    .select('source_entry_id').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
-  const allocatedSourceIds = new Set(((allocatedRows as any[]) ?? []).map(row => row.source_entry_id as string))
-  const unallocatedPostings = sourcedPostings.filter(posting => !allocatedSourceIds.has(posting.entryId))
-  const inPeriod = postingsInPeriod(unallocatedPostings, periodStart, periodEnd)
+  //
+  // "Allocated" has to be read in full. PostgREST returns at most 1000 rows, and a vehicle with
+  // more allocated entries than that used to look as if the rest had never been allocated — and
+  // the close allocated them again. Paged, and a failed read refuses the preview rather than
+  // reading as "nothing allocated".
+  let allocatedRows: any[]
+  let skips: Map<string, string>
+  try {
+    [allocatedRows, skips] = await Promise.all([
+      vehicleId
+        ? fetchAllRows<any>((from, to) => admin.from('journal_entry_allocations' as any)
+          .select('id, source_entry_id').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
+          .order('id', { ascending: true }).range(from, to))
+        : Promise.resolve([]),
+      vehicleId ? loadAllocationSkips(admin, fundId, vehicleId) : Promise.resolve(new Map<string, string>()),
+    ])
+  } catch (error) {
+    return { error: `Could not read which entries are already allocated, so nothing was allocated: ${(error as any)?.message ?? String(error)}` }
+  }
+  const allocatedSourceIds = new Set(allocatedRows.map(row => row.source_entry_id as string))
   const pnlAccounts = accounts.filter(a => a.type === 'income' || a.type === 'expense')
   const pnlById = new Map(pnlAccounts.map(a => [a.id, a]))
+
+  // Entries the catch-up must leave alone even though no allocation row points at them:
+  //   - posted with allocation off ('allocation_off' skip): imports whose books already carry
+  //     the partner capital lines, or never split income by partner;
+  //   - carrying their own allocation lines (a compound entry, ACCOUNTING.md 4–7) — recorded
+  //     as a skip on posting, and recognised here from the ledger for entries posted before that;
+  //   - imported (QuickBooks / Carta) with no allocation and no record of how they were posted.
+  //     Those predate the skip record, and the close cannot tell an import posted with allocation
+  //     off from one posted before allocation-on-posting existed. Allocating one whose source books
+  //     already carried the capital lines doubles every partner's share, so they are reported,
+  //     never allocated silently.
+  const accountById = new Map(accounts.map(a => [a.id, a]))
+  const postingsByEntry = new Map<string, typeof sourcedPostings>()
+  for (const p of sourcedPostings) {
+    const list = postingsByEntry.get(p.entryId) ?? []
+    list.push(p)
+    postingsByEntry.set(p.entryId, list)
+  }
+  const selfAllocated = new Set<string>()
+  const allocationOff = new Set<string>()
+  const unmarkedImports = new Set<string>()
+  for (const [entryId, lines] of postingsByEntry) {
+    if (allocatedSourceIds.has(entryId)) continue
+    const skip = skips.get(entryId)
+    if (skip === 'allocation_off') allocationOff.add(entryId)
+    else if (skip === 'self_allocated' || carriesOwnAllocation(lines, accountById)) selfAllocated.add(entryId)
+    else if (isExternalBookSource(lines[0].sourceType) && lines.some(l => pnlById.has(l.accountId))) unmarkedImports.add(entryId)
+  }
+  const unallocatedPostings = sourcedPostings.filter(posting => !allocatedSourceIds.has(posting.entryId)
+    && !selfAllocated.has(posting.entryId) && !allocationOff.has(posting.entryId) && !unmarkedImports.has(posting.entryId))
+  const inPeriod = postingsInPeriod(unallocatedPostings, periodStart, periodEnd)
 
   // Group the period's P&L by category. `amount` is the debit-side sum, so an
   // expense is positive and income is negative.
@@ -317,11 +379,29 @@ export async function previewClose(
   }
 
   const netIncome = roundCents(categories.reduce((s, c) => s + c.capitalEffect, 0))
-  const allocatedInPeriod = postingsInPeriod(sourcedPostings.filter(p => allocatedSourceIds.has(p.entryId)), periodStart, periodEnd)
-    .filter(p => pnlById.has(p.accountId))
+  // A self-allocated entry was allocated on posting too — by its own lines.
+  const allocatedInPeriod = postingsInPeriod(
+    sourcedPostings.filter(p => allocatedSourceIds.has(p.entryId) || selfAllocated.has(p.entryId)), periodStart, periodEnd,
+  ).filter(p => pnlById.has(p.accountId))
   const allocatedOnPosting = {
     entries: new Set(allocatedInPeriod.map(p => p.entryId)).size,
     netIncome: roundCents(-allocatedInPeriod.reduce((s, p) => s + p.amount, 0)),
+  }
+  const leftAlone = (ids: Set<string>) => {
+    const lines = postingsInPeriod(sourcedPostings.filter(p => ids.has(p.entryId)), periodStart, periodEnd)
+      .filter(p => pnlById.has(p.accountId))
+    return { entries: new Set(lines.map(p => p.entryId)).size, net: roundCents(-lines.reduce((s, p) => s + p.amount, 0)) }
+  }
+  const off = leftAlone(allocationOff)
+  if (off.entries > 0) {
+    warnings.push(`${off.entries} entr${off.entries === 1 ? 'y' : 'ies'} in this period (net income ${off.net.toFixed(2)}) ${off.entries === 1 ? 'was' : 'were'} posted with partner allocation turned off. The close leaves ${off.entries === 1 ? 'it' : 'them'} unallocated, as posted.`)
+  }
+  const imports = leftAlone(unmarkedImports)
+  if (imports.entries > 0) {
+    warnings.push(
+      `${imports.entries} imported (QuickBooks or Carta) entr${imports.entries === 1 ? 'y' : 'ies'} in this period (net income ${imports.net.toFixed(2)}) ${imports.entries === 1 ? 'has' : 'have'} no partner allocation and no record of how ${imports.entries === 1 ? 'it was' : 'they were'} posted. ` +
+      `The close does not allocate imports on its own: if the source books already carry each partner's capital lines, nothing is needed; if not, unpost and post ${imports.entries === 1 ? 'it' : 'them'} again with allocation on.`
+    )
   }
   if (categories.length === 0 && allocatedOnPosting.entries === 0) {
     warnings.push('No P&L activity in this period — closing will lock the books without allocating anything.')

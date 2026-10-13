@@ -26,7 +26,12 @@ const stored = [
 const admin = {
   from: (t: string) => {
     const data = t === 'lp_entities' ? entities : t === 'lp_snapshots' ? [{ id: 's1', name: 'Q2', as_of_date: '2026-06-30' }] : t === 'lp_investments' ? stored : []
-    const chain: any = { select: () => chain, eq: () => chain, in: () => chain, then: (res: any) => res({ data, error: null }) }
+    let rows = data
+    const chain: any = {
+      select: () => chain, eq: () => chain, in: () => chain, order: () => chain,
+      range: (a: number, b: number) => { rows = data.slice(a, b + 1); return chain },
+      then: (res: any) => res({ data: rows, error: null }),
+    }
     return chain
   },
 } as any

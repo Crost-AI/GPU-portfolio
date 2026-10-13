@@ -34,6 +34,7 @@ import type { JournalEntry, Posting } from './types'
 import { ACTUAL_BOOK } from './books'
 import { computeSummary, sortForRollup } from '@/lib/investments'
 import { txnsForVehicle } from './soi'
+import { proceedsSplit, escrowExceedsGross } from '@/lib/portfolio/proceeds'
 
 const CASH = '1000'
 const ESCROW_RECEIVABLE = '1350'
@@ -164,13 +165,15 @@ export async function retractEntriesForTransaction(
 }
 
 export interface ExitInputs {
-  /** Cash actually received on the exit. */
+  /**
+   * GROSS proceeds realized at the exit — the row's `proceeds_received`, escrow included
+   * (lib/portfolio/proceeds.ts). The cash that arrived is this less `escrow`.
+   */
   proceeds: number
   /**
-   * Holdback the buyer retained in escrow. Earned at the exit, but not yet paid — so it is
-   * recognized as a RECEIVABLE, not as cash. The tracker already counts it in proceeds
-   * (lib/investments.ts:75); booking only the cash made the ledger's realized gain differ
-   * from the tracker's by exactly this amount on every exit with a holdback.
+   * The part of the gross the buyer held back in escrow. Earned at the exit, but not yet paid — so
+   * it is recognized as a RECEIVABLE (1350), not as cash, and it is NOT added to the gross again:
+   * the gain is gross − basis, the same figure the tracker reports.
    */
   escrow?: number
   /** Cost basis being retired (always treated as a magnitude). */
@@ -206,8 +209,9 @@ export interface ExitAccounts {
  * A partial exit unwinds pro-rata to the cost basis retired.
  */
 export function exitPostings(inputs: ExitInputs, acc: ExitAccounts, currency = 'USD'): Posting[] {
-  const proceeds = roundCents(inputs.proceeds)
+  const gross = roundCents(inputs.proceeds)
   const escrow = roundCents(inputs.escrow ?? 0)
+  const cash = roundCents(gross - escrow)
   const basis = Math.abs(roundCents(inputs.basis))
   const { cost: priorCost, unrealized, fx } = inputs.carried
 
@@ -220,17 +224,18 @@ export function exitPostings(inputs: ExitInputs, acc: ExitAccounts, currency = '
   const unrealizedOut = roundCents(unrealized * fraction)
   const fxOut = roundCents(fx * fraction)
 
-  // The gain is measured on TOTAL consideration — cash plus the holdback the fund has earned
-  // but not yet collected. This is what makes the ledger agree with the tracker, which counts
-  // escrow in proceeds at close.
-  const consideration = roundCents(proceeds + (acc.escrowId ? escrow : 0))
+  // The gain is measured on the GROSS — cash plus the holdback the fund has earned but not yet
+  // collected — which is what the tracker reports. Without a 1350 to hold the escrow (a chart seeded
+  // before it existed) only the cash is recognized now, and the escrow receipt books the rest as
+  // gain when it lands.
+  const consideration = acc.escrowId ? gross : cash
   const gain = roundCents(consideration - basis)
 
   const postings: Posting[] = [
-    { accountId: acc.cashId, amount: proceeds, currency, lpEntityId: null },
+    { accountId: acc.cashId, amount: cash, currency, lpEntityId: null },
     { accountId: acc.costId, amount: roundCents(-basis), currency, lpEntityId: null },
   ]
-  // Dr escrow receivable. It clears when the money lands (a bank inflow categorized to 1350).
+  // Dr escrow receivable. It clears when the money lands (the escrow receipt on the holding).
   if (escrow !== 0 && acc.escrowId) {
     postings.push({ accountId: acc.escrowId, amount: escrow, currency, lpEntityId: null })
   }
@@ -670,10 +675,13 @@ export async function buildEntryForTransaction(
 
   // ---- An exit: cash in, cost retired, the difference is a realized gain. -
   else if (txn.transaction_type === 'proceeds') {
-    const proceeds = num(txn.proceeds_received)
-    const escrow = num(txn.proceeds_escrow)
+    // `proceeds_received` is the GROSS, escrow included (lib/portfolio/proceeds.ts): cash is
+    // gross − escrow, 1350 the escrow, the gain gross − basis.
+    const { gross: proceeds, escrow, cash } = proceedsSplit({ proceeds_received: num(txn.proceeds_received), proceeds_escrow: num(txn.proceeds_escrow) })
     const basis = Math.abs(num(txn.cost_basis_exited))
     if (proceeds === 0 && escrow === 0 && basis === 0) return { skip: skip('The exit has neither proceeds nor cost basis — nothing to book.') }
+    const escrowProblem = escrowExceedsGross(txn)
+    if (escrowProblem) return { skip: skip(escrowProblem) }
 
     // Prefer the company's OWN realized-gain account (4000-<company>) so the ledger keeps which
     // deal produced the gain; fall back to the pooled 4000 for charts seeded before it existed.
@@ -692,7 +700,7 @@ export async function buildEntryForTransaction(
     // A partial exit reverses its share: the fraction of the cost basis being retired.
     const carried = await companyCarrying(admin, fundId, group, vehicleId, a, opts.excludeEntryIds ?? [])
 
-    amount = proceeds
+    amount = cash
     kind = 'proceeds'
     entry = {
       fundId,
@@ -706,8 +714,8 @@ export async function buildEntryForTransaction(
         unrealizedId: a.unrealizedId,
         fxId: a.fxId,
         // Absent on a chart seeded before 1350 existed. Without it the escrow can't be
-        // recognized, so the entry falls back to cash-only — the old behaviour — rather
-        // than posting an unbalanced entry. Re-syncing the chart adds it.
+        // recognized, so the entry books the cash only (gross − escrow) rather than posting an
+        // unbalanced entry; the receipt books the rest as gain. Re-syncing the chart adds it.
         escrowId: codes.get(ESCROW_RECEIVABLE),
         unrealizedIncomeId: codes.get(UNREALIZED_INCOME),
         fxIncomeId: codes.get(FX_INCOME),

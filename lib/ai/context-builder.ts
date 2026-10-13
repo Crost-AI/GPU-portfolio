@@ -9,6 +9,7 @@ import type { EntityScope } from '@/lib/access/entity-scope'
 import type { AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, filterByCompany, scopeTransactions } from '@/lib/access/scope'
 import { scopeNotesQuery } from '@/lib/notes/entity'
+import { grossProceeds } from '@/lib/portfolio/proceeds'
 
 type Admin = ReturnType<typeof createAdminClient>
 
@@ -80,7 +81,7 @@ export async function buildPortfolioContext(
           shares += Number(t.shares_acquired ?? 0)
         }
         if (t.transaction_type === 'proceeds') {
-          realized += Number(t.proceeds_received ?? 0) + Number(t.proceeds_escrow ?? 0)
+          realized += grossProceeds(t)
         }
         if (t.transaction_type === 'unrealized_gain_change' && t.current_share_price) {
           sharePrice = Number(t.current_share_price)
@@ -365,7 +366,7 @@ export async function buildCompanyContext(
         totalShares += Number(t.shares_acquired ?? 0)
       }
       if (t.transaction_type === 'proceeds') {
-        totalRealized += Number(t.proceeds_received ?? 0) + Number(t.proceeds_escrow ?? 0)
+        totalRealized += grossProceeds(t)
       }
       if (t.transaction_type === 'unrealized_gain_change' && t.current_share_price) {
         latestSharePrice = Number(t.current_share_price)
@@ -426,7 +427,7 @@ export async function buildCompanyContext(
           shares += Number(t.shares_acquired ?? 0)
         }
         if (t.transaction_type === 'proceeds') {
-          realized += Number(t.proceeds_received ?? 0) + Number(t.proceeds_escrow ?? 0)
+          realized += grossProceeds(t)
         }
         if (t.transaction_type === 'unrealized_gain_change' && t.current_share_price) {
           sharePrice = Number(t.current_share_price)

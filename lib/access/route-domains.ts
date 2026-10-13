@@ -555,6 +555,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/pending-actions': 'Queue spans domains; each row filtered by hasAccess(read) in-handler.',
   'api/pending-actions/[id]/approve': 'Domain resolved from the row; write enforced in-handler.',
   'api/pending-actions/[id]/reject': 'Domain resolved from the row; write enforced in-handler.',
+  'api/pending-actions/[id]/undo': "A run's domains resolved from the row; write in each enforced in-handler, as approve.",
 
   'api/mcp': 'MCP: authenticates by API key/OAuth token; gated per tool by domain.',
   'api/agent/reports/[token]': 'Signed, one-hour link an agent tool issued (lib/agent/report-links.ts); re-checks the member\'s live membership, lp_capital grant and entities in-handler; an investor connector link (portal_statement) re-checks the LP account and the fund\'s portal and connector switches instead.',

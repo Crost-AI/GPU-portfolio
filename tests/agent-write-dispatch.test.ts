@@ -123,14 +123,20 @@ describe('a chat assistant (OAuth over MCP)', () => {
     expect(notifyAdmins).not.toHaveBeenCalled()
   })
 
-  it('applies the staged write when the person approves it in the chat', async () => {
+  it('applies the staged write when approved from another credential, never the chat that staged it', async () => {
     const staged = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' })
+    const self = await callTool('approve_action', { id: staged.json.pendingActionId })
+    expect(self.isError).toBe(true)
+    expect(addChartAccount).not.toHaveBeenCalled()
+
+    keyId = 'oauth:another-chat'
     const approved = await callTool('approve_action', { id: staged.json.pendingActionId })
     expect(approved.isError).toBe(false)
     expect(approved.json).toMatchObject({ applied: true, result: { tool: 'add_account', result: { code: '6100' } } })
     expect(addChartAccount).toHaveBeenCalledTimes(1)
     expect(store.tables.pending_actions[0].status).toBe('applied')
     expect(audit().map(e => [e.action, e.source])).toEqual([['pending_action.stage', 'mcp'], ['pending_action.approve', 'mcp']])
+    expect(store.tables.pending_actions[0].created_credential).toBe('oauth:claude')
 
     // A second approval replays rather than writing twice.
     await callTool('approve_action', { id: staged.json.pendingActionId })
@@ -163,8 +169,10 @@ describe('a chat assistant (OAuth over MCP)', () => {
   it('approves only with the approver’s own write access to the change', async () => {
     const staged = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' })
     access = member({ accounting: 'read' })
+    keyId = 'oauth:another-chat'
     const out = await callTool('approve_action', { id: staged.json.pendingActionId })
     expect(out.isError).toBe(true)
+    expect(out.text).toMatch(/write access/)
     expect(addChartAccount).not.toHaveBeenCalled()
   })
 
@@ -242,7 +250,9 @@ describe('admin-only operations (lib/access/admin-only.ts)', () => {
 
   it('applies a member’s proposal once an admin approves it', async () => {
     const staged = await callTool('add_partner', partner)
+    // The admin, from their own chat.
     access = member({}, 'admin')
+    keyId = 'oauth:admin-chat'
     const approved = await callTool('approve_action', { id: staged.json.pendingActionId })
     expect(approved.isError).toBe(false)
     expect(addPartner).toHaveBeenCalledTimes(1)
@@ -284,7 +294,10 @@ describe('an assistant asking for the same change twice (no idempotency key)', (
 
   it('says a repeat of an applied change is already done, and applies nothing', async () => {
     const first = await callTool('add_account', legal)
+    // Approved by a person from another credential: the staging chat cannot approve its own change.
+    keyId = 'oauth:another-chat'
     await callTool('approve_action', { id: first.json.pendingActionId })
+    keyId = 'oauth:claude'
     const again = await callTool('add_account', legal)
     expect(again.json).toMatchObject({ duplicate: true, status: 'applied', pendingActionId: first.json.pendingActionId })
     expect(again.json.next).toMatch(/Do NOT approve or send it again/)

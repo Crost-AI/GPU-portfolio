@@ -62,9 +62,9 @@ describe('readInvestmentLines — what it reads', () => {
       { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 1000, proceeds_received: 700 },
     ] })
   })
-  it('an exit with escrow held back', () => {
+  it('an exit with escrow held back reads proceeds as the gross, escrow included', () => {
     expect(read(L('cash', 900), L('esc', 100), L('a1100', -800), L('a4000', -200))).toEqual({ transactions: [
-      { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 800, proceeds_received: 900, proceeds_escrow: 100 },
+      { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 800, proceeds_received: 1000, proceeds_escrow: 100 },
     ] })
   })
   it("an earn-out: the company's own 4000 gain with no cost line reads as zero-basis proceeds", () => {
@@ -74,7 +74,7 @@ describe('readInvestmentLines — what it reads', () => {
   })
   it('an earn-out with escrow held back keeps the escrow', () => {
     expect(read(L('cash', 90), L('esc', 10), L('a4000', -100))).toEqual({ transactions: [
-      { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 0, proceeds_received: 90, proceeds_escrow: 10 },
+      { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 0, proceeds_received: 100, proceeds_escrow: 10 },
     ] })
   })
   it('a pooled gain with no company line stays unattributed', () => {
@@ -93,6 +93,22 @@ describe('readInvestmentLines — what it reads', () => {
     expect(readInvestmentLines(postings, chart)).toEqual({ transactions: [
       { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 500, proceeds_received: 600 },
     ] })
+  })
+  it('round-trips an exit with escrow: the adopted row derives the same entry', () => {
+    const acc = { cashId: 'cash', gainId: 'a4000', costId: 'a1100', unrealizedId: 'a1200', fxId: 'a1250', escrowId: 'esc', unrealizedIncomeId: 'p4200', fxIncomeId: 'p4300' }
+    const carried = { cost: 1000, unrealized: 0, fx: 0 }
+    const original = exitPostings({ proceeds: 1500, escrow: 200, basis: 1000, carried }, acc)
+      .map(p => ({ accountId: p.accountId, amount: p.amount }))
+    const r = readInvestmentLines(original, chart)
+    expect(r).toEqual({ transactions: [
+      { company_id: 'co-a', transaction_type: 'proceeds', cost_basis_exited: 1000, proceeds_received: 1500, proceeds_escrow: 200 },
+    ] })
+    // And back: deriving the adopted row books exactly the entry it was read from.
+    const t = (r as any).transactions[0]
+    const again = exitPostings({ proceeds: t.proceeds_received, escrow: t.proceeds_escrow, basis: t.cost_basis_exited, carried }, acc)
+      .map(p => ({ accountId: p.accountId, amount: p.amount }))
+    expect(again).toEqual(original)
+    expect(again.find(p => p.accountId === 'cash')?.amount).toBe(1300)
   })
   it('in-kind income reads as a purchase at that cost', () => {
     expect(read(L('a1100', 300), L('inc', -300))).toEqual({ transactions: [

@@ -112,29 +112,29 @@ describe('exitPostings', () => {
   })
 
   it('recognises escrow as a receivable, so the gain matches the tracker', () => {
-    // Sold for 3m: 2.5m wired, 500k held back in escrow. The TRACKER counts all 3m as
-    // proceeds at close (computeSummary). The ledger used to book only the 2.5m, so its
-    // realized gain was short by exactly the escrow — on every exit with a holdback.
+    // Sold for 3m gross: 2.5m wired, 500k held back in escrow. proceeds_received is the GROSS
+    // (lib/portfolio/proceeds.ts), so the cash is the gross less the escrow.
     const p = exitPostings(
-      { proceeds: 2_500_000, escrow: 500_000, basis: 1_000_000, carried: { cost: 1_000_000, unrealized: 0, fx: 0 } },
+      { proceeds: 3_000_000, escrow: 500_000, basis: 1_000_000, carried: { cost: 1_000_000, unrealized: 0, fx: 0 } },
       ACC
     )
     expect(() => balanced(p)).not.toThrow()
 
-    expect(bal(p, 'cash')).toBe(2_500_000)       // only the cash that actually arrived
+    expect(bal(p, 'cash')).toBe(2_500_000)       // gross − escrow: only the cash that actually arrived
     expect(bal(p, 'escrow1350')).toBe(500_000)   // earned, not yet collected
     expect(bal(p, 'cost1100')).toBe(-1_000_000)
-    // Gain is on TOTAL consideration (3m - 1m), which is what the tracker reports.
+    // Gain is gross − basis (3m − 1m), which is what the tracker reports. Not gross + escrow.
     expect(bal(p, 'gain4000')).toBe(-2_000_000)
   })
 
   it('does not double-count when the escrow is later received', () => {
-    // At exit: Dr escrow 500k. When the money lands, the escrow receipt on the holding posts
-    // Dr Cash / Cr 1350 — the receivable clears and NO new gain is booked.
+    // All 500k held back at exit: Dr escrow 500k, no cash. When the money lands, the escrow receipt
+    // on the holding posts Dr Cash / Cr 1350 — the receivable clears and NO new gain is booked.
     const atExit = exitPostings(
-      { proceeds: 0, escrow: 500_000, basis: 0, carried: { cost: 0, unrealized: 0, fx: 0 } },
+      { proceeds: 500_000, escrow: 500_000, basis: 0, carried: { cost: 0, unrealized: 0, fx: 0 } },
       ACC
     )
+    expect(bal(atExit, 'cash')).toBe(0)
     expect(bal(atExit, 'escrow1350')).toBe(500_000)
     expect(bal(atExit, 'gain4000')).toBe(-500_000) // recognised ONCE, at the exit
 
@@ -143,17 +143,18 @@ describe('exitPostings', () => {
     expect(bal(atExit, 'escrow1350') + onReceipt).toBe(0)
   })
 
-  it('falls back to cash-only when the chart has no escrow account', () => {
-    // A vehicle whose chart was seeded before 1350 existed must not post an unbalanced entry.
-    // It books the old way until the chart is re-synced.
+  it('books only the cash when the chart has no escrow account', () => {
+    // A vehicle whose chart was seeded before 1350 existed must not post an unbalanced entry. The
+    // cash (gross − escrow) is recognized now; the escrow receipt books the rest as gain.
     const { escrowId, ...noEscrow } = ACC
     const p = exitPostings(
-      { proceeds: 2_500_000, escrow: 500_000, basis: 1_000_000, carried: { cost: 1_000_000, unrealized: 0, fx: 0 } },
+      { proceeds: 3_000_000, escrow: 500_000, basis: 1_000_000, carried: { cost: 1_000_000, unrealized: 0, fx: 0 } },
       noEscrow
     )
     expect(() => balanced(p)).not.toThrow()
+    expect(bal(p, 'cash')).toBe(2_500_000)
     expect(bal(p, 'escrow1350')).toBe(0)
-    expect(bal(p, 'gain4000')).toBe(-1_500_000) // gain on cash only — the old, understated figure
+    expect(bal(p, 'gain4000')).toBe(-1_500_000) // the receipt's 500k gain completes the 2m
   })
 
   it('denominates every posting in the fund currency', () => {

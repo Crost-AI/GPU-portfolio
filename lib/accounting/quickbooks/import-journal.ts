@@ -9,7 +9,8 @@ import { BULK_BATCH } from '@/lib/accounting/journal-bulk'
 import { buildEntries, qbVendorName } from './build-entries'
 import { proposeMapping, type ChartAccount } from './propose-mapping'
 import type { QbAccountSummary, QbTransaction } from './parse-journal'
-import { vendorResolver } from '@/lib/accounting/vendors'
+import { normalizeVendorName, vendorResolver } from '@/lib/accounting/vendors'
+import { matchImported, type BookEntry, type DuplicateTransaction, type RecoveredTransaction } from './dedupe'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import type { JournalSource } from './sources'
 
@@ -160,6 +161,10 @@ export type QbImportResult =
       wouldCreate: number
       alreadyPresent: number
       skipped: number
+      /** Each transaction counted in alreadyPresent, with the entry it matched and why (dedupe.ts). */
+      duplicates: DuplicateTransaction[]
+      /** Imported although an entry under its pre-payee ref exists — the ones an older import dropped. */
+      recovered: RecoveredTransaction[]
       errors: string[]
       capitalWarnings: string[]
     }
@@ -170,6 +175,8 @@ export type QbImportResult =
       created: number
       alreadyPresent: number
       skipped: number
+      duplicates: DuplicateTransaction[]
+      recovered: RecoveredTransaction[]
       errors: string[]
       capitalWarnings: string[]
     }
@@ -183,9 +190,10 @@ export type QbImportResult =
  * bulk-post surface — an import that posted directly would need REVERSING when a mapping turns
  * out wrong, instead of simply being re-run.
  *
- * Idempotent by `source_ref = qb:<hash>`: re-importing after fixing one mapping updates the
+ * Idempotent by `source_ref = qb:v2:<hash>`: re-importing after fixing one mapping updates the
  * count of matched entries rather than duplicating the ledger. That is also what makes a
- * scheduled connector safe to re-send overlapping windows.
+ * scheduled connector safe to re-send overlapping windows. Entries written under the first,
+ * payee-blind ref are still recognised, by count — see dedupe.ts.
  */
 export async function importQbJournal(admin: SupabaseClient, params: QbImportParams): Promise<QbImportResult> {
   const { fundId, group, userId, transactions, parseErrors, dryRun } = params
@@ -238,29 +246,48 @@ export async function importQbJournal(admin: SupabaseClient, params: QbImportPar
     .eq('type', 'equity').eq('subtype', 'lp_capital').eq('is_active', true)
   if (capitalError) throw new QbImportError(capitalError.message)
   const rows = (capitalRows ?? []) as any[]
-  const { entries, skipped, capitalWarnings } = buildEntries(importable, mapping, accountIds, fundId, vendorIdByName, {
+  const { entries, origins, skipped, capitalWarnings } = buildEntries(importable, mapping, accountIds, fundId, vendorIdByName, {
     accountIds: new Set(rows.filter(r => !r.lp_entity_id).map(r => r.id)),
     targets: rows.filter(r => r.lp_entity_id && r.lp_entities?.entity_name).map(r => ({
       entityId: r.lp_entity_id, name: r.lp_entities.entity_name, accountId: r.id,
     })),
   }, source)
 
-  // Which of these have we already imported? Batched: a decade of history is thousands of
-  // refs, and one .in() of that size fails.
-  const refs = entries.map(e => e.sourceRef!).filter(Boolean)
-  const present = new Set<string>()
+  // Which of these have we already imported? Under the current ref or the first-version one
+  // (dedupe.ts). Batched: a decade of history is thousands of refs, and one .in() of that size
+  // fails. No status filter — a voided entry still blocks re-import, deliberately.
+  const refs = Array.from(new Set(entries.flatMap((e, i) => [e.sourceRef!, origins[i].legacyRef])))
+  const book: BookEntry[] = []
   for (let i = 0; i < refs.length; i += BULK_BATCH) {
     const chunk = refs.slice(i, i + BULK_BATCH)
     const { data, error } = await admin.from('journal_entries' as any)
-      .select('source_ref')
+      .select('id, source_ref, status, vendor_id, journal_postings(lp_entity_id)')
       .eq('book', ACTUAL_BOOK)
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId)
       .in('source_ref', chunk)
     if (error) throw new QbImportError(error.message)
-    for (const r of ((data as any[]) ?? [])) present.add(r.source_ref)
+    for (const r of ((data as any[]) ?? [])) book.push({
+      id: r.id, sourceRef: r.source_ref, status: r.status, vendorId: r.vendor_id ?? null,
+      lpEntityIds: ((r.journal_postings as any[]) ?? []).map(p => p.lp_entity_id).filter(Boolean),
+    })
   }
+  // An old entry's payee is a vendor id. Look the incoming names up — never create them here.
+  const existingVendors = new Map<string, string>()
+  if (book.some(b => b.vendorId)) {
+    const { data, error } = await admin.from('vendors' as any).select('id, name').eq('fund_id', fundId)
+    if (error) throw new QbImportError(error.message)
+    for (const v of ((data as any[]) ?? [])) existingVendors.set(normalizeVendorName(v.name).toLowerCase(), v.id)
+  }
+  const { present, duplicates, recovered } = matchImported(entries.map((e, i) => {
+    const payee = qbVendorName(origins[i].transaction)
+    return {
+      ref: e.sourceRef!, legacyRef: origins[i].legacyRef, entryDate: e.entryDate, memo: e.memo ?? null, payee,
+      vendorId: payee ? existingVendors.get(normalizeVendorName(payee).toLowerCase()) ?? null : null,
+      lpEntityIds: e.postings.map(p => p.lpEntityId).filter((id): id is string => !!id),
+    }
+  }), book)
 
-  const toCreate = entries.filter(e => !present.has(e.sourceRef!))
+  const toCreate = entries.filter((_, i) => !present[i])
   const writeErrors: string[] = [...parseErrors, ...skippedForExclusion, ...skipped.map(s => s.reason)]
 
   const importReview = await reviewImport(admin, fundId, group, { entries: toCreate, previewAccounts, includeLp: params.includeLp })
@@ -276,6 +303,8 @@ export async function importQbJournal(admin: SupabaseClient, params: QbImportPar
       wouldCreate: toCreate.length,
       alreadyPresent: entries.length - toCreate.length,
       skipped: skipped.length + skippedForExclusion.length,
+      duplicates,
+      recovered,
       errors: writeErrors,
       capitalWarnings,
     }
@@ -325,6 +354,8 @@ export async function importQbJournal(admin: SupabaseClient, params: QbImportPar
     created,
     alreadyPresent: entries.length - toCreate.length,
     skipped: skipped.length + skippedForExclusion.length,
+    duplicates,
+    recovered,
     errors: writeErrors,
     capitalWarnings,
   }

@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import { hasAccess } from '@/lib/access/effective'
 import { fetchAllRows } from '@/lib/accounting/load'
-import { stagedAction } from '@/lib/pending-actions/staged'
+import { mayActOn, stagedAction } from '@/lib/pending-actions/staged'
 import { toolCallGate } from '@/lib/agent/tool-call-action'
 import { csvField } from '@/lib/csv/escape'
 
@@ -35,7 +35,8 @@ export interface AuditRow {
  *     to ANY domain (a portfolio metric, an investment, a forecast). They follow that action's own
  *     gate — `getWriteAction(actionType).domain` + `accessFeature` — and an action type the
  *     registry no longer knows is hidden, since nothing says who may see its args. A staged tool
- *     call (`agent_tool_call`) follows its TOOL's gate, read from the args the event carries.
+ *     call (`agent_tool_call`) follows its TOOL's gate, read from the args the event carries, and a
+ *     run (`agent_run`) every one of its steps' gates.
  *   - `agent.*` events are a connected assistant's direct writes and carry the call's input; they
  *     follow the tool's gate the same way, and an unknown tool is hidden.
  */
@@ -50,7 +51,7 @@ export function visibleTo(access: AccessContext) {
     if (action.startsWith('pending_action.')) {
       const type = details?.actionType
       const wa = typeof type === 'string' ? stagedAction(type, details?.args) : undefined
-      return !!wa && hasAccess(access, wa.domain, 'read', wa.accessFeature)
+      return !!wa && mayActOn(access, wa, 'read')
     }
     if (action.startsWith('agent.')) {
       const gate = toolCallGate({ tool: details?.tool, input: details?.input })

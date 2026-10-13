@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { commitmentsAsOf } from '@/lib/accounting/terms'
 import { unwrap } from '@/lib/service-outcome'
 import {
@@ -57,11 +58,12 @@ export const LP_RECORD_HANDLERS: Record<string, AgentToolHandler> = {
     const scope = await lpToolScope(ctx.admin, ctx.access)
     const identities = await loadIdentities(ctx.admin, ctx.fundId, scope.entityIds)
     const only = input?.lp ? (await resolveEntity(ctx, input.lp)).entityId : null
-    const { data } = await (ctx.admin as any).from('commitment_events')
+    // Every event, paged: a commitment is the SUM of its events, so a capped read understates it.
+    const data = await fetchAllRows<any>((f, t) => (ctx.admin as any).from('commitment_events')
       .select('id, lp_entity_id, effective_date, amount, kind, transfer_id, counterparty_entity_id, memo')
-      .eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId).order('effective_date', { ascending: true })
+      .eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId).order('effective_date', { ascending: true }).order('id', { ascending: true }).range(f, t))
     // Only the caller's LPs, as everywhere else on the register.
-    const rows = ((data ?? []) as any[]).filter(e => identities.has(e.lp_entity_id) && (!only || e.lp_entity_id === only))
+    const rows = data.filter(e => identities.has(e.lp_entity_id) && (!only || e.lp_entity_id === only))
     const name = (id: string | null) => (id ? identities.get(id)?.entityName ?? 'another partner' : null)
     const commitments = commitmentsAsOf(
       rows.map(e => ({ lpEntityId: e.lp_entity_id, effectiveDate: e.effective_date, amount: Number(e.amount), kind: e.kind })),

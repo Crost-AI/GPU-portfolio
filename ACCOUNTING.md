@@ -131,7 +131,8 @@ Everything is per-vehicle from there, so the same company can run an SPV and a f
   allocation at once — a separate entry dated the same day, memo ending "— partner allocation", from
   3200 Undistributed earnings to each partner's capital by the basis in force on that date. Unposting
   or voiding the source takes its allocation with it. If an allocation cannot be made (no partner
-  with a commitment, say), the entry is not posted.
+  with a commitment, say), the entry is not posted. An entry that carries its own capital lines
+  (the compound form below) is not allocated again, and neither is one posted with allocation off.
 - **Close:** the **Close** page reviews and locks a month. It catches up any P&L that was never
   allocated (older books), trues up accrued carried interest to that month's NAV, accrues note
   interest, and records its review: trial balance, no drafts, bank activity recorded, **bank
@@ -395,13 +396,25 @@ that LP. In text they read `Equity:Partners-Capital-<Name>:3100-<id>`.
 
 Fees, expenses, and income need to be in **two** places: the **income statement** (as expense/income)
 *and* each LP's **capital account** (reducing/increasing it). The entry you book — by hand, from the
-journal's New entry menu, or from the bank feed — posts the **P&L side only** (`Dr 5000 / Cr 2100`
-for a fee). The **period close** then posts the capital side for every category in the month: it
+journal's New entry menu, or from the bank feed — usually posts the **P&L side only** (`Dr 5000 /
+Cr 2100` for a fee). **Posting** then writes the capital side as a separate allocation entry: it
 debits or credits each partner's capital account for their share and parks the offset in
-**Undistributed earnings (3200)**. During a period the income statement is right and the capital
-accounts lag by the unclosed month; at close they catch up, and the balance sheet's *unallocated
-earnings* line goes to zero. The T-accounts for entries 4–7 below show the whole economic picture,
-the P&L line and the capital lines together; the capital lines are the close's, not the entry's.
+**Undistributed earnings (3200)**. The period close only catches up P&L that was never allocated
+(books from before allocation-on-posting).
+
+Entries 4–7 below are shown in the **compound** form: the P&L lines and the capital lines in one
+entry. You can book them that way. An entry that already carries its own allocation — any line on
+3200, or partner-capital lines that net to exactly its P&L on the allocating side — is recognised
+when it posts and is **not** allocated a second time, by posting or by the close. Book either the
+P&L side alone or the whole compound entry, never the P&L side and then the capital side again by
+hand. (A partner paying a fund expense directly, `Dr 5100 / Cr 3100-<id>`, is a contribution, not
+an allocation, and is allocated as usual.)
+
+Entries posted with allocation **turned off** (`allocate: false` on a bulk post, for imports whose
+source books already carry each partner's capital lines) are recorded as such, and the close
+leaves them unallocated too. An imported QuickBooks or Carta entry with no allocation and no such
+record (posted before the record existed) is never allocated by the close on its own: the close
+preview lists it as a warning to resolve.
 
 ## Entry types
 
@@ -519,6 +532,14 @@ Cash/income in; each LP's capital increases. Line: **gains**.
   Equity:Partners-Capital-John-Smith:3100-aaaa   -300000.00 USD
   Equity:Partners-Capital-Acme-LLC:3100-bbbb     -200000.00 USD
 ```
+
+**An exit recorded on the company** posts the same way, with the cost retired (Cr 1100) and any
+escrow held back. Its **Proceeds** is the *gross* amount realized, escrow included; **In escrow** is
+the part of it not yet paid. The entry books gross − escrow to 1000 Cash, the escrow to 1350 Escrow
+receivable, and gross − cost basis as the realized gain — the same gain the tracker reports. An
+*escrow receipt* on the company later moves the escrow from 1350 to cash and books no further gain.
+Exits booked before this rule debited cash with the full Proceeds; the entity's status page lists
+the ones to check against the bank (`scripts/diagnose-escrow-exits.ts` prints the detail).
 
 ### 7. Revaluation (unrealized mark) — `source: valuation` (compound, via bridge)
 Mark the investment to a new fair value by recording a valuation update on the company (or booking

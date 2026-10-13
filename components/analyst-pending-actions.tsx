@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { announceApplied } from '@/lib/pending-actions/applied-event'
+import { isRunResult, RunPreview, RunResultView, type RunResult } from '@/components/agent-run-card'
 
 export interface PreviewResult {
   summary: string
@@ -24,6 +25,8 @@ type CardState = 'idle' | 'busy' | 'applied' | 'rejected' | 'error'
 export function AnalystPendingActions({ actions, title = 'Proposed changes — approve to apply' }: { actions: StagedAction[]; title?: string }) {
   const [state, setState] = useState<Record<string, CardState>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
+  // A run's outcome (lib/agent/run-action.ts): each step's result and the checks, shown once applied.
+  const [runs, setRuns] = useState<Record<string, RunResult>>({})
 
   async function act(a: StagedAction, kind: 'approve' | 'reject') {
     setState(s => ({ ...s, [a.id]: 'busy' }))
@@ -37,6 +40,7 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
         return
       }
       setState(s => ({ ...s, [a.id]: kind === 'approve' ? 'applied' : 'rejected' }))
+      if (kind === 'approve' && isRunResult(data.result)) setRuns(r => ({ ...r, [a.id]: data.result }))
       if (kind === 'approve') announceApplied({ actionType: a.actionType, result: data.result })
     } catch {
       setState(s => ({ ...s, [a.id]: 'error' }))
@@ -56,7 +60,13 @@ export function AnalystPendingActions({ actions, title = 'Proposed changes — a
         return (
           <div key={a.id} className="border rounded-card p-3 space-y-2">
             <p className="text-xs font-medium">{a.preview.summary}</p>
-            <PreviewDetails details={a.preview.details} />
+            {a.actionType === 'agent_run' ? (
+              runs[a.id]
+                ? <RunResultView id={a.id} result={runs[a.id]} onChange={next => setRuns(r => ({ ...r, [a.id]: next }))} />
+                : <RunPreview details={a.preview.details} />
+            ) : (
+              <PreviewDetails details={a.preview.details} />
+            )}
             {st === 'applied' ? (
               <span className="text-xs text-success flex items-center gap-1">
                 <Check className="h-3.5 w-3.5" />Applied.

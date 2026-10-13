@@ -197,17 +197,15 @@ export async function loadEntityNames(
   fundId: string,
   group: string
 ): Promise<Map<string, string>> {
-  const { data: inv } = await admin
-    .from('lp_investments' as any)
-    .select('entity_id')
-    .eq('fund_id', fundId)
-    .eq('portfolio_group', group)
-  const entityIds = Array.from(new Set(((inv as any[]) ?? []).map(r => r.entity_id)))
+  // Paged: lp_investments holds one row per LP per SNAPSHOT, so a vehicle passes 1000 rows long
+  // before it has 1000 partners — and the partners past the cap would vanish from every list.
+  const inv = await fetchAllRows<any>((f, t) => admin.from('lp_investments' as any).select('id, entity_id').eq('fund_id', fundId).eq('portfolio_group', group).order('id').range(f, t))
+  const entityIds = Array.from(new Set(inv.map(r => r.entity_id)))
   const out = new Map<string, string>()
   if (entityIds.length === 0) return out
 
-  const { data } = await admin.from('lp_entities' as any).select('id, entity_name').in('id', entityIds)
-  for (const e of ((data as any[]) ?? [])) out.set(e.id, e.entity_name ?? e.id)
+  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, entity_name').in('id', entityIds).order('id').range(f, t))
+  for (const e of data) out.set(e.id, e.entity_name ?? e.id)
   return out
 }
 
@@ -217,16 +215,12 @@ export async function loadEntityClasses(
   fundId: string,
   group: string
 ): Promise<Map<string, string>> {
-  const { data: inv } = await admin
-    .from('lp_investments' as any)
-    .select('entity_id')
-    .eq('fund_id', fundId)
-    .eq('portfolio_group', group)
-  const ids = Array.from(new Set(((inv as any[]) ?? []).map(r => r.entity_id)))
+  const inv = await fetchAllRows<any>((f, t) => admin.from('lp_investments' as any).select('id, entity_id').eq('fund_id', fundId).eq('portfolio_group', group).order('id').range(f, t))
+  const ids = Array.from(new Set(inv.map(r => r.entity_id)))
   const out = new Map<string, string>()
   if (ids.length === 0) return out
-  const { data } = await admin.from('lp_entities' as any).select('id, partner_class').in('id', ids)
-  for (const e of ((data as any[]) ?? [])) out.set(e.id, (e.partner_class as string) ?? 'lp')
+  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, partner_class').in('id', ids).order('id').range(f, t))
+  for (const e of data) out.set(e.id, (e.partner_class as string) ?? 'lp')
   return out
 }
 
@@ -250,12 +244,16 @@ export async function loadOwnership(
   fundId: string,
   group: string
 ): Promise<Ownership[]> {
-  const { data } = await admin
+  // Paged (one row per LP per snapshot — see loadEntityNames): past the cap, partners dropped out
+  // of the allocation basis with no error.
+  const data = await fetchAllRows<any>((f, t) => admin
     .from('lp_investments' as any)
-    .select('entity_id, commitment, paid_in_capital, distributions, snapshot_id, updated_at, lp_snapshots(as_of_date, created_at)')
+    .select('id, entity_id, commitment, paid_in_capital, distributions, snapshot_id, updated_at, lp_snapshots(as_of_date, created_at)')
     .eq('fund_id', fundId)
     .eq('portfolio_group', group)
-  return currentOwnership((data as InvestmentRow[]) ?? [])
+    .order('id')
+    .range(f, t))
+  return currentOwnership(data as InvestmentRow[])
 }
 
 export interface Ownership {

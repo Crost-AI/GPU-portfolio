@@ -17,6 +17,7 @@ import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { companyUpdateStatus, submitCompanyUpdate } from '@/lib/company-updates/submit'
 import { jobRecordId } from './jobs'
 import { writeMetricValue } from '@/lib/pending-actions/metric-value'
@@ -25,6 +26,7 @@ import { createCompany } from '@/lib/companies/create'
 import { createCompanyNote } from '@/lib/notes/create'
 import { EDITABLE_TXN_FIELDS, deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { unwrap } from '@/lib/service-outcome'
+import { escrowExceedsGross } from '@/lib/portfolio/proceeds'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -290,15 +292,18 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   list_lps: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    let q = (admin as any)
-      .from('lp_investments')
-      .select('portfolio_group, commitment, paid_in_capital, distributions, nav, dpi, rvpi, tvpi, irr, lp_entities ( entity_name )')
-      .eq('fund_id', fundId)
-    if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
-    const { data } = await q
+    // Paged: one row per LP per snapshot passes the 1000-row cap quickly, and the rest vanished.
+    const data = await fetchAllRows<any>((f, t) => {
+      let q = (admin as any)
+        .from('lp_investments')
+        .select('id, portfolio_group, commitment, paid_in_capital, distributions, nav, dpi, rvpi, tvpi, irr, lp_entities ( entity_name )')
+        .eq('fund_id', fundId)
+      if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
+      return q.order('id').range(f, t)
+    })
     const lpScope = await entityScopeFor(admin, access)
 
-    return scopeCompanyRows((data as any[]) ?? [], lpScope.vehicleNames, 'portfolio_group').map(r => ({
+    return scopeCompanyRows(data, lpScope.vehicleNames, 'portfolio_group').map(r => ({
       partner: r.lp_entities?.entity_name ?? '—',
       vehicle: r.portfolio_group,
       commitment: Number(r.commitment ?? 0),
@@ -446,7 +451,10 @@ export interface RecordInvestmentInput {
   unrealized_value_change?: number | string | null
   current_share_price?: number | string | null
   cost_basis_exited?: number | string | null
+  /** GROSS proceeds realized at the exit, escrow included (lib/portfolio/proceeds.ts). */
   proceeds_received?: number | string | null
+  /** The part of proceeds_received held back in escrow. */
+  proceeds_escrow?: number | string | null
   valuation_change_source?: string
   original_currency?: string
   fx_rate?: number | string | null
@@ -486,6 +494,8 @@ export async function executeRecordInvestment(
   if (!input?.transaction_date) throw new Error('transaction_date is required (YYYY-MM-DD)')
 
   const num = (v: any) => (v == null || v === '' ? null : Number(v))
+  const escrowProblem = escrowExceedsGross({ transaction_type: input.transaction_type, proceeds_received: num(input.proceeds_received), proceeds_escrow: num(input.proceeds_escrow) })
+  if (escrowProblem) throw new Error(escrowProblem)
 
   // The registry is the source of truth for entity names; a new name is registered before the row
   // that carries it (the company and import routes already do this).
@@ -508,6 +518,7 @@ export async function executeRecordInvestment(
       current_share_price: num(input.current_share_price),
       cost_basis_exited: num(input.cost_basis_exited),
       proceeds_received: num(input.proceeds_received),
+      proceeds_escrow: num(input.proceeds_escrow) ?? 0,
       valuation_change_source: input.valuation_change_source ?? null,
       original_currency: input.original_currency ?? null,
       fx_rate: num(input.fx_rate),

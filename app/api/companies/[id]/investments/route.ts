@@ -10,6 +10,7 @@ import { computeSummary } from '@/lib/investments'
 import { draftEntryForTransaction } from '@/lib/accounting/from-portfolio'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { TRANSACTION_TYPES, incomeError, splitError } from '@/lib/portfolio/transaction-checks'
+import { escrowExceedsGross } from '@/lib/portfolio/proceeds'
 import { normalizeSecurityType, SECURITY_TYPES } from '@/lib/accounting/soi'
 import { disposalBasis, isLotMethod, type LotMethod } from '@/lib/portfolio/lots'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
@@ -145,6 +146,10 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
 
   const incomeProblem = incomeError(body)
   if (incomeProblem) return NextResponse.json({ error: incomeProblem }, { status: 400 })
+
+  // Proceeds are gross, escrow included (lib/portfolio/proceeds.ts) — escrow can't exceed them.
+  const escrowProblem = escrowExceedsGross(body)
+  if (escrowProblem) return NextResponse.json({ error: escrowProblem }, { status: 400 })
 
   // security_type is CHECK-constrained. Unvalidated, a bad value reached Postgres and came back as
   // a raw constraint violation the user saw as "An unexpected error occurred" — so say what's wrong

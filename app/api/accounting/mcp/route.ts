@@ -61,9 +61,11 @@ const SERVER_INSTRUCTIONS =
   '"get started", "home" or "menu", or seems unsure what to ask, call show_home and present its ' +
   'overview. Do not describe these tools from memory: show_home lists only what this member may ' +
   'open, filtered to their own entities and access. ' +
-  'Changes you make for the user may come back staged ({ staged: true, pendingActionId }) instead of applied: ' +
-  'nothing has changed yet. Tell the user what the change is and ask them to confirm; only after they do, ' +
-  'call approve_action with that id (or reject_action if they decline). ' +
+  'Changes you make for the user may come back staged ({ staged: true, pendingActionId, approveUrl }) instead of applied: ' +
+  'nothing has changed yet. Tell the user what the change is and give them the approveUrl: a person approves it in the app. ' +
+  'You cannot approve a change you staged (approve_action refuses it); call reject_action if they decline. ' +
+  'When a fix needs more than one change, stage them together with stage_run (a title, a rationale, the ordered steps ' +
+  'and the balances that should hold afterwards) so the person reviews and approves it once. ' +
   'When an admin asks to set up the fund (or the fund is new), call setup_status, ask only for what is missing, ' +
   'confirm the plan, and apply it with one setup_fund call. ' +
   "When the user shares a portfolio company's update (a letter, deck or KPI sheet), pass it to submit_company_update " +

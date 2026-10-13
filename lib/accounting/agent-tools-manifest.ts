@@ -94,9 +94,17 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   { name: 'financial_statements', description: 'Trial balance, balance sheet, and income statement derived from posted entries.', scope: 'read', inputSchema: EMPTY_SCHEMA },
   {
     name: 'list_journal',
-    description: 'List recent journal entries with their postings.',
+    description: 'List journal entries with their postings, newest first, one page at a time. Returns { rows, total, hasMore, nextCursor }: when hasMore is true the list is INCOMPLETE — call again with cursor = nextCursor before drawing any conclusion from the whole journal.',
     scope: 'read',
-    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'Max entries (default 100)' } } },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Entries per page (default 100, max 500)' },
+        cursor: { type: 'string', description: 'nextCursor from the previous page' },
+        start: { type: 'string', description: 'ISO date; only entries on or after it' },
+        end: { type: 'string', description: 'ISO date; only entries on or before it' },
+      },
+    },
   },
   {
     name: 'post_entry',
@@ -200,9 +208,17 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'export_ledger_text',
-    description: "Export the vehicle's ledger as plain-text double-entry.",
+    description: "Export the vehicle's ledger (every non-void entry, oldest first) as plain-text double-entry. Returns { text, entries, total, truncated }: a large ledger comes in pages — when truncated is true, call again with the returned cursor (and the same start/end) until it is false; the text alone is NOT the whole ledger.",
     scope: 'read',
-    inputSchema: EMPTY_SCHEMA,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        start: { type: 'string', description: 'ISO date; only entries on or after it' },
+        end: { type: 'string', description: 'ISO date; only entries on or before it' },
+        asOf: { type: 'string', description: 'ISO date; same as end (a snapshot as of that date)' },
+        cursor: { type: 'string', description: 'cursor from the previous page' },
+      },
+    },
   },
   {
     name: 'post_ledger_text',
@@ -291,7 +307,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'import_journal',
-    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend. Transactions touching an unmapped account are skipped and named. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
+    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend; the `duplicates` in the result says which entry each matched transaction matched and why, and `recovered` lists transactions an earlier import wrongly skipped as duplicates (same date and amount, different payee). Transactions touching an unmapped account are skipped and named. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -364,9 +380,18 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'list_bank_transactions',
-    description: 'List staged bank transactions and their status (drafted / reconciled / ignored).',
+    description: 'List staged bank transactions and their status (unmatched / drafted / reconciled / ignored), newest first, one page at a time. Returns { rows, total, hasMore, nextCursor }: when hasMore is true the list is INCOMPLETE — call again with cursor = nextCursor.',
     scope: 'read',
-    inputSchema: EMPTY_SCHEMA,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Transactions per page (default 500, max 1000)' },
+        cursor: { type: 'string', description: 'nextCursor from the previous page' },
+        status: { type: 'string', enum: ['unmatched', 'drafted', 'reconciled', 'ignored'], description: 'only this status' },
+        start: { type: 'string', description: 'ISO date; only transactions on or after it' },
+        end: { type: 'string', description: 'ISO date; only transactions on or before it' },
+      },
+    },
   },
   {
     name: 'bank_reconciliation',

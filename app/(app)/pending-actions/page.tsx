@@ -3,6 +3,7 @@
 import { ClipboardCheck } from 'lucide-react'
 import { AnalystPendingActions } from '@/components/analyst-pending-actions'
 import { usePendingActions } from '@/components/pending-approvals'
+import { RecentRuns } from '@/components/agent-run-card'
 import { EmptyState } from '@/components/ui/empty-state'
 
 /**
@@ -10,6 +11,9 @@ import { EmptyState } from '@/components/ui/empty-state'
  * Analyst. A client page, so it declares nothing in page-domains.ts: the queue arrives through
  * /api/pending-actions, which filters each row by the caller's read access, and Approve goes
  * through /api/pending-actions/[id]/approve, which re-checks write access per action.
+ *
+ * Below the queue, the latest runs (several changes staged as one, lib/agent/run-action.ts) that
+ * were applied or stopped partway: each step's result, the checks, and Undo where it applies.
  */
 export default function PendingActionsPage() {
   const { actions, loading, error } = usePendingActions()
@@ -32,6 +36,9 @@ export default function PendingActionsPage() {
         ) : (
           <AnalystPendingActions actions={actions} title={`${actions.length} waiting`} />
         )}
+      </div>
+      <div className="mt-8 max-w-4xl">
+        <RecentRuns />
       </div>
     </div>
   )
