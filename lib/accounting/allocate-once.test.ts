@@ -39,10 +39,13 @@ vi.mock('./persist', () => ({
   accountIdByCode: async () => new Map(accounts.map(a => [a.code, a.id])),
   ensureCapitalAccounts: async () => new Map([['a', 'capA'], ['b', 'capB']]),
   persistEntry: vi.fn(async (admin: any, fundId: string, _g: string, _u: string, entry: any) => {
-    const { data } = await admin.from('journal_entries').insert({
-      fund_id: fundId, vehicle_id: 'v', status: 'posted', book: 'actual', entry_date: entry.entryDate, source_ref: entry.sourceRef,
-    }).select('id')
-    return { entryId: data[0].id }
+    // A write with its own id, so no read-back is needed (books.test.ts treats a `.select(` near
+    // `.from('journal_entries')` as a read that must filter on book).
+    const id = `posted-${entry.sourceRef ?? Math.random().toString(36).slice(2)}`
+    await admin.from('journal_entries').insert({
+      id, fund_id: fundId, vehicle_id: 'v', status: 'posted', book: 'actual', entry_date: entry.entryDate, source_ref: entry.sourceRef,
+    })
+    return { entryId: id }
   }),
 }))
 
