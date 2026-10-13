@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildStatementHtml, ytdWindow, NET_PNL_LABEL, type StatementPdfData } from './lp-statement-pdf'
+import { buildStatementHtml, NET_PNL_LABEL, type StatementPdfData } from './lp-statement-pdf'
+import { ytdWindow } from './statement-period'
 import { emptyAccount, type CapitalAccount } from './capital-account'
 
 // One 3SE Holdings LP partner's books, inception to date (capital_accounts, Oct 2026).
@@ -15,7 +16,7 @@ function data(over: Partial<StatementPdfData> = {}): StatementPdfData {
     vehicle: '3SE Holdings LP', partnerName: 'Jon May',
     period: { label: 'Inception to date', start: null, end: null } as any,
     row: { commitment: 100000, called: 90000, funded: 90000, outstanding: 10000, receivable: 0, ending: 76798.45 },
-    periodRollForward: itd, rollForward: itd, transactions: [], ownership: 0.02,
+    periodRollForward: itd, ytdRollForward: itd, rollForward: itd, ownership: 0.02,
     ...over,
   }
 }
@@ -44,7 +45,7 @@ describe('buildStatementHtml', () => {
 
   it('leaves the subtotal out when nothing in the period is profit or loss', () => {
     const flat = { ...emptyAccount(), contributions: 5000, ending: 5000 }
-    expect(buildStatementHtml(data({ periodRollForward: flat, rollForward: flat }))).not.toContain(NET_PNL_LABEL)
+    expect(buildStatementHtml(data({ periodRollForward: flat, ytdRollForward: flat, rollForward: flat }))).not.toContain(NET_PNL_LABEL)
   })
 
   it("puts the vehicle's logo in the header when one is passed", () => {
@@ -66,24 +67,41 @@ describe('buildStatementHtml', () => {
     expect(t).toContain('unaudited')
   })
 
-  it('keeps two columns when there is no year-to-date figure', () => {
-    expect(text(buildStatementHtml(data()))).not.toContain('Year to date')
+  it('always prints three columns, even when the period is itself year to date', () => {
+    const ytd = { ...emptyAccount(), beginning: 82792.03, operatingIncome: 373.25, ending: 83165.28 }
+    const t = text(buildStatementHtml(data({
+      period: { preset: 'ytd', label: 'YTD 2026', start: '2026-01-01', end: '2026-10-13' } as any,
+      periodRollForward: ytd, ytdRollForward: ytd,
+    })))
+    expect(t).toContain('Statement period Year to date Inception to date')
+    expect(t).toContain('Ending capital $83,165.28 $83,165.28 $76,798.45')
+  })
+
+  it('ends at the commitment summary', () => {
+    const t = text(buildStatementHtml(data()))
+    expect(t).toContain('Commitment summary')
+    for (const gone of ['Contributions and distributions in the period', 'Commitments to underlying funds', 'Underlying fund performance', 'Basis of valuation']) {
+      expect(t).not.toContain(gone)
+    }
   })
 })
 
 describe('ytdWindow', () => {
   const today = new Date('2026-10-13T00:00:00Z')
   it('runs from January 1 of the period end year to the period end', () => {
-    expect(ytdWindow({ preset: 'custom', start: '2026-04-01', end: '2026-06-30', label: 'Q2 2026' }, today))
+    expect(ytdWindow({ start: '2026-04-01', end: '2026-06-30' }, today))
       .toEqual({ start: '2026-01-01', end: '2026-06-30' })
   })
-  it('repeats the period for a Q1 statement, and is null for a year-to-date one', () => {
-    expect(ytdWindow({ preset: 'custom', start: '2026-01-01', end: '2026-03-31', label: 'Q1 2026' }, today))
+  it('repeats the period for a Q1 or year-to-date statement', () => {
+    expect(ytdWindow({ start: '2026-01-01', end: '2026-03-31' }, today))
       .toEqual({ start: '2026-01-01', end: '2026-03-31' })
-    expect(ytdWindow({ preset: 'ytd', start: '2026-01-01', end: '2026-10-13', label: 'YTD 2026' }, today)).toBeNull()
+    expect(ytdWindow({ start: '2026-01-01', end: '2026-10-13' }, today))
+      .toEqual({ start: '2026-01-01', end: '2026-10-13' })
   })
   it('ends today for an inception-to-date statement', () => {
-    expect(ytdWindow({ preset: 'itd', start: null, end: null, label: 'Inception to date' }, today))
+    expect(ytdWindow({ start: null, end: null }, today))
+      .toEqual({ start: '2026-01-01', end: '2026-10-13' })
+    expect(ytdWindow(undefined, today))
       .toEqual({ start: '2026-01-01', end: '2026-10-13' })
   })
 })

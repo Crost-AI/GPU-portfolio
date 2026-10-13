@@ -86,7 +86,9 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
     name: 'lp_statement',
     description:
       'One LP\'s capital-account statement in a vehicle: the roll-forward (beginning, contributions, distributions, fees, expenses, ' +
-      'gains, carry, ending) both inception-to-date and for the period, plus every transaction with a running balance.',
+      'gains, carry, ending) in three columns (the period, year to date, inception to date), the commitment summary ' +
+      '(commitment, capital called per column, remaining to be called, ownership, ending capital), and the period\'s transactions ' +
+      'with a running balance.',
     scope: 'read',
     domain: 'lp',
     inputSchema: {

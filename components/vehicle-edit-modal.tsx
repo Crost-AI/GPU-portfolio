@@ -1,12 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ImagePlus, Loader2, X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { VEHICLE_KIND_OPTIONS } from '@/lib/vehicle-kinds'
+import { useVehicleLetterhead, VehicleLetterheadFields } from '@/components/vehicle-letterhead'
 
 const KINDS = VEHICLE_KIND_OPTIONS
 
@@ -45,53 +45,8 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
   const [mergeBusy, setMergeBusy] = useState(false)
   const [mergeErr, setMergeErr] = useState<string | null>(null)
 
-  // The vehicle's own letterhead (logo, name, address) for its LP statements, notices, receipts
-  // and letters (lib/vehicle-letterhead.ts). Fetched on its own because logos are too heavy for
-  // the list. The logo saves as soon as it's picked, like the fund logo in settings; the name and
-  // address save with the rest of the form. `undefined` while loading, and the section stays
-  // hidden when the columns aren't migrated yet.
-  const [logo, setLogo] = useState<string | null | undefined>(undefined)
-  const [logoAvailable, setLogoAvailable] = useState(false)
-  const [letterheadName, setLetterheadName] = useState('')
-  const [letterheadAddress, setLetterheadAddress] = useState('')
-  const [logoBusy, setLogoBusy] = useState(false)
-  const [logoErr, setLogoErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetch(`/api/vehicles?letterhead=${encodeURIComponent(vehicle.id)}`).then(r => r.ok ? r.json() : null).then(data => {
-      if (cancelled) return
-      setLogoAvailable(!!data?.available)
-      setLogo(data?.logo ?? null)
-      setLetterheadName(data?.name ?? '')
-      setLetterheadAddress(data?.address ?? '')
-    }).catch(() => { if (!cancelled) setLogo(null) })
-    return () => { cancelled = true }
-  }, [vehicle.id])
-
-  async function saveLogo(next: string | null) {
-    const previous = logo ?? null
-    setLogo(next); setLogoBusy(true); setLogoErr(null)
-    const res = await fetch('/api/vehicles', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: vehicle.id, logo: next }),
-    })
-    setLogoBusy(false)
-    if (!res.ok) {
-      setLogo(previous)
-      setLogoErr((await res.json().catch(() => ({}))).error ?? 'Could not save logo')
-    }
-  }
-
-  function pickLogo(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-    if (file.size > 200 * 1024) { setLogoErr('File must be under 200KB'); return }
-    const reader = new FileReader()
-    reader.onload = () => { void saveLogo(reader.result as string) }
-    reader.readAsDataURL(file)
-  }
+  // The vehicle's own letterhead (components/vehicle-letterhead.tsx).
+  const letterhead = useVehicleLetterhead(vehicle.id)
 
   useEffect(() => {
     let cancelled = false
@@ -132,8 +87,7 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
         vintageYear: vintage.trim() === '' ? null : Number(vintage),
         active,
         aliases,
-        // Only once loaded, so a slow fetch can't save blanks over a letterhead that exists.
-        ...(logoAvailable ? { letterheadName, letterheadAddress } : {}),
+        ...letterhead.payload(),
       }),
     })
     setBusy(false)
@@ -183,46 +137,7 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
               <Button variant="outline" size="sm" onClick={addAlias} disabled={!aliasInput.trim()}>Add</Button>
             </div>
           </div>
-          {logoAvailable && (
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Letterhead</label>
-              <p className="text-[11px] text-muted-foreground">
-                Replaces the fund&rsquo;s logo, name and address on this vehicle&rsquo;s capital account statements, notices,
-                receipts and letters. Leave a part blank to keep the fund&rsquo;s. Logo max 200KB.
-              </p>
-              <div className="flex items-center gap-3">
-                {logo ? (
-                  <div className="relative">
-                    <img src={logo} alt={`${vehicle.name} logo`} className="h-12 w-auto max-w-[160px] rounded-sm border bg-background object-contain p-1" />
-                    <button
-                      onClick={() => saveLogo(null)}
-                      disabled={logoBusy}
-                      aria-label="Remove logo"
-                      className="absolute -top-1.5 -right-1.5 rounded-full bg-destructive p-0.5 text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ) : (
-                  <label className="flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent">
-                    <ImagePlus className="h-4 w-4" />
-                    {logo === undefined ? 'Loading…' : 'Choose file'}
-                    <input type="file" accept="image/*" onChange={pickLogo} className="hidden" disabled={logo === undefined || logoBusy} />
-                  </label>
-                )}
-                {logo && (
-                  <label className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
-                    Replace
-                    <input type="file" accept="image/*" onChange={pickLogo} className="hidden" disabled={logoBusy} />
-                  </label>
-                )}
-                {logoBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              </div>
-              {logoErr && <p className="text-sm text-destructive">{logoErr}</p>}
-              <Input value={letterheadName} onChange={e => setLetterheadName(e.target.value)} placeholder="Name, e.g. 3SE Holdings" className="h-8" />
-              <Textarea value={letterheadAddress} onChange={e => setLetterheadAddress(e.target.value)} placeholder="Address" rows={3} />
-            </div>
-          )}
+          <VehicleLetterheadFields lh={letterhead} vehicleName={vehicle.name} />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} className="h-3.5 w-3.5" />
             Active

@@ -413,10 +413,22 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
         receivable: result.row.receivable,
         ending_balance: result.row.ending,
       },
-      // Includes the carried-interest line: the carry this LP is charged, which is the fund's carry.
-      // A recipient's statement — what they earn — was refused above without gp_economics.
-      roll_forward_itd: result.rollForward,
+      // The statement's three columns, as the PDF prints them. Includes the carried-interest line:
+      // the carry this LP is charged, which is the fund's carry. A recipient's statement — what
+      // they earn — was refused above without gp_economics.
       roll_forward_period: result.periodRollForward,
+      roll_forward_ytd: result.ytdRollForward,
+      ytd_period: result.ytdPeriod,
+      roll_forward_itd: result.rollForward,
+      commitment_summary: {
+        commitment: result.row.commitment,
+        called_period: result.periodRollForward.contributions,
+        called_ytd: result.ytdRollForward.contributions,
+        called_itd: result.row.called,
+        remaining_to_be_called: result.row.outstanding,
+        ownership: result.ownership,
+        ending_capital: result.row.ending,
+      },
       transactions: result.transactions.map(t => ({
         date: t.date,
         memo: t.memo,

@@ -12,6 +12,7 @@ export interface SettingsData {
   fundName: string
   fundLogo: string | null
   fundAddress: string | null
+  fundContactEmail: string | null
   signInLogo: string | null
   signInTitle: string | null
   postmarkInboundAddress: string

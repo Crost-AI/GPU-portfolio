@@ -150,7 +150,7 @@ export default function SettingsPage() {
       {settings.isAdmin && (
         <AdminSectionContext.Provider value={true}>
           <SettingsGroup label="Organization">
-            <FundNameSection name={settings.fundName} logo={settings.fundLogo} address={settings.fundAddress} onSaved={load} />
+            <FundNameSection name={settings.fundName} logo={settings.fundLogo} address={settings.fundAddress} contactEmail={settings.fundContactEmail} onSaved={load} />
             <SignInSection logo={settings.signInLogo} title={settings.signInTitle} onSaved={load} />
             <Section title="Appearance">
               <AppearanceEditor />

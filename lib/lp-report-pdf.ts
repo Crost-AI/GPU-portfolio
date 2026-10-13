@@ -5,7 +5,7 @@ import { sanitizeLetterHtml } from '@/lib/sanitize'
 import { lpRatios } from '@/lib/lp-metrics'
 import { generateLiveReport } from '@/lib/accounting/live-report'
 import { lastDataDates } from '@/lib/accounting/lp-positions'
-import { documentLetterhead } from '@/lib/vehicle-letterhead'
+import { documentLetterhead, contactBlock } from '@/lib/vehicle-letterhead'
 
 // Shared LP investor-report rendering: HTML template + PDF rendering, used by the
 // GP batch export (zip of PDFs), the LP portal (single download), and the admin
@@ -474,7 +474,7 @@ export async function generateInvestorReportPdf(
 
   const html = buildReportHtml({
     investorName, rows, totals, excludedGroupNames,
-    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address,
+    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: contactBlock(letterhead),
     description: snapshot.description, footerNote: snapshot.footer_note, asOfFormatted, currency,
     displayFont: displayFontOf(settingsRes.data?.theme),
   })
@@ -549,7 +549,7 @@ export async function generateLiveInvestorReportPdf(
 
   const html = buildReportHtml({
     investorName, rows, totals, excludedGroupNames: [],
-    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: letterhead.address,
+    fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: contactBlock(letterhead),
     description: settingsRes.data?.lp_report_description ?? null, footerNote: settingsRes.data?.lp_report_footer ?? null,
     asOfFormatted, currency,
     displayFont: displayFontOf(settingsRes.data?.theme),
@@ -660,7 +660,7 @@ export async function generateLetterPdf(
     portfolioTableHtml: letter.portfolio_table_html,
     fundName: letterhead.name,
     fundLogo: letterhead.logo,
-    fundAddress: letterhead.address,
+    fundAddress: contactBlock(letterhead),
     asOfFormatted: null,
     displayFont: displayFontOf(settingsRes.data?.theme),
   })
