@@ -1,6 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { listVehiclesWithId, listMancoVehicles } from './load'
-import { MANCO_KIND } from '@/lib/vehicle-kinds'
+import { listFirmEntities, type FirmEntityScope } from './firm-entities'
 
 // THE FIRM-WIDE BANK QUEUE: every open bank row across every entity the caller may see, and a
 // summary per entity, for the /funds/bank landing.
@@ -75,15 +74,9 @@ export function summarizeOpenRows(
 export async function loadFirmBank(
   admin: SupabaseClient,
   fundId: string,
-  opts: { includeManco: boolean; visible?: (vehicleId: string | null) => boolean },
+  opts: FirmEntityScope,
 ): Promise<FirmBank> {
-  const vehicles = await listVehiclesWithId(admin, fundId)
-  const mancos = opts.includeManco ? await listMancoVehicles(admin, fundId) : []
-  // Bank rows are keyed by vehicle id, so a legacy name-only vehicle has none to show.
-  const entities = [
-    ...vehicles.filter((v): v is { id: string; name: string; kind: string | null } => !!v.id),
-    ...mancos.map(m => ({ id: m.id, name: m.name, kind: MANCO_KIND as string })),
-  ].filter(v => !opts.visible || opts.visible(v.id))
+  const entities = await listFirmEntities(admin, fundId, opts)
   if (entities.length === 0) return { entities: [], rows: [], truncated: false, mancoOmitted: !opts.includeManco }
   const ids = entities.map(e => e.id)
 

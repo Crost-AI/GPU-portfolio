@@ -12,6 +12,9 @@ import { capitalActionFromParam, type CapitalAction } from '@/lib/accounting/cap
 import { FundDetailView } from './fund-detail-view'
 import { FundOverview } from '../fund-overview'
 import { FirmBankView } from '@/components/accounting/firm-bank'
+import { FirmCloseView } from '@/components/accounting/firm-close'
+import { FirmDraftsView } from '@/components/accounting/firm-drafts'
+import { FirmHoldingsView } from '@/components/accounting/firm-holdings'
 import { MancoDetailView } from './manco-detail-view'
 
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
@@ -92,12 +95,15 @@ async function FirmSectionPage({ slug, action }: { slug: string; action: Capital
       <AccountingPageHeader title={section.label}>{section.desc}</AccountingPageHeader>
       <AccountingBody>
         {/* Where the firm-wide answer is the section's own content rather than a list of doors:
-            every vehicle's multiples side by side, and every open bank row in one queue. */}
-        {slug === 'performance'
-          ? <FundOverview section="performance" />
-          : slug === 'bank'
-            ? <FirmBankView />
-            : <FirmVehiclesTable section={slug} showAdd={slug === 'status'} action={action} />}
+            every vehicle's multiples side by side, every open bank row and every draft in one
+            queue, the close calendar, and every holding with who holds it. The rest pick an
+            entity. */}
+        {slug === 'performance' ? <FundOverview section="performance" />
+          : slug === 'bank' ? <FirmBankView />
+          : slug === 'journal' ? <FirmDraftsView />
+          : slug === 'periods' ? <FirmCloseView />
+          : slug === 'schedule-of-investments' ? <FirmHoldingsView />
+          : <FirmVehiclesTable section={slug} showAdd={slug === 'status'} action={action} />}
       </AccountingBody>
     </div>
   )

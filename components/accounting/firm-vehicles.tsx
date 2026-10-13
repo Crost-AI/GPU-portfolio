@@ -14,6 +14,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { AddVehicleButton } from '@/components/add-vehicle-button'
 import { useVehicleGroups, GroupHeadingRow } from '@/components/vehicle-groups'
 import { groupBySection, isGrouped } from '@/lib/vehicle-groups'
+import { attentionFor } from '@/lib/accounting/attention'
 
 // THE FIRM-WIDE TABLE: every entity the caller may see, with the state of its books.
 //
@@ -95,10 +96,6 @@ const BANK_OPEN: Col = {
   key: 'bank', label: 'Bank open', align: 'right',
   cell: (r, link) => link(r.openBankRows, '/bank', r.openBankRows > 0),
 }
-const CASH: Col = {
-  key: 'cash', label: 'Cash', align: 'right',
-  cell: (r, link, money) => (r.empty ? dash : link(money(r.cash), '/bank')),
-}
 const TOTAL_DEBITS: Col = {
   key: 'debits', label: 'Trial balance', align: 'right',
   cell: (r, link, money) => (r.empty ? dash : link(money(r.totalDebits), '/statements')),
@@ -112,40 +109,24 @@ const TIES: Col = {
         ? <span className="inline-flex items-center gap-1 text-success"><Check className="h-3.5 w-3.5" />Yes</span>
         : <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="h-3.5 w-3.5" />No</span>,
 }
-/** A vehicle whose tracker holds transactions the ledger does not carry says so, not "—". */
-const notOnLedger = (r: Row, link: LinkCell) =>
-  link(`${r.underivedTransactions} not on the ledger`, '/status#book-investments', true)
-
-const AT_COST: Col = {
-  key: 'cost', label: 'At cost', align: 'right',
-  cell: (r, link, money) => (r.underivedTransactions > 0 && r.investmentsAtCost === 0
-    ? notOnLedger(r, link)
-    : r.empty ? dash : link(money(r.investmentsAtCost), '/schedule-of-investments')),
-}
-const AT_VALUE: Col = {
-  key: 'value', label: 'At value', align: 'right',
-  cell: (r, link, money) => (r.empty || (r.underivedTransactions > 0 && r.investmentsAtValue === 0)
-    ? dash : link(money(r.investmentsAtValue), '/schedule-of-investments')),
-}
-
 /** The whole state of the books — the firm-wide Admin view, and the fallback for a section
  *  with no figures of its own (allocation terms, opening balances, a migration). */
 const ALL: Col[] = [CLOSED, LAST_ENTRY, POSTED, DRAFTS, BANK_OPEN, TOTAL_DEBITS, TIES]
 
-/** The two or three figures that answer "which entity?" for each section. */
-const COLUMNS: Record<string, Col[]> = {
-  status: ALL,
-  journal: [DRAFTS, POSTED, LAST_ENTRY],
-  ledger: [POSTED, LAST_ENTRY, TOTAL_DEBITS],
-  text: [DRAFTS, POSTED, LAST_ENTRY],
-  periods: [CLOSED, DRAFTS, TIES],
-  statements: [CLOSED, TOTAL_DEBITS, TIES],
-  'capital-accounts': [CLOSED, LAST_ENTRY, POSTED],
-  'schedule-of-investments': [AT_COST, AT_VALUE, LAST_ENTRY],
-  construction: [AT_VALUE, AT_COST, CLOSED],
-  tax: [CLOSED, LAST_ENTRY, TIES],
+/**
+ * The one figure that answers "which entity?" on each section's picker. The sections whose
+ * firm-wide answer is the content itself (bank, journal, close, schedule of investments,
+ * performance) have landings of their own and do not come here; Admin keeps the full table.
+ */
+interface Figure { label: string; value: (r: Row, money: (n: number) => string) => string | null; warn?: (r: Row) => boolean }
+const LAST_ENTRY_FIGURE: Figure = { label: 'Last entry', value: r => r.lastEntryDate }
+const FIGURES: Record<string, Figure> = {
+  ledger: { label: 'Posted entries', value: r => (r.empty ? null : r.postedEntries.toLocaleString()) },
+  statements: { label: 'Trial balance', value: (r, m) => (r.empty ? null : m(r.totalDebits)), warn: r => !r.empty && !r.trialBalanced },
+  'capital-accounts': { label: 'Closed through', value: r => r.closedThrough },
+  tax: { label: 'Closed through', value: r => r.closedThrough },
   // Actuals run through the last close; cash is what a forecast is mostly about.
-  forecast: [CLOSED, CASH, LAST_ENTRY],
+  forecast: { label: 'Cash', value: (r, m) => (r.empty ? null : m(r.cash)) },
 }
 
 /**
@@ -157,27 +138,10 @@ function summaryFor(section: string | null, rows: Row[]): string | null {
   const n = (count: number, one: string, many: string) =>
     count === 0 ? null : `${count} ${count === 1 ? 'entity' : 'entities'} ${count === 1 ? one : many}`
   switch (section) {
-    case 'journal':
-    case 'text':
-      return n(live.filter(r => r.draftEntries > 0).length, 'has drafts waiting.', 'have drafts waiting.')
-        ?? 'No drafts waiting anywhere.'
-    case 'bank':
-      return n(live.filter(r => r.openBankRows > 0).length, 'has bank rows to reconcile.', 'have bank rows to reconcile.')
-        ?? 'Every bank row is reconciled.'
-    case 'periods':
-      return n(live.filter(r => !r.closedThrough).length, 'has never been closed.', 'have never been closed.')
-        ?? 'Every entity with postings has been closed at least once.'
     case 'statements':
     case 'ledger':
       return n(live.filter(r => !r.trialBalanced).length, 'does not tie.', 'do not tie.')
         ?? 'Every trial balance ties.'
-    case 'schedule-of-investments':
-    case 'construction': {
-      const holding = rows.filter(r => (!r.empty || r.underivedTransactions > 0) && (r.investmentsAtValue !== 0 || r.underivedTransactions > 0))
-      const k = rows.filter(r => r.underivedTransactions > 0).length
-      const base = n(holding.length, 'holds investments.', 'hold investments.') ?? 'No entity carries an investment balance.'
-      return k > 0 ? `${base} ${k} ${k === 1 ? 'has' : 'have'} transactions not on the ledger yet.` : base
-    }
     default: {
       const open = rows.filter(r => (!r.empty && (r.draftEntries > 0 || r.openBankRows > 0 || !r.trialBalanced)) || r.underivedTransactions > 0)
       return open.length === 0
@@ -218,7 +182,7 @@ export function FirmVehiclesTable({
   const [bookNote, setBookNote] = useState<string | null>(null)
 
   // The backlog count costs queries per entity, so only the pages that show it ask for it.
-  const withBacklog = section === null || section === 'status' || section === 'schedule-of-investments' || section === 'construction'
+  const withBacklog = section === null || section === 'status'
 
   const load = useCallback(() => {
     setLoading(true)
@@ -282,7 +246,7 @@ export function FirmVehiclesTable({
   const visible = rows.filter(r => hasSection(r, section))
 
   // Booking every entity's transactions is admin-only; the route enforces it, this just hides the button.
-  const showBookAll = (section === null || section === 'status' || section === 'schedule-of-investments')
+  const showBookAll = (section === null || section === 'status')
     && isAdmin && access('accounting') === 'write' && rows.some(r => r.underivedTransactions > 0)
 
   const addButton = showAdd ? <AddVehicleButton onCreated={load} /> : null
@@ -298,7 +262,7 @@ export function FirmVehiclesTable({
   }
 
   const sectionLabel = section ? sectionForSlug(section)?.label ?? null : null
-  const cols = (section && COLUMNS[section]) || ALL
+  const cols = ALL
   const summary = data ? summaryFor(section, visible) : null
   const money = (n: number) => formatCurrencyFull(n, currency)
   // Admin-defined sections (Settings → Entity groups). No subtotals here: these are the state of
@@ -329,6 +293,34 @@ export function FirmVehiclesTable({
       {bookError && <p className="text-sm text-destructive">{bookError}</p>}
       {bookNote && <p className="text-sm text-muted-foreground">{bookNote}</p>}
 
+      {/* A section's picker is cards: the whole card is the link, with the one figure that answers
+          "which entity?" and the state of its books. Admin (no section, or `status`) keeps the
+          full table, because there the whole state of the books IS the question. */}
+      {section && section !== 'status' ? (
+        <div className="space-y-4">
+          {sections.map(sec => (
+            <div key={sec.group?.id ?? 'other'} className="space-y-2">
+              {grouped && (
+                <p className="text-eyebrow uppercase text-muted-foreground">
+                  {sec.label}<span className="ml-1.5 font-normal normal-case tracking-normal tabular-nums">· {sec.items.length}</span>
+                </p>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {sec.items.map(r => (
+                  <PickerCard
+                    key={r.id ?? r.name}
+                    row={r}
+                    href={withCapitalAction(`${baseFor(r)}/${section}`, action)}
+                    figure={FIGURES[section] ?? LAST_ENTRY_FIGURE}
+                    money={money}
+                    inactive={!!(r.id && mancoById.get(r.id) && !mancoById.get(r.id)!.active)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className="rounded-card border overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-muted-foreground">
@@ -381,6 +373,39 @@ export function FirmVehiclesTable({
           </tbody>
         </table>
       </div>
+      )}
     </div>
+  )
+}
+
+function PickerCard({ row, href, figure, money, inactive }: {
+  row: Row; href: string; figure: Figure; money: (n: number) => string; inactive: boolean
+}) {
+  const value = figure.value(row, money)
+  const waiting = row.empty ? [] : attentionFor(row, new Date())
+  const warn = figure.warn?.(row) ?? false
+  return (
+    <Link href={href} className="group rounded-card border p-4 space-y-2 hover:bg-muted/30 transition-colors">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-medium leading-tight truncate group-hover:underline">{row.name}</p>
+          <p className="text-xs text-muted-foreground">
+            {kindLabel(row.kind)}{inactive && ' · Inactive'}
+          </p>
+        </div>
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
+      </div>
+      <div className="flex items-baseline justify-between gap-2 text-sm">
+        <span className="text-muted-foreground">{figure.label}</span>
+        <span className={`tabular-nums ${warn ? 'text-destructive' : ''}`}>{value ?? '—'}</span>
+      </div>
+      <p className="text-xs">
+        {row.empty
+          ? <span className="text-muted-foreground">No entries yet</span>
+          : waiting.length === 0
+            ? <span className="inline-flex items-center gap-1 text-success"><Check className="h-3.5 w-3.5" />Up to date</span>
+            : <span className="inline-flex items-center gap-1 text-warning"><AlertTriangle className="h-3.5 w-3.5" />{waiting.length === 1 ? waiting[0].label : `${waiting.length} items waiting`}</span>}
+      </p>
+    </Link>
   )
 }
