@@ -77,6 +77,32 @@ export async function ensureCapitalAccounts(
   return map
 }
 
+export interface LiveEntryRef { id: string; status: string; entryDate: string }
+
+/**
+ * The non-void entry in this vehicle's book that carries `sourceRef`, or null. THROWS on a failed
+ * read: a caller using this to refuse a duplicate must not read "unknown" as "not in the books".
+ */
+export async function liveEntryByRef(
+  admin: SupabaseClient, fundId: string, vehicleId: string, sourceRef: string, book: LedgerBook = ACTUAL_BOOK,
+): Promise<LiveEntryRef | null> {
+  const { data, error } = await admin.from('journal_entries' as any)
+    .select('id, status, entry_date')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', book)
+    .eq('source_ref', sourceRef).neq('status', 'void')
+    .order('entry_date', { ascending: true }).limit(1)
+  if (error) throw new Error(`Could not check for an entry already in the books: ${error.message}`)
+  const row = ((data as any[]) ?? [])[0]
+  return row ? { id: row.id, status: row.status, entryDate: row.entry_date } : null
+}
+
+/** The refusal for a second copy of an entry, naming the first. */
+export function duplicateRefMessage(sourceRef: string, existing: LiveEntryRef | null): string {
+  const which = existing ? `entry ${existing.id} (${existing.status}, dated ${existing.entryDate})` : 'another entry'
+  return `This entry is already in the books as ${which}, booked from the same source (${sourceRef}). ` +
+    'Nothing was posted. Void that entry first if it is wrong; do not post it again.'
+}
+
 /** Write a balanced entry and its postings for a vehicle. Returns id or error. */
 export async function persistEntry(
   admin: SupabaseClient,
@@ -99,7 +125,7 @@ export async function persistEntry(
   allocate: boolean = true,
   /** What the caller may do to the tracker when this entry is adopted (adoption.ts). */
   adoptOpts: AdoptOptions = {},
-): Promise<{ entryId: string } | { error: string; allocationFailed?: true; adoptionRefused?: true }> {
+): Promise<{ entryId: string } | { error: string; allocationFailed?: true; adoptionRefused?: true; duplicateOf?: string }> {
   // DENOMINATE THE ENTRY IN THE FUND'S CURRENCY, here, at the one place everything is written.
   //
   // Every entry builder takes a `currency` and defaults it to 'USD', and no caller ever passed
@@ -209,7 +235,15 @@ export async function persistEntry(
     })
     .select('id')
     .single()
-  if (entryErr) return { error: entryErr.message }
+  if (entryErr) {
+    // A unique index on source_ref (the partner opening, an agent allocation) refused a second
+    // copy — another request or another chat booked it first. Name the entry already there.
+    if ((entryErr as { code?: string }).code === '23505' && entry.sourceRef) {
+      const existing = await liveEntryByRef(admin, fundId, vehicleId, entry.sourceRef, book).catch(() => null)
+      return { error: duplicateRefMessage(entry.sourceRef, existing), duplicateOf: existing?.id }
+    }
+    return { error: entryErr.message }
+  }
 
   const entryId = (created as any).id
   const discard = () => admin.from('journal_entries' as any).delete().eq('id', entryId).eq('fund_id', fundId)

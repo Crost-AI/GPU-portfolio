@@ -169,11 +169,12 @@ describe('call_tool', () => {
     expect(gateway.json).toMatchObject({ staged: true, summary: direct.json.summary })
     expect(addChartAccount).not.toHaveBeenCalled()
 
-    const [a, b] = store.tables.pending_actions
-    const strip = ({ id: _id, created_at: _c, ...rest }: any) => rest
-    expect(strip(b)).toEqual(strip(a))
+    // The same write from the same credential derives the same idempotency key whichever way it
+    // arrives, so the gateway call lands on the direct call's pending action instead of a twin.
+    expect(gateway.json.pendingActionId).toBe(direct.json.pendingActionId)
+    expect(store.tables.pending_actions).toHaveLength(1)
     expect(audit().map(e => [e.action, e.source, e.details.credentialId])).toEqual([
-      ['pending_action.stage', 'mcp', 'oauth:claude'], ['pending_action.stage', 'mcp', 'oauth:claude'],
+      ['pending_action.stage', 'mcp', 'oauth:claude'],
     ])
     // Metered as a write, not as the read call_tool might look like.
     expect(rateKeys.at(-1)).toBe('accounting-agent:w:fund-1')
