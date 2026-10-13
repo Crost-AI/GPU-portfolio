@@ -17,6 +17,7 @@ import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { companyUpdateStatus, submitCompanyUpdate } from '@/lib/company-updates/submit'
 import { jobRecordId } from './jobs'
 import { writeMetricValue } from '@/lib/pending-actions/metric-value'
@@ -290,15 +291,18 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   list_lps: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    let q = (admin as any)
-      .from('lp_investments')
-      .select('portfolio_group, commitment, paid_in_capital, distributions, nav, dpi, rvpi, tvpi, irr, lp_entities ( entity_name )')
-      .eq('fund_id', fundId)
-    if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
-    const { data } = await q
+    // Paged: one row per LP per snapshot passes the 1000-row cap quickly, and the rest vanished.
+    const data = await fetchAllRows<any>((f, t) => {
+      let q = (admin as any)
+        .from('lp_investments')
+        .select('id, portfolio_group, commitment, paid_in_capital, distributions, nav, dpi, rvpi, tvpi, irr, lp_entities ( entity_name )')
+        .eq('fund_id', fundId)
+      if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
+      return q.order('id').range(f, t)
+    })
     const lpScope = await entityScopeFor(admin, access)
 
-    return scopeCompanyRows((data as any[]) ?? [], lpScope.vehicleNames, 'portfolio_group').map(r => ({
+    return scopeCompanyRows(data, lpScope.vehicleNames, 'portfolio_group').map(r => ({
       partner: r.lp_entities?.entity_name ?? '—',
       vehicle: r.portfolio_group,
       commitment: Number(r.commitment ?? 0),

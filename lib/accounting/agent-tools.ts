@@ -9,7 +9,7 @@ import type { Domain } from '@/lib/access/domains'
 import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { carryRecipientIds, combineCarryRecipients, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import type { FeatureKey } from '@/lib/types/features'
-import { loadPostedLedger, loadEntityNames, loadOwnership } from './load'
+import { loadPostedLedger, loadEntityNames, loadOwnership, fetchAllRows } from './load'
 import { accountIdByCode, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
 import { computeCapitalAccounts, totalNav } from './capital-account'
@@ -27,7 +27,7 @@ import { postBankTransaction, setBankTransactionAccount } from './bank-actions'
 import { mayTouchInvestments } from './investment-access'
 import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
-import { exportLedgerText, postLedgerText } from './text-ledger-run'
+import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
 import { closeThrough } from './close'
 import { summarizeBankRec, type BankTxnState } from './bank'
@@ -89,6 +89,35 @@ export interface AgentTool extends AgentToolMeta {
   handler: AgentToolHandler
 }
 
+/** `limit` (clamped to [1, max]) and the offset a `cursor` from a previous page names. */
+function pageArgs(input: any, dflt: number, max: number): { limit: number; offset: number } {
+  const limit = Math.min(Math.max(1, Math.floor(Number(input?.limit ?? dflt)) || dflt), max)
+  const offset = Math.max(0, Math.floor(Number(input?.cursor ?? 0)) || 0)
+  return { limit, offset }
+}
+
+/** An optional YYYY-MM-DD filter argument; anything else is refused rather than ignored. */
+function dateArg(input: any, key: string): string | undefined {
+  const v = input?.[key]
+  if (v == null || v === '') return undefined
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v))) throw new Error(`${key} must be an ISO date (YYYY-MM-DD)`)
+  return String(v)
+}
+
+/** One page of a list tool: the rows, whether more remain, and — when they do — the cursor and a
+ *  note saying how to continue, so a partial list can never pass for the whole one. */
+function pageResult<T>(rows: T[], offset: number, limit: number, total: number | null | undefined, tool: string, noun: string) {
+  const hasMore = total != null ? offset + rows.length < total : rows.length === limit
+  const nextCursor = hasMore ? String(offset + rows.length) : null
+  return {
+    rows,
+    total: total ?? null,
+    hasMore,
+    nextCursor,
+    ...(hasMore ? { note: `Showing ${noun} ${offset + 1}-${offset + rows.length}${total != null ? ` of ${total}` : ''}. Call ${tool} again with cursor "${nextCursor}" for more.` } : {}),
+  }
+}
+
 const HANDLERS: Record<string, AgentToolHandler> = {
   list_accounts: async ({ admin, fundId, portfolioGroup }) => {
     const { accounts } = await loadPostedLedger(admin, fundId, portfolioGroup)
@@ -123,11 +152,18 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     }
   },
 
+  // Newest first, one page per call. A bare array used to stop at `limit` with no sign there was
+  // more, so an agent reading "the journal" could reason from the newest 100 entries alone.
   list_journal: async ({ admin, fundId, portfolioGroup }, input) => {
-    const limit = Math.min(Number(input?.limit ?? 100), 500)
+    const { limit, offset } = pageArgs(input, 100, 500)
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
-    const { data } = await admin.from('journal_entries' as any).select('*, journal_postings(*)').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('entry_date', { ascending: false }).limit(limit)
-    return data ?? []
+    let q = admin.from('journal_entries' as any).select('*, journal_postings(*)', { count: 'exact' }).eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId)
+    const start = dateArg(input, 'start'), end = dateArg(input, 'end')
+    if (start) q = q.gte('entry_date', start)
+    if (end) q = q.lte('entry_date', end)
+    const { data, error, count } = await q.order('entry_date', { ascending: false }).order('id', { ascending: false }).range(offset, offset + limit - 1)
+    if (error) throw new Error(`The journal could not be read: ${error.message}`)
+    return pageResult((data as any[]) ?? [], offset, limit, count, 'list_journal', 'entries')
   },
 
   post_entry: async ({ admin, fundId, portfolioGroup, userId }, input) => {
@@ -199,7 +235,14 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return result
   },
 
-  export_ledger_text: async ({ admin, fundId, portfolioGroup }) => ({ text: await exportLedgerText(admin, fundId, portfolioGroup) }),
+  // Pages instead of truncating: `truncated` + `cursor` when the text would be too large to return.
+  export_ledger_text: async ({ admin, fundId, portfolioGroup }, input) => {
+    return exportLedgerTextPage(admin, fundId, portfolioGroup, {
+      start: dateArg(input, 'start'),
+      end: dateArg(input, 'end') ?? dateArg(input, 'asOf'),
+      cursor: input?.cursor,
+    })
+  },
 
   post_ledger_text: async ({ admin, fundId, portfolioGroup, userId, access }, input) => {
     return postLedgerText(admin, fundId, portfolioGroup, userId, String(input.text ?? ''), input.status, input.reviewToken, hasAccess(access, 'lp_capital', 'read'))
@@ -280,16 +323,21 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return { posted: changed, skipped, warnings, hasMore, cursor }
   },
 
-  list_bank_transactions: async ({ admin, fundId, portfolioGroup }) => {
+  list_bank_transactions: async ({ admin, fundId, portfolioGroup }, input) => {
+    const { limit, offset } = pageArgs(input, 500, 1000)
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
-    const { data } = await admin
+    let q = admin
       .from('bank_transactions' as any)
-      .select('id, txn_date, amount, description, counterparty, status, suggested_account_code, journal_entry_id')
+      .select('id, txn_date, amount, description, counterparty, status, suggested_account_code, journal_entry_id', { count: 'exact' })
       .eq('fund_id', fundId)
       .eq('vehicle_id', vehicleId)
-      .order('txn_date', { ascending: false })
-      .limit(1000)
-    return data ?? []
+    if (input?.status) q = q.eq('status', String(input.status))
+    const start = dateArg(input, 'start'), end = dateArg(input, 'end')
+    if (start) q = q.gte('txn_date', start)
+    if (end) q = q.lte('txn_date', end)
+    const { data, error, count } = await q.order('txn_date', { ascending: false }).order('id', { ascending: false }).range(offset, offset + limit - 1)
+    if (error) throw new Error(`Bank transactions could not be read: ${error.message}`)
+    return pageResult((data as any[]) ?? [], offset, limit, count, 'list_bank_transactions', 'transactions')
   },
 
   bank_reconciliation: async ({ admin, fundId, portfolioGroup }) => {
@@ -297,8 +345,9 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const cash = accounts.find(a => a.code === '1000')
     const ledgerCashBalance = cash ? (accountBalances(postings).get(cash.id) ?? 0) : 0
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
-    const { data } = await admin.from('bank_transactions' as any).select('amount, status').eq('fund_id', fundId).eq('vehicle_id', vehicleId).neq('status', 'ignored')
-    const txns: BankTxnState[] = ((data as any[]) ?? []).map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled' }))
+    // Every row, paged: past 1000 the unmatched count and difference were silently understated.
+    const data = await fetchAllRows<any>((f, t) => admin.from('bank_transactions' as any).select('id, amount, status').eq('fund_id', fundId).eq('vehicle_id', vehicleId).neq('status', 'ignored').order('id').range(f, t))
+    const txns: BankTxnState[] = data.map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled' }))
     return summarizeBankRec(txns, ledgerCashBalance)
   },
 

@@ -460,6 +460,8 @@ The MCP URL is `https://<your-domain>/api/mcp` (`/api/accounting/mcp` still answ
 
 They call the same code as the app's own pages, under the same access checks.
 
+**Reading the books from chat comes in pages.** `list_journal` and `list_bank_transactions` return `{ rows, total, hasMore, nextCursor }`, newest first; while `hasMore` is true the list is incomplete, and passing `cursor: nextCursor` returns the next page. Both take `start` and `end` dates; the bank list also takes a `status`. `export_ledger_text` exports every non-void entry, optionally between `start` and `end` (or `asOf`). A ledger too large for one reply comes back with `truncated: true`, the counts and a `cursor` to continue from. No tool drops rows without saying so.
+
 **Correcting an investment from chat.** `record_investment` adds a transaction; `update_investment` and `delete_investment` correct one, by the id `list_investments` returns. An update changes only the fields passed, for example turning a mark into an FX revaluation (`valuation_change_source: "fx"` with the rates and the position's own-currency value). Both run the company page's edit and delete (`lib/portfolio/transaction-edit.ts`): the journal entry is retracted first and re-derived from the new values, and the same refusals apply (a closed period, a row the fund register owns, a SAFE or note a conversion depends on).
 
 **Deals and diligence from chat.** Deal flow and the deal room can be worked end to end from Claude, ChatGPT or `/api/agent`. Each write is staged for approval from a chat, like any other change:

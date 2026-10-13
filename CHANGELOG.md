@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Complete ledger reads for assistants
+- **An assistant's view of the books no longer stops at 1000 rows without saying so.** `export_ledger_text` asked for 2000 entries but PostgREST returns at most 1000, so it exported only the oldest 1000 and the newest entries were missing. A reconciliation built on that export showed $547,832 of LP capital as unassigned when it was not. The export now reads every entry in pages (`fetchAllRows`), takes `start`, `end` and `asOf`, and splits a very large ledger into pages marked `truncated`, with a `cursor` to continue (`lib/accounting/text-ledger-run.ts`). The same full read fixes the period-close snapshot. `list_journal` and `list_bank_transactions` now return `{ rows, total, hasMore, nextCursor }` instead of a bare array that ended at its limit. `bank_reconciliation`, the LP entity, commitment-event and `lp_investments` reads behind `list_entities`, `capital_accounts`, `lp_commitments` and `list_lps`, and the allocation basis in `loadOwnership` also read every row now (`lib/accounting/agent-tools.ts`, `lib/accounting/load.ts`, `lib/agent/lp-tools.ts`, `lib/agent/lp-record-tools.ts`, `lib/agent/portfolio-tools.ts`). A REST caller of `list_journal` or `list_bank_transactions` must now read `.rows`.
+
 ### Headless: chat and scripts as first-class ways in and out
 - **Chat writes wait for approval.** A change Claude or ChatGPT makes over OAuth is staged as a pending action and applied only when a person approves it, under the approver's own access. API-key writes apply directly. One dispatcher (`lib/agent/dispatch.ts`) serves `/api/mcp` and `/api/agent`, with idempotency keys (`_meta.idempotencyKey`, `Idempotency-Key`).
 - **Every change records its source.** The audit trail and activity log say whether a change came from `web`, `api` or `mcp`. Migration `20261012140000_audit_events_source.sql`.

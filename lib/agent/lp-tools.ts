@@ -14,7 +14,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
-import { listVehicles } from '@/lib/accounting/load'
+import { fetchAllRows, listVehicles } from '@/lib/accounting/load'
 import { resolveVehicle as resolveSharedVehicle } from '@/lib/accounting/vehicle-resolver'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { scopeLiveReport, visibleLpEntityIds } from '@/lib/access/lp-scope'
@@ -67,12 +67,15 @@ export async function loadIdentities(
   /** The caller's visible LP entities (null = all): every name lookup and list starts here. */
   visibleEntityIds: string[] | null,
 ): Promise<Map<string, EntityIdentity>> {
-  const { data } = await (admin as any)
+  // Paged: past PostgREST's 1000-row cap the remaining LPs would silently drop out of every LP tool.
+  const data = await fetchAllRows<any>((f, t) => (admin as any)
     .from('lp_entities')
     .select('id, entity_name, investor_id, lp_investors(id, name)')
     .eq('fund_id', fundId)
+    .order('id')
+    .range(f, t))
   const out = new Map<string, EntityIdentity>()
-  for (const e of ((data as any[]) ?? [])) {
+  for (const e of data) {
     if (visibleEntityIds !== null && !visibleEntityIds.includes(e.id)) continue
     const inv = Array.isArray(e.lp_investors) ? e.lp_investors[0] : e.lp_investors
     out.set(e.id, {
