@@ -45,7 +45,7 @@ const ALLOWLIST = new Map<string, string>([
   ['app/api/emails/save-to-drive/route.ts', 'resolves drive folders for an explicit id set'],
   ['app/api/settings/notifications/route.ts', 'validates an explicit subscribed-company id set'],
   ['lib/portfolio/fof-register.ts', 'resolves one fund holding\'s name by id for the entry memo'],
-  ['app/api/companies/[id]/investments/[txnId]/route.ts', 'resolves one holding name by id for the memo'],
+  ['lib/portfolio/transaction-edit.ts', 'resolves one holding name by id for the memo'],
   // LEDGER paths. A fund holding is a real position with 1100/1200 balances, exactly like a
   // company — so anything reconciling the ledger, pricing positions, or computing carry must
   // see BOTH kinds. Filtering these to companies would break the tie-outs, not tidy them.

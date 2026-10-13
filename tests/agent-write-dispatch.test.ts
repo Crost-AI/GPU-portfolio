@@ -346,6 +346,8 @@ describe('the same access rules as the web', () => {
     ['add_partner', 'api/accounting/commitments'],
     ['book_capital_call', 'api/accounting/capital-calls'],
     ['record_investment', 'api/portfolio/investments'],
+    ['update_investment', 'api/companies/[id]/investments/[txnId]'],
+    ['delete_investment', 'api/companies/[id]/investments/[txnId]'],
     ['forecast_update_plan', 'api/accounting/forecast/[id]'],
     ['forecast_publish', 'api/accounting/forecast/[id]/publish'],
     ['portfolio_construction_update', 'api/accounting/construction'],
