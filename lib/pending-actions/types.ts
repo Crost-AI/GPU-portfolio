@@ -6,6 +6,7 @@ export type ActionType =
   | 'update_company_metric'
   | 'record_investment'
   | 'issue_capital_call'
+  | 'publish_call_notices'
   | 'update_portfolio_construction'
   | 'update_forecast_plan'
   | 'publish_forecast_plan'

@@ -14,12 +14,13 @@ import { useAccess, useCanRead, useIsAdmin } from '@/components/access-context'
 import { QuickActionButtons } from '@/components/quick-action-buttons'
 import { createActions } from '@/lib/start/quick-actions'
 import { CapitalCallsCard } from './capital-calls-card'
+import { ProposedCallsCard } from './proposed-calls-card'
 import { isManagementCompany, VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { MancoIntercompanyCard } from './intercompany-card'
 import { AllocationTermsView } from '../allocation-terms/view'
 import { CollapsibleSection } from '@/components/collapsible-section'
 import { ChartOfAccountsCard } from '@/components/accounting/chart-of-accounts-card'
-import { WireInstructionsCard } from '@/components/accounting/wire-instructions-card'
+import { WireInstructionsCard, CallNoticePeriodField } from '@/components/accounting/wire-instructions-card'
 import { AuditTrailCard } from '@/components/accounting/audit-trail-card'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -140,6 +141,7 @@ function EntityStatusView() {
       })()}
 
       {!manco && <CapitalCallsCard capitalHref={fundHref('/funds/capital-accounts')} />}
+      {!manco && <ProposedCallsCard onApproved={load} />}
 
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -230,8 +232,11 @@ function EntityStatusView() {
           <AuditTrailCard />
         </CollapsibleSection>
 
-        {!manco && <CollapsibleSection title="Payment instructions" subtitle="Bank details printed on this vehicle's capital call notices">
-          <WireInstructionsCard />
+        {!manco && <CollapsibleSection title="Payment instructions" subtitle="Bank details printed on this vehicle's capital call notices, and the LPA notice period">
+          <div className="space-y-4">
+            <WireInstructionsCard />
+            <CallNoticePeriodField isAdmin={isAdmin} />
+          </div>
         </CollapsibleSection>}
 
         {/* The entity's governing documents — the LPA or operating agreement, side letters and
