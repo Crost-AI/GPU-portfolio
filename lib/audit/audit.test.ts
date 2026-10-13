@@ -55,3 +55,23 @@ describe('reading the audit trail', () => {
     expect(auditReason(undefined)).toBeNull()
   })
 })
+
+describe('filtering the trail by source', () => {
+  it('keeps only changes made through the door asked for, reading the old details.source too', async () => {
+    const { memoryAdmin } = await import('@/tests/helpers/memory-admin')
+    const { loadAuditTrail } = await import('./read')
+    const { parseChangeSource } = await import('./source-labels')
+    const { admin } = memoryAdmin({
+      accounting_audit_events: [
+        { id: 'a', fund_id: 'f1', action: 'entry.post', source: 'web', details: {}, created_at: '2026-10-01T00:00:00Z' },
+        { id: 'b', fund_id: 'f1', action: 'entry.post', source: 'mcp', details: {}, created_at: '2026-10-02T00:00:00Z' },
+        { id: 'c', fund_id: 'f1', action: 'agent.write', source: null, details: { source: 'mcp' }, created_at: '2026-10-03T00:00:00Z' },
+      ],
+    })
+    ;(admin as any).auth = { admin: { getUserById: async () => ({ data: { user: null } }) } }
+    const all = () => true
+    const mcp = await loadAuditTrail(admin as any, 'f1', { source: parseChangeSource('mcp') }, all)
+    expect(mcp.map(r => r.id)).toEqual(['c', 'b'])
+    expect((await loadAuditTrail(admin as any, 'f1', { source: parseChangeSource('nonsense') }, all)).length).toBe(3)
+  })
+})

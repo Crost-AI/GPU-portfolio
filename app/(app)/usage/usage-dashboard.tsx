@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, Lock } from 'lucide-react'
 import { AnalystToggleButton } from '@/components/analyst-button'
 import { AnalystPanel } from '@/components/analyst-panel'
+import { SourceFilter } from '@/components/audit/source-filter'
+import { CHANGE_SOURCE_LABEL, type ChangeSourceKey } from '@/lib/audit/source-labels'
 
 interface DailyRow {
   date: string
@@ -35,6 +37,7 @@ interface RecentActivity {
   displayName: string | null
   action: string
   metadata: Record<string, unknown>
+  source?: ChangeSourceKey | null
   createdAt: string
 }
 
@@ -117,6 +120,7 @@ export function UsageDashboard() {
   const [data, setData] = useState<UsageData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [activitySource, setActivitySource] = useState<ChangeSourceKey | null>(null)
 
   useEffect(() => {
     fetch('/api/usage')
@@ -337,7 +341,10 @@ export function UsageDashboard() {
       {/* Recent Activity Feed */}
       {activity && activity.recent.length > 0 && (
         <div>
-          <h2 className="text-lg font-medium mb-3">Recent Activity</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h2 className="text-lg font-medium">Recent Activity</h2>
+            <SourceFilter value={activitySource} onChange={setActivitySource} />
+          </div>
           <div className="rounded-lg border overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -345,14 +352,16 @@ export function UsageDashboard() {
                   <th className="text-left font-medium px-4 py-2.5">Time</th>
                   <th className="text-left font-medium px-4 py-2.5">User</th>
                   <th className="text-left font-medium px-4 py-2.5">Action</th>
+                  <th className="text-left font-medium px-4 py-2.5">Source</th>
                 </tr>
               </thead>
               <tbody>
-                {activity.recent.map((entry, i) => (
+                {activity.recent.filter(e => !activitySource || e.source === activitySource).map((entry, i) => (
                   <tr key={i} className="border-b last:border-0">
                     <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{timeAgo(entry.createdAt)}</td>
                     <td className="px-4 py-2.5">{entry.displayName || entry.email}</td>
                     <td className="px-4 py-2.5">{actionLabel(entry.action)}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground">{entry.source ? CHANGE_SOURCE_LABEL[entry.source] : '—'}</td>
                   </tr>
                 ))}
               </tbody>

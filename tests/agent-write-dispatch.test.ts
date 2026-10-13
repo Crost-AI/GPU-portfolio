@@ -22,6 +22,8 @@ const addChartAccount = vi.fn(async (_a: unknown, _f: string, _g: string, input:
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => store.admin }))
 vi.mock('@/lib/oauth/enabled', () => ({ agentApiEnabled: async () => true }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => null }))
+const notifyAdmins = vi.fn(async () => 1)
+vi.mock('@/lib/pending-actions/notify', () => ({ notifyAdminsOfStagedChange: (...args: any[]) => (notifyAdmins as any)(...args) }))
 vi.mock('@/lib/accounting/chart-add', () => ({ addChartAccount: (...args: any[]) => (addChartAccount as any)(...args) }))
 const addPartner = vi.fn(async () => ({ entityId: 'lp-1', commitmentId: 'c-1' }))
 vi.mock('@/lib/accounting/add-partner', async importOriginal => ({
@@ -113,6 +115,12 @@ describe('a chat assistant (OAuth over MCP)', () => {
     const url = `${new URL(out.json.approveUrl).origin}/pending-actions`
     expect(out.json.approveUrl).toBe(url)
     expect(out.json.next).toContain(`approve it in the app at ${url}`)
+  })
+
+  it('emails nobody about a change the person can approve themselves', async () => {
+    notifyAdmins.mockClear()
+    await callTool('add_account', { code: '1999', name: 'Suspense', type: 'asset' })
+    expect(notifyAdmins).not.toHaveBeenCalled()
   })
 
   it('applies the staged write when the person approves it in the chat', async () => {
@@ -217,7 +225,9 @@ describe('admin-only operations (lib/access/admin-only.ts)', () => {
 
   it('lets a member propose one from chat, and says an admin must approve it', async () => {
     const staged = await callTool('add_partner', partner)
-    expect(staged.json).toMatchObject({ staged: true, next: expect.stringMatching(/admin/i) })
+    expect(staged.json).toMatchObject({ staged: true, next: expect.stringMatching(/admins have been emailed/) })
+    // The admin it waits on is not in this conversation, so they are told.
+    expect(notifyAdmins).toHaveBeenCalledWith(store.admin, expect.objectContaining({ fundId: 'fund-1', label: 'add a partner and commitment', requesterId: 'user-me' }))
 
     const approved = await callTool('approve_action', { id: staged.json.pendingActionId })
     expect(approved.isError).toBe(true)

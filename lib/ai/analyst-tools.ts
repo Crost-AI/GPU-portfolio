@@ -12,6 +12,8 @@ import type { ToolDefinition, ToolExecutor, ToolInvocation } from '@/lib/ai/type
 import { WRITE_ACTIONS, getWriteAction } from '@/lib/pending-actions/registry'
 import type { ActionType, PreviewResult } from '@/lib/pending-actions/types'
 import { stagedTarget } from '@/lib/pending-actions/target'
+import { ADMIN_ONLY_ACTIONS } from '@/lib/access/admin-only'
+import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
 import { ENTITY_DOCUMENTS_TOOL, runEntityDocumentsTool } from '@/lib/entity-documents/analyst'
 
 /** A write the Analyst staged this turn — surfaced so the caller can render approval cards. */
@@ -124,6 +126,11 @@ export function buildAnalystTools(deps: AnalystToolDeps): { tools: ToolDefinitio
           if (error) return JSON.stringify({ error: error.message })
           const id = (data as { id: string }).id
           deps.stagedActions?.push({ id, actionType: call.name as ActionType, preview })
+          // An admin-only action from a member waits on an admin who is not in this conversation.
+          const adminLabel = ADMIN_ONLY_ACTIONS[call.name]
+          if (adminLabel && deps.access.role !== 'admin') {
+            await notifyAdminsOfStagedChange(deps.admin, { fundId: deps.fundId, label: adminLabel, summary: preview.summary, requesterId: deps.userId })
+          }
           return `Staged pending action ${id} for approval: ${preview.summary}`
         } catch (e) {
           return JSON.stringify({ error: (e as Error).message })

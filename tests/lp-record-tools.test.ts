@@ -76,16 +76,16 @@ describe('LP record tools', () => {
 
   it('sets a parent only from this fund, and never the investor itself', async () => {
     await H.lp_update_investor(ctx(), { investor: 'Acme', parent: 'Birch Family' })
-    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1').parent_id).toBe('inv-2')
+    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1')!.parent_id).toBe('inv-2')
     await expect(H.lp_update_investor(ctx(), { investor: 'Acme', parent: 'Acme' })).rejects.toThrow('own parent')
     await H.lp_update_investor(ctx(), { investor: 'Acme', parent: '' })
-    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1').parent_id).toBeNull()
+    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1')!.parent_id).toBeNull()
   })
 
   it('renames an entity and its investor with it', async () => {
     await H.lp_update_entity(ctx(), { lp: 'Acme LP', name: 'Acme Holdings LP' })
-    expect(store.tables.lp_entities.find((e: any) => e.id === 'ent-1').entity_name).toBe('Acme Holdings LP')
-    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1').name).toBe('Acme Holdings LP')
+    expect(store.tables.lp_entities.find((e: any) => e.id === 'ent-1')!.entity_name).toBe('Acme Holdings LP')
+    expect(store.tables.lp_investors.find((i: any) => i.id === 'inv-1')!.name).toBe('Acme Holdings LP')
   })
 
   it("updates a profile and contact, only for the caller's LPs", async () => {
