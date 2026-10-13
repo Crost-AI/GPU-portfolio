@@ -119,7 +119,7 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
       update: (v: Row) => { mode = 'update'; payload = v; return q },
       delete: () => { mode = 'delete'; return q },
       eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return q },
-      match: (m: Row) => { for (const [k, v] of Object.entries(m)) filters.push(r => r[k] === v); return q },
+      match: (o: Row) => { for (const [k, v] of Object.entries(o)) filters.push(r => r[k] === v); return q },
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q },
       in: (k: string, vs: unknown[]) => { filters.push(r => vs.includes(r[k])); return q },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },

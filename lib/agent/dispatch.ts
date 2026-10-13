@@ -90,6 +90,11 @@ export function isDraftOnlyCall(tool: Pick<AgentTool, 'name'>, input: Record<str
   return DRAFT_ONLY[tool.name]?.(input) ?? false
 }
 
+/** Whether some calls of this tool are draft-only (search_tools says so beside "staged"). */
+export function hasDraftMode(name: string): boolean {
+  return name in DRAFT_ONLY
+}
+
 /** Whether this write waits for a person. Reads never do. */
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
   return tool.scope === 'write' && isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
@@ -317,6 +322,7 @@ async function stage(call: AgentCall): Promise<StagedResult> {
       : 'Nothing has changed yet. Show the user this change in plain words and ask them to confirm. ' +
       `Only after they confirm, call approve_action with id "${id}"; if they decline, call reject_action. ` +
       'Approving here is the normal path; the app is not needed. ' +
-      `Only if you have no approve_action tool (a stale tool list), tell the user to reconnect, or approve it ${inApp}.`,
+      'If approve_action is not in your tool list (a stale list), run it through call_tool. ' +
+      `Only if you have neither, tell the user to reconnect, or approve it ${inApp}.`,
   }
 }
