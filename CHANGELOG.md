@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Partner allocation happens exactly once
+- **The close no longer allocates P&L a second time.** Its catch-up read which entries were already allocated in one unpaged query, so on an entity with more than 1,000 allocated entries the rest looked unallocated and were allocated again; the same 1,000-row cut also truncated the rounding carried between allocations. Those reads are paged now (`lib/accounting/close.ts`, `lib/accounting/continuous-allocation.ts`), and a failed read refuses the preview instead of reading as "nothing allocated". Posting with allocation off (`allocate: false`, used for QuickBooks and Carta imports whose books already carry each partner's capital lines) is recorded, and a compound entry that carries its own allocation lines (3200 and partner capital, ACCOUNTING.md entries 4–7) is recognised when it posts and not allocated again. That second allocation once credited $37,820 of interest twice. Both are recorded in the new `journal_entry_allocation_skips` table, and the close leaves those entries alone. An imported entry with neither an allocation nor a record is listed as a close warning and never allocated silently. Migration `20261013140000_journal_entry_allocation_skips.sql` creates the table and backfills it from the audited `allocate: false` bulk posts; push it before deploying.
+
 ### Headless: chat and scripts as first-class ways in and out
 - **Chat writes wait for approval.** A change Claude or ChatGPT makes over OAuth is staged as a pending action and applied only when a person approves it, under the approver's own access. API-key writes apply directly. One dispatcher (`lib/agent/dispatch.ts`) serves `/api/mcp` and `/api/agent`, with idempotency keys (`_meta.idempotencyKey`, `Idempotency-Key`).
 - **Every change records its source.** The audit trail and activity log say whether a change came from `web`, `api` or `mcp`. Migration `20261012140000_audit_events_source.sql`.

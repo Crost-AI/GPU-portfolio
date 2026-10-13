@@ -7,7 +7,7 @@ import { allocateAmountCumulatively } from './allocation'
 import { computeCapitalAccounts } from './capital-account'
 import { ACTUAL_BOOK } from './books'
 import { closesToOwnerEquity } from '@/lib/vehicle-kinds'
-import { loadPostedLedger, loadEntityNames, loadOwnership } from './load'
+import { fetchAllRows, loadPostedLedger, loadEntityNames, loadOwnership } from './load'
 import { roundCents } from './ledger'
 import { keepsRetainedEarnings } from './statements'
 import { ensureCapitalAccounts, accountIdByCode, persistEntry } from './persist'
@@ -32,6 +32,88 @@ const SUBTYPE_TO_SOURCE: Record<string, AllocationCategory> = {
 function categoryFor(account: Account): AllocationCategory {
   return (account.subtype && SUBTYPE_TO_SOURCE[account.subtype])
     || (account.type === 'expense' ? 'partnership_expense' : 'income')
+}
+
+/**
+ * Entries whose P&L the app must NOT allocate, and why (20261013140000_journal_entry_allocation_skips.sql).
+ * Written when the entry posts, so the close's catch-up of "unallocated" P&L can tell an entry
+ * that was left alone on purpose from one that was simply never allocated:
+ *   - 'allocation_off' — posted with `allocate: false` (an import whose source books already carry
+ *     each partner's capital lines, or never split income by partner);
+ *   - 'self_allocated' — the entry carries its own allocation lines (ACCOUNTING.md entries 4–7).
+ * Cleared when the entry is unposted or voided: the next post decides again.
+ */
+export const ALLOCATION_SKIPS = 'journal_entry_allocation_skips'
+export type AllocationSkipReason = 'allocation_off' | 'self_allocated'
+
+/** The skips table not migrated yet (PostgREST / Postgres "no such relation"). */
+export function isMissingSkipsTable(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false
+  return error.code === '42P01' || error.code === 'PGRST205'
+    || ((error.message ?? '').includes(ALLOCATION_SKIPS) && /does not exist|schema cache|could not find/i.test(error.message ?? ''))
+}
+
+/**
+ * Does this entry already post its own partner allocation? The compound form in ACCOUNTING.md
+ * (entries 4–7) books the P&L lines AND the capital side in one entry: each partner's capital
+ * account against 3200 Undistributed earnings. Allocating that entry again on posting doubles
+ * every partner's share, which is how $37,820 of interest was once credited twice.
+ *
+ * Two shapes count. Any line on 3200 — the bridge exists only to carry an allocation, so an
+ * entry that writes to it is allocating. Or, without 3200, capital lines (partner capital, or
+ * the owner's equity account) that net to exactly the entry's P&L effect, on the allocating
+ * side: an expense debits capital, income credits it. A capital line on the OTHER side — a
+ * partner paying a fund expense directly is a contribution (Dr expense / Cr capital) — or one
+ * that doesn't match the P&L is not an allocation, and the entry is allocated as usual.
+ */
+export function carriesOwnAllocation(
+  postings: Pick<Posting, 'accountId' | 'amount'>[], accountById: Map<string, Account>,
+): boolean {
+  let capitalEffect = 0
+  let capitalLines = 0
+  let touchesBridge = false
+  let touchesCapital = false
+  for (const posting of postings) {
+    const account = accountById.get(posting.accountId)
+    if (!account) continue
+    if (account.type === 'income' || account.type === 'expense') capitalEffect -= posting.amount
+    else if (account.code === BRIDGE_CODE) touchesBridge = true
+    else if (account.type === 'equity' && (account.lpEntityId || account.subtype === 'members_capital')) {
+      capitalLines += posting.amount
+      touchesCapital = true
+    }
+  }
+  if (roundCents(capitalEffect) === 0) return false
+  if (touchesBridge) return true
+  return touchesCapital && roundCents(capitalLines) === roundCents(-capitalEffect)
+}
+
+/** Record that posting left this entry's P&L unallocated on purpose. Upsert: a re-post re-decides. */
+export async function recordAllocationSkip(
+  admin: SupabaseClient, fundId: string, vehicleId: string, sourceEntryId: string, reason: AllocationSkipReason,
+): Promise<{ error?: string }> {
+  const { error } = await admin.from(ALLOCATION_SKIPS as any).upsert({
+    fund_id: fundId, vehicle_id: vehicleId, source_entry_id: sourceEntryId, reason,
+  }, { onConflict: 'source_entry_id' })
+  if (!error) return {}
+  return { error: isMissingSkipsTable(error)
+    ? `The ${ALLOCATION_SKIPS} table is missing — push migration 20261013140000_journal_entry_allocation_skips.sql before posting entries that skip the partner allocation.`
+    : `Could not record that the entry skips the partner allocation: ${error.message}` }
+}
+
+/** The posted entries of a vehicle that posting deliberately left unallocated (paged; a missing table reads as none). */
+export async function loadAllocationSkips(
+  admin: SupabaseClient, fundId: string, vehicleId: string,
+): Promise<Map<string, AllocationSkipReason>> {
+  try {
+    const rows = await fetchAllRows<any>((from, to) => admin.from(ALLOCATION_SKIPS as any)
+      .select('source_entry_id, reason').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
+      .order('source_entry_id', { ascending: true }).range(from, to))
+    return new Map(rows.map(row => [row.source_entry_id as string, row.reason as AllocationSkipReason]))
+  } catch (error) {
+    if (isMissingSkipsTable(error as any)) return new Map()
+    throw error
+  }
 }
 
 /** Generated allocation entries are balance-sheet-only, but the explicit tag is the recursion guard. */
@@ -74,6 +156,12 @@ export async function allocatePostedEntry(
   // Owner books that keep retained earnings never move net income into capital — not on posting
   // and not at the close. It rolls into retained earnings on the balance sheet instead.
   if (ownerMode && keepsRetainedEarnings(accounts)) return { allocationEntryIds: [] }
+  // A compound entry that already posts its own capital side is allocated — by its author.
+  // Recorded, so the close's catch-up leaves it alone too.
+  if (carriesOwnAllocation(entry.postings, accountById)) {
+    const skipped = await recordAllocationSkip(admin, fundId, vehicleId, sourceEntryId, 'self_allocated')
+    return skipped.error ? { error: skipped.error } : { allocationEntryIds: [] }
+  }
   const codes = await accountIdByCode(admin, fundId, group)
   const bridgeId = codes.get(BRIDGE_CODE)
   if (!bridgeId) return { error: `Missing account ${BRIDGE_CODE} (Undistributed earnings)` }
@@ -112,11 +200,19 @@ export async function allocatePostedEntry(
     } else {
       const weights = allocationWeights(basisAmounts.filter(row => row.basisAmount > 0), terms, category)
       if (weights.length === 0) return { error: `No partner participates in ${category}` }
-      const { data: history } = await admin.from('journal_entry_allocations' as any)
-        .select('lp_entity_id, exact_amount, posted_amount, journal_entries!journal_entry_allocations_allocation_entry_id_fkey(status)')
-        .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('source_type', category)
+      // Paged: PostgREST returns at most 1000 rows, and a vehicle's history of one category
+      // passes that within a few years — a truncated read would carry the wrong residuals.
+      let history: any[]
+      try {
+        history = await fetchAllRows<any>((from, to) => admin.from('journal_entry_allocations' as any)
+          .select('id, lp_entity_id, exact_amount, posted_amount, journal_entries!journal_entry_allocations_allocation_entry_id_fkey(status)')
+          .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('source_type', category)
+          .order('id', { ascending: true }).range(from, to))
+      } catch (error) {
+        return { error: `Could not read the allocation history: ${(error as any)?.message ?? String(error)}` }
+      }
       const residuals = new Map<string, number>()
-      for (const row of ((history as any[]) ?? [])) {
+      for (const row of history) {
         if (!row.lp_entity_id || row.journal_entries?.status !== 'posted') continue
         residuals.set(row.lp_entity_id, (residuals.get(row.lp_entity_id) ?? 0) + Number(row.exact_amount) - Number(row.posted_amount))
       }
@@ -157,6 +253,10 @@ export async function allocatePostedEntry(
 export async function setGeneratedAllocationStatus(
   admin: SupabaseClient, fundId: string, sourceEntryId: string, status: 'draft' | 'void',
 ): Promise<{ error?: string }> {
+  // A skip was a decision about THIS posting; whoever posts the entry next decides again.
+  const { error: skipError } = await admin.from(ALLOCATION_SKIPS as any)
+    .delete().eq('fund_id', fundId).eq('source_entry_id', sourceEntryId)
+  if (skipError && !isMissingSkipsTable(skipError)) return { error: skipError.message }
   const { data } = await admin.from('journal_entry_allocations' as any)
     .select('allocation_entry_id').eq('fund_id', fundId).eq('source_entry_id', sourceEntryId)
   const ids = Array.from(new Set(((data as any[]) ?? []).map(row => row.allocation_entry_id as string)))
@@ -177,6 +277,7 @@ export async function rollbackGeneratedAllocations(
   const ids = ((data as any[]) ?? []).map(row => row.id as string)
   if (ids.length > 0) await admin.from('journal_entries' as any).delete().eq('fund_id', fundId).in('id', ids)
   await admin.from('journal_entry_allocations' as any).delete().eq('fund_id', fundId).eq('source_entry_id', sourceEntryId)
+  await admin.from(ALLOCATION_SKIPS as any).delete().eq('fund_id', fundId).eq('source_entry_id', sourceEntryId)
 }
 
 export interface PostedExisting {
@@ -193,7 +294,8 @@ export async function postExistingEntryWithAllocation(
   admin: SupabaseClient, fundId: string, group: string, userId: string | null, entryId: string,
   /** What the caller may do to the tracker: adopting, or releasing a reversed entry's owners.
    *  `allocate: false` posts without the partner allocation — for a migration whose source books
-   *  never split income by partner (a QuickBooks history that has to match line for line). */
+   *  never split income by partner (a QuickBooks history that has to match line for line), or
+   *  already carry each partner's capital lines. Recorded as an 'allocation_off' skip. */
   opts: AdoptOptions & { allocate?: boolean } = {},
 ): Promise<PostedExisting | { error: string }> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
@@ -248,8 +350,11 @@ export async function postExistingEntryWithAllocation(
     sourceType: (header as any).source_type, sourceRef: (header as any).source_ref,
     postings,
   }
+  // Allocation off is recorded, not just skipped: with no allocation row and no record, the
+  // close's catch-up would take the entry for never-allocated P&L and allocate it after all.
   const allocated = opts.allocate === false
-    ? { allocationEntryIds: [] as string[] }
+    ? await recordAllocationSkip(admin, fundId, vehicleId!, entryId, 'allocation_off')
+      .then(r => r.error ? { error: r.error } : { allocationEntryIds: [] as string[] })
     : await allocatePostedEntry(admin, fundId, group, userId, entryId, entry)
   if ('error' in allocated) {
     await rollbackGeneratedAllocations(admin, fundId, entryId)

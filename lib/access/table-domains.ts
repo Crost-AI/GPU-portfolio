@@ -166,6 +166,7 @@ export const TABLE_RULES: Record<string, TableRule> = {
   // gate as the ledger; the rest are written by the close and read through its routes only.
   close_allocation_rounding: { scope: 'fund', domain: 'accounting' },
   journal_entry_allocations: { scope: 'service', note: 'Links a source entry to the allocation entries the close posted for it; written by the close, read through accounting routes.' },
+  journal_entry_allocation_skips: { scope: 'service', note: 'Posted entries whose P&L was deliberately not allocated on posting (allocation off, or self-allocated); written by posting, read by the close.' },
   close_reviews: { scope: 'service', note: 'Close review runs; written by the close and served by the accounting close routes.' },
   close_review_checks: { scope: 'service', note: 'Per-check results of a close review; worker-written, served with their review.' },
   accounting_schedules: { scope: 'service', note: 'Recurring accruals and amortization schedules the close posts; managed through accounting routes.' },
