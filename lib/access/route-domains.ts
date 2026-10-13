@@ -164,6 +164,10 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/capital-accounts': { domain: 'lp_capital' },
   'api/accounting/settlements': { domain: 'lp_capital' },
   'api/accounting/capital-calls': { domain: 'lp_capital' },
+  // Capital calls proposed before they are issued: each LP's proposed share. Approving one issues
+  // the call, so it is admin-only (lib/access/admin-only.ts).
+  'api/accounting/proposed-calls': { domain: 'lp_capital' },
+  'api/accounting/proposed-calls/pdf': { domain: 'lp_capital' },
   // The outbound mirror of capital-calls, and the same per-partner capital data.
   'api/accounting/distributions': { domain: 'lp_capital' },
   'api/accounting/commitments': { domain: 'lp_capital' },
@@ -228,6 +232,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/lp-statement/publish': { domain: 'lp_relations', feature: 'lp_portal' },
   // Call and distribution notices go OUT to partners, same as a published statement.
   'api/accounting/notices/publish': { domain: 'lp_relations', feature: 'lp_portal' },
+  // One partner's notice as publishing would render it, marked DRAFT: what an approver opens first.
+  'api/accounting/notices/preview': { domain: 'lp_relations', feature: 'lp_portal' },
   // A receipt for a funded call line goes out the same way a notice does.
   'api/accounting/notices/receipt': { domain: 'lp_relations', feature: 'lp_portal' },
   'api/lps/live-report/share': { domain: 'lp_relations', feature: 'lp_portal' },

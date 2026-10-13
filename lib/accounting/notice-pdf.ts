@@ -32,36 +32,8 @@ function money(v: number | null, currency: string): string {
   return v < 0 ? `(${sym}${n})` : `${sym}${n}`
 }
 
-export type NoticeKind = 'capital_call' | 'distribution'
-
-export interface NoticeData {
-  kind: NoticeKind
-  /** Fund's display face (FundTheme.displayFont). Absent = the default. */
-  displayFont?: string | null
-  fundName: string
-  fundLogo: string | null
-  fundAddress: string | null
-  currency: string
-  vehicle: string
-  partnerName: string
-  /** Date of the call or declaration — NOT today. A reissued PDF must not move it. */
-  noticeDate: string
-  /** Sequence within the vehicle, when the register carries one. */
-  number?: number | null
-  description?: string | null
-  /** THE figure. Straight from the register line, frozen at issue. */
-  amount: number
-  /** Calls only: when the money is due. */
-  dueDate?: string | null
-  /** Calls only: where to send it. */
-  wireInstructions?: string | null
-  /**
-   * Context lines shown under the amount — commitment, called to date, remaining, or capital
-   * balance. Supplied by the caller as label/value pairs so the register stays the only
-   * source of the amount itself.
-   */
-  context?: { label: string; value: number | null }[]
-}
+import type { NoticeData, NoticeKind } from './notice-types'
+export type { NoticeData, NoticeKind }
 
 const TITLE: Record<NoticeKind, string> = {
   capital_call: 'Capital Call Notice',
@@ -105,6 +77,26 @@ export function buildNoticeHtml(d: NoticeData): string {
       Payment instructions will be provided separately.
     </p>` : ''
 
+  // What the whole call is for. Fund-wide figures, labelled as such; the partner's own figure is
+  // the headline above.
+  const purposeRows = isCall && d.purposes && d.purposes.length > 0 ? d.purposes.map(p => `
+    <tr>
+      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;">${esc(p.label)}${p.basis ? `<div style="color:#888;font-size:10px;">${esc(p.basis)}</div>` : ''}</td>
+      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(p.amount)}</td>
+    </tr>`).join('') : ''
+  const purposeTotal = (d.purposes ?? []).reduce((s, p) => s + p.amount, 0)
+  const purposeSection = purposeRows ? `
+    <h3 style="font-size:12px;font-weight:600;margin:24px 0 6px;">Purpose of this call (whole fund)</h3>
+    <table><tbody>${purposeRows}
+      <tr><td style="padding:5px 8px;border-top:2px solid #ccc;font-weight:600;">Total call</td><td style="padding:5px 8px;border-top:2px solid #ccc;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${m(purposeTotal)}</td></tr>
+    </tbody></table>
+    ${d.share != null ? `<p style="font-size:11px;color:#555;margin-top:6px;">Your share is ${(d.share * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}% of the fund's total commitments.</p>` : ''}` : ''
+
+  const draftBanner = d.draft ? `
+    <div style="margin-bottom:18px;padding:8px 12px;border:1px solid #111;font-size:11px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">
+      Draft for review. Not a demand for payment.
+    </div>` : ''
+
   const contextSection = contextRows ? `
     <h3 style="font-size:12px;font-weight:600;margin:24px 0 6px;">${isCall ? 'Your commitment' : 'Your capital account'}</h3>
     <table><tbody>${contextRows}</tbody></table>` : ''
@@ -117,6 +109,7 @@ export function buildNoticeHtml(d: NoticeData): string {
   th { font-weight:600; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; color:#555; }
 </style></head><body>
   <div style="padding-bottom:40px;">
+    ${draftBanner}
     <!-- Fund header — identical to the capital account statement and LP letter -->
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:32px;">
       <div style="flex-shrink:0;">
@@ -135,13 +128,14 @@ export function buildNoticeHtml(d: NoticeData): string {
     ${d.description ? `<p style="font-size:12px;color:#333;margin-top:18px;">${esc(d.description)}</p>` : ''}
 
     ${headline}
+    ${purposeSection}
     ${contextSection}
     ${wireSection}
     ${wireMissing}
   </div>
 
   <div style="position:fixed;bottom:0;left:0;right:0;padding:8px 0;border-top:1px solid #e5e5e5;background:white;font-size:9px;color:#888;">
-    ${isCall ? 'Capital call notice' : 'Distribution notice'} for ${esc(d.partnerName)} in ${esc(d.vehicle)}, dated ${esc(d.noticeDate)}.
+    ${d.draft ? 'DRAFT. ' : ''}${isCall ? 'Capital call notice' : 'Distribution notice'} for ${esc(d.partnerName)} in ${esc(d.vehicle)}, dated ${esc(d.noticeDate)}.
     Figures are stated in ${esc(currency)} and are those recorded in the fund's books at the date of this notice.
     ${isCall ? 'Please reference your name and the vehicle when remitting funds.' : ''}
   </div>

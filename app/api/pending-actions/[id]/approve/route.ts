@@ -3,6 +3,8 @@ import { expireTag } from '@/lib/cache/tags'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveBrowserPrincipal } from '@/lib/pending-actions/browser-principal'
 import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-actions/service'
+// Publishing notices renders each partner's PDF here, so this route ships Chromium (lib/pdf-routes.mjs).
+import { executePublishCallNotices } from '@/lib/pending-actions/call-notices-publish'
 
 // Approving a staged company update runs the extraction pipeline (submit_company_update), and a
 // run (lib/agent/run-action.ts) applies up to a hundred steps in one approval.
@@ -22,16 +24,22 @@ export const maxDuration = 300
  * caller's CURRENT write access, which is why approving is not merely "you could see the queue".
  *
  * The HTTP shape is unchanged — `{ ok: true, result }`, or a status with `{ error }` — because the
- * Analyst panel's cards read exactly that.
+ * Analyst panel's cards read exactly that. A 428 means the action wants its second confirmation.
  */
-export async function POST(_req: Request, props: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const admin = createAdminClient()
   const principal = await resolveBrowserPrincipal(admin)
   if (principal instanceof NextResponse) return principal
 
   try {
-    const result = await approvePendingAction(admin, principal, params.id)
+    // An action that publishes to LPs (confirmInApp) needs `{ confirmed: true }`, which the card
+    // sends only after its second confirmation; every other action ignores the body.
+    const body = await req.json().catch(() => ({}))
+    const result = await approvePendingAction(admin, principal, params.id, {
+      confirmed: body?.confirmed === true,
+      executors: { publish_call_notices: executePublishCallNotices },
+    })
     expireTag('pending-actions-badge')
     return NextResponse.json({ ok: true, result: result.result, replayed: result.replayed })
   } catch (error) {

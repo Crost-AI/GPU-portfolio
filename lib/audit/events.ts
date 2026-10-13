@@ -16,6 +16,7 @@ export type AuditAction =
   | 'snapshot.share' | 'snapshot.unshare' | 'snapshot.edit' | 'snapshot.delete'
   | 'lp_statement.force_publish'
   | 'capital_call.issue' | 'distribution.declare'
+  | 'proposed_call.create' | 'proposed_call.revise' | 'proposed_call.approve' | 'proposed_call.discard'
   | 'k1.generate' | 'k1.finalize' | 'k1.amend'
   | 'tax.adjustments' | 'pending_action.approve' | 'pending_action.reject' | 'pending_action.stage'
   | 'pending_action.undo'

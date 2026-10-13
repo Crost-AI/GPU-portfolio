@@ -118,3 +118,33 @@ describe('buildReceiptHtml', () => {
     expect(html).toContain('Smith &amp; Sons &lt;Trust&gt;')
   })
 })
+
+describe('buildNoticeHtml — drafted calls', () => {
+  it('shows what the whole call is for, labelled fund-wide, with the partner\'s share', () => {
+    const html = buildNoticeHtml({
+      ...base,
+      purposes: [
+        { label: 'Series A in Acme', amount: 800_000 },
+        { label: 'Management fees', amount: 200_000, basis: '2% of commitments, Q1 2027' },
+      ],
+      share: 0.025,
+    })
+    expect(html).toContain('Purpose of this call (whole fund)')
+    expect(html).toContain('Series A in Acme')
+    expect(html).toContain('2% of commitments, Q1 2027')
+    expect(html).toContain('$1,000,000.00')
+    expect(html).toContain('Your share is 2.5% of the fund')
+  })
+
+  it('marks a draft as not a demand for payment, on the page and in the footer', () => {
+    const html = buildNoticeHtml({ ...base, draft: true })
+    expect(html).toContain('Draft for review. Not a demand for payment.')
+    expect(html).toContain('DRAFT. Capital call notice')
+  })
+
+  it('prints neither for an ordinary notice', () => {
+    const html = buildNoticeHtml(base)
+    expect(html).not.toContain('Purpose of this call')
+    expect(html).not.toContain('Draft for review')
+  })
+})

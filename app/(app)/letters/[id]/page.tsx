@@ -217,6 +217,18 @@ export default function LetterEditorPage() {
     setEditingNarrative(null)
   }
 
+  // Final = a person has reviewed it; only a final letter can be shared. Regenerating puts it back to draft.
+  const setStatus = async (status: 'draft' | 'final') => {
+    setSaving(true)
+    const res = await fetch(`/api/lp-letters/${letterId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+    if (res.ok) setLetter(await res.json())
+    setSaving(false)
+  }
+
   const saveFullDraft = async () => {
     setSaving(true)
     const res = await fetch(`/api/lp-letters/${letterId}`, {
@@ -418,6 +430,21 @@ export default function LetterEditorPage() {
           )}
           {/* Sharing into the portal is the portal's own switch — `lp_portal_access` was a second
               key for the same idea and has been folded into `lp_portal`. */}
+          {hasContent && letter.status !== 'generating' && (
+            letter.status === 'final' ? (
+              <Button size="sm" variant="outline" className="text-muted-foreground" onClick={() => setStatus('draft')} disabled={saving}
+                title="Final: reviewed and ready to share. Click to put it back to draft.">
+                <Check className="h-3.5 w-3.5 mr-1.5" />
+                Final
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" className="text-muted-foreground" onClick={() => setStatus('final')} disabled={saving}
+                title="Mark the letter final once it has been reviewed. Only a final letter can be shared with LPs.">
+                Mark final
+              </Button>
+            )
+          )}
+          {/* Shown on drafts too, so a share can be removed; adding one to a draft is refused with the reason. */}
           {isAdmin && (fv.lp_portal === 'everyone' || fv.lp_portal === 'admin') && (
             <LpShareControl shareEndpoint={`/api/lp-letters/${letterId}/share`} />
           )}

@@ -23,6 +23,7 @@ import { connectorPrincipal, lpConnectorEnabled } from '@/lib/portal/principal'
 import { PortalError, portalLetterShare, portalStatementInvestors } from '@/lib/portal/service'
 import { getLetter } from '@/lib/lp-letters/service'
 import { renderPdf as renderTemplateDocumentPdf } from '@/lib/document-templates/pdf'
+import { callNoticePreviewPdf } from '@/lib/accounting/notice-preview'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -182,6 +183,16 @@ async function fundDocument(admin: ReturnType<typeof createAdminClient>, claims:
         if (!a.render) return notFound()
         const result = await renderTemplateDocumentPdf(admin, fundId, a.render)
         doc = result ? { body: result.pdf, fileName: result.fileName, contentType: 'application/pdf' } : null
+        break
+      }
+      // /api/accounting/notices/preview — lp_relations (lp_portal), and the call's entity. One
+      // partner's notice for an issued call, marked DRAFT: what preview_call_notices links to.
+      case 'call_notice_preview': {
+        if (!hasAccess(access, 'lp_relations', 'read', 'lp_portal')) return notFound()
+        if (!a.call || !a.lp) return notFound()
+        const group = await resolveVehicle(admin, fundId, a.vehicle ?? undefined, { access })
+        const out = await callNoticePreviewPdf(admin, { fundId, group }, a.call, a.lp)
+        doc = out.ok ? { body: out.value.pdf, fileName: out.value.fileName, contentType: 'application/pdf' } : null
         break
       }
       default:

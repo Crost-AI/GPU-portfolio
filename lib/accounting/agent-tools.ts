@@ -57,6 +57,8 @@ import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
 import { LETTER_HANDLERS } from '@/lib/agent/letter-tools'
 import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
+import { ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_TOOL_MANIFEST } from '@/lib/agent/operations-tools-manifest'
+import { OPERATIONS_HANDLERS } from '@/lib/agent/operations-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -401,13 +403,18 @@ function bind(manifest: AgentToolMeta[], handlers: Record<string, AgentToolHandl
  * optional filter they declare themselves. Forcing them to pick one would make "list every
  * company" (or every deal) impossible on a multi-vehicle fund.
  */
+/** The same for tools on ONE entity's books: the dispatcher resolves the entity, `vehicle` names it. */
+function bindLedger(manifest: AgentToolMeta[], handlers: Record<string, AgentToolHandler>): AgentTool[] {
+  return bind(manifest, handlers).map(tool => ({
+    ...tool,
+    domain: 'ledger' as const,
+    inputSchema: { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties ?? {}), vehicle: VEHICLE_PROP } },
+  }))
+}
+
 export const AGENT_TOOLS: AgentTool[] = [
-  ...AGENT_TOOL_MANIFEST.map(meta => {
-    const handler = HANDLERS[meta.name]
-    if (!handler) throw new Error(`No handler for agent tool ${meta.name}`)
-    const inputSchema = { ...meta.inputSchema, properties: { ...(meta.inputSchema.properties ?? {}), vehicle: VEHICLE_PROP } }
-    return { ...meta, domain: 'ledger' as const, inputSchema, handler }
-  }),
+  ...bindLedger(AGENT_TOOL_MANIFEST, HANDLERS),
+  ...bindLedger(ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
@@ -419,6 +426,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(REPORT_TOOL_MANIFEST, REPORT_HANDLERS),
   ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
+  ...bind(OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

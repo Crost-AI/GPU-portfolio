@@ -95,7 +95,14 @@ export async function updateLetter(admin: Admin, ctx: { fundId: string; visible:
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (company_narratives !== undefined) updates.company_narratives = company_narratives
   if (full_draft !== undefined) updates.full_draft = full_draft
-  if (status !== undefined && ['draft', 'generating', 'complete'].includes(String(status))) updates.status = status
+  // 'final' is a reviewed letter, the only kind that can be shared (shareLetter). 'complete' was a
+  // name the code used and the table's check never allowed; it means final.
+  if (status !== undefined) {
+    const next = String(status) === 'complete' ? 'final' : String(status)
+    if (!['draft', 'final'].includes(next)) return fail(400, 'status must be draft or final')
+    if (next === 'final' && found.value.status === 'generating') return fail(409, 'This letter is being generated. Try again when it finishes.')
+    updates.status = next
+  }
   if (generation_prompt !== undefined) updates.generation_prompt = generation_prompt
   // portfolio_table_html is always derived server-side — not accepted from the caller
   if (company_prompts !== undefined) updates.company_prompts = company_prompts
@@ -159,10 +166,10 @@ export async function writeLetterSections(
   return done(data)
 }
 
-/** Set exactly which of this fund's investors a letter is shared with. Admin only (lib/access/admin-only.ts). */
+/** Set exactly which of this fund's investors a letter is shared with. Admin only (lib/access/admin-only.ts); only a final letter can be shared. */
 export async function shareLetter(admin: Admin, ctx: { fundId: string; userId: string }, letterId: string, investorIds: string[]): Promise<Outcome<{ lp_investor_ids: string[] }>> {
   const db = admin as any
-  const { data: letter } = await db.from('lp_letters').select('id').eq('id', letterId).eq('fund_id', ctx.fundId).maybeSingle()
+  const { data: letter } = await db.from('lp_letters').select('id, status').eq('id', letterId).eq('fund_id', ctx.fundId).maybeSingle()
   if (!letter) return fail(404, 'Letter not found')
 
   const requested = investorIds.filter((x): x is string => typeof x === 'string')
@@ -176,6 +183,8 @@ export async function shareLetter(admin: Admin, ctx: { fundId: string; userId: s
   const currentIds = new Set(((current ?? []) as any[]).map(r => r.lp_investor_id as string))
   const toRemove = Array.from(currentIds).filter(id => !target.includes(id))
   const toAdd = target.filter(id => !currentIds.has(id))
+  // A draft has not been reviewed: it reaches no investor. Unsharing is always allowed.
+  if (toAdd.length && letter.status !== 'final') return fail(409, 'Mark the letter final before sharing it with investors.')
 
   if (toRemove.length) {
     await db.from('lp_letter_shares').delete().eq('letter_id', letterId).eq('fund_id', ctx.fundId).in('lp_investor_id', toRemove)

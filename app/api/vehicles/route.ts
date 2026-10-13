@@ -11,6 +11,7 @@ import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 import { safeLogo, fundLetterhead, loadFundEmail } from '@/lib/vehicle-letterhead'
+import { EMPTY_PROFILE, PROFILE_COLUMNS, parseProfilePatch, profileFromRow } from '@/lib/vehicle-profile'
 
 // Fund-wide investment-vehicle registry (fund_vehicles). Vehicles are used across
 // LP snapshots, portfolio, compliance, and accounting — so management lives here,
@@ -63,6 +64,19 @@ export async function GET(req: NextRequest) {
       available: true,
       emailAvailable,
     })
+  }
+
+  // The entity's reporting profile (lib/vehicle-profile.ts), for the Edit vehicle modal.
+  const profileFor = req.nextUrl.searchParams.get('profile')
+  if (profileFor) {
+    const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+    if (!canSeeVehicle(access, profileFor)) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    const { data, error } = await (admin as any)
+      .from('fund_vehicles').select(PROFILE_COLUMNS).eq('id', profileFor).eq('fund_id', gate.fundId).maybeSingle()
+    // Columns not migrated yet (20261013165000_vehicle_reporting_profile.sql).
+    if (error) return NextResponse.json({ ...EMPTY_PROFILE, available: false })
+    if (!data) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+    return NextResponse.json({ ...profileFromRow(data), available: true })
   }
 
   // serves_vehicle_id / lp_entity_id may not exist until their migrations are pushed — fall back.
@@ -264,6 +278,13 @@ export async function PATCH(req: NextRequest) {
     update.kind = body.kind
   }
   if (body.active !== undefined) update.active = !!body.active
+  // The reporting profile: strategy, administrator, LP reporting days (lib/vehicle-profile.ts).
+  if (body.profile !== undefined) {
+    if (!body.profile || typeof body.profile !== 'object') return NextResponse.json({ error: 'profile must be an object' }, { status: 400 })
+    const parsed = parseProfilePatch(body.profile)
+    if ('error' in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 })
+    Object.assign(update, parsed.update)
+  }
 
   // Vintage year. A FACT about the vehicle, not a parameter of a calculation — it used to
   // live on fund_group_config next to carry_rate and gp_commit_pct, both of which are now
