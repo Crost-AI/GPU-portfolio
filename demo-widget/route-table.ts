@@ -37,7 +37,7 @@ export const ROUTES: DemoRoute[] = [
   { pattern: '/interactions', section: 'portfolio' },
   { pattern: '/letters', section: 'portfolio' },
   { pattern: '/letters/new', section: 'portfolio' },
-  { pattern: '/letters/:id', section: 'portfolio', hrefs: () => [] },
+  { pattern: '/letters/:id', section: 'portfolio', hrefs: s => (s.letters ?? []).map(l => `/letters/${l.id}`) },
   { pattern: '/notes', section: 'portfolio' },
   { pattern: '/compliance', section: 'portfolio' },
   { pattern: '/compliance/links', section: 'portfolio' },

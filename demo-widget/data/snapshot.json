@@ -1349,6 +1349,14 @@
    "lpEntityId": "4f57aefa-a42b-4293-9162-6b849f592dc8"
   }
  ],
+ "letters": [
+  {
+   "id": "a6462487-c265-44d5-b882-cd0834c5c1ea",
+   "periodLabel": "Q4 2025 / Year End 2025",
+   "portfolioGroup": "Fund I",
+   "status": "draft"
+  }
+ ],
  "deals": [
   {
    "id": "24729968-7f2b-4159-948b-7f68411d7231",
