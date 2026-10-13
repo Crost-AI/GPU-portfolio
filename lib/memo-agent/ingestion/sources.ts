@@ -81,7 +81,9 @@ export async function loadDealDocuments(
     query = query.in('id', documentIds)
   }
 
-  const { data, error } = await query
+  // A fixed order, so the manifest in each document's prompt is the same on every run: the
+  // assistant runner (lib/memo-agent/assistant-runner.ts) matches its answers to calls by content.
+  const { data, error } = await query.order('uploaded_at', { ascending: true }).order('id', { ascending: true })
   if (error) throw new Error(`Failed to list deal documents: ${error.message}`)
 
   const allRows = (data ?? []) as Array<{
