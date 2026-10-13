@@ -1,22 +1,23 @@
-// Capital call notice drafts: the service the call-notices route and the agent tools both call, so
-// the web, the API and chat draft, check and approve a call the same way.
+// Proposed capital calls: a call written down for review before it is issued. Until now a call was
+// either previewed (nothing saved) or issued (in the books), with nothing in between for someone
+// to check, revise, or hand to an admin to approve.
 //
 // The life of one:
-//   draft     → created from a request (total, purposes, dates, notice period). Nothing is in the
-//               books and no LP can see it. Anyone with LP capital write may draft or revise one.
+//   proposed  → created from a request (total, purposes, dates, notice period). Nothing is in the
+//               books and no LP can see it. Anyone with LP capital write may propose or revise one.
 //   approved  → an ADMIN approves it. The checks are re-run against live commitments and the
 //               vehicle's stored LPA notice period; blockers refuse, warnings must be acknowledged.
 //               Then the call is issued through `issueCapitalCall` (the path the Capital page uses)
 //               and advances are applied as that page applies them. Each LP's own notice is then
-//               published to their portal (call-notice-publish.ts, which the web route calls; the
-//               agent tools never render a PDF themselves, so they don't ship Chromium).
+//               published to their portal (proposed-call-publish.ts, kept apart because it renders
+//               PDFs).
 //   discarded → withdrawn. Kept, so the audit trail can point at it.
 //
-// Every check lives in call-notice-check.ts and is pure. This file only loads what the fund's
+// Every check lives in capital-call-check.ts and is pure. This file only loads what the fund's
 // records say and writes the result down.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { checkCallNotice, normalizePurposes, type CallNoticeFacts, type CallNoticeRequest, type CheckedCallNotice, type NoticePeriodBasis } from './call-notice-check'
+import { checkCapitalCall, normalizePurposes, type CallFacts, type ProposedCallRequest, type CheckedCall, type NoticePeriodBasis } from './capital-call-check'
 import { approvable, needsAcknowledgement } from '@/lib/drafting/checks'
 import { loadOwnership, loadEntityNames } from './load'
 import { lpCalledTotals, issueCapitalCall } from './capital-calls'
@@ -27,21 +28,21 @@ import { recordAudit } from '@/lib/audit/events'
 import { currentChangeSource } from '@/lib/audit/source'
 import { done, fail, dbFail, type Outcome } from '@/lib/service-outcome'
 
-export type DraftStatus = 'draft' | 'approved' | 'discarded'
+export type ProposedCallStatus = 'proposed' | 'approved' | 'discarded'
 
-export interface DraftContext {
+export interface ProposedCallContext {
   fundId: string
   /** The vehicle (portfolio_group), already resolved against the caller's entities. */
   group: string
   userId: string | null
 }
 
-const TABLE = 'capital_call_notice_drafts'
+const TABLE = 'proposed_capital_calls'
 const today = () => new Date().toISOString().slice(0, 10)
 const validBasis = (v: unknown): NoticePeriodBasis | null => (v === 'calendar' || v === 'business' ? v : null)
 
 /** What the fund's records say about a call on this vehicle. */
-export async function loadCallNoticeFacts(admin: SupabaseClient, fundId: string, group: string, asOf = today()): Promise<CallNoticeFacts> {
+export async function loadCallFacts(admin: SupabaseClient, fundId: string, group: string, asOf = today()): Promise<CallFacts> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   const settings = async () => {
     const q = (cols: string) => (admin as any).from('vehicle_accounting_settings').select(cols).eq('fund_id', fundId).eq('vehicle_id', vehicleId).maybeSingle()
@@ -76,8 +77,8 @@ export async function loadCallNoticeFacts(admin: SupabaseClient, fundId: string,
   }
 }
 
-/** The request a stored draft represents. */
-function requestOf(row: any): CallNoticeRequest {
+/** The request a stored proposal represents. */
+function requestOf(row: any): ProposedCallRequest {
   return {
     total: Number(row.total),
     purposes: normalizePurposes(row.purposes),
@@ -89,9 +90,9 @@ function requestOf(row: any): CallNoticeRequest {
   }
 }
 
-export interface DraftView extends CheckedCallNotice {
+export interface ProposedCallView extends CheckedCall {
   id: string
-  status: DraftStatus
+  status: ProposedCallStatus
   vehicle: string
   approvable: boolean
   needsAcknowledgement: boolean
@@ -100,7 +101,7 @@ export interface DraftView extends CheckedCallNotice {
   approvedAt: string | null
 }
 
-function view(row: any, group: string, checked: CheckedCallNotice): DraftView {
+function view(row: any, group: string, checked: CheckedCall): ProposedCallView {
   return {
     id: row.id,
     status: row.status,
@@ -114,13 +115,13 @@ function view(row: any, group: string, checked: CheckedCallNotice): DraftView {
   }
 }
 
-/** A draft as stored at its last check (approved and discarded drafts are not re-checked). */
-function frozenCheck(row: any): CheckedCallNotice | null {
+/** A proposal as stored at its last check (approved and discarded ones are not re-checked). */
+function frozenCheck(row: any): CheckedCall | null {
   const c = row.checked
-  return c && Array.isArray(c.lines) ? (c as CheckedCallNotice) : null
+  return c && Array.isArray(c.lines) ? (c as CheckedCall) : null
 }
 
-function rowFields(req: CallNoticeRequest) {
+function rowFields(req: ProposedCallRequest) {
   return {
     total: req.total,
     purposes: normalizePurposes(req.purposes),
@@ -133,54 +134,54 @@ function rowFields(req: CallNoticeRequest) {
 }
 
 /** Store the parts of a request the table can hold: dates it cannot parse stay out of the row. */
-function storable(req: CallNoticeRequest, checked: CheckedCallNotice): CallNoticeRequest {
+function storable(req: ProposedCallRequest, checked: CheckedCall): ProposedCallRequest {
   return { ...req, noticeDate: checked.noticeDate, dueDate: checked.dueDate }
 }
 
-export async function createCallNoticeDraft(admin: SupabaseClient, ctx: DraftContext, req: CallNoticeRequest): Promise<Outcome<DraftView>> {
+export async function proposeCapitalCall(admin: SupabaseClient, ctx: ProposedCallContext, req: ProposedCallRequest): Promise<Outcome<ProposedCallView>> {
   const vehicleId = await vehicleIdByName(admin, ctx.fundId, ctx.group)
   if (!vehicleId) return fail(400, `"${ctx.group}" is not in this fund's vehicle registry.`)
-  const checked = checkCallNotice(req, await loadCallNoticeFacts(admin, ctx.fundId, ctx.group))
+  const checked = checkCapitalCall(req, await loadCallFacts(admin, ctx.fundId, ctx.group))
   const { data, error } = await (admin as any).from(TABLE).insert({
-    fund_id: ctx.fundId, vehicle_id: vehicleId, status: 'draft',
+    fund_id: ctx.fundId, vehicle_id: vehicleId, status: 'proposed',
     ...rowFields(storable(req, checked)),
     checked, created_by: ctx.userId, created_source: currentChangeSource(),
   }).select('*').single()
-  if (error) return dbFail(error, 'call-notice-drafts.create')
+  if (error) return dbFail(error, 'proposed-calls.create')
   await recordAudit(admin, {
-    fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'capital_call_notice.draft',
-    subjectType: 'capital_call_notice_draft', subjectId: (data as any).id,
+    fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'proposed_call.create',
+    subjectType: 'proposed_capital_call', subjectId: (data as any).id,
     details: { total: checked.total, noticeDate: checked.noticeDate, dueDate: checked.dueDate, partners: checked.lines.length, missing: checked.missing.map(m => m.field), flags: checked.flags.map(f => f.code) },
   })
   return done(view(data, ctx.group, checked))
 }
 
-async function loadRow(admin: SupabaseClient, ctx: DraftContext, id: string): Promise<Outcome<{ row: any; vehicleId: string }>> {
+async function loadRow(admin: SupabaseClient, ctx: ProposedCallContext, id: string): Promise<Outcome<{ row: any; vehicleId: string }>> {
   const vehicleId = await vehicleIdByName(admin, ctx.fundId, ctx.group)
-  if (!vehicleId || !id) return fail(404, 'No capital call notice draft with that id on this vehicle.')
+  if (!vehicleId || !id) return fail(404, 'No proposed capital call with that id on this vehicle.')
   const { data, error } = await (admin as any).from(TABLE).select('*').eq('id', id).eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId).maybeSingle()
-  if (error) return dbFail(error, 'call-notice-drafts.load')
-  if (!data) return fail(404, 'No capital call notice draft with that id on this vehicle.')
+  if (error) return dbFail(error, 'proposed-calls.load')
+  if (!data) return fail(404, 'No proposed capital call with that id on this vehicle.')
   return done({ row: data, vehicleId })
 }
 
 /**
- * One draft. An open draft is RE-CHECKED against today's records (a commitment recorded or the
- * LPA notice period set since it was drafted changes the answer); an approved one shows what was
+ * One proposed call. An open one is RE-CHECKED against today's records (a commitment recorded or
+ * the LPA notice period set since it was proposed changes the answer); an approved one shows what was
  * approved.
  */
-export async function getCallNoticeDraft(admin: SupabaseClient, ctx: DraftContext, id: string): Promise<Outcome<DraftView>> {
+export async function getProposedCall(admin: SupabaseClient, ctx: ProposedCallContext, id: string): Promise<Outcome<ProposedCallView>> {
   const r = await loadRow(admin, ctx, id)
   if (!r.ok) return r
   const { row } = r.value
-  const frozen = row.status === 'draft' ? null : frozenCheck(row)
-  const checked = frozen ?? checkCallNotice(requestOf(row), await loadCallNoticeFacts(admin, ctx.fundId, ctx.group))
+  const frozen = row.status === 'proposed' ? null : frozenCheck(row)
+  const checked = frozen ?? checkCapitalCall(requestOf(row), await loadCallFacts(admin, ctx.fundId, ctx.group))
   return done(view(row, ctx.group, checked))
 }
 
-export interface DraftSummary {
+export interface ProposedCallSummary {
   id: string
-  status: DraftStatus
+  status: ProposedCallStatus
   vehicle: string
   total: number
   noticeDate: string | null
@@ -191,15 +192,15 @@ export interface DraftSummary {
 }
 
 /** Drafts on the given vehicles (null = every vehicle the fund has), newest first. */
-export async function listCallNoticeDrafts(
-  admin: SupabaseClient, fundId: string, vehicles: { id: string; name: string }[] | null, status?: DraftStatus,
-): Promise<Outcome<DraftSummary[]>> {
+export async function listProposedCalls(
+  admin: SupabaseClient, fundId: string, vehicles: { id: string; name: string }[] | null, status?: ProposedCallStatus,
+): Promise<Outcome<ProposedCallSummary[]>> {
   let q = (admin as any).from(TABLE).select('id, status, vehicle_id, total, notice_date, due_date, description, capital_call_id, created_at, fund_vehicles(name)')
     .eq('fund_id', fundId).order('created_at', { ascending: false }).limit(100)
   if (vehicles) q = q.in('vehicle_id', vehicles.map(v => v.id))
   if (status) q = q.eq('status', status)
   const { data, error } = await q
-  if (error) return dbFail(error, 'call-notice-drafts.list')
+  if (error) return dbFail(error, 'proposed-calls.list')
   return done(((data as any[]) ?? []).map(r => ({
     id: r.id, status: r.status, vehicle: r.fund_vehicles?.name ?? '', total: Number(r.total),
     noticeDate: r.notice_date ?? null, dueDate: r.due_date ?? null, description: r.description ?? null,
@@ -207,37 +208,37 @@ export async function listCallNoticeDrafts(
   })))
 }
 
-/** Change an open draft. Only the fields given change; the checks run again on the result. */
-export async function reviseCallNoticeDraft(admin: SupabaseClient, ctx: DraftContext, id: string, patch: Partial<CallNoticeRequest>): Promise<Outcome<DraftView>> {
+/** Change an open proposal. Only the fields given change; the checks run again on the result. */
+export async function reviseProposedCall(admin: SupabaseClient, ctx: ProposedCallContext, id: string, patch: Partial<ProposedCallRequest>): Promise<Outcome<ProposedCallView>> {
   const r = await loadRow(admin, ctx, id)
   if (!r.ok) return r
   const { row, vehicleId } = r.value
-  if (row.status !== 'draft') return fail(409, `That draft is ${row.status}; start a new one.`)
+  if (row.status !== 'proposed') return fail(409, `That call is already ${row.status}; propose a new one.`)
   const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
-  const req: CallNoticeRequest = { ...requestOf(row), ...defined }
-  const checked = checkCallNotice(req, await loadCallNoticeFacts(admin, ctx.fundId, ctx.group))
+  const req: ProposedCallRequest = { ...requestOf(row), ...defined }
+  const checked = checkCapitalCall(req, await loadCallFacts(admin, ctx.fundId, ctx.group))
   const { data, error } = await (admin as any).from(TABLE)
     .update({ ...rowFields(storable(req, checked)), checked, updated_at: new Date().toISOString() })
-    .eq('id', id).eq('fund_id', ctx.fundId).eq('status', 'draft').select('*').maybeSingle()
-  if (error) return dbFail(error, 'call-notice-drafts.revise')
-  if (!data) return fail(409, 'That draft changed while you were editing it. Fetch it again.')
+    .eq('id', id).eq('fund_id', ctx.fundId).eq('status', 'proposed').select('*').maybeSingle()
+  if (error) return dbFail(error, 'proposed-calls.revise')
+  if (!data) return fail(409, 'That proposed call changed while you were editing it. Fetch it again.')
   await recordAudit(admin, {
-    fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'capital_call_notice.revise',
-    subjectType: 'capital_call_notice_draft', subjectId: id, details: { changed: Object.keys(defined) },
+    fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'proposed_call.revise',
+    subjectType: 'proposed_capital_call', subjectId: id, details: { changed: Object.keys(defined) },
   })
   return done(view(data, ctx.group, checked))
 }
 
-export async function discardCallNoticeDraft(admin: SupabaseClient, ctx: DraftContext, id: string): Promise<Outcome<{ id: string; status: 'discarded' }>> {
+export async function discardProposedCall(admin: SupabaseClient, ctx: ProposedCallContext, id: string): Promise<Outcome<{ id: string; status: 'discarded' }>> {
   const r = await loadRow(admin, ctx, id)
   if (!r.ok) return r
-  if (r.value.row.status !== 'draft') return fail(409, `That draft is already ${r.value.row.status}.`)
+  if (r.value.row.status !== 'proposed') return fail(409, `That call is already ${r.value.row.status}.`)
   const { error } = await (admin as any).from(TABLE).update({ status: 'discarded', updated_at: new Date().toISOString() })
-    .eq('id', id).eq('fund_id', ctx.fundId).eq('status', 'draft')
-  if (error) return dbFail(error, 'call-notice-drafts.discard')
+    .eq('id', id).eq('fund_id', ctx.fundId).eq('status', 'proposed')
+  if (error) return dbFail(error, 'proposed-calls.discard')
   await recordAudit(admin, {
-    fundId: ctx.fundId, vehicleId: r.value.vehicleId, actorId: ctx.userId, action: 'capital_call_notice.discard',
-    subjectType: 'capital_call_notice_draft', subjectId: id,
+    fundId: ctx.fundId, vehicleId: r.value.vehicleId, actorId: ctx.userId, action: 'proposed_call.discard',
+    subjectType: 'proposed_capital_call', subjectId: id,
   })
   return done({ id, status: 'discarded' })
 }
@@ -245,11 +246,11 @@ export async function discardCallNoticeDraft(admin: SupabaseClient, ctx: DraftCo
 export interface ApproveOptions {
   /** The approver's fund role. Only an admin may approve (lib/access/admin-only.ts says so too). */
   role: string
-  /** Required when the draft carries warnings or optional missing items. */
+  /** Required when the proposal carries warnings or optional missing items. */
   acknowledge?: boolean
 }
 
-export interface ApprovedDraft {
+export interface ApprovedCall {
   id: string
   capitalCallId: string
   /** False when this approval found the call already issued (a retry). */
@@ -258,38 +259,38 @@ export interface ApprovedDraft {
 }
 
 /**
- * Approve: re-check from live records, then issue. Idempotent: an approved draft returns its call,
- * and the call is issued under a request key derived from the draft, so a retry after a timeout
+ * Approve: re-check from live records, then issue. Idempotent: an approved proposal returns its call,
+ * and the call is issued under a request key derived from the proposal, so a retry after a timeout
  * finds the same call rather than issuing a second.
  */
-export async function approveCallNoticeDraft(admin: SupabaseClient, ctx: DraftContext, id: string, opts: ApproveOptions): Promise<Outcome<ApprovedDraft>> {
+export async function approveProposedCall(admin: SupabaseClient, ctx: ProposedCallContext, id: string, opts: ApproveOptions): Promise<Outcome<ApprovedCall>> {
   if (opts.role !== 'admin') return fail(403, 'Only an admin can approve a capital call notice.')
   if (!ctx.userId) return fail(403, 'A person has to approve a capital call notice.')
   const r = await loadRow(admin, ctx, id)
   if (!r.ok) return r
   const { row, vehicleId } = r.value
-  if (row.status === 'discarded') return fail(409, 'That draft was discarded.')
+  if (row.status === 'discarded') return fail(409, 'That proposed call was discarded.')
 
   let callId: string | null = row.capital_call_id ?? null
-  let checked: CheckedCallNotice | null = frozenCheck(row)
+  let checked: CheckedCall | null = frozenCheck(row)
   let advancesApplied: Record<string, number> = {}
-  const issuedNow = row.status === 'draft'
+  const issuedNow = row.status === 'proposed'
 
-  if (row.status === 'draft') {
-    checked = checkCallNotice(requestOf(row), await loadCallNoticeFacts(admin, ctx.fundId, ctx.group))
+  if (row.status === 'proposed') {
+    checked = checkCapitalCall(requestOf(row), await loadCallFacts(admin, ctx.fundId, ctx.group))
     if (!approvable(checked)) {
-      return fail(422, 'This draft cannot be approved yet.', {
+      return fail(422, 'This call cannot be approved yet.', {
         missing: checked.missing.filter(m => m.required), flags: checked.flags.filter(f => f.severity === 'blocker'),
       })
     }
     if (needsAcknowledgement(checked) && !opts.acknowledge) {
-      return fail(422, 'Approving this draft means accepting the warnings below. Approve again with acknowledge set.', {
+      return fail(422, 'Approving this call means accepting the warnings below. Approve again with acknowledge set.', {
         missing: checked.missing, flags: checked.flags.filter(f => f.severity === 'warning'),
       })
     }
     const lines = checked.lines.filter(l => l.amount > 0).map(l => ({ lpEntityId: l.lpEntityId, amount: l.amount }))
     const issued = await issueCapitalCall(admin, ctx.fundId, ctx.group, ctx.userId, {
-      requestKey: `call-notice-draft:${id}`,
+      requestKey: `proposed-call:${id}`,
       callDate: checked.noticeDate!,
       dueDate: checked.dueDate,
       description: checked.description,
@@ -312,7 +313,7 @@ export async function approveCallNoticeDraft(admin: SupabaseClient, ctx: DraftCo
       status: 'approved', capital_call_id: callId, checked, approved_by: ctx.userId,
       approved_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq('id', id).eq('fund_id', ctx.fundId)
-    if (error) return dbFail(error, 'call-notice-drafts.approve')
+    if (error) return dbFail(error, 'proposed-calls.approve')
 
     await recordAudit(admin, {
       fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'capital_call.issue',
@@ -320,11 +321,11 @@ export async function approveCallNoticeDraft(admin: SupabaseClient, ctx: DraftCo
       details: { fromDraft: id, callDate: checked.noticeDate, dueDate: checked.dueDate, total: checked.total, partners: lines.length, advancesApplied },
     })
     await recordAudit(admin, {
-      fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'capital_call_notice.approve',
-      subjectType: 'capital_call_notice_draft', subjectId: id,
+      fundId: ctx.fundId, vehicleId, actorId: ctx.userId, action: 'proposed_call.approve',
+      subjectType: 'proposed_capital_call', subjectId: id,
       details: { capitalCallId: callId, acknowledged: checked.flags.filter(f => f.severity === 'warning').map(f => f.code).concat(checked.missing.map(m => m.field)) },
     })
   }
-  if (!callId) return fail(409, 'That draft was approved but has no call. Ask an admin to check the Capital page.')
+  if (!callId) return fail(409, 'That proposal was approved but has no call. Ask an admin to check the Capital page.')
   return done({ id, capitalCallId: callId, issued: issuedNow, advancesApplied })
 }

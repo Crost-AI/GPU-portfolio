@@ -12,7 +12,7 @@ import { dbError } from '@/lib/api-error'
 // Wire instructions for capital-call notices. Kept on the VEHICLE rather than on each call — an
 // SPV's bank details are a standing fact, and re-typing them into every call is how one notice
 // goes out with a stale account number. The same goes for the LPA's capital call notice period,
-// which every drafted notice is checked against (lib/accounting/call-notice-check.ts); changing it
+// which every drafted notice is checked against (lib/accounting/capital-call-check.ts); changing it
 // is admin-only, like the other LPA terms (lib/access/admin-only.ts).
 export async function GET(req: NextRequest) {
   const supabase = await createClient()

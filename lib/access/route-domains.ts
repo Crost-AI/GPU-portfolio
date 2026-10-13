@@ -166,8 +166,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/capital-calls': { domain: 'lp_capital' },
   // Capital call notices drafted before they are issued: each LP's proposed share. Approving one
   // issues the call, so it is admin-only (lib/access/admin-only.ts).
-  'api/accounting/call-notices': { domain: 'lp_capital' },
-  'api/accounting/call-notices/pdf': { domain: 'lp_capital' },
+  'api/accounting/proposed-calls': { domain: 'lp_capital' },
+  'api/accounting/proposed-calls/pdf': { domain: 'lp_capital' },
   // The outbound mirror of capital-calls, and the same per-partner capital data.
   'api/accounting/distributions': { domain: 'lp_capital' },
   'api/accounting/commitments': { domain: 'lp_capital' },

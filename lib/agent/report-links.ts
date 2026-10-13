@@ -18,12 +18,11 @@ import { createHmac, hkdfSync, timingSafeEqual } from 'crypto'
 // own live statement, and a letter shared with them.
 // The rest are the fund's own documents (lib/reports/documents.ts), each re-gated at the click
 // exactly as its web route gates it. `template_document` is a stored render of one of the fund's
-// own document templates (lib/document-templates). `call_notice_draft` is one LP's capital call
-// notice as a draft stands (lib/accounting/call-notice-drafts.ts), marked DRAFT.
+// own document templates (lib/document-templates).
 export const REPORT_KINDS = [
   'lp_statement', 'lp_report_card', 'portal_statement', 'portal_letter',
   'fund_performance', 'financial_statements', 'k1', 'lp_snapshot', 'tax_package', 'lp_letter',
-  'template_document', 'call_notice_draft',
+  'template_document',
 ] as const
 export type ReportKind = typeof REPORT_KINDS[number]
 

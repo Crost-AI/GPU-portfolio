@@ -204,7 +204,7 @@ export const TABLE_RULES: Record<string, TableRule> = {
   lp_capital_events: { scope: 'fund', domain: 'lp_capital' },
   capital_calls: { scope: 'fund', domain: 'lp_capital' },
   capital_call_lines: { scope: 'fund', domain: 'lp_capital' },
-  capital_call_notice_drafts: { scope: 'service', note: 'Proposed capital calls awaiting an admin\'s approval; served only by the lp_capital call-notices route and agent tools, never to an LP.' },
+  proposed_capital_calls: { scope: 'service', note: 'Proposed capital calls awaiting an admin\'s approval; served only by the lp_capital proposed-calls route, never to an LP.' },
   distributions: { scope: 'fund', domain: 'lp_capital' },
   distribution_lines: { scope: 'fund', domain: 'lp_capital' },
   commitment_events: { scope: 'fund', domain: 'lp_capital' },

@@ -14,7 +14,7 @@ import { useAccess, useCanRead, useIsAdmin } from '@/components/access-context'
 import { QuickActionButtons } from '@/components/quick-action-buttons'
 import { createActions } from '@/lib/start/quick-actions'
 import { CapitalCallsCard } from './capital-calls-card'
-import { CallNoticeDraftsCard } from './call-notice-drafts-card'
+import { ProposedCallsCard } from './proposed-calls-card'
 import { isManagementCompany, VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { MancoIntercompanyCard } from './intercompany-card'
 import { AllocationTermsView } from '../allocation-terms/view'
@@ -141,7 +141,7 @@ function EntityStatusView() {
       })()}
 
       {!manco && <CapitalCallsCard capitalHref={fundHref('/funds/capital-accounts')} />}
-      {!manco && <CallNoticeDraftsCard onApproved={load} />}
+      {!manco && <ProposedCallsCard onApproved={load} />}
 
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

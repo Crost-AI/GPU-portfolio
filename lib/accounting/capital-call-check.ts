@@ -1,11 +1,6 @@
-// A capital call notice, checked before anyone sees it. Pure: no I/O, so every rule here is pinned
-// by call-notice-check.test.ts.
-//
-// The prompt this answers is the one a CFO would give an assistant: "total call, purpose with
-// amounts, due date, the LPA's notice period; work out each LP's share; do not invent dates, wire
-// details or fee terms; list what is missing; flag any date inside the notice period". The app can
-// do all of it from its own records, and do the arithmetic and the date checks itself rather than
-// trusting prose to:
+// A capital call, checked before it is issued. Pure: no I/O, so every rule here is pinned by
+// capital-call-check.test.ts. Whoever proposes a call (the Capital page, the API, an assistant in
+// chat) gets the same answer, computed from the fund's records rather than written in prose:
 //
 //   * Each LP's share is their STORED commitment over the vehicle's total, split to the cent by
 //     the same allocator the issue path uses. A commitment or percentage typed into the request is
@@ -45,7 +40,7 @@ export interface CallPurpose {
 
 export type NoticePeriodBasis = 'calendar' | 'business'
 
-export interface CallNoticeRequest {
+export interface ProposedCallRequest {
   total: number
   purposes: CallPurpose[]
   /** The date on the notice, when it is sent. */
@@ -58,8 +53,8 @@ export interface CallNoticeRequest {
   description?: string | null
 }
 
-/** What the fund's records say. Loaded by call-notice-drafts.ts. */
-export interface CallNoticeFacts {
+/** What the fund's records say. Loaded by proposed-calls.ts. */
+export interface CallFacts {
   vehicle: string
   currency: string
   fundAddress: string | null
@@ -78,7 +73,7 @@ export interface CallNoticeFacts {
   today: string
 }
 
-export interface CallNoticeLine {
+export interface CheckedCallLine {
   lpEntityId: string
   name: string
   commitment: number
@@ -90,7 +85,7 @@ export interface CallNoticeLine {
   remainingAfter: number | null
 }
 
-export interface CheckedCallNotice extends DraftChecks {
+export interface CheckedCall extends DraftChecks {
   total: number
   purposes: CallPurpose[]
   description: string
@@ -100,7 +95,7 @@ export interface CheckedCallNotice extends DraftChecks {
   /** The first due date the notice period allows, when the notice date and period are known. */
   earliestDueDate: string | null
   totalCommitments: number
-  lines: CallNoticeLine[]
+  lines: CheckedCallLine[]
 }
 
 const fmt = (n: number, currency: string) =>
@@ -152,7 +147,7 @@ export function describePurposes(purposes: CallPurpose[], currency: string): str
     .join('; ')
 }
 
-export function checkCallNotice(req: CallNoticeRequest, facts: CallNoticeFacts): CheckedCallNotice {
+export function checkCapitalCall(req: ProposedCallRequest, facts: CallFacts): CheckedCall {
   const missing: MissingItem[] = []
   const flags: DraftFlag[] = []
   const total = roundCents(Number(req.total))
@@ -165,8 +160,8 @@ export function checkCallNotice(req: CallNoticeRequest, facts: CallNoticeFacts):
   }
   if (purposes.length === 0) {
     missing.push({
-      field: 'purposes', label: 'Purpose of the call, with amounts', required: true,
-      why: 'A notice states what the capital is for (investments, management fees, fund expenses) and how much of the call each takes.',
+      field: 'purposes', label: 'Purpose of the call, with amounts', required: false,
+      why: 'A notice usually states what the capital is for (investments, management fees, fund expenses) and how much of the call each takes. Without it the notice shows the description only.',
     })
   } else {
     const sum = roundCents(purposes.reduce((s, p) => s + p.amount, 0))
@@ -213,7 +208,7 @@ export function checkCallNotice(req: CallNoticeRequest, facts: CallNoticeFacts):
   // ── The LPA notice period ─────────────────────────────────────────────────
   const stated = validDays(req.noticePeriodDays) ? req.noticePeriodDays : null
   const stored = validDays(facts.storedNoticeDays) ? facts.storedNoticeDays : null
-  let noticePeriod: CheckedCallNotice['noticePeriod'] = null
+  let noticePeriod: CheckedCall['noticePeriod'] = null
   if (stored != null && stated != null && stored !== stated) {
     const longer = Math.max(stored, stated)
     flags.push({
@@ -229,7 +224,7 @@ export function checkCallNotice(req: CallNoticeRequest, facts: CallNoticeFacts):
     noticePeriod = { days: stated, basis: req.noticePeriodBasis ?? 'calendar', source: 'request' }
   } else {
     missing.push({
-      field: 'notice_period_days', label: 'Notice period required by the LPA', required: true,
+      field: 'notice_period_days', label: 'Notice period required by the LPA', required: false,
       why: `No notice period is recorded for ${facts.vehicle} and none was given, so no date on the notice can be checked against it. Record it on the vehicle once and every call is checked.`,
     })
   }
@@ -283,7 +278,7 @@ export function checkCallNotice(req: CallNoticeRequest, facts: CallNoticeFacts):
   const split = committed.length > 0 && total > 0
     ? allocateAmount(total, committed.map(p => ({ lpEntityId: p.lpEntityId, commitment: p.commitment })))
     : new Map<string, number>()
-  const lines: CallNoticeLine[] = committed.map(p => {
+  const lines: CheckedCallLine[] = committed.map(p => {
     const amount = split.get(p.lpEntityId) ?? 0
     const remainingAfter = p.calledToDate == null ? null : roundCents(p.commitment - p.calledToDate - amount)
     return {

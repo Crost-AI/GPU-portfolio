@@ -1,12 +1,10 @@
-// The PDF half of capital call notice drafts: a draft notice to preview, and the published notices
-// an approval puts in each LP's portal. Kept apart from call-notice-drafts.ts because rendering
-// launches headless Chromium, and only routes listed in lib/pdf-routes.mjs ship it. The agent
-// tools import the drafts service, never this file; a chat preview is a report link, rendered by
-// the report-link route.
+// The PDF half of proposed calls: a preview of one LP's notice before the call is issued, and the
+// published notices an approval puts in each LP's portal. Kept apart from proposed-calls.ts because
+// rendering launches headless Chromium, and only routes listed in lib/pdf-routes.mjs ship it.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { PURPOSE_LABEL } from './call-notice-check'
-import { getCallNoticeDraft, loadCallNoticeFacts, type DraftContext } from './call-notice-drafts'
+import { PURPOSE_LABEL } from './capital-call-check'
+import { getProposedCall, loadCallFacts, type ProposedCallContext } from './proposed-calls'
 import { generateNoticePdf } from './notice-pdf'
 import { loadNoticeRegister, publishNotices } from './notices'
 import { documentLetterhead } from '@/lib/vehicle-letterhead'
@@ -18,7 +16,7 @@ import { done, fail, type Outcome } from '@/lib/service-outcome'
  * reuses the notice a line already has. Emailing stays the Notices step it always was.
  */
 export async function publishCallNotices(
-  admin: SupabaseClient, ctx: DraftContext & { userId: string }, callId: string,
+  admin: SupabaseClient, ctx: ProposedCallContext & { userId: string }, callId: string,
 ): Promise<{ published: number; errors: string[] }> {
   const reg = await loadNoticeRegister(admin, ctx.fundId, ctx.group, 'capital_call', callId)
   if ('error' in reg) return { published: 0, errors: [reg.error] }
@@ -26,16 +24,16 @@ export async function publishCallNotices(
   return { published: out.published.length, errors: out.errors }
 }
 
-/** One partner's notice as the draft stands, marked DRAFT. The caller authorizes. */
-export async function draftNoticePdf(admin: SupabaseClient, ctx: DraftContext, id: string, lpEntityId: string): Promise<Outcome<{ pdf: Buffer; fileName: string }>> {
-  const d = await getCallNoticeDraft(admin, ctx, id)
+/** One partner's notice as the proposal stands, marked DRAFT. The caller authorizes. */
+export async function proposedNoticePdf(admin: SupabaseClient, ctx: ProposedCallContext, id: string, lpEntityId: string): Promise<Outcome<{ pdf: Buffer; fileName: string }>> {
+  const d = await getProposedCall(admin, ctx, id)
   if (!d.ok) return d
   const line = d.value.lines.find(l => l.lpEntityId === lpEntityId)
-  if (!line) return fail(404, 'That LP has no line on this draft.')
+  if (!line) return fail(404, 'That LP has no line on this proposed call.')
   const [fundRes, settingsRes, facts] = await Promise.all([
     (admin as any).from('funds').select('name, logo_url, address').eq('id', ctx.fundId).maybeSingle(),
     (admin as any).from('fund_settings').select('currency, theme').eq('fund_id', ctx.fundId).maybeSingle(),
-    loadCallNoticeFacts(admin, ctx.fundId, ctx.group),
+    loadCallFacts(admin, ctx.fundId, ctx.group),
   ])
   const letterhead = await documentLetterhead(admin, ctx.fundId, (fundRes as any).data, [ctx.group])
   const pdf = await generateNoticePdf({
@@ -48,7 +46,7 @@ export async function draftNoticePdf(admin: SupabaseClient, ctx: DraftContext, i
     currency: facts.currency,
     vehicle: ctx.group,
     partnerName: line.name,
-    // Never filled in: a draft without a date says so on its face.
+    // Never filled in: a proposal without a date says so on its face.
     noticeDate: d.value.noticeDate ?? '[notice date missing]',
     description: d.value.description,
     amount: line.amount,

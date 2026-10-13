@@ -86,11 +86,6 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   // Filling a saved template makes a draft document for the person to read before sending; it
   // changes nothing else. Saving the template itself still stages.
   document_generate: () => true,
-  // A capital call notice draft is invisible to LPs and in no books; approving it is the write
-  // that stages (approve_capital_call_notice, admin-only).
-  draft_capital_call_notice: () => true,
-  revise_capital_call_notice: () => true,
-  discard_capital_call_notice: () => true,
 }
 
 export function isDraftOnlyCall(tool: Pick<AgentTool, 'name'>, input: Record<string, unknown>): boolean {

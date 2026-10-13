@@ -52,7 +52,7 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
 
   // ── Move money ─────────────────────────────────────────────────────────────
   { route: 'api/accounting/capital-calls', method: 'POST', when: action('issue'), label: 'issue a capital call' },
-  { route: 'api/accounting/call-notices', method: 'POST', when: action('approve'), label: 'approve a capital call notice' },
+  { route: 'api/accounting/proposed-calls', method: 'POST', when: action('approve'), label: 'approve a capital call notice' },
   { route: 'api/accounting/distributions', method: 'POST', when: action('declare'), label: 'declare a distribution' },
 
   // ── Tell LPs something ─────────────────────────────────────────────────────
@@ -104,9 +104,6 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_record_commitment: { label: 'add a commitment' },
   // As the letter's share route (ADMIN_ONLY_ROUTES above): what an LP sees in their portal.
   lp_share_letter: { label: 'share an LP letter' },
-  // Approving a drafted notice issues the call and publishes each LP's notice to their portal.
-  approve_capital_call_notice: { label: 'approve a capital call notice' },
-  set_call_notice_period: { label: 'change the LPA notice period' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

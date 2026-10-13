@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { checkCallNotice, earliestDue, type CallNoticeFacts, type CallNoticeRequest } from './call-notice-check'
+import { checkCapitalCall, earliestDue, type CallFacts, type ProposedCallRequest } from './capital-call-check'
 import { approvable, needsAcknowledgement } from '@/lib/drafting/checks'
 
-const facts = (over: Partial<CallNoticeFacts> = {}): CallNoticeFacts => ({
+const facts = (over: Partial<CallFacts> = {}): CallFacts => ({
   vehicle: 'Fund II',
   currency: 'USD',
   fundAddress: '1 Main St',
@@ -18,7 +18,7 @@ const facts = (over: Partial<CallNoticeFacts> = {}): CallNoticeFacts => ({
   ...over,
 })
 
-const request = (over: Partial<CallNoticeRequest> = {}): CallNoticeRequest => ({
+const request = (over: Partial<ProposedCallRequest> = {}): ProposedCallRequest => ({
   total: 1_000_000,
   purposes: [
     { category: 'investment', amount: 800_000, description: 'Series A in Acme' },
@@ -30,12 +30,12 @@ const request = (over: Partial<CallNoticeRequest> = {}): CallNoticeRequest => ({
   ...over,
 })
 
-const codes = (r: ReturnType<typeof checkCallNotice>) => r.flags.map(f => f.code)
-const fields = (r: ReturnType<typeof checkCallNotice>) => r.missing.map(m => m.field)
+const codes = (r: ReturnType<typeof checkCapitalCall>) => r.flags.map(f => f.code)
+const fields = (r: ReturnType<typeof checkCapitalCall>) => r.missing.map(m => m.field)
 
-describe('checkCallNotice: each LP share', () => {
+describe('checkCapitalCall: each LP share', () => {
   it('splits the call by STORED commitment, to the cent, summing to the total', () => {
-    const r = checkCallNotice(request(), facts())
+    const r = checkCapitalCall(request(), facts())
     expect(r.lines.map(l => [l.name, l.amount])).toEqual([['Alpha LP', 600_000], ['Beta LP', 300_000], ['Gamma LP', 100_000]])
     expect(r.lines.reduce((s, l) => s + l.amount, 0)).toBe(1_000_000)
     expect(r.lines[0].share).toBeCloseTo(0.6)
@@ -43,19 +43,19 @@ describe('checkCallNotice: each LP share', () => {
   })
 
   it('rounds an uneven split to the cent without losing a cent', () => {
-    const r = checkCallNotice(request({ total: 100, purposes: [{ category: 'other', amount: 100 }] }), facts({
+    const r = checkCapitalCall(request({ total: 100, purposes: [{ category: 'other', amount: 100 }] }), facts({
       partners: [1, 2, 3].map(i => ({ lpEntityId: `p${i}`, name: `P${i}`, commitment: 1, calledToDate: 0 })),
     }))
     expect(r.lines.map(l => l.amount).sort()).toEqual([33.33, 33.33, 33.34])
   })
 
   it('shows what each LP has left to call after this one', () => {
-    const r = checkCallNotice(request(), facts())
+    const r = checkCapitalCall(request(), facts())
     expect(r.lines[0].remainingAfter).toBe(4_400_000)
   })
 
   it('blocks a call that takes an LP past their commitment', () => {
-    const r = checkCallNotice(request(), facts({
+    const r = checkCapitalCall(request(), facts({
       partners: [{ lpEntityId: 'a', name: 'Alpha LP', commitment: 1_000_000, calledToDate: 900_000 }],
     }))
     expect(r.flags).toContainEqual(expect.objectContaining({ code: 'exceeds_uncalled_commitment', severity: 'blocker', subject: 'a' }))
@@ -63,16 +63,16 @@ describe('checkCallNotice: each LP share', () => {
   })
 
   it('lists commitments as missing when none are recorded, and computes no shares', () => {
-    const r = checkCallNotice(request(), facts({ partners: [] }))
+    const r = checkCapitalCall(request(), facts({ partners: [] }))
     expect(fields(r)).toContain('commitments')
     expect(r.lines).toEqual([])
     expect(approvable(r)).toBe(false)
   })
 })
 
-describe('checkCallNotice: never invents', () => {
+describe('checkCapitalCall: never invents', () => {
   it('lists a missing notice date and due date rather than assuming today', () => {
-    const r = checkCallNotice(request({ noticeDate: null, dueDate: null }), facts())
+    const r = checkCapitalCall(request({ noticeDate: null, dueDate: null }), facts())
     expect(r.noticeDate).toBeNull()
     expect(r.dueDate).toBeNull()
     expect(r.earliestDueDate).toBeNull()
@@ -81,7 +81,7 @@ describe('checkCallNotice: never invents', () => {
   })
 
   it('lists wire instructions as missing when the vehicle has none, and does not block on it', () => {
-    const r = checkCallNotice(request(), facts({ wireInstructions: null }))
+    const r = checkCapitalCall(request(), facts({ wireInstructions: null }))
     const m = r.missing.find(x => x.field === 'wire_instructions')
     expect(m?.required).toBe(false)
     expect(approvable(r)).toBe(true)
@@ -89,28 +89,29 @@ describe('checkCallNotice: never invents', () => {
   })
 
   it('lists a management fee basis as missing when the user gave only an amount', () => {
-    const r = checkCallNotice(request({
+    const r = checkCapitalCall(request({
       purposes: [{ category: 'investment', amount: 900_000 }, { category: 'management_fee', amount: 100_000 }],
     }), facts())
     expect(fields(r)).toContain('purposes[1].basis')
   })
 
-  it('lists the purpose as missing when none was given', () => {
-    const r = checkCallNotice(request({ purposes: [] }), facts())
+  it('lists the purpose as missing when none was given, for the approver to accept', () => {
+    const r = checkCapitalCall(request({ purposes: [] }), facts())
     expect(fields(r)).toContain('purposes')
-    expect(approvable(r)).toBe(false)
+    expect(approvable(r)).toBe(true)
+    expect(needsAcknowledgement(r)).toBe(true)
   })
 
   it('blocks purposes that do not add up to the total', () => {
-    const r = checkCallNotice(request({ total: 1_200_000 }), facts())
+    const r = checkCapitalCall(request({ total: 1_200_000 }), facts())
     expect(codes(r)).toContain('purposes_do_not_sum')
     expect(approvable(r)).toBe(false)
   })
 })
 
-describe('checkCallNotice: the LPA notice period', () => {
+describe('checkCapitalCall: the LPA notice period', () => {
   it('passes a due date on or after the end of the period', () => {
-    const r = checkCallNotice(request({ dueDate: '2026-10-25' }), facts())
+    const r = checkCapitalCall(request({ dueDate: '2026-10-25' }), facts())
     expect(r.earliestDueDate).toBe('2026-10-25')
     expect(codes(r)).not.toContain('due_inside_notice_period')
     expect(approvable(r)).toBe(true)
@@ -118,7 +119,7 @@ describe('checkCallNotice: the LPA notice period', () => {
   })
 
   it('flags a due date inside the period and names the earliest allowed', () => {
-    const r = checkCallNotice(request({ dueDate: '2026-10-20' }), facts())
+    const r = checkCapitalCall(request({ dueDate: '2026-10-20' }), facts())
     const f = r.flags.find(x => x.code === 'due_inside_notice_period')
     expect(f).toMatchObject({ severity: 'warning', date: '2026-10-20' })
     expect(f?.message).toContain('2026-10-25')
@@ -126,53 +127,54 @@ describe('checkCallNotice: the LPA notice period', () => {
   })
 
   it('flags any purpose date inside the period', () => {
-    const r = checkCallNotice(request({
+    const r = checkCapitalCall(request({
       purposes: [{ category: 'investment', amount: 1_000_000, description: 'Acme closing', date: '2026-10-18' }],
     }), facts())
     expect(r.flags).toContainEqual(expect.objectContaining({ code: 'purpose_date_inside_notice_period', date: '2026-10-18' }))
   })
 
   it('blocks a due date before the notice date', () => {
-    const r = checkCallNotice(request({ dueDate: '2026-10-01' }), facts())
+    const r = checkCapitalCall(request({ dueDate: '2026-10-01' }), facts())
     expect(codes(r)).toContain('due_before_notice')
   })
 
   it('warns about a backdated notice', () => {
-    const r = checkCallNotice(request({ noticeDate: '2026-10-01', dueDate: '2026-10-20' }), facts())
+    const r = checkCapitalCall(request({ noticeDate: '2026-10-01', dueDate: '2026-10-20' }), facts())
     expect(codes(r)).toContain('notice_date_past')
   })
 
   it('uses the period the user gave when the vehicle has none recorded', () => {
-    const r = checkCallNotice(request({ noticePeriodDays: 20 }), facts({ storedNoticeDays: null }))
+    const r = checkCapitalCall(request({ noticePeriodDays: 20 }), facts({ storedNoticeDays: null }))
     expect(r.noticePeriod).toEqual({ days: 20, basis: 'calendar', source: 'request' })
     expect(codes(r)).toContain('due_inside_notice_period')
   })
 
   it('takes the longer period and flags the disagreement when the user and the LPA record differ', () => {
-    const r = checkCallNotice(request({ noticePeriodDays: 5 }), facts({ storedNoticeDays: 10 }))
+    const r = checkCapitalCall(request({ noticePeriodDays: 5 }), facts({ storedNoticeDays: 10 }))
     expect(r.noticePeriod).toMatchObject({ days: 10, source: 'vehicle' })
     expect(codes(r)).toContain('notice_period_disagrees')
   })
 
   it('lists the notice period as missing, and checks no date, when nobody knows it', () => {
-    const r = checkCallNotice(request({ dueDate: '2026-10-16' }), facts({ storedNoticeDays: null }))
+    const r = checkCapitalCall(request({ dueDate: '2026-10-16' }), facts({ storedNoticeDays: null }))
     expect(fields(r)).toContain('notice_period_days')
     expect(codes(r)).not.toContain('due_inside_notice_period')
-    expect(approvable(r)).toBe(false)
+    expect(approvable(r)).toBe(true)
+    expect(needsAcknowledgement(r)).toBe(true)
   })
 
   it('counts business days, skipping weekends, and says holidays are not known', () => {
     // 2026-10-16 is a Friday; ten business days later is Friday 2026-10-30.
     expect(earliestDue('2026-10-16', 10, 'business')).toBe('2026-10-30')
-    const r = checkCallNotice(request({ noticeDate: '2026-10-16', dueDate: '2026-10-29' }), facts({ storedNoticeBasis: 'business' }))
+    const r = checkCapitalCall(request({ noticeDate: '2026-10-16', dueDate: '2026-10-29' }), facts({ storedNoticeBasis: 'business' }))
     expect(r.earliestDueDate).toBe('2026-10-30')
     expect(codes(r)).toEqual(expect.arrayContaining(['due_inside_notice_period', 'business_days_without_holidays']))
   })
 })
 
-describe('checkCallNotice: description', () => {
+describe('checkCapitalCall: description', () => {
   it('builds the notice line from the purposes when none is given', () => {
-    const r = checkCallNotice(request(), facts())
+    const r = checkCapitalCall(request(), facts())
     expect(r.description).toContain('Series A in Acme ($800,000.00)')
     expect(r.description).toContain('management fees ($150,000.00)')
   })

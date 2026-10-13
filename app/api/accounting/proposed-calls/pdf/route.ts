@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-// lp_capital domain (lib/access/route-domains.ts): a draft notice shows one partner's proposed call.
+// lp_capital domain (lib/access/route-domains.ts): the preview shows one partner's proposed call.
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
-import { draftNoticePdf } from '@/lib/accounting/call-notice-publish'
+import { proposedNoticePdf } from '@/lib/accounting/proposed-call-publish'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-// GET ?group=&id=&lp= — one partner's notice as the draft stands, marked DRAFT.
+// GET ?group=&id=&lp= — one partner's notice as the proposal stands, marked DRAFT.
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
 
-  const out = await draftNoticePdf(admin, { fundId: gate.fundId, group, userId: user.id }, req.nextUrl.searchParams.get('id') ?? '', req.nextUrl.searchParams.get('lp') ?? '')
+  const out = await proposedNoticePdf(admin, { fundId: gate.fundId, group, userId: user.id }, req.nextUrl.searchParams.get('id') ?? '', req.nextUrl.searchParams.get('lp') ?? '')
   if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status })
   return new NextResponse(new Uint8Array(out.value.pdf), {
     headers: {

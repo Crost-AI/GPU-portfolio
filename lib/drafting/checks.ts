@@ -1,5 +1,5 @@
-// The shape every drafting capability returns alongside its draft: what is missing, and what is
-// wrong. Shared so a capital call notice, an LP letter and a close checklist report gaps the same
+// The shape a check returns alongside anything proposed for review: what is missing, and what is
+// wrong. Shared so a proposed capital call, an LP letter and a close checklist report gaps the same
 // way, in chat and on the page.
 //
 // The app decides both lists from its own records and the request, deterministically. A model

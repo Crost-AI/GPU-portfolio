@@ -17,13 +17,12 @@ interface Draft {
 }
 
 /**
- * Capital call notices drafted but not yet issued — most often from chat ("draft a capital call
- * notice for…"). Each shows every LP's share from stored commitments, what is missing and which
- * dates fall inside the LPA notice period, exactly as the assistant was told. An admin approves
- * here: the call is issued and each LP's own notice goes to their portal. Nobody else, and no LP,
- * sees a draft. Renders nothing when there are none.
+ * Capital calls proposed but not yet issued. Each shows every LP's share from stored commitments,
+ * what is missing and which dates fall inside the LPA notice period. An admin approves here: the
+ * call is issued and each LP's own notice goes to their portal. No LP sees a proposal. Renders
+ * nothing when there are none.
  */
-export function CallNoticeDraftsCard({ onApproved }: { onApproved?: () => void }) {
+export function ProposedCallsCard({ onApproved }: { onApproved?: () => void }) {
   const lf = useLedgerFetch()
   const { group } = useVehicle()
   const currency = useCurrency()
@@ -33,9 +32,9 @@ export function CallNoticeDraftsCard({ onApproved }: { onApproved?: () => void }
   const [drafts, setDrafts] = useState<Draft[] | null>(null)
 
   const load = useCallback(async () => {
-    const list = await lf('/api/accounting/call-notices?status=draft').then(r => (r.ok ? r.json() : { drafts: [] })).catch(() => ({ drafts: [] }))
-    const full = await Promise.all(((list.drafts ?? []) as { id: string }[]).map(d =>
-      lf(`/api/accounting/call-notices?id=${encodeURIComponent(d.id)}`).then(r => (r.ok ? r.json() : null)).catch(() => null)))
+    const list = await lf('/api/accounting/proposed-calls?status=proposed').then(r => (r.ok ? r.json() : { calls: [] })).catch(() => ({ calls: [] }))
+    const full = await Promise.all(((list.calls ?? []) as { id: string }[]).map(d =>
+      lf(`/api/accounting/proposed-calls?id=${encodeURIComponent(d.id)}`).then(r => (r.ok ? r.json() : null)).catch(() => null)))
     setDrafts(full.filter(Boolean) as Draft[])
   }, [lf])
   useEffect(() => { if (canRead) load() }, [canRead, load])
@@ -43,12 +42,12 @@ export function CallNoticeDraftsCard({ onApproved }: { onApproved?: () => void }
   if (!canRead || !drafts || drafts.length === 0) return null
   const fmt = (n: number) => formatCurrency(n, currency)
   const pdfHref = (draftId: string, lp: string) =>
-    `/api/accounting/call-notices/pdf?id=${encodeURIComponent(draftId)}&lp=${encodeURIComponent(lp)}${group ? `&group=${encodeURIComponent(group)}` : ''}`
+    `/api/accounting/proposed-calls/pdf?id=${encodeURIComponent(draftId)}&lp=${encodeURIComponent(lp)}${group ? `&group=${encodeURIComponent(group)}` : ''}`
 
   return (
     <div className="rounded-card border">
       <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
-        <p className="flex items-center gap-2 text-sm font-medium"><FileText className="h-4 w-4 text-muted-foreground" />Draft capital call notices</p>
+        <p className="flex items-center gap-2 text-sm font-medium"><FileText className="h-4 w-4 text-muted-foreground" />Proposed capital calls</p>
         <span className="text-xs text-muted-foreground">Not issued · invisible to LPs</span>
       </div>
       <ul className="divide-y">
@@ -71,7 +70,7 @@ function DraftRow({ d, fmt, pdfHref, canWrite, isAdmin, lf, onChange }: {
 
   async function act(action: 'approve' | 'discard') {
     setBusy(action); setErr(null)
-    const res = await lf('/api/accounting/call-notices', {
+    const res = await lf('/api/accounting/proposed-calls', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, id: d.id, acknowledge: ack }),
     })
@@ -158,7 +157,7 @@ function DraftRow({ d, fmt, pdfHref, canWrite, isAdmin, lf, onChange }: {
           <Button size="sm" variant="outline" onClick={() => act('discard')} disabled={busy !== null}>
             {busy === 'discard' && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}Discard
           </Button>
-          {!isAdmin && <span className="text-xs text-muted-foreground">An admin approves capital call notices.</span>}
+          {!isAdmin && <span className="text-xs text-muted-foreground">An admin approves capital calls.</span>}
           {!d.approvable && isAdmin && <span className="text-xs text-muted-foreground">Resolve the items marked in red before approving.</span>}
           {err && <span className="text-sm text-destructive">{err}</span>}
         </div>

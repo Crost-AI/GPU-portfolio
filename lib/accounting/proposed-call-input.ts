@@ -1,15 +1,15 @@
-// A capital call notice request as the route (camelCase) or an agent tool (snake_case) sends it.
-// Shape checks only: whether the values make a good notice is call-notice-check.ts's job, which
-// reports rather than refuses, so a draft with gaps can still be saved and shown.
+// A proposed capital call as a caller sends it, in camelCase (the route) or snake_case (the agent
+// action). Shape checks only: whether the values make a good call is capital-call-check.ts's job,
+// which reports rather than refuses, so a proposal with gaps can still be saved and shown.
 
-import { normalizePurposes, type CallNoticeRequest } from './call-notice-check'
+import { normalizePurposes, type ProposedCallRequest } from './capital-call-check'
 
 const pick = (raw: any, camel: string, snake: string) => (raw?.[camel] !== undefined ? raw[camel] : raw?.[snake])
 
-export function callNoticeRequestFrom(
+export function proposedCallRequestFrom(
   raw: any, opts: { partial?: boolean } = {},
-): { request: CallNoticeRequest } | { error: string } {
-  const out: Partial<CallNoticeRequest> = {}
+): { request: ProposedCallRequest } | { error: string } {
+  const out: Partial<ProposedCallRequest> = {}
 
   const total = pick(raw, 'total', 'total')
   if (total !== undefined) {
@@ -42,5 +42,5 @@ export function callNoticeRequestFrom(
     out.noticePeriodBasis = basis
   }
 
-  return { request: out as CallNoticeRequest }
+  return { request: out as ProposedCallRequest }
 }

@@ -26,7 +26,7 @@ import { buildLpEmailHtml, siteUrl } from '@/lib/lp-email'
 import { logDelivery, listDeliveries, lastSentByItem, type DeliveryKind } from '@/lib/lp-deliveries'
 import { roundCents } from './ledger'
 import { documentLetterhead } from '@/lib/vehicle-letterhead'
-import { PURPOSE_LABEL, type PurposeCategory } from './call-notice-check'
+import { PURPOSE_LABEL, type PurposeCategory } from './capital-call-check'
 
 export interface NoticeLine {
   id: string
@@ -50,7 +50,7 @@ export interface NoticeRegister {
   posted: boolean
   /** True on a capital-tracking vehicle, where there is no entry to check. */
   tracking: boolean
-  /** Calls drafted as a notice (lib/accounting/call-notice-drafts.ts): what the call is for. */
+  /** Calls drafted as a notice (lib/accounting/proposed-calls.ts): what the call is for. */
   purposes?: { label: string; amount: number; basis?: string | null }[] | null
 }
 

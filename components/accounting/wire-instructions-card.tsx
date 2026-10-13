@@ -68,7 +68,7 @@ export function WireInstructionsCard() {
 
 /**
  * The LPA's capital call notice period for this vehicle. Every drafted notice checks its dates
- * against it (lib/accounting/call-notice-check.ts). An LPA term, so only an admin changes it.
+ * against it (lib/accounting/capital-call-check.ts). An LPA term, so only an admin changes it.
  */
 export function CallNoticePeriodField({ isAdmin }: { isAdmin: boolean }) {
   const lf = useLedgerFetch()
