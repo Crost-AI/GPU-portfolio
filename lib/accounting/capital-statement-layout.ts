@@ -3,13 +3,33 @@
 // (funds/capital-accounts/[lpEntityId]/view.tsx) so the two can't drift. Pure: no I/O, safe to
 // import from a client component.
 //
-// Three columns, left to right: the statement period, year to date, inception to date — always
-// all three, as a hand-built statement has them (a Q1 statement's YTD column repeats its period).
-// The statement is the roll-forward and the commitment summary, and ends there.
+// Up to three columns, left to right: the statement period, year to date, inception to date. A
+// column that would only repeat another is left out (statementColumns). The statement is the
+// roll-forward and the commitment summary, and ends there.
 
 import { ACTIVITY_FIELDS, CAPITAL_ACCOUNT_LABELS, type CapitalAccount } from './capital-account'
+import { ytdWindow } from './statement-period'
 
 export const STATEMENT_COLUMNS = ['Statement period', 'Year to date', 'Inception to date'] as const
+
+/**
+ * The columns a statement for `period` prints, left to right, leaving out any that would repeat
+ * another: an inception-to-date statement (no start date) drops the statement-period column, and
+ * one whose period IS year to date (the YTD preset, or a Q1 statement) drops the year-to-date one.
+ */
+export function statementColumns<T>(
+  period: { start?: string | null; end?: string | null },
+  values: { period: T; ytd: T; itd: T },
+  today: Date = new Date(),
+): { label: (typeof STATEMENT_COLUMNS)[number]; value: T }[] {
+  const ytd = ytdWindow(period, today)
+  const periodIsYtd = period.start === ytd.start && (period.end ?? ytd.end) === ytd.end
+  return [
+    ...(period.start ? [{ label: STATEMENT_COLUMNS[0], value: values.period }] : []),
+    ...(periodIsYtd ? [] : [{ label: STATEMENT_COLUMNS[1], value: values.ytd }]),
+    { label: STATEMENT_COLUMNS[2], value: values.itd },
+  ]
+}
 
 /** The roll-forward lines that make up the partner's profit and loss, in statement order. Carried
  *  interest stays outside: it reallocates profit between partners rather than earning it. */

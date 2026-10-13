@@ -83,3 +83,13 @@ describe('comparisonPeriods', () => {
     expect(prev[1].end).toBe('2026-12-31')
   })
 })
+
+describe('customPeriod labels', () => {
+  it('names a calendar quarter or year, and leaves other windows as dates', () => {
+    expect(customPeriod('2026-01-01', '2026-03-31').label).toBe('Q1 2026')
+    expect(customPeriod('2025-10-01', '2025-12-31').label).toBe('Q4 2025')
+    expect(customPeriod('2025-01-01', '2025-12-31').label).toBe('FY 2025')
+    expect(customPeriod('2026-01-15', '2026-03-31').label).toBe('2026-01-15 → 2026-03-31')
+  })
+})
+

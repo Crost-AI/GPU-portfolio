@@ -171,7 +171,7 @@ export function VehicleLetterheadDialog({ vehicleId, vehicleName, onClose, onSav
     <Dialog open onOpenChange={o => { if (!o) onClose() }}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>{vehicleName} letterhead</DialogTitle>
+          <DialogTitle>{vehicleName} details</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           {lh.logo === undefined ? (

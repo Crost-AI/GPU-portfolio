@@ -52,13 +52,13 @@ describe('buildStatementHtml', () => {
     expect(buildStatementHtml(data({ fundLogo: 'data:image/png;base64,3SE' }))).toContain('src="data:image/png;base64,3SE"')
   })
 
-  it('adds a year-to-date column, and lays the commitment summary out in the same columns', () => {
+  it('prints all three columns for a Q2 statement, and lays the commitment summary out in them', () => {
     const quarter = { ...emptyAccount(), beginning: 75940, operatingIncome: 170, ending: 76110 }
-    const html = buildStatementHtml(data({
-      period: { label: 'Q1 2026', start: '2026-01-01', end: '2026-03-31' } as any,
-      periodRollForward: quarter, ytdRollForward: quarter,
-    }))
-    const t = text(html)
+    const ytd = { ...emptyAccount(), beginning: 75000, operatingIncome: 1110, ending: 76110 }
+    const t = text(buildStatementHtml(data({
+      period: { label: 'Q2 2026', start: '2026-04-01', end: '2026-06-30' } as any,
+      periodRollForward: quarter, ytdRollForward: ytd,
+    })))
     expect(t).toContain('Statement period Year to date Inception to date')
     expect(t).toContain('Ending capital $76,110.00 $76,110.00 $76,798.45')
     // Called capital is a flow (nothing called this quarter); the balances sit under inception to date.
@@ -67,14 +67,26 @@ describe('buildStatementHtml', () => {
     expect(t).toContain('unaudited')
   })
 
-  it('always prints three columns, even when the period is itself year to date', () => {
-    const ytd = { ...emptyAccount(), beginning: 82792.03, operatingIncome: 373.25, ending: 83165.28 }
-    const t = text(buildStatementHtml(data({
-      period: { preset: 'ytd', label: 'YTD 2026', start: '2026-01-01', end: '2026-10-13' } as any,
-      periodRollForward: ytd, ytdRollForward: ytd,
-    })))
-    expect(t).toContain('Statement period Year to date Inception to date')
-    expect(t).toContain('Ending capital $83,165.28 $83,165.28 $76,798.45')
+  it('drops the year-to-date column when the period is year to date (Q1, or the YTD preset)', () => {
+    const q1 = { ...emptyAccount(), beginning: 75940, operatingIncome: 170, ending: 76110 }
+    for (const period of [
+      { label: 'Q1 2026', start: '2026-01-01', end: '2026-03-31' },
+      { preset: 'ytd', label: 'YTD 2026', start: '2026-01-01', end: '2026-10-13' },
+    ]) {
+      const t = text(buildStatementHtml(data({ period: period as any, periodRollForward: q1, ytdRollForward: q1 })))
+      expect(t).toContain('Statement period Inception to date')
+      expect(t).not.toContain('Year to date')
+      expect(t).toContain('Ending capital $76,110.00 $76,798.45 ')
+    }
+  })
+
+  it('drops the statement-period column on an inception-to-date statement', () => {
+    const ytd = { ...emptyAccount(), beginning: 75940, operatingIncome: 170, ending: 76110 }
+    const t = text(buildStatementHtml(data({ ytdRollForward: ytd })))
+    expect(t).not.toContain('Statement period')
+    expect(t).toContain('Year to date Inception to date')
+    expect(t).toContain('Ending capital $76,110.00 $76,798.45 ')
+    expect(t).toContain('Called capital — $90,000.00')
   })
 
   it('ends at the commitment summary', () => {

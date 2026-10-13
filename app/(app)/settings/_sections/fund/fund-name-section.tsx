@@ -154,7 +154,7 @@ export function FundNameSection({ name, logo, address, contactEmail, onSaved }: 
         <Label>Address</Label>
         <p className="text-xs text-muted-foreground mb-2">
           Displayed on LP documents (capital account statements, notices, letters, reports) below the fund name.
-          A vehicle can replace the name, logo, address or email with its own letterhead, from Edit on the fund&rsquo;s Status page or Edit letterhead on a partner&rsquo;s capital statement.
+          A vehicle can replace the name, logo, address or email with its own letterhead, from Edit on the fund&rsquo;s Status page or Edit Details on a partner&rsquo;s capital statement.
         </p>
         <textarea
           value={addressValue}

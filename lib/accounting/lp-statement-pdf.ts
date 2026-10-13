@@ -19,7 +19,7 @@ import { getCurrencySymbol } from '@/lib/currency'
 import { lpStatement } from './capital-calls'
 import { lastDataDate } from './lp-positions'
 import type { CapitalAccount } from './capital-account'
-import { rollForwardRows, commitmentSummaryRows, STATEMENT_COLUMNS } from './capital-statement-layout'
+import { rollForwardRows, commitmentSummaryRows, statementColumns } from './capital-statement-layout'
 import type { CapitalPeriod } from './capital-account'
 import type { StatementPeriod } from './statement-period'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -74,7 +74,8 @@ export function buildStatementHtml(d: StatementPdfData): string {
   // The statement ends with the commitment summary. The transaction list and the fund-of-funds
   // exhibits (underlying commitments, performance, valuation basis) used to follow it; they belong
   // to the fund's financials, not to a partner's capital account.
-  const accounts = [d.periodRollForward, d.ytdRollForward, d.rollForward]
+  const columns = statementColumns(d.period, { period: d.periodRollForward, ytd: d.ytdRollForward, itd: d.rollForward })
+  const accounts = columns.map(c => c.value)
 
   const cell = (v: string) =>
     `<td style="padding:6px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${v}</td>`
@@ -122,7 +123,7 @@ export function buildStatementHtml(d: StatementPdfData): string {
       <thead>
         <tr>
           <th></th>
-          ${STATEMENT_COLUMNS.map(h => `<th style="text-align:right;width:130px;">${h}</th>`).join('')}
+          ${columns.map(({ label: h }) => `<th style="text-align:right;width:130px;">${h}</th>`).join('')}
         </tr>
       </thead>
       <tbody>${rollForwardHtml}</tbody>

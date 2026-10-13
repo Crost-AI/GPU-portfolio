@@ -77,13 +77,32 @@ export function ytdWindow(
   return { start: `${end.slice(0, 4)}-01-01`, end }
 }
 
-/** A custom window, for the explicit start/end date inputs. */
+/** Calendar quarter `q` (1-4) of `year`, inclusive. */
+export function quarterWindow(year: number, q: number): { start: string; end: string } {
+  return { start: iso(new Date(Date.UTC(year, (q - 1) * 3, 1))), end: iso(new Date(Date.UTC(year, q * 3, 0))) }
+}
+
+/** "Q1 2026" / "FY 2025" when a window is exactly a calendar quarter or year, else null. */
+function calendarLabel(start: string, end: string): string | null {
+  const year = Number(start.slice(0, 4))
+  if (!Number.isInteger(year) || end.slice(0, 4) !== start.slice(0, 4)) return null
+  if (start === `${year}-01-01` && end === `${year}-12-31`) return `FY ${year}`
+  for (let q = 1; q <= 4; q++) {
+    const w = quarterWindow(year, q)
+    if (w.start === start && w.end === end) return `Q${q} ${year}`
+  }
+  return null
+}
+
+/** A custom window, for the explicit start/end date inputs (and the year/quarter picker, which
+ *  sends a calendar quarter or year as one and gets its name back as the label). */
 export function customPeriod(start: string | null, end: string | null): StatementPeriod {
   return {
     preset: 'custom',
     start: start || null,
     end: end || null,
-    label: start && end ? `${start} → ${end}` : end ? `Through ${end}` : start ? `From ${start}` : 'Inception to date',
+    label: start && end ? (calendarLabel(start, end) ?? `${start} → ${end}`)
+      : end ? `Through ${end}` : start ? `From ${start}` : 'Inception to date',
   }
 }
 

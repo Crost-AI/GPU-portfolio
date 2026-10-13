@@ -22,6 +22,7 @@ import { scopeCompanyRows } from '@/lib/access/scope'
 import { generateLiveReport, type LiveInvestmentRow } from '@/lib/accounting/live-report'
 import { lpCapitalSummary, lpStatement, listCapitalCalls } from '@/lib/accounting/capital-calls'
 import { resolvePeriod, customPeriod, type PeriodPreset } from '@/lib/accounting/statement-period'
+import { statementColumns } from '@/lib/accounting/capital-statement-layout'
 import { reportLinkUrl, signReportLink } from '@/lib/agent/report-links'
 import { CarryRecipientStatementError, carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { siteOrigin } from '@/lib/site-links'
@@ -399,6 +400,7 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
     )
     // Returns a union, not a throw.
     if ('error' in result) throw new Error(result.error)
+    const columns = new Set(statementColumns({ start, end }, { period: 0, ytd: 0, itd: 0 }).map(c => c.label))
 
     return {
       vehicle,
@@ -416,14 +418,16 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
       // The statement's three columns, as the PDF prints them. Includes the carried-interest line:
       // the carry this LP is charged, which is the fund's carry. A recipient's statement — what
       // they earn — was refused above without gp_economics.
-      roll_forward_period: result.periodRollForward,
-      roll_forward_ytd: result.ytdRollForward,
+      // Only the columns the statement prints (statementColumns): no period column on an
+      // inception-to-date statement, no YTD column when the period is year to date.
+      ...(columns.has('Statement period') ? { roll_forward_period: result.periodRollForward } : {}),
+      ...(columns.has('Year to date') ? { roll_forward_ytd: result.ytdRollForward } : {}),
       ytd_period: result.ytdPeriod,
       roll_forward_itd: result.rollForward,
       commitment_summary: {
         commitment: result.row.commitment,
-        called_period: result.periodRollForward.contributions,
-        called_ytd: result.ytdRollForward.contributions,
+        ...(columns.has('Statement period') ? { called_period: result.periodRollForward.contributions } : {}),
+        ...(columns.has('Year to date') ? { called_ytd: result.ytdRollForward.contributions } : {}),
         called_itd: result.row.called,
         remaining_to_be_called: result.row.outstanding,
         ownership: result.ownership,
