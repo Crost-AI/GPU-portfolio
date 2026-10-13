@@ -11,7 +11,7 @@ const scanFileAsync = vi.fn(async (_b: Buffer, name: string) => (name.startsWith
 vi.mock('@/lib/pipeline/processEmail', () => ({ runPipeline: (...a: unknown[]) => runPipeline(...a) }))
 vi.mock('@/lib/security/scan-file', () => ({ scanFileAsync: (b: Buffer, n: string) => scanFileAsync(b, n) }))
 
-import { parseUpdateFiles, submitCompanyUpdate } from '@/lib/company-updates/submit'
+import { companyUpdateStatus, parseUpdateFiles, submitCompanyUpdate } from '@/lib/company-updates/submit'
 
 const inserts: any[] = []
 const updates: any[] = []
@@ -77,6 +77,52 @@ describe('submitCompanyUpdate', () => {
   it('lets the pipeline identify the company when none is named', async () => {
     await submitCompanyUpdate(deps(), { text: 'Q3 update' })
     expect(inserts[0].row.company_id).toBeNull()
+  })
+})
+
+describe('a company update that outlasts the call', () => {
+  it('hands back a job instead of waiting, and keeps the pipeline running', async () => {
+    let finish!: () => void
+    runPipeline.mockImplementationOnce(() => new Promise<void>(r => { finish = r }))
+    const r = await submitCompanyUpdate(deps({ budgetMs: 5 }), { company: 'Acme', text: 'Long deck' })
+    expect(r.status).toBe('processing')
+    expect(r.job).toMatchObject({ id: 'company_update:email-1', status: 'running', check_with: 'company_update_status' })
+    finish()
+  })
+
+  it('returns a finished job when the pipeline is quick', async () => {
+    const r = await submitCompanyUpdate(deps(), { company: 'Acme', text: 'MRR was $120k.' })
+    expect(r.job).toMatchObject({ id: 'company_update:email-1', status: 'done' })
+  })
+})
+
+describe('companyUpdateStatus', () => {
+  const emailDb = (email: any) => {
+    const db = admin()
+    const from = db.from.bind(db)
+    db.from = (table: string) => {
+      const q = from(table)
+      if (table === 'inbound_emails') {
+        let cols = ''
+        q.select = (c: string) => { cols = c; return q }
+        q.maybeSingle = async () => ({ data: cols.includes('routed_to') ? email : { processing_status: 'success', companies: { id: 'co-1', name: 'Acme' } } })
+      }
+      return q
+    }
+    return db
+  }
+
+  it('reads back what the pipeline wrote', async () => {
+    const r = await companyUpdateStatus(emailDb({ id: 'email-1', company_id: 'co-1', routed_to: 'reporting' }), 'fund-1', 'email-1', ['co-1'], 'https://f.example')
+    expect(r.metricsRecorded).toEqual([{ metric: 'MRR', period: 'Q3 2026', value: 120000 }])
+    expect(r.job.status).toBe('done')
+  })
+
+  it("doesn't show an update for a company outside the caller's scope, or an email that isn't an update", async () => {
+    await expect(companyUpdateStatus(emailDb({ id: 'email-1', company_id: 'co-2', routed_to: 'reporting' }), 'fund-1', 'email-1', ['co-1'])).rejects.toThrow(/No company update/)
+    await expect(companyUpdateStatus(emailDb({ id: 'email-1', company_id: null, routed_to: 'reporting' }), 'fund-1', 'email-1', ['co-1'])).rejects.toThrow(/No company update/)
+    await expect(companyUpdateStatus(emailDb({ id: 'email-1', company_id: 'co-1', routed_to: 'deals' }), 'fund-1', 'email-1', null)).rejects.toThrow(/No company update/)
+    await expect(companyUpdateStatus(emailDb(null), 'fund-1', 'email-1', null)).rejects.toThrow(/No company update/)
   })
 })
 

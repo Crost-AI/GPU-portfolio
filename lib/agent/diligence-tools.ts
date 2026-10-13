@@ -26,6 +26,7 @@ import {
   updateDiligenceDeal, uploadDiligenceDocument, writeMemoParagraph,
 } from '@/lib/diligence/service'
 import { enqueueMemoStage, MEMO_AGENT_STAGES, type MemoAgentStage } from '@/lib/memo-agent/enqueue'
+import { jobHandle, jobRecordId } from './jobs'
 import { unwrap } from '@/lib/service-outcome'
 import { requireUser } from './deals-tools'
 import { fundMemberId, visibleVehicleId } from './refs'
@@ -468,7 +469,27 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     const stage = str(input?.stage) as MemoAgentStage
     if (!MEMO_AGENT_STAGES.includes(stage)) throw new Error(`stage must be one of ${MEMO_AGENT_STAGES.join(', ')}.`)
     const out = unwrap(await enqueueMemoStage(admin, { fundId, userId: requireUser(userId) }, deal.id, stage, { full: input?.full === true }))
-    return { deal: deal.name, stage, ...out }
+    return { deal: deal.name, stage, ...out, job: jobHandle('diligence', String(out.job_id), out.status as string) }
+  },
+
+  diligence_job_status: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const cols = 'id, deal_id, kind, status, progress_message, error, enqueued_at, started_at, finished_at'
+    const view = (j: any) => ({
+      ...jobHandle('diligence', j.id, j.status), stage: j.kind, raw_status: j.status, progress: j.progress_message ?? null, error: j.error ?? null,
+      enqueued_at: j.enqueued_at, started_at: j.started_at ?? null, finished_at: j.finished_at ?? null,
+    })
+    if (input?.job_id) {
+      const id = jobRecordId('diligence', input.job_id)
+      const { data: job } = await (admin as any).from('memo_agent_jobs').select(cols).eq('id', id).eq('fund_id', fundId).maybeSingle()
+      // The deal's own scope: a job on another entity's deal is not found, like the deal.
+      const deal = job ? await resolveDeal(admin, fundId, job.deal_id, access).catch(() => null) : null
+      if (!job || !deal) throw new Error('No diligence job with that id.')
+      return { deal: deal.name, job: view(job) }
+    }
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const { data } = await (admin as any).from('memo_agent_jobs').select(cols).eq('deal_id', deal.id).eq('fund_id', fundId)
+      .order('enqueued_at', { ascending: false }).limit(5)
+    return { deal: deal.name, jobs: ((data ?? []) as any[]).map(view) }
   },
 
   diligence_write_memo: async ({ admin, fundId, access }: AgentToolContext, input: any) => {

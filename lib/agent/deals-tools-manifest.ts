@@ -113,6 +113,18 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'deals_research_status',
+    description:
+      'Whether external research on an inbound deal has finished: queued, running, done or failed, and the research once done. ' +
+      'Pass the job_id deals_research_inbound returned, or the deal.',
+    scope: 'read',
+    domain: 'deals',
+    inputSchema: {
+      type: 'object',
+      properties: { job_id: { type: 'string', description: 'The job id a tool returned (its job.id).' }, deal: { type: 'string', description: 'Inbound deal id, or the company name.' } },
+    },
+  },
+  {
     name: 'deals_promote_to_diligence',
     description:
       'Open a deal room for an INBOUND deal: creates the diligence deal pre-filled from it (with the fund\'s checklist) and moves ' +

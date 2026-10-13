@@ -148,4 +148,47 @@ describe('deal and diligence tools', () => {
     expect(after.agent_job).toMatchObject({ id: 'job-1', kind: 'draft', status: 'failed', error: 'Over the cap' })
     expect(after.progress.some((p: any) => p.state === 'failed')).toBe(true)
   })
+
+  describe('following long-running work', () => {
+    const withJobs = () => {
+      const { admin } = memoryAdmin({
+        inbound_deals: [
+          { id: 'in-1', fund_id: 'f1', company_name: 'Acme', vehicle_id: 'v1', research_status: 'complete', research_output: { summary: 'Solid' } },
+          { id: 'in-2', fund_id: 'f1', company_name: 'Beta', vehicle_id: 'v2', research_status: 'pending' },
+          { id: 'in-3', fund_id: 'f1', company_name: 'Gamma', vehicle_id: 'v1', research_status: null },
+        ],
+        diligence_deals: [
+          { id: 'dd-1', fund_id: 'f1', name: 'Acme', vehicle_id: 'v1', aliases: [] },
+          { id: 'dd-2', fund_id: 'f1', name: 'Beta', vehicle_id: 'v2', aliases: [] },
+        ],
+        memo_agent_jobs: [
+          { id: 'job-1', fund_id: 'f1', deal_id: 'dd-1', kind: 'analyze', status: 'running', enqueued_at: '2026-03-01' },
+          { id: 'job-2', fund_id: 'f1', deal_id: 'dd-2', kind: 'draft', status: 'succeeded', enqueued_at: '2026-03-02' },
+        ],
+      })
+      return admin
+    }
+
+    it('reads a diligence job back by its handle, within the deal\'s scope', async () => {
+      const admin = withJobs()
+      const out = await DILIGENCE_HANDLERS.diligence_job_status(ctx(admin, member), { job_id: 'diligence:job-1' }) as any
+      expect(out.job).toMatchObject({ id: 'diligence:job-1', status: 'running', stage: 'analyze' })
+      await expect(DILIGENCE_HANDLERS.diligence_job_status(ctx(admin, member), { job_id: 'diligence:job-2' })).rejects.toThrow(/No diligence job/)
+      await expect(DILIGENCE_HANDLERS.diligence_job_status(ctx(admin, member), { job_id: 'deal_research:in-1' })).rejects.toThrow(/deals_research_status/)
+      const byDeal = await DILIGENCE_HANDLERS.diligence_job_status(ctx(admin, everyone), { deal: 'dd-2' }) as any
+      expect(byDeal.jobs.map((j: any) => j.status)).toEqual(['done'])
+    })
+
+    it('reads deal research back, with the result once it is done', async () => {
+      const admin = withJobs()
+      const done = await DEALS_HANDLERS.deals_research_status(ctx(admin, member), { job_id: 'deal_research:in-1' }) as any
+      expect(done.job.status).toBe('done')
+      expect(done.research).toEqual({ summary: 'Solid' })
+      await expect(DEALS_HANDLERS.deals_research_status(ctx(admin, member), { job_id: 'deal_research:in-2' })).rejects.toThrow()
+      const queued = await DEALS_HANDLERS.deals_research_status(ctx(admin, everyone), { deal: 'in-2' }) as any
+      expect(queued).toMatchObject({ job: { status: 'queued' }, research: null })
+      const none = await DEALS_HANDLERS.deals_research_status(ctx(admin, everyone), { deal: 'in-3' }) as any
+      expect(none.job).toBeNull()
+    })
+  })
 })

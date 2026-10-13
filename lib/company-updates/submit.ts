@@ -11,6 +11,9 @@
  * can be reprocessed or rerouted like any other.
  *
  * From a connected chat the call is staged, and runs when someone approves it (lib/agent/dispatch.ts).
+ *
+ * Reading a long deck can outlast the call. After PIPELINE_BUDGET_MS the call returns a job handle
+ * and the pipeline finishes in the background (`after`); `company_update_status` reads the result.
  */
 import crypto from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -18,6 +21,11 @@ import type { AccessContext } from '@/lib/access/effective'
 import { scanFileAsync } from '@/lib/security/scan-file'
 import { runPipeline, type PostmarkPayload } from '@/lib/pipeline/processEmail'
 import { sanitizeFilename, fileExt } from '@/lib/deals/submission-validation'
+import { jobHandle, type JobHandle } from '@/lib/agent/jobs'
+import { after } from 'next/server'
+
+/** How long the call waits for the pipeline before handing back a job (the route allows 120 s). */
+export const PIPELINE_BUDGET_MS = 45_000
 
 /** Inline files stay well under the serverless request-body limit once base64-encoded. */
 export const MAX_UPDATE_FILE_BYTES = 3 * 1024 * 1024
@@ -56,6 +64,7 @@ export interface SubmitUpdateResult {
   needsReview: { issue: string; detail: string | null }[]
   warnings: string[]
   url: string
+  job: JobHandle
 }
 
 interface Deps {
@@ -66,6 +75,17 @@ interface Deps {
   origin?: string
   /** Resolves a company the caller may see (lib/agent/portfolio-tools.ts resolveCompany). */
   resolveCompany: (ref: string) => Promise<{ id: string; name: string }>
+  /** Override PIPELINE_BUDGET_MS (tests). */
+  budgetMs?: number
+}
+
+/** Keep a promise running after the response, where there is a response to outlive. */
+function keepAlive(work: Promise<unknown>) {
+  try {
+    after(() => work)
+  } catch {
+    // Outside a request (a script, a test) there is nothing to outlive: the promise runs anyway.
+  }
 }
 
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
@@ -152,16 +172,44 @@ export async function submitCompanyUpdate(deps: Deps, input: SubmitUpdateInput):
   const base = { From: fromAddress, To: 'chat@hemrock.local', Subject: subject, TextBody: text, HtmlBody: '', MessageID: messageId }
   await db.from('inbound_emails').update({ raw_payload: { ...base, Attachments: stored } }).eq('id', emailId)
 
-  try {
-    await runPipeline(admin as any, emailId, fundId, { ...base, Attachments: forPipeline } as PostmarkPayload, userId ? { userId } : null, { forcedRoute: 'reporting' })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    console.error('[submit_company_update] pipeline failed:', e)
-    await db.from('inbound_emails').update({ processing_status: 'failed', processing_error: message.slice(0, 500) }).eq('id', emailId)
-    warnings.push('Processing failed. It is saved on the Emails page, where it can be reprocessed.')
+  const run = runPipeline(admin as any, emailId, fundId, { ...base, Attachments: forPipeline } as PostmarkPayload, userId ? { userId } : null, { forcedRoute: 'reporting' })
+    .then(() => true)
+    .catch(async e => {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[submit_company_update] pipeline failed:', e)
+      await db.from('inbound_emails').update({ processing_status: 'failed', processing_error: message.slice(0, 500) }).eq('id', emailId)
+      warnings.push('Processing failed. It is saved on the Emails page, where it can be reprocessed.')
+      return true
+    })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const finished = await Promise.race([run, new Promise<false>(r => { timer = setTimeout(() => r(false), deps.budgetMs ?? PIPELINE_BUDGET_MS) })])
+  clearTimeout(timer)
+  const url = `${(deps.origin ?? '').replace(/\/$/, '')}/emails/${emailId}`
+  if (!finished) {
+    keepAlive(run)
+    return {
+      emailId, status: 'processing', company, metricsRecorded: [], needsReview: [], warnings, url,
+      job: jobHandle('company_update', emailId, 'processing'),
+    }
   }
 
-  return { ...(await outcome(admin, emailId)), warnings: [...warnings, ...(await pipelineWarnings(admin, emailId))], url: `${(deps.origin ?? '').replace(/\/$/, '')}/emails/${emailId}` }
+  const result = await outcome(admin, emailId)
+  return { ...result, warnings: [...warnings, ...(await pipelineWarnings(admin, emailId))], url, job: jobHandle('company_update', emailId, result.status) }
+}
+
+/**
+ * A submitted update's result, for `company_update_status`: only one this fund received, and one
+ * about a company the caller can see (an unmatched one only for a caller who sees every company).
+ */
+export async function companyUpdateStatus(admin: SupabaseClient, fundId: string, emailId: string, visibleCompanyIds: string[] | null, origin?: string) {
+  const { data: email } = await (admin as any).from('inbound_emails').select('id, company_id, routed_to').eq('id', emailId).eq('fund_id', fundId).maybeSingle()
+  const visible = !!email && (visibleCompanyIds === null || (!!email.company_id && visibleCompanyIds.includes(email.company_id)))
+  if (!visible || email.routed_to !== 'reporting') throw new Error('No company update with that job id.')
+  const result = await outcome(admin, emailId)
+  return {
+    ...result, warnings: await pipelineWarnings(admin, emailId),
+    url: `${(origin ?? '').replace(/\/$/, '')}/emails/${emailId}`, job: jobHandle('company_update', emailId, result.status),
+  }
 }
 
 /** What the pipeline did with it, read back from what it wrote. */

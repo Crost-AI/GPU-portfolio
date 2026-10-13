@@ -17,7 +17,8 @@ import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
-import { submitCompanyUpdate } from '@/lib/company-updates/submit'
+import { companyUpdateStatus, submitCompanyUpdate } from '@/lib/company-updates/submit'
+import { jobRecordId } from './jobs'
 import { writeMetricValue } from '@/lib/pending-actions/metric-value'
 import { parseMetricPeriod } from '@/lib/metrics/period'
 import { createCompany } from '@/lib/companies/create'
@@ -319,6 +320,9 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access) },
       input,
     ),
+
+  company_update_status: async ({ admin, fundId, access, origin }: AgentToolContext, input: any) =>
+    companyUpdateStatus(admin, fundId, jobRecordId('company_update', String(input?.job_id ?? '')), await visibleCompanyIds(admin, access), origin),
 
   record_metric_value: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
