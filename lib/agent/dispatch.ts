@@ -311,17 +311,24 @@ function approveUrlFor(origin: string | undefined): string | undefined {
 }
 
 /**
- * What the assistant is told to do with a staged change. It cannot approve it itself (the service
- * refuses an approval from the credential that staged it), so it hands the person the link.
+ * What the assistant is told to do with a staged change. A chat asks its person in the
+ * conversation and approves on their explicit yes; a script's key cannot approve what it staged
+ * (the service refuses it), so it hands over the link.
  */
-function nextStep(opts: { id: string; approveUrl?: string; adminLabel?: string | null; emailed: number; isAdmin: boolean }): string {
+function nextStep(opts: { id: string; approveUrl?: string; adminLabel?: string | null; emailed: number; isAdmin: boolean; chat: boolean }): string {
   const inApp = opts.approveUrl ? `in the app at ${opts.approveUrl}` : 'in the app, under Approvals'
   if (opts.adminLabel && !opts.isAdmin) {
     return `Nothing has changed yet. ${adminOnlyMessage(opts.adminLabel)}${opts.emailed ? " The fund's admins have been emailed." : ''} ` +
       `Tell the user it is waiting for an admin, who approves it ${inApp}.`
   }
+  if (opts.chat) {
+    return 'Nothing has changed yet. Show the user this change in plain words and ask them to approve it here. ' +
+      `Only after they explicitly say yes, call approve_action with id "${opts.id}"; if they decline, call reject_action. ` +
+      `They can also approve it ${inApp}. When a fix needs several changes, stage them together with stage_run so they are approved once. ` +
+      'If a tool named here is not in your tool list (a stale list), run it through call_tool.'
+  }
   return 'Nothing has changed yet. Show the user this change in plain words, then give them the link to approve it ' +
-    `${inApp}. This connection cannot approve its own changes: approve_action on id "${opts.id}" from here is refused. ` +
+    `${inApp}. This key cannot approve its own changes: approve_action on id "${opts.id}" from here is refused. ` +
     'If they decline, call reject_action. When a fix needs several changes, stage them together with stage_run so they are approved once. ' +
     'If a tool named here is not in your tool list (a stale list), run it through call_tool.'
 }
@@ -382,7 +389,7 @@ async function stage(call: AgentCall): Promise<StagedResult> {
     summary: preview.summary,
     preview: preview.details,
     ...(approveUrl ? { approveUrl } : {}),
-    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin' }),
+    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin', chat: isAssistantCredential(auth) }),
   }
 }
 
@@ -438,7 +445,7 @@ export async function stageAgentRun(call: RunCall, input: unknown): Promise<Stag
     summary: preview.summary,
     preview: preview.details,
     ...(approveUrl ? { approveUrl } : {}),
-    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin' }),
+    next: nextStep({ id, approveUrl, adminLabel, emailed, isAdmin: auth.role === 'admin', chat: isAssistantCredential(auth) }),
   }
 }
 

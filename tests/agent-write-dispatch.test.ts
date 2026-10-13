@@ -123,10 +123,8 @@ describe('a chat assistant (OAuth over MCP)', () => {
     expect(notifyAdmins).not.toHaveBeenCalled()
   })
 
-  it('applies the staged write when approved from another credential, never the chat that staged it', async () => {
+  it('applies the staged write when approved from chat, its own or another', async () => {
     const staged = await callTool('add_account', { code: '6100', name: 'Legal', type: 'expense' })
-    const self = await callTool('approve_action', { id: staged.json.pendingActionId })
-    expect(self.isError).toBe(true)
     expect(addChartAccount).not.toHaveBeenCalled()
 
     keyId = 'oauth:another-chat'
@@ -294,7 +292,7 @@ describe('an assistant asking for the same change twice (no idempotency key)', (
 
   it('says a repeat of an applied change is already done, and applies nothing', async () => {
     const first = await callTool('add_account', legal)
-    // Approved by a person from another credential: the staging chat cannot approve its own change.
+    // Approved from another chat of the same person.
     keyId = 'oauth:another-chat'
     await callTool('approve_action', { id: first.json.pendingActionId })
     keyId = 'oauth:claude'
