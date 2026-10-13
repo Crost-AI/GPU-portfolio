@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Capital statement: Edit Details next to the period picker
+- **Edit Details sits with the period picker and Generate PDF** on a partner's capital statement, and the line under the letterhead saying where it came from is gone. It opens the same per-vehicle logo, name, address and email editor as before.
+
 ### Capital statements: three columns, end at the commitment summary, per-entity letterhead email
 - **Statement period, Year to date and Inception to date, always.** A partner's capital statement now has all three columns on the web (Funds → Capital accounts → a partner), in the PDF and in the `lp_statement` assistant tool, as a hand-built 3SE statement does. Before, the web showed two, and the PDF dropped the YTD column whenever the period was itself year to date. The layout lives in one module both renderers use (`lib/accounting/capital-statement-layout.ts`).
 - **The statement ends at the commitment summary.** The transaction list and the fund-of-funds exhibits (underlying commitments, performance, basis of valuation) are gone from the PDF, and the web page now mirrors the PDF instead of showing cards and a transaction table.

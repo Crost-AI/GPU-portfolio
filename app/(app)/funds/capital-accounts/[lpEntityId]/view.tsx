@@ -75,7 +75,6 @@ export function LpStatementView({ lpEntityId, vehicleId }: { lpEntityId: string;
   const lh = data.letterhead
   const vehicleName = group ?? 'This vehicle'
   const contact = [lh.letterhead.address, lh.letterhead.email].filter(Boolean).join('\n')
-  const overridden = (['logo', 'name', 'address', 'email'] as const).filter(k => lh.vehicle[k])
   const columnSub = [
     period.start && period.end ? `${period.start} to ${period.end}` : period.label,
     `${data.ytdPeriod.start} to ${data.ytdPeriod.end}`,
@@ -102,6 +101,15 @@ export function LpStatementView({ lpEntityId, vehicleId }: { lpEntityId: string;
               <Input type="date" value={end} onChange={e => setEnd(e.target.value)} className="h-8 w-36 text-xs" />
             </>
           )}
+          {/* The vehicle's letterhead (logo, name, address, email), each part falling back to the fund's. */}
+          {vehicleId && canEditLetterhead && (
+            <button
+              onClick={() => setEditingLetterhead(true)}
+              className="inline-flex h-8 items-center gap-1.5 rounded border border-input px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Pencil className="h-3.5 w-3.5" />Edit Details
+            </button>
+          )}
           {/* Preview only — renders the PDF without storing or sharing it. Publishing
               to the portal is the bulk action on the capital accounts page. */}
           <a
@@ -125,21 +133,6 @@ export function LpStatementView({ lpEntityId, vehicleId }: { lpEntityId: string;
             <p className="text-heading font-display font-normal">{lh.letterhead.name}</p>
             {contact && <p className="text-xs text-muted-foreground whitespace-pre-line leading-snug mt-0.5">{contact}</p>}
           </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 -mt-3 text-[11px] text-muted-foreground">
-          <span>
-            {overridden.length > 0
-              ? `Letterhead: ${vehicleName}'s own ${overridden.join(', ')}; the rest from the fund.`
-              : `Letterhead: the fund's. ${vehicleName} can have its own.`}
-          </span>
-          {vehicleId && canEditLetterhead && (
-            <button
-              onClick={() => setEditingLetterhead(true)}
-              className="inline-flex items-center gap-1 rounded border border-input px-2 py-0.5 hover:bg-accent hover:text-foreground"
-            >
-              <Pencil className="h-3 w-3" />Edit letterhead
-            </button>
-          )}
         </div>
 
         <div>
