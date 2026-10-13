@@ -209,6 +209,7 @@ export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
         industry: input?.industry,
         raiseAmount: input?.raise_amount,
       },
+      research: input?.research && typeof input.research === 'object' ? input.research : undefined,
     }))
     return { dealId: deal.id, company: deal.company_name, updated: out.updated }
   },

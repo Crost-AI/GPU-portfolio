@@ -84,6 +84,25 @@ export const DILIGENCE_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: { type: 'object', properties: { deal: DEAL }, required: ['deal'] },
   },
   {
+    name: 'diligence_document_text',
+    description:
+      'The text of one data-room document (PDF, Word, Excel, text), read now from the stored file: how you answer questions ' +
+      'about a deal from its documents yourself, including when the fund has no server AI key. A scanned PDF has no text ' +
+      'layer and comes back empty; say so rather than guessing. Page through a long one with offset.',
+    scope: 'read',
+    domain: 'diligence',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deal: DEAL,
+        document: { type: 'string', description: 'The document id, or its file name, from diligence_list_documents.' },
+        offset: { type: 'number', description: 'Character offset to start from (default 0).' },
+        max_chars: { type: 'number', description: '2000-60000; default 30000.' },
+      },
+      required: ['deal', 'document'],
+    },
+  },
+  {
     name: 'diligence_evidence',
     description:
       'The raw evidence base extracted from the deal: per-document claims (with criticality), research findings, contradictions, ' +

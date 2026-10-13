@@ -88,7 +88,8 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
       'Move an INBOUND deal: change its pipeline status (new, reviewing, advancing, met, diligence, invested, passed), ' +
       'the entity it belongs to, or who it is assigned to. Also writes its analysis (summary, thesis fit, stage, industry, raise): ' +
       'how an assistant analyses a deal when the fund has no server AI key, or corrects the model\'s. ' +
-      'To open a deal room for it, use deals_promote_to_diligence instead.',
+      'And it saves web research you ran yourself (research: summary, findings, the sources you read), stored where the ' +
+      'app\'s own research goes. To open a deal room for it, use deals_promote_to_diligence instead.',
     scope: 'write',
     domain: 'deals',
     inputSchema: {
@@ -104,6 +105,30 @@ export const DEALS_TOOL_MANIFEST: AgentToolMeta[] = [
         stage: { type: 'string' },
         industry: { type: 'string' },
         raise_amount: { type: 'string', description: 'As stated, e.g. "$3M seed".' },
+        research: {
+          type: 'object',
+          description: 'Web research you ran on the company and its founders. Replaces any earlier research on the deal.',
+          properties: {
+            summary: { type: 'string', description: 'Two or three sentences: what the research found, and how far it bears out the pitch.' },
+            findings: {
+              type: 'object',
+              properties: {
+                founder_background: { type: 'string' },
+                prior_companies: { type: 'array', items: { type: 'string' } },
+                traction_corroboration: { type: 'string', description: 'What public evidence supports or contradicts the claimed traction.' },
+                market_context: { type: 'string' },
+                red_flags: { type: 'array', items: { type: 'string' } },
+                open_questions: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            sources: {
+              type: 'array',
+              description: 'The pages you actually read. At least one is required.',
+              items: { type: 'object', properties: { url: { type: 'string' }, title: { type: 'string' } }, required: ['url'] },
+            },
+          },
+          required: ['summary', 'sources'],
+        },
       },
       required: ['deal'],
     },

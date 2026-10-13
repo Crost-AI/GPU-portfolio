@@ -9,7 +9,7 @@
 // ledger tools.
 
 import type { AgentToolMeta } from '@/lib/accounting/agent-tools-manifest'
-import { INBOX_TOOL_MANIFEST } from './inbox-tools-manifest'
+import { KEYLESS_TOOL_MANIFEST } from './keyless-tools-manifest'
 
 const EMPTY_SCHEMA = { type: 'object', properties: {}, additionalProperties: false }
 
@@ -342,5 +342,5 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
       required: ['company', 'content'],
     },
   },
-  ...INBOX_TOOL_MANIFEST,
+  ...KEYLESS_TOOL_MANIFEST,
 ]

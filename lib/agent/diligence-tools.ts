@@ -12,6 +12,7 @@
 // spending on the memo agent or editing the memo is always a decision someone confirmed.
 
 import { fundHasAIKey, noKeyMessage } from '@/lib/ai/keyless'
+import { extractText } from '@/lib/memo-agent/extract-text'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { answerDealQuestion } from '@/lib/diligence/qa-answer'
@@ -278,7 +279,7 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     // diligence_ask / diligence_evidence, not from here.
     return {
       deal: deal.name,
-      note: 'Document text is not stored. Use diligence_ask or diligence_evidence to reach what the documents actually say.',
+      note: 'Read a document\'s text with diligence_document_text, or reach the extracted claims with diligence_evidence.',
       documents: ((data as any[]) ?? []).map(d => ({
         id: d.id,
         file_name: d.file_name,
@@ -289,6 +290,37 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
         parse_notes: d.parse_notes,
         uploaded_at: d.uploaded_at,
       })),
+    }
+  },
+
+  // Read on demand from the stored file: no text column exists (ingest parses transiently), and a
+  // fund with no server AI key has no other way to put a document in front of a model.
+  diligence_document_text: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, String(input?.deal ?? ''), access)
+    const ref = String(input?.document ?? '').trim()
+    if (!ref) throw new Error('Name the document: its id or file name, from diligence_list_documents.')
+    const { data: docs } = await (admin as any)
+      .from('diligence_documents')
+      .select('id, file_name, file_format, storage_path')
+      .eq('deal_id', deal.id)
+      .eq('fund_id', fundId)
+    const all = ((docs ?? []) as { id: string; file_name: string; file_format: string; storage_path: string }[])
+    const doc = all.find(d => d.id === ref) ?? all.find(d => d.file_name.toLowerCase() === ref.toLowerCase())
+    if (!doc) throw new Error(`No document "${ref}" in ${deal.name}'s data room.`)
+    const { data: blob, error } = await (admin as any).storage.from('diligence-documents').download(doc.storage_path)
+    if (error || !blob) throw new Error(`Could not open ${doc.file_name}.`)
+    const text = (await extractText(Buffer.from(await blob.arrayBuffer()), doc.file_format ?? '')) ?? ''
+    const offset = Math.max(0, Math.floor(Number(input?.offset) || 0))
+    const max = Math.min(60_000, Math.max(2000, Math.floor(Number(input?.max_chars) || 30_000)))
+    const slice = text.slice(offset, offset + max)
+    return {
+      deal: deal.name,
+      document: doc.file_name,
+      total_chars: text.length,
+      offset,
+      text: slice,
+      ...(offset + slice.length < text.length ? { next_offset: offset + slice.length } : {}),
+      ...(text ? {} : { note: 'No text could be read: a scanned PDF, an image, or an unsupported format. Do not guess at its contents.' }),
     }
   },
 

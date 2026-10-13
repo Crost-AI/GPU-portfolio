@@ -11,7 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
 import { dealEntityProblem } from '@/lib/access/scope'
 import { getFeatureProvider } from '@/lib/ai/feature-provider'
-import { fundHasAIKey } from '@/lib/ai/keyless'
+import { fundHasAIKey, noKeyMessage } from '@/lib/ai/keyless'
 import { extractAttachmentText, type PostmarkPayload } from '@/lib/parsing/extractAttachmentText'
 import { processDeal } from '@/lib/pipeline/processDeal'
 import type { PostmarkPayload as PipelinePayload } from '@/lib/pipeline/processEmail'
@@ -254,6 +254,16 @@ export interface InboundDealChanges {
     industry?: unknown
     raiseAmount?: unknown
   }
+  /**
+   * Web research the person's own assistant ran (the app's runs on the server key). Stored where the
+   * research job stores its own, so the deal page shows it the same way. Sources are required: they
+   * are what makes the research checkable.
+   */
+  research?: {
+    summary?: unknown
+    findings?: unknown
+    sources?: unknown
+  }
 }
 
 export const THESIS_FIT_SCORES = ['strong', 'moderate', 'weak', 'out_of_thesis', 'spam'] as const
@@ -292,6 +302,11 @@ export async function updateInboundDeal(
       updates.thesis_fit_score = a.thesisFitScore
     }
   }
+  if (changes.research) {
+    const r = parseResearch(changes.research)
+    if (!r.ok) return r
+    Object.assign(updates, r.value)
+  }
   if (Object.keys(updates).length === 0) return fail(400, 'Nothing to update')
 
   const updated = Object.keys(updates)
@@ -299,6 +314,35 @@ export async function updateInboundDeal(
   const { error } = await (admin as any).from('inbound_deals').update(updates).eq('id', dealId).eq('fund_id', access.fundId)
   if (error) return dbFail(error, 'deals-id')
   return done({ updated })
+}
+
+const RESEARCH_TEXT_FIELDS = ['founder_background', 'traction_corroboration', 'market_context'] as const
+const RESEARCH_LIST_FIELDS = ['prior_companies', 'red_flags', 'open_questions'] as const
+
+/** Validate research written by an assistant into the shape lib/deals/research.ts stores. */
+export function parseResearch(r: NonNullable<InboundDealChanges['research']>): Outcome<Record<string, unknown>> {
+  const summary = typeof r.summary === 'string' ? r.summary.trim().slice(0, 4000) : ''
+  if (!summary) return fail(400, 'research.summary is required')
+  const raw = (r.findings && typeof r.findings === 'object' ? r.findings : {}) as Record<string, unknown>
+  const findings: Record<string, unknown> = {}
+  for (const f of RESEARCH_TEXT_FIELDS) findings[f] = typeof raw[f] === 'string' ? (raw[f] as string).trim().slice(0, 4000) : ''
+  for (const f of RESEARCH_LIST_FIELDS) {
+    findings[f] = Array.isArray(raw[f]) ? (raw[f] as unknown[]).filter(x => typeof x === 'string' && x.trim()).map(x => (x as string).trim().slice(0, 500)).slice(0, 25) : []
+  }
+  const sources = (Array.isArray(r.sources) ? r.sources : [])
+    .map(s => (typeof s === 'string' ? { url: s, title: '' } : s as { url?: unknown; title?: unknown }))
+    .filter(s => typeof s?.url === 'string' && /^https?:\/\//i.test(s.url))
+    .map(s => ({ url: String(s.url).slice(0, 2000), title: typeof s.title === 'string' ? s.title.slice(0, 300) : '' }))
+    .slice(0, 50)
+  if (sources.length === 0) return fail(400, 'research.sources needs at least one http(s) URL you read: they are what makes research checkable')
+  return done({
+    research_status: 'done',
+    research_summary: summary,
+    research_findings: findings,
+    research_sources: sources,
+    research_error: null,
+    researched_at: new Date().toISOString(),
+  })
 }
 
 /**
@@ -309,6 +353,10 @@ export async function updateInboundDeal(
 export async function queueDealResearch(
   admin: SupabaseClient, fundId: string, dealId: string,
 ): Promise<Outcome<{ queued: true; already?: true; research_status: string }>> {
+  // Checked first: with no key, the useful answer is how to research it anyway, not the fund's switch.
+  if (!(await fundHasAIKey(admin, fundId))) {
+    return fail(400, noKeyMessage('deal_research', 'research a deal'))
+  }
   const db = admin as any
   const { data: settings } = await db.from('fund_settings').select('deal_research_enabled').eq('fund_id', fundId).maybeSingle()
   if (!(settings as any)?.deal_research_enabled) {

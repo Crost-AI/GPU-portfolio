@@ -138,9 +138,11 @@ export const AI_CAPABILITIES: AICapability[] = [
   },
   {
     key: 'ocr',
-    label: 'Reading scanned PDFs and images in the background',
-    keyless: 'needs_key',
-    why: 'It runs on a schedule with nobody present. Text PDFs are read without a model.',
+    label: 'Reading scanned pages in company updates',
+    keyless: 'on_demand',
+    why: 'With a key a background job reads them. Without one, scans wait until you ask: your assistant looks at each page and saves its text. Text PDFs are read without a model either way.',
+    prompt: 'Read the scanned updates waiting for me.',
+    tools: ['ocr_waiting', 'ocr_page', 'ocr_save_text'],
   },
   {
     key: 'memo_pipeline',
@@ -151,20 +153,26 @@ export const AI_CAPABILITIES: AICapability[] = [
   {
     key: 'diligence_qa',
     label: 'Asking questions of a deal\'s data room',
-    keyless: 'needs_key',
-    why: 'No tool yet returns a data-room document\'s text to your assistant.',
+    keyless: 'assistant',
+    why: 'Your assistant reads the documents\' text and the memo agent\'s evidence, and answers in chat.',
+    prompt: 'What does Acme\'s data room say about churn?',
+    tools: ['diligence_list_documents', 'diligence_document_text', 'diligence_evidence'],
   },
   {
     key: 'company_summary',
     label: 'Saving an AI summary on a company page',
-    keyless: 'needs_key',
-    why: 'Your assistant can write one in chat, but no tool saves it to the company yet.',
+    keyless: 'assistant',
+    why: 'Your assistant reads the company\'s metrics and updates, writes the summary and saves it to the company.',
+    prompt: 'Write and save a summary for Acme.',
+    tools: ['company_detail', 'company_metrics', 'get_updates', 'company_save_summary'],
   },
   {
     key: 'deal_research',
     label: 'Web research on inbound deals',
-    keyless: 'needs_key',
-    why: 'It runs as a background job; there is no tool yet to save your assistant\'s research.',
+    keyless: 'assistant',
+    why: 'Your assistant searches the web with its own tools and saves the findings and sources to the deal.',
+    prompt: 'Research the founders of Acme and save what you find.',
+    tools: ['deals_inbound_detail', 'deals_update_inbound'],
   },
 ]
 

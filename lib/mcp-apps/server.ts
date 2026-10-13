@@ -216,7 +216,21 @@ export function authorizeMcpTool(tool: McpTool, auth: ResolvedKey, access: Acces
  * model reads `structuredContent`, and the text is also everything a host without MCP Apps shows.
  * The fund's theme is left out of the text; it is presentation, not something to reason over.
  */
+/**
+ * A handler result that is MCP content itself: an image a tool hands the caller's own model to
+ * read (`ocr_page`). Passed through as content blocks rather than JSON-encoded, which a model
+ * cannot see as an image.
+ */
+export interface McpContentResult {
+  mcpContent: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[]
+}
+
+function isMcpContent(result: unknown): result is McpContentResult {
+  return !!result && typeof result === 'object' && Array.isArray((result as McpContentResult).mcpContent)
+}
+
 export function toolResult(tool: McpTool, result: unknown) {
+  if (isMcpContent(result)) return { content: result.mcpContent }
   if (isUi(tool) && isDashboardPayload(result) && result.view === 'home') {
     return { content: [{ type: 'text', text: result.data.help }], structuredContent: result }
   }

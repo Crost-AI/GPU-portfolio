@@ -642,7 +642,7 @@ A server key is optional. Without one, your own assistant does the AI work: conn
 
 Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI providers, with `npm run bootstrap -- --ai assistant`, or from chat with `setup_fund { "aiMode": "assistant" }`. Adding a key later switches the fund to the server key; your assistant can still do any of this either way. `setup_status` returns the same list as `ai.worksWithoutKey`, `ai.waitsForYou` and `ai.needsKey`.
 
-**Inbound email without a key.** Updates still arrive and are saved, but nothing reads them as they come in. Each waits on the Emails page as pending until you ask your assistant to **Process my inbox** (a prompt in the connector's menu): it lists them with `inbox_waiting`, reads each with `inbox_read`, records the figures with `record_metric_value` and files it under the company with `inbox_done`. A deal you add from chat (`deals_create_inbound`) is saved unanalysed, and `deals_inbound_detail` hands your assistant the pitch and the fund's thesis to write the analysis back with `deals_update_inbound`.
+**Inbound email without a key.** Updates still arrive and are saved, but nothing reads them as they come in. Each waits on the Emails page as pending until you ask your assistant to **Process my inbox** (a prompt in the connector's menu): it lists them with `inbox_waiting`, reads each with `inbox_read`, records the figures with `record_metric_value` and files it under the company with `inbox_done`. A scanned PDF or image in an update waits the same way: `ocr_waiting` lists them, `ocr_page` shows your assistant each page as an image, and `ocr_save_text` saves what it read, which makes the file searchable like any other. A deal you add from chat (`deals_create_inbound`) is saved unanalysed, and `deals_inbound_detail` hands your assistant the pitch and the fund's thesis to write the analysis back with `deals_update_inbound`.
 
 | Feature | Without a server key | How, or why not |
 |---|---|---|
@@ -659,11 +659,11 @@ Choose in the onboarding wizard (**Use my own assistant**), in Settings → AI p
 | AI buttons in the web app (Analyst panel, Generate letter, AI import, Summarise) | Needs a key | A button in the browser has no model of its own to borrow; without a key, do the same thing from your assistant. |
 | Reading emailed company updates | Waits for your assistant | With a key it runs as each email arrives. Without one, each update is saved and waits in an inbox your assistant clears when you ask. (`inbox_waiting`, `inbox_read`, `record_metric_value`, `inbox_done`) |
 | Sorting inbound email into deals, diligence and updates | Needs a key | It runs as each email arrives, with nobody present. Without a key, everything is treated as a company update. |
-| Reading scanned PDFs and images in the background | Needs a key | It runs on a schedule with nobody present. Text PDFs are read without a model. |
+| Reading scanned pages in company updates | Waits for your assistant | With a key a background job reads them. Without one, scans wait until you ask: your assistant looks at each page and saves its text. Text PDFs are read without a model either way. (`ocr_waiting`, `ocr_page`, `ocr_save_text`) |
 | The memo agent (ingest, research, draft, score) | Needs a key | Its stages run as background jobs on the server. |
-| Asking questions of a deal's data room | Needs a key | No tool yet returns a data-room document's text to your assistant. |
-| Saving an AI summary on a company page | Needs a key | Your assistant can write one in chat, but no tool saves it to the company yet. |
-| Web research on inbound deals | Needs a key | It runs as a background job; there is no tool yet to save your assistant's research. |
+| Asking questions of a deal's data room | Yes, from your assistant | Your assistant reads the documents' text and the memo agent's evidence, and answers in chat. (`diligence_list_documents`, `diligence_document_text`, `diligence_evidence`) |
+| Saving an AI summary on a company page | Yes, from your assistant | Your assistant reads the company's metrics and updates, writes the summary and saves it to the company. (`company_detail`, `company_metrics`, `get_updates`, `company_save_summary`) |
+| Web research on inbound deals | Yes, from your assistant | Your assistant searches the web with its own tools and saves the findings and sources to the deal. (`deals_inbound_detail`, `deals_update_inbound`) |
 
 ### Feature Visibility
 
