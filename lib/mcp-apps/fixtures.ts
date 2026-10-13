@@ -6,7 +6,7 @@
 
 import { VIEW_TOOL } from './payload'
 import type {
-  HomePayload, CallsPayload, CallLine,
+  HomePayload, ChartPayload, CallsPayload, CallLine,
   CompanyMetricSeries, CompanyPayload, DashboardBranding, DashboardPayload, LpPayload, LpRow,
   PartnerCapitalRow, PortfolioPayload, PortfolioPosition, StatementLine, StatementsPayload,
 } from './payload'
@@ -177,7 +177,17 @@ export const home: HomePayload = {
     help: 'You are connected to Northgate.',
   },
 }
-export const SAMPLE_DASHBOARDS = { portfolio, company, statements, lps, calls, home }
+export const chart: ChartPayload = {
+  view: 'chart', title: 'NAV by quarter', subtitle: 'Fund performance as of 30 Sep 2026', args: {}, generatedAt: now, branding,
+  data: {
+    kind: 'line', unit: 'currency', measure: 'NAV', source: 'Fund performance as of 30 Sep 2026',
+    points: [
+      { label: 'Q4 2025', value: 18200000 }, { label: 'Q1 2026', value: 19100000 },
+      { label: 'Q2 2026', value: 21400000 }, { label: 'Q3 2026', value: 22750000 },
+    ],
+  },
+}
+export const SAMPLE_DASHBOARDS = { portfolio, company, statements, lps, calls, home, chart }
 
 /** The sample each `show_*` tool returns, for a host standing in for the MCP server. */
 export const SAMPLE_BY_TOOL: Record<string, DashboardPayload> = {
@@ -187,4 +197,5 @@ export const SAMPLE_BY_TOOL: Record<string, DashboardPayload> = {
   [VIEW_TOOL.lps]: lps,
   [VIEW_TOOL.calls]: calls,
   show_home: home,
+  show_chart: chart,
 }

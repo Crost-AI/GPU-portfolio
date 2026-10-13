@@ -41,12 +41,12 @@ async function resolveVehicle(admin: SupabaseClient, fundId: string, requested: 
  * The caller's entities, for tools that read across them: their names (rows are keyed by
  * portfolio_group) and the LP entities visible through them. Null = every entity.
  */
-async function lpToolScope(admin: SupabaseClient, access: AccessContext): Promise<{ names: string[] | null; entityIds: string[] | null }> {
+export async function lpToolScope(admin: SupabaseClient, access: AccessContext): Promise<{ names: string[] | null; entityIds: string[] | null }> {
   const scope = await entityScopeFor(admin, access)
   return { names: scope.vehicleNames, entityIds: await visibleLpEntityIds(admin, scope) }
 }
 
-interface EntityIdentity {
+export interface EntityIdentity {
   entityId: string
   entityName: string
   investorId: string | null
@@ -61,7 +61,7 @@ interface EntityIdentity {
  * investor level and compute the ratios AFTER summing; averaging per-entity DPI/TVPI is
  * wrong and is the convention every existing read path avoids.
  */
-async function loadIdentities(
+export async function loadIdentities(
   admin: SupabaseClient,
   fundId: string,
   /** The caller's visible LP entities (null = all): every name lookup and list starts here. */
@@ -86,7 +86,7 @@ async function loadIdentities(
 }
 
 /** Resolve an LP by entity id, entity name, or investor name. There is no alias table for LPs. */
-function resolveLp(identities: Map<string, EntityIdentity>, ref: string): EntityIdentity[] {
+export function resolveLp(identities: Map<string, EntityIdentity>, ref: string): EntityIdentity[] {
   if (identities.has(ref)) return [identities.get(ref)!]
   const needle = ref.trim().toLowerCase()
   const all = Array.from(identities.values())
@@ -106,7 +106,7 @@ function resolveLp(identities: Map<string, EntityIdentity>, ref: string): Entity
 }
 
 /** A snapshot by id or name; omitted = the most recent by as_of_date. */
-async function resolveSnapshot(admin: SupabaseClient, fundId: string, ref?: string): Promise<any> {
+export async function resolveSnapshot(admin: SupabaseClient, fundId: string, ref?: string): Promise<any> {
   const { data } = await (admin as any)
     .from('lp_snapshots').select('id, name, as_of_date, created_at').eq('fund_id', fundId)
   const rows = ((data as any[]) ?? [])

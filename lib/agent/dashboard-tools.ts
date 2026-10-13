@@ -39,7 +39,8 @@ import {
 } from '@/lib/mcp-apps/saved-dashboards'
 import { listVehicles } from '@/lib/accounting/load'
 import { areasFor, DASHBOARD_TIPS, helpText, type CanRead } from './getting-started'
-import type { HomePayload } from '@/lib/mcp-apps/payload'
+import type { ChartData, ChartPayload, HomePayload } from '@/lib/mcp-apps/payload'
+import { CHART_KINDS, CHART_MAX_POINTS, CHART_UNITS } from '@/lib/mcp-apps/payload'
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
@@ -572,8 +573,44 @@ async function homeView(ctx: AgentToolContext): Promise<HomePayload> {
   }
 }
 
+const clip = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max)
+
+/**
+ * A chart of figures the conversation already holds. Validated rather than trusted: the view draws
+ * what arrives, so a label is text of bounded length and a value a finite number, or the call fails.
+ */
+async function chartView(ctx: AgentToolContext, input: any): Promise<ChartPayload> {
+  const kind = String(input?.kind ?? '')
+  if (!(CHART_KINDS as readonly string[]).includes(kind)) throw new Error(`kind must be one of: ${CHART_KINDS.join(', ')}`)
+  const unit = String(input?.unit ?? 'number')
+  if (!(CHART_UNITS as readonly string[]).includes(unit)) throw new Error(`unit must be one of: ${CHART_UNITS.join(', ')}`)
+  const title = clip(input?.title, 120)
+  const measure = clip(input?.measure, 60)
+  if (!title || !measure) throw new Error('A chart needs a title and a measure.')
+  const raw = Array.isArray(input?.points) ? input.points : []
+  if (raw.length === 0) throw new Error('Pass at least one point.')
+  if (raw.length > CHART_MAX_POINTS) throw new Error(`At most ${CHART_MAX_POINTS} points: group or trim them first.`)
+  const points = raw.map((p: any, i: number) => {
+    const value = Number(p?.value)
+    const label = clip(p?.label, 60)
+    if (!label || typeof p?.value !== 'number' || !Number.isFinite(value)) throw new Error(`Point ${i + 1} needs a label and a numeric value.`)
+    return { label, value }
+  })
+  const source = clip(input?.source, 200) || null
+  return {
+    view: 'chart',
+    title,
+    subtitle: source,
+    args: {},
+    generatedAt: new Date().toISOString(),
+    branding: await loadBranding(ctx.admin, ctx.fundId),
+    data: { kind: kind as ChartData['kind'], unit: unit as ChartData['unit'], measure, points, source },
+  }
+}
+
 export const DASHBOARD_HANDLERS: Record<string, AgentToolHandler> = {
   show_home: homeView,
+  show_chart: chartView,
   show_portfolio_dashboard: portfolioView,
   show_company_dashboard: companyView,
   show_financial_statements: statementsView,

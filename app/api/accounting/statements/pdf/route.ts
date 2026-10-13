@@ -4,10 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { rateLimit } from '@/lib/rate-limit'
-import { buildStatementPackage } from '@/lib/accounting/statement-package'
-import { buildStatementsHtml } from '@/lib/accounting/statements-pdf'
-import { fundCurrency } from '@/lib/accounting/currency'
-import { renderHtmlToPdf } from '@/lib/lp-report-pdf'
+import { DocumentBuildError, financialStatementsDocument } from '@/lib/reports/documents'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -28,32 +25,17 @@ export async function GET(req: NextRequest) {
   const limited = await rateLimit({ key: `statements-pdf:${user.id}`, limit: 20, windowSeconds: 300 })
   if (limited) return limited
 
-  const [pkg, { data: fund }, currency] = await Promise.all([
-    buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams),
-    admin.from('funds').select('name').eq('id', gate.fundId).maybeSingle() as unknown as Promise<{ data: { name: string } | null }>,
-    // A document labelled in the wrong currency is a wrong document: refuse rather than guess USD.
-    fundCurrency(admin, gate.fundId).catch((e: unknown) => ({ unread: e })),
-  ])
-  if (typeof currency !== 'string') {
-    console.error('[statements-pdf] fund currency', currency.unread instanceof Error ? currency.unread.message : currency.unread)
-    return NextResponse.json({ error: "The fund's currency could not be read, so the document was not built. Try again." }, { status: 500 })
+  let doc
+  try {
+    doc = await financialStatementsDocument(admin, gate.fundId, group, req.nextUrl.searchParams)
+  } catch (e) {
+    if (e instanceof DocumentBuildError) return NextResponse.json({ error: e.message }, { status: 500 })
+    throw e
   }
-
-  const html = buildStatementsHtml(pkg, {
-    fundName: fund?.name ?? 'Fund',
-    vehicle: group,
-    currency,
-    generatedAt: new Date().toISOString(),
-    basisNote: pkg.basis === 'tax' ? 'Tax basis' : null,
-  })
-  const pdf = await renderHtmlToPdf(html)
-
-  const asOf = pkg.payload.period.end ?? new Date().toISOString().split('T')[0]
-  const filename = `statements-${group}-${asOf}`.replace(/[^a-zA-Z0-9\-]/g, '-')
-  return new NextResponse(new Uint8Array(pdf), {
+  return new NextResponse(new Uint8Array(doc.body), {
     headers: {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="${filename}.pdf"`,
+      'Content-Disposition': `inline; filename="${doc.fileName}"`,
     },
   })
 }

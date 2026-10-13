@@ -13,7 +13,7 @@
 // figures as text and loses nothing.
 
 import type { AgentToolMeta } from '@/lib/accounting/agent-tools-manifest'
-import { DASHBOARD_VIEWS, STATEMENT_PRESETS } from '@/lib/mcp-apps/payload'
+import { CHART_KINDS, CHART_MAX_POINTS, CHART_UNITS, DASHBOARD_VIEWS, STATEMENT_PRESETS } from '@/lib/mcp-apps/payload'
 
 export interface DashboardToolMeta extends AgentToolMeta {
   /** The result is a DashboardPayload, drawn by the dashboard view where the host supports it. */
@@ -71,6 +71,41 @@ export const DASHBOARD_TOOL_MANIFEST: DashboardToolMeta[] = [
     personal: true,
     ui: true,
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'show_chart',
+    description:
+      'Draw figures you already have as a chart in the conversation: bars to compare categories (fair value by ' +
+      'company, commitments by investor), or a line to follow one measure over time (NAV by quarter). One measure per ' +
+      'chart. Use this when the user asks to chart, plot or graph something no dashboard shows. Take the figures from ' +
+      'the tools you called; never invent or estimate them. It reads no data itself.',
+    scope: 'read',
+    domain: 'portfolio',
+    // Reads nothing: it draws numbers the conversation already holds, which the member's own
+    // access produced. So, like home, membership is the test.
+    personal: true,
+    ui: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'The chart title, e.g. "Fair value by company".' },
+        kind: { type: 'string', enum: [...CHART_KINDS], description: 'bar to compare categories; line for one measure over time, oldest first.' },
+        unit: { type: 'string', enum: [...CHART_UNITS], description: "How values are written: the fund's currency, a plain number, percent (12.5 = 12.5%) or a multiple (1.8 = 1.8x)." },
+        measure: { type: 'string', description: 'What the values measure, e.g. "Fair value" or "TVPI".' },
+        points: {
+          type: 'array',
+          maxItems: CHART_MAX_POINTS,
+          items: {
+            type: 'object',
+            properties: { label: { type: 'string' }, value: { type: 'number' } },
+            required: ['label', 'value'],
+          },
+          description: `The figures, at most ${CHART_MAX_POINTS}.`,
+        },
+        source: { type: 'string', description: 'Optional: where the figures came from, e.g. "Portfolio summary as of 30 Jun 2026".' },
+      },
+      required: ['title', 'kind', 'measure', 'points'],
+    },
   },
   {
     name: 'show_portfolio_dashboard',

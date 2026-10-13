@@ -273,7 +273,9 @@ Each dashboard expands to full screen, follows the assistant's light or dark the
 
 **Capital calls dashboard.** "Who still owes us on the latest call?" opens a call's dashboard: called, received and outstanding, how many LPs have paid, and each LP's standing — paid, partly paid, says wired (their word from the LP portal, not yet received), unpaid, overdue — most urgent first, with the fund's other calls to switch between. Saveable like the others.
 
-**LP documents as PDFs.** Ask for an LP's capital account statement or an investor's report card "as a PDF" and the assistant hands back a download link to the same document the app produces. The link works for one hour and only for the member who asked: opening it checks their access again — the LP capital grant, the entity, membership — so a forwarded or stale link opens nothing.
+**The fund's documents as downloads.** Ask for an LP's capital account statement, an investor's report card, the fund performance report, the financial statements, a partner's K-1, an investor's snapshot report "as a PDF", or the year's tax package, and the assistant hands back a download link to the same document the app produces. The link works for one hour and only for the member who asked: opening it checks their access again, exactly as the app's own download does, so a forwarded or stale link opens nothing.
+
+**Charts of anything.** "Chart commitments by investor" or "plot NAV by quarter" draws the figures the assistant just looked up as a bar or line chart in the conversation, with the figures in a table beneath.
 
 **Save a dashboard** by asking ("save this as Q3 LP review"), and reopen it in any later conversation, in either assistant. A saved dashboard keeps the view and its filters, not the numbers, so it always opens on current figures. Share one with the fund and colleagues can open it too, each seeing only what their own access allows.
 

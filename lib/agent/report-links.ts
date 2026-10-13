@@ -1,5 +1,5 @@
 // Download links for documents an assistant hands over — a capital account statement, an LP
-// report card. An MCP tool result is JSON text, and hosts disagree on embedded binaries, so the
+// report card, the fund performance report, the financial statements, a K-1, the tax package. An MCP tool result is JSON text, and hosts disagree on embedded binaries, so the
 // tool returns a LINK, and the document is rendered when the link is opened.
 //
 // The link is self-authenticating, because whoever opens it is a browser with no credential: the
@@ -15,7 +15,13 @@
 import { createHmac, hkdfSync, timingSafeEqual } from 'crypto'
 
 // `portal_statement` is the investor connector's (app/api/portal/mcp): the LP's own live statement.
-export type ReportKind = 'lp_statement' | 'lp_report_card' | 'portal_statement'
+// The rest are the fund's own documents (lib/reports/documents.ts), each re-gated at the click
+// exactly as its web route gates it.
+export const REPORT_KINDS = [
+  'lp_statement', 'lp_report_card', 'portal_statement',
+  'fund_performance', 'financial_statements', 'k1', 'lp_snapshot', 'tax_package',
+] as const
+export type ReportKind = typeof REPORT_KINDS[number]
 
 export interface ReportLinkClaims {
   fundId: string
@@ -65,7 +71,7 @@ export function verifyReportLink(token: string, now = Date.now()): ReportLinkCla
   const claims = authenticClaims(token)
   if (!claims || claims.exp * 1000 <= now) return null
   if (typeof claims.fundId !== 'string' || typeof claims.userId !== 'string') return null
-  if (claims.kind !== 'lp_statement' && claims.kind !== 'lp_report_card' && claims.kind !== 'portal_statement') return null
+  if (!(REPORT_KINDS as readonly string[]).includes(claims.kind)) return null
   return claims
 }
 
