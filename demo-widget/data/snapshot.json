@@ -1,6 +1,6 @@
 {
  "schemaVersion": 2,
- "generatedAt": "2026-10-10",
+ "generatedAt": "2026-10-13",
  "source": "the demo fund",
  "fund": {
   "name": "Portfolio Demo",
@@ -94,6 +94,62 @@
        "quarter": 1,
        "month": 1,
        "number": 348000
+      },
+      {
+       "period_label": "Feb 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 2,
+       "number": 355000
+      },
+      {
+       "period_label": "Mar 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 3,
+       "number": 362000
+      },
+      {
+       "period_label": "Apr 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 4,
+       "number": 370000
+      },
+      {
+       "period_label": "May 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 5,
+       "number": 381000
+      },
+      {
+       "period_label": "Jun 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 6,
+       "number": 390000
+      },
+      {
+       "period_label": "Jul 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 7,
+       "number": 402000
+      },
+      {
+       "period_label": "Aug 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 8,
+       "number": 409000
+      },
+      {
+       "period_label": "Sep 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 9,
+       "number": 421000
       }
      ]
     },
@@ -128,6 +184,27 @@
        "quarter": 4,
        "month": null,
        "number": 2.8
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 2.9
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 2.6
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 2.5
       }
      ]
     }
@@ -194,6 +271,20 @@
        "quarter": 1,
        "month": null,
        "number": 10800000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 11600000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 12300000
       }
      ]
     },
@@ -235,6 +326,27 @@
        "quarter": 4,
        "month": null,
        "number": 127
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 126
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 124
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 123
       }
      ]
     },
@@ -276,6 +388,27 @@
        "quarter": 4,
        "month": null,
        "number": 62
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 66
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 71
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 74
       }
      ]
     },
@@ -317,6 +450,27 @@
        "quarter": 4,
        "month": null,
        "number": 14000000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 13100000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 12000000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 11200000
       }
      ]
     }
@@ -376,6 +530,20 @@
        "quarter": 4,
        "month": null,
        "number": 1500000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 1200000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 950000
       }
      ]
     },
@@ -417,6 +585,20 @@
        "quarter": 4,
        "month": null,
        "number": 14
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 14
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 15
       }
      ]
     }
@@ -476,6 +658,20 @@
        "quarter": 4,
        "month": null,
        "number": 520000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 410000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 1600000
       }
      ]
     },
@@ -517,6 +713,20 @@
        "quarter": 4,
        "month": null,
        "number": 48000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 50000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 52000
       }
      ]
     }
@@ -632,6 +842,69 @@
        "quarter": 4,
        "month": 12,
        "number": 258000
+      },
+      {
+       "period_label": "Jan 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 1,
+       "number": 270000
+      },
+      {
+       "period_label": "Feb 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 2,
+       "number": 282000
+      },
+      {
+       "period_label": "Mar 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 3,
+       "number": 295000
+      },
+      {
+       "period_label": "Apr 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 4,
+       "number": 306000
+      },
+      {
+       "period_label": "May 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 5,
+       "number": 318000
+      },
+      {
+       "period_label": "Jun 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 6,
+       "number": 331000
+      },
+      {
+       "period_label": "Jul 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 7,
+       "number": 342000
+      },
+      {
+       "period_label": "Aug 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 8,
+       "number": 356000
+      },
+      {
+       "period_label": "Sep 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 9,
+       "number": 371000
       }
      ]
     },
@@ -673,6 +946,27 @@
        "quarter": 4,
        "month": null,
        "number": 95000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 96000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 98000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 101000
       }
      ]
     },
@@ -714,6 +1008,27 @@
        "quarter": 4,
        "month": null,
        "number": 121
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 121
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 122
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 124
       }
      ]
     },
@@ -755,6 +1070,27 @@
        "quarter": 4,
        "month": null,
        "number": 2400000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 4400000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 4100000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 3800000
       }
      ]
     }
@@ -822,6 +1158,20 @@
        "quarter": 1,
        "month": null,
        "number": 6100000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 6600000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 7200000
       }
      ]
     },
@@ -870,6 +1220,20 @@
        "quarter": 1,
        "month": null,
        "number": 68
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 69
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 70
       }
      ]
     },
@@ -918,6 +1282,20 @@
        "quarter": 1,
        "month": null,
        "number": 74
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 81
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 88
       }
      ]
     }
@@ -998,6 +1376,62 @@
        "quarter": 1,
        "month": 1,
        "number": 18200000
+      },
+      {
+       "period_label": "Feb 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 2,
+       "number": 18900000
+      },
+      {
+       "period_label": "Mar 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 3,
+       "number": 20100000
+      },
+      {
+       "period_label": "Apr 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 4,
+       "number": 21400000
+      },
+      {
+       "period_label": "May 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 5,
+       "number": 22000000
+      },
+      {
+       "period_label": "Jun 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 6,
+       "number": 23500000
+      },
+      {
+       "period_label": "Jul 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 7,
+       "number": 24800000
+      },
+      {
+       "period_label": "Aug 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 8,
+       "number": 25300000
+      },
+      {
+       "period_label": "Sep 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 9,
+       "number": 26900000
       }
      ]
     },
@@ -1060,6 +1494,62 @@
        "quarter": 1,
        "month": 1,
        "number": 273000
+      },
+      {
+       "period_label": "Feb 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 2,
+       "number": 283500
+      },
+      {
+       "period_label": "Mar 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": 3,
+       "number": 301500
+      },
+      {
+       "period_label": "Apr 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 4,
+       "number": 321000
+      },
+      {
+       "period_label": "May 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 5,
+       "number": 330000
+      },
+      {
+       "period_label": "Jun 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": 6,
+       "number": 352500
+      },
+      {
+       "period_label": "Jul 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 7,
+       "number": 372000
+      },
+      {
+       "period_label": "Aug 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 8,
+       "number": 379500
+      },
+      {
+       "period_label": "Sep 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": 9,
+       "number": 403500
       }
      ]
     },
@@ -1085,6 +1575,27 @@
        "period_label": "Q4 2025",
        "year": 2025,
        "quarter": 4,
+       "month": null,
+       "number": 1.5
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 1.5
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 1.5
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
        "month": null,
        "number": 1.5
       }
@@ -1128,6 +1639,27 @@
        "quarter": 4,
        "month": null,
        "number": 3200000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 2900000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 2600000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 2200000
       }
      ]
     }
@@ -1187,6 +1719,27 @@
        "quarter": 4,
        "month": null,
        "number": 1100000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 900000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 700000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 1000000
       }
      ]
     },
@@ -1228,6 +1781,27 @@
        "quarter": 4,
        "month": null,
        "number": 85000
+      },
+      {
+       "period_label": "Q1 2026",
+       "year": 2026,
+       "quarter": 1,
+       "month": null,
+       "number": 86000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 88000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 84000
       }
      ]
     },
@@ -1255,6 +1829,20 @@
        "quarter": 4,
        "month": null,
        "number": 200000
+      },
+      {
+       "period_label": "Q2 2026",
+       "year": 2026,
+       "quarter": 2,
+       "month": null,
+       "number": 250000
+      },
+      {
+       "period_label": "Q3 2026",
+       "year": 2026,
+       "quarter": 3,
+       "month": null,
+       "number": 400000
       }
      ]
     }
@@ -1306,7 +1894,31 @@
   },
   {
    "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
+   "lpEntityId": "278ec0e3-2940-46f6-b651-5775726f9560"
+  },
+  {
+   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
+   "lpEntityId": "278ec0e3-2940-46f6-b651-5775726f9560"
+  },
+  {
+   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
    "lpEntityId": "284cb747-2354-4cf1-8018-548eb5eac0f3"
+  },
+  {
+   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
+   "lpEntityId": "284cb747-2354-4cf1-8018-548eb5eac0f3"
+  },
+  {
+   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
+   "lpEntityId": "4f57aefa-a42b-4293-9162-6b849f592dc8"
+  },
+  {
+   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
+   "lpEntityId": "6a657357-5f5d-416f-81f3-35815df4ae69"
+  },
+  {
+   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
+   "lpEntityId": "7888b510-c3cf-40ab-b40a-586623662b83"
   },
   {
    "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
@@ -1314,42 +1926,30 @@
   },
   {
    "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
-   "lpEntityId": "7888b510-c3cf-40ab-b40a-586623662b83"
-  },
-  {
-   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
-   "lpEntityId": "278ec0e3-2940-46f6-b651-5775726f9560"
-  },
-  {
-   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
    "lpEntityId": "a2636fbe-5a1e-4bf1-a600-c1d5e28631d5"
-  },
-  {
-   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
-   "lpEntityId": "fcfff8e9-f323-497e-bcf1-15d2979a3a82"
-  },
-  {
-   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
-   "lpEntityId": "284cb747-2354-4cf1-8018-548eb5eac0f3"
   },
   {
    "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
    "lpEntityId": "ed542a37-1fc6-4c19-bce8-992413009631"
   },
   {
-   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
-   "lpEntityId": "6a657357-5f5d-416f-81f3-35815df4ae69"
-  },
-  {
-   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
-   "lpEntityId": "278ec0e3-2940-46f6-b651-5775726f9560"
-  },
-  {
-   "vehicleId": "d73f3df5-5a2f-4c34-b431-e6c8d71fd4e9",
-   "lpEntityId": "4f57aefa-a42b-4293-9162-6b849f592dc8"
+   "vehicleId": "061ee98b-cea1-465e-a73c-d597df4afaba",
+   "lpEntityId": "fcfff8e9-f323-497e-bcf1-15d2979a3a82"
   }
  ],
  "letters": [
+  {
+   "id": "50cf9118-52c8-57e5-82d1-5c2f3cb7e6f3",
+   "periodLabel": "Q3 2026",
+   "portfolioGroup": "Fund I",
+   "status": "draft"
+  },
+  {
+   "id": "9ace39a0-836a-54f1-9150-e54259bf9828",
+   "periodLabel": "Q2 2026",
+   "portfolioGroup": "Fund I",
+   "status": "final"
+  },
   {
    "id": "a6462487-c265-44d5-b882-cd0834c5c1ea",
    "periodLabel": "Q4 2025 / Year End 2025",
