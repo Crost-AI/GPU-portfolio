@@ -6,6 +6,7 @@ import { issuerFor } from '@/lib/oauth/metadata'
 import { AGENT_TOOLS, getTool, accessDomainFor, accessDomainForCall, accessFeatureFor } from '@/lib/accounting/agent-tools'
 import { AgentCallError, idempotencyKeyOf, runAgentTool } from '@/lib/agent/dispatch'
 import { withChangeSource } from '@/lib/audit/source'
+import { isGatewayTool } from '@/lib/mcp-apps/gateway-names'
 import { hasAccess } from '@/lib/access/effective'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -72,6 +73,14 @@ async function handlePost(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}))
+  // search_tools and call_tool are MCP-only (lib/mcp-apps/gateway.ts): they exist because chat
+  // hosts cache the MCP tool list. Here GET is read fresh and POST takes any tool by name, so
+  // there is nothing for them to work around, and no second route to keep in step with this one.
+  if (isGatewayTool(body?.tool)) {
+    return NextResponse.json({
+      error: `${body.tool} is an MCP tool and is not needed here: GET /api/agent lists every tool you may use, and POST { tool, input } runs any of them by name.`,
+    }, { status: 400 })
+  }
   const tool = getTool(body?.tool)
   if (!tool) return NextResponse.json({ error: `Unknown tool: ${body?.tool}` }, { status: 400 })
   // The owner's grants, re-read live: a credential can never exceed the person who authorized it.
