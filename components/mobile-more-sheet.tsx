@@ -59,6 +59,7 @@ interface MobileMoreSheetProps {
   /** Hrefs already on the tab bar. Repeating them here would be the first thing the menu showed. */
   tabHrefs: string[]
   reviewBadge: number
+  approvalsBadge?: number
   settingsBadge?: number
   notesBadge?: number
   isAdmin?: boolean
@@ -72,6 +73,7 @@ export function MobileMoreSheet({
   onOpenChange,
   tabHrefs,
   reviewBadge,
+  approvalsBadge,
   settingsBadge,
   notesBadge,
   isAdmin,
@@ -86,15 +88,16 @@ export function MobileMoreSheet({
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
 
-  const sections = navSectionsFor(!!isAdmin, access, { review: reviewBadge })
+  const sections = navSectionsFor(!!isAdmin, access, { review: reviewBadge, approvals: approvalsBadge })
 
   const badgeFor = (key: NavItem['badgeKey']) =>
     key === 'review' ? reviewBadge
+      : key === 'approvals' ? (approvalsBadge ?? 0)
       : key === 'settings' ? (settingsBadge ?? 0)
       : key === 'notes' ? (notesBadge ?? 0)
       : 0
 
-  const grid = moreSectionsFor(!!isAdmin, access, tabHrefs, { review: reviewBadge })
+  const grid = moreSectionsFor(!!isAdmin, access, tabHrefs, { review: reviewBadge, approvals: approvalsBadge })
 
   // The section you are IN, whether or not it is a tab — its sub-pages are the reason
   // most people open this menu, and the tab bar has no way to reach them.

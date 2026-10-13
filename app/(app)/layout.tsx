@@ -60,6 +60,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         supabase.from('inbound_emails').select('id', { count: 'exact', head: true }).eq('processing_status', 'needs_review').eq('fund_id', fund.id),
       ])
     : null
+  // Staged changes waiting for approval, counted with the user's own client: RLS limits it to rows
+  // in domains (and entities) they can read — the same filter /api/pending-actions applies — so the
+  // Approvals nav entry appears only when there is something this user can actually see.
+  const { count: approvalsBadge } = await supabase
+    .from('pending_actions')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending')
+    .eq('fund_id', fund.id)
   const noEntities = !!scopedCounts && (scopedCounts[0].count ?? 0) === 0
   const [pendingRequestCount, updateAvailable] = await Promise.all([
     isAdmin ? getPendingRequests(fund.id) : Promise.resolve(0),
@@ -116,6 +124,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           fundLogo={fundLogo}
           userEmail={user.email ?? ''}
           reviewBadge={scopedCounts ? (scopedCounts[1].count ?? 0) + (scopedCounts[2].count ?? 0) : reviewBadge}
+          approvalsBadge={approvalsBadge ?? 0}
           settingsBadge={pendingRequestCount}
           notesBadge={notesBadge}
           isAdmin={isAdmin}
