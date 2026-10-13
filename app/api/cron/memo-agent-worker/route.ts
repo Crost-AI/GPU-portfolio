@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { runIngestJob } from '@/lib/memo-agent/jobs/ingest-job'
-import { runIngestSynthesisJob } from '@/lib/memo-agent/jobs/ingest-synthesis-job'
-import { runResearchJob } from '@/lib/memo-agent/jobs/research-job'
-import { runDraftJob } from '@/lib/memo-agent/jobs/draft-job'
-import { runDraftReviewJob } from '@/lib/memo-agent/jobs/draft-review-job'
-import { runScoreJob } from '@/lib/memo-agent/jobs/score-job'
-import { runRenderJob } from '@/lib/memo-agent/jobs/render-job'
-import { runTranscribeJob, isAwaitingCallback } from '@/lib/memo-agent/jobs/transcribe-job'
-import { runChecklistAssessmentJob } from '@/lib/memo-agent/jobs/checklist-assessment-job'
-import { runAffinitySyncJob } from '@/lib/memo-agent/jobs/affinity-sync-job'
+import { isAwaitingCallback } from '@/lib/memo-agent/jobs/transcribe-job'
+import { AWAITING_ASSISTANT_JOB, MODEL_JOB_KINDS, runJobHandler, type MemoJob } from '@/lib/memo-agent/jobs/dispatch'
+import { ASSISTANT_RUNNER } from '@/lib/memo-agent/assistant-runner'
+import { fundHasAIKey } from '@/lib/ai/keyless'
 import { kickWorker } from '@/lib/memo-agent/kick'
 import { cronAuthDenial } from '@/lib/security/cron-auth'
 
@@ -69,6 +63,8 @@ export async function GET(req: NextRequest) {
     } as any)
     .eq('status', 'running')
     .not('external_job_id', 'is', null)
+    // A job waiting for the person's assistant waits as long as it takes.
+    .neq('external_job_id', ASSISTANT_RUNNER)
     .lt('started_at', callbackCutoff)
 
   // Drain the queue: process jobs back-to-back until it's empty or we approach
@@ -102,40 +98,23 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ ok: true, processed, handedOff: true })
 }
 
-interface Job {
-  id: string
-  fund_id: string
-  deal_id: string
-  draft_id: string | null
-  kind: 'ingest' | 'ingest_synthesis' | 'research' | 'qa' | 'draft' | 'draft_review' | 'score' | 'render' | 'transcribe' | 'checklist_assessment' | 'affinity_sync'
-  payload: Record<string, unknown>
-  enqueued_by: string | null
-}
+type Job = MemoJob
 
 /** Run one claimed job and write its outcome back. Never throws. */
 async function processJob(admin: ReturnType<typeof createAdminClient>, job: Job): Promise<void> {
   console.log(`[memo-agent-worker] claimed ${job.kind} job ${job.id} (deal ${job.deal_id})`)
   try {
-    let result: unknown
-    switch (job.kind) {
-      case 'ingest': result = await runIngestJob(admin, job); break
-      case 'ingest_synthesis': result = await runIngestSynthesisJob(admin, job); break
-      case 'research': result = await runResearchJob(admin, job); break
-      case 'draft': result = await runDraftJob(admin, job); break
-      case 'draft_review': result = await runDraftReviewJob(admin, job); break
-      case 'score': result = await runScoreJob(admin, job); break
-      case 'render': result = await runRenderJob(admin, job); break
-      case 'transcribe': result = await runTranscribeJob(admin, job); break
-      case 'checklist_assessment': result = await runChecklistAssessmentJob(admin, job); break
-      case 'affinity_sync': result = await runAffinitySyncJob(admin, job); break
-      case 'qa':
-        // Q&A is a synchronous interactive flow, not a worker job — fail if seen.
-        await markFailed(admin, job.id, 'Q&A is run interactively; no worker job needed.')
-        return
-      default:
-        await markFailed(admin, job.id, `Unknown job kind: ${job.kind}`)
-        return
+    // No key: hand the job to the person's assistant instead of failing it. It stays `running`, so
+    // the deal page shows it in flight with this message, and nothing else starts on the deal.
+    if (MODEL_JOB_KINDS.has(job.kind) && !(await fundHasAIKey(admin, job.fund_id))) {
+      await admin
+        .from('memo_agent_jobs')
+        .update({ external_job_id: ASSISTANT_RUNNER, progress_message: AWAITING_ASSISTANT_JOB } as any)
+        .eq('id', job.id)
+      return
     }
+
+    const result = await runJobHandler(admin, job)
 
     // Async jobs that handed work to an external provider stay `running` until
     // the provider's webhook finishes them — leave their status untouched.

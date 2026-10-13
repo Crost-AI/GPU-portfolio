@@ -3,6 +3,7 @@ import { createFundAIProvider, createFundAIProviderWithOverride } from '@/lib/ai
 import { recommendedModel } from '@/lib/ai/recommended'
 import type { AIProvider } from '@/lib/ai/types'
 import type { AgentStage } from './cost'
+import { ASSISTANT_RUNNER, assistantProvider } from './assistant-runner'
 
 type Admin = ReturnType<typeof createAdminClient>
 
@@ -54,6 +55,16 @@ export async function getStageProvider(admin: Admin, fundId: string, stage: Agen
   const webSearchOptIn = !!(settings as any)?.memo_agent_web_search_enabled
   const fallbackStage = STAGE_OVERRIDE_FALLBACK[stage]
   const override = overrides[stage] ?? (fallbackStage ? overrides[fallbackStage] : null) ?? null
+
+  // Running for the person's own assistant (assistant-runner.ts): its model answers every call.
+  // Research asks it to search the web when the fund opted in, whatever the server provider is.
+  const replay = assistantProvider()
+  if (replay) {
+    return {
+      provider: replay, model: ASSISTANT_RUNNER, providerType: ASSISTANT_RUNNER,
+      webSearchAvailable: stage === 'research' && webSearchOptIn, webSearchOptIn,
+    }
+  }
 
   let resolved: { provider: AIProvider; model: string; providerType: string }
   if (override?.provider) {

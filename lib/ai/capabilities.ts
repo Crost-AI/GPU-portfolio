@@ -147,8 +147,10 @@ export const AI_CAPABILITIES: AICapability[] = [
   {
     key: 'memo_pipeline',
     label: 'The memo agent (ingest, research, draft, score)',
-    keyless: 'needs_key',
-    why: 'Its stages run as background jobs on the server.',
+    keyless: 'on_demand',
+    why: 'With a key its stages run as background jobs. Without one, a stage waits until you ask: your assistant answers each request the stage would have sent a model, and the stage stores the result as it would with a key.',
+    prompt: 'Run the memo agent on Acme: analyse the data room, then draft the memo.',
+    tools: ['diligence_run_agent', 'diligence_stage_next', 'diligence_stage_read', 'diligence_stage_submit'],
   },
   {
     key: 'diligence_qa',

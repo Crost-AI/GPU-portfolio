@@ -18,6 +18,8 @@ export async function logAIUsage(admin: SupabaseAdmin, params: {
   /** Anthropic web_search tool invocations (~$10 / 1,000), billed on top of tokens. */
   webSearches?: number
 }) {
+  // The person's own assistant answered (lib/memo-agent/assistant-runner.ts): no server spend.
+  if (params.provider === 'assistant') return
   try {
     await admin.from('ai_usage_logs').insert({
       fund_id: params.fundId,

@@ -32,12 +32,16 @@ export function jobState(raw: string | null | undefined): JobState {
   }
 }
 
-export function jobHandle(kind: JobKind, id: string, rawStatus: string | null | undefined): JobHandle {
+export function jobHandle(
+  kind: JobKind, id: string, rawStatus: string | null | undefined, opts: { awaitingAssistant?: boolean } = {},
+): JobHandle {
   const status = jobState(rawStatus)
   const tool = JOB_KINDS[kind]
   return {
     id: `${kind}:${id}`, kind, status, check_with: tool,
-    next: status === 'queued' || status === 'running'
+    next: opts.awaitingAssistant
+      ? 'Waiting for you: this fund has no server AI key, so you run this stage yourself. Call diligence_stage_next with the deal.'
+      : status === 'queued' || status === 'running'
       ? `It runs in the background. Tell the user it has started; call ${tool} with this job_id when they ask, or once after a minute. Don't poll in a loop.`
       : `Finished. ${tool} with this job_id shows the result.`,
   }

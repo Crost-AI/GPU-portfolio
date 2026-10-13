@@ -28,6 +28,10 @@ import {
   updateDiligenceDeal, uploadDiligenceDocument, writeMemoParagraph,
 } from '@/lib/diligence/service'
 import { enqueueMemoStage, MEMO_AGENT_STAGES, type MemoAgentStage } from '@/lib/memo-agent/enqueue'
+import { advanceAssistantJobs, assistantCallAttachment, readAssistantCall, submitAssistantAnswers, waitingJobId } from '@/lib/memo-agent/assistant-jobs'
+import { ASSISTANT_RUNNER } from '@/lib/memo-agent/assistant-runner'
+import type { McpContentResult } from '@/lib/mcp-apps/server'
+import { MAX_PAGE_IMAGE_BYTES, renderPdfPage } from '@/lib/pdf-page-image'
 import { jobHandle, jobRecordId } from './jobs'
 import { unwrap } from '@/lib/service-outcome'
 import { requireUser } from './deals-tools'
@@ -503,13 +507,61 @@ export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
     const stage = str(input?.stage) as MemoAgentStage
     if (!MEMO_AGENT_STAGES.includes(stage)) throw new Error(`stage must be one of ${MEMO_AGENT_STAGES.join(', ')}.`)
     const out = unwrap(await enqueueMemoStage(admin, { fundId, userId: requireUser(userId) }, deal.id, stage, { full: input?.full === true }))
-    return { deal: deal.name, stage, ...out, job: jobHandle('diligence', String(out.job_id), out.status as string) }
+    const awaitingAssistant = !!out.job_id && !(await fundHasAIKey(admin, fundId))
+    return { deal: deal.name, stage, ...out, job: jobHandle('diligence', String(out.job_id), out.status as string, { awaitingAssistant }) }
+  },
+
+  diligence_stage_next: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    if (await fundHasAIKey(admin, fundId)) {
+      return { deal: deal.name, state: 'server', next: 'This fund has a server AI key, so its memo-agent stages run on their own. Follow them with diligence_job_status.' }
+    }
+    return { deal: deal.name, ...(await advanceAssistantJobs(admin, fundId, deal.id)) }
+  },
+
+  diligence_stage_read: async ({ admin, fundId, access }: AgentToolContext, input: any): Promise<unknown> => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const jobId = await waitingJobId(admin, fundId, deal.id)
+    if (input?.attachment !== undefined && input?.attachment !== null) {
+      const callId = str(input?.call_id)
+      if (!callId) throw new Error('call_id is required with attachment.')
+      const a = await assistantCallAttachment(admin, fundId, jobId, callId, Number(input.attachment))
+      let image: { data: string; mimeType: string; label: string }
+      if (a.mediaType === 'application/pdf') {
+        const page = Number(input?.page) || 1
+        const { png, numPages } = await renderPdfPage(Buffer.from(a.data, 'base64'), page)
+        image = { data: png.toString('base64'), mimeType: 'image/png', label: `Page ${page} of ${numPages}` }
+      } else {
+        image = { data: a.data, mimeType: a.mediaType, label: 'The image' }
+      }
+      if (image.data.length * 0.75 > MAX_PAGE_IMAGE_BYTES) throw new Error('That attachment is too large to hand over as an image.')
+      const result: McpContentResult = {
+        mcpContent: [
+          { type: 'text', text: `${image.label} of attachment ${input.attachment} in call ${callId}.` },
+          { type: 'image', data: image.data, mimeType: image.mimeType },
+        ],
+      }
+      return result
+    }
+    return readAssistantCall(admin, fundId, {
+      jobId,
+      callId: str(input?.call_id) || undefined,
+      systemId: str(input?.system_id) || undefined,
+      offset: Number(input?.offset) || 0,
+      maxChars: Number(input?.max_chars) || undefined,
+    })
+  },
+
+  diligence_stage_submit: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
+    const deal = await resolveDeal(admin, fundId, str(input?.deal), access)
+    const jobId = await waitingJobId(admin, fundId, deal.id)
+    return { deal: deal.name, ...(await submitAssistantAnswers(admin, fundId, jobId, input?.answers)) }
   },
 
   diligence_job_status: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    const cols = 'id, deal_id, kind, status, progress_message, error, enqueued_at, started_at, finished_at'
+    const cols = 'id, deal_id, kind, status, progress_message, error, enqueued_at, started_at, finished_at, external_job_id'
     const view = (j: any) => ({
-      ...jobHandle('diligence', j.id, j.status), stage: j.kind, raw_status: j.status, progress: j.progress_message ?? null, error: j.error ?? null,
+      ...jobHandle('diligence', j.id, j.status, { awaitingAssistant: j.status === 'running' && j.external_job_id === ASSISTANT_RUNNER }), stage: j.kind, raw_status: j.status, progress: j.progress_message ?? null, error: j.error ?? null,
       enqueued_at: j.enqueued_at, started_at: j.started_at ?? null, finished_at: j.finished_at ?? null,
     })
     if (input?.job_id) {

@@ -12,9 +12,9 @@ import { captureCompanyUpdate } from '@/lib/company-updates/capture'
 import { AWAITING_ASSISTANT_OCR, loadArtifactBytes, ocrOneArtifact, suppliedTextEngine, type ClaimedArtifact } from '@/lib/company-updates/ocr'
 import type { McpContentResult } from '@/lib/mcp-apps/server'
 import { logActivity } from '@/lib/activity'
+import { MAX_PAGE_IMAGE_BYTES, renderPdfPage } from '@/lib/pdf-page-image'
 
 /** An image handed to the caller's model stays well under what a host accepts in one result. */
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 const clamp = (v: unknown, min: number, max: number, fallback: number) => {
   const n = Number(v)
@@ -103,18 +103,15 @@ export const KEYLESS_HANDLERS: Record<string, AgentToolHandler> = {
     if (type === 'application/pdf') {
       const needed = (artifact.metadata?.ocrNeededPages as number[] | undefined) ?? []
       const page = Number.isInteger(Number(input?.page)) && Number(input.page) > 0 ? Number(input.page) : needed[0] ?? 1
-      const { getDocumentProxy, renderPageAsImage } = await import('unpdf')
-      const pdf = await getDocumentProxy(new Uint8Array(bytes))
-      if (page > pdf.numPages) throw new Error(`${artifact.filename} has ${pdf.numPages} pages.`)
-      const png = await renderPageAsImage(pdf, page, { scale: 2, canvasImport: () => import('@napi-rs/canvas') })
-      image = { data: Buffer.from(png), mimeType: 'image/png' }
-      label = `${artifact.filename}, page ${page} of ${pdf.numPages}`
+      const { png, numPages } = await renderPdfPage(bytes, page)
+      image = { data: png, mimeType: 'image/png' }
+      label = `${artifact.filename}, page ${page} of ${numPages}`
     } else if (type.startsWith('image/')) {
       image = { data: bytes, mimeType: type }
     } else {
       throw new Error(`${artifact.filename} is not a scan (${type || 'unknown type'}).`)
     }
-    if (image.data.length > MAX_IMAGE_BYTES) throw new Error(`${label} is too large to hand over as an image.`)
+    if (image.data.length > MAX_PAGE_IMAGE_BYTES) throw new Error(`${label} is too large to hand over as an image.`)
     return {
       mcpContent: [
         { type: 'text', text: `${label}. Transcribe it verbatim and save it with ocr_save_text { artifact: "${artifact.id}" }.` },

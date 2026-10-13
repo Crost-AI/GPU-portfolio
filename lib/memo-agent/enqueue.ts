@@ -7,6 +7,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { kickWorker } from './kick'
 import { enforceCapsForStage } from './cost'
+import { ASSISTANT_RUNNER } from './assistant-runner'
+import { fundHasAIKey } from '@/lib/ai/keyless'
 import { AUDIO_VIDEO_FORMATS } from './ingestion/sources'
 import { done, fail, type Outcome } from '@/lib/service-outcome'
 
@@ -22,13 +24,17 @@ type Body = Record<string, unknown>
 async function activeJob(admin: SupabaseClient, fundId: string, dealId: string): Promise<Outcome<never> | null> {
   const { data: existing } = await (admin as any)
     .from('memo_agent_jobs')
-    .select('id, status, kind')
+    .select('id, status, kind, external_job_id')
     .eq('deal_id', dealId)
     .eq('fund_id', fundId)
     .in('status', ['pending', 'running'])
     .limit(1)
     .maybeSingle()
-  return existing ? fail(409, `A ${existing.kind} job is already ${existing.status}.`, { job_id: existing.id }) : null
+  if (!existing) return null
+  if (existing.external_job_id === ASSISTANT_RUNNER) {
+    return fail(409, `A ${existing.kind} job is waiting for your assistant. Carry it on with diligence_stage_next.`, { job_id: existing.id })
+  }
+  return fail(409, `A ${existing.kind} job is already ${existing.status}.`, { job_id: existing.id })
 }
 
 async function enqueue(admin: SupabaseClient, row: Record<string, unknown>): Promise<Outcome<{ id: string; status: string }>> {
@@ -36,6 +42,15 @@ async function enqueue(admin: SupabaseClient, row: Record<string, unknown>): Pro
   if (error || !data) return fail(500, error?.message ?? 'enqueue failed')
   await kickWorker()
   return done({ id: data.id as string, status: data.status as string })
+}
+
+/**
+ * The fund's cost caps, which meter the server's model. With no server key the person's own
+ * assistant answers (assistant-jobs.ts), at no cost to the fund, so there is nothing to cap.
+ */
+async function capsFor(admin: SupabaseClient, fundId: string, dealId: string, stage: 'ingest' | 'research' | 'draft' | 'score') {
+  if (!(await fundHasAIKey(admin, fundId))) return { ok: true as const, estimate: null, caps: null, reason: undefined }
+  return enforceCapsForStage({ admin: admin as any, fundId, dealId, stage })
 }
 
 async function setStage(admin: SupabaseClient, fundId: string, dealId: string, stage: string) {
@@ -88,7 +103,7 @@ export async function enqueueAnalysis(
     return done({ job_id: job.value.id, kind: 'checklist_assessment', status: job.value.status, ...extra })
   }
   const ingest = async (payload: Body, extra: (caps: { estimate: unknown; caps: unknown }) => Body) => {
-    const enforced = await enforceCapsForStage({ admin, fundId, dealId, stage: 'ingest' })
+    const enforced = await capsFor(admin, fundId, dealId, 'ingest')
     if (!enforced.ok) return fail(422, enforced.reason ?? 'This would go over the fund\'s cost caps.', { estimate: enforced.estimate, caps: enforced.caps })
     const job = await enqueue(admin, { fund_id: fundId, deal_id: dealId, kind: 'ingest', payload, enqueued_by: ctx.userId })
     if (!job.ok) return job
@@ -141,7 +156,7 @@ export async function enqueueDraftStage(
   const busy = await activeJob(admin, fundId, dealId)
   if (busy) return busy
 
-  const enforced = await enforceCapsForStage({ admin, fundId, dealId, stage })
+  const enforced = await capsFor(admin, fundId, dealId, stage)
   if (!enforced.ok) return fail(422, enforced.reason ?? 'This would go over the fund\'s cost caps.', { estimate: enforced.estimate, caps: enforced.caps })
 
   const job = await enqueue(admin, { fund_id: fundId, deal_id: dealId, draft_id: draft.id, kind: stage, enqueued_by: ctx.userId })
