@@ -7,7 +7,9 @@
 // This module is where all four live, so a tool added to the registry gets them without asking.
 //
 //   1. Idempotency. A write may carry a key; a retry under it replays the first result instead of
-//      writing twice (the /api/v1 store, lib/api-v1/idempotency.ts).
+//      writing twice (the /api/v1 store, lib/api-v1/idempotency.ts). A chat assistant's write that
+//      would be staged and carries NO key gets one derived from what it asks (see
+//      `assistantDedupeKey`), so the same change asked twice — a retry, or two chats — is staged once.
 //   2. Staging. A chat assistant's write (an OAuth credential) is staged as a pending action and
 //      applied only when a person approves it. An API key — a script someone wrote on purpose —
 //      writes directly, as before. Calls that only make drafts or previews always run directly:
@@ -25,8 +27,8 @@ import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { recordAudit } from '@/lib/audit/events'
 import type { ChangeSource } from '@/lib/audit/source'
 import {
-  claimIdempotentRequest, completeIdempotentRequest, releaseIdempotentRequest, requestFingerprint,
-  IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyScope,
+  canonicalJson, claimIdempotentRequest, completeIdempotentRequest, releaseIdempotentRequest, requestFingerprint,
+  IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyOutcome, type IdempotencyScope,
 } from '@/lib/api-v1/idempotency'
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
 import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
@@ -133,6 +135,66 @@ function resultRefs(result: unknown): Record<string, unknown> {
   return refs
 }
 
+/**
+ * How long an assistant's identical write is treated as the same request. Long enough to cover a
+ * second chat opened the same day on the same task (which is how a carry reallocation was booked
+ * twice); short enough that the same routine entry next week is a new request.
+ */
+export const ASSISTANT_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000
+/** The derived keys' client: every OAuth client of one person shares it, so a second host is caught too. */
+const ASSISTANT_DEDUPE_CLIENT = 'assistant:derived'
+
+/**
+ * The key an assistant's write is deduplicated under when it sent none, or null when it is not
+ * deduplicated. Only writes that will be STAGED: replaying the first pending action for an
+ * identical request is always right, because staging changes nothing and the replay names the same
+ * action to approve. Draft-only calls (DRAFT_ONLY) run directly and are left alone — their result
+ * depends on the books at the time (a categorization re-run, a bank row pointed back to its first
+ * account, a regenerated document, a ledger text re-sent after its unknown account was added), so
+ * replaying a stale result would be wrong, and a duplicate draft still has to be posted through a
+ * call that stages. Per person (the key names them), across every assistant host they use.
+ */
+export async function assistantDedupeKey(call: AgentCall): Promise<{ key: string; fingerprint: string; scope: IdempotencyScope } | null> {
+  const { admin, tool, input, auth, access } = call
+  if (!shouldStage(tool, input, auth)) return null
+  // The entity as it will be staged, so "vehicle omitted" and "vehicle named" are the same request.
+  const vehicle = await resolveVehicleForTool(tool, admin, auth.fundId, input.vehicle as string | undefined, access)
+  const rest = vehicle ? Object.fromEntries(Object.entries(input).filter(([k]) => k !== 'vehicle')) : input
+  const fingerprint = requestFingerprint({ canonical: canonicalJson({ tool: tool.name, vehicle: vehicle || null, input: rest }) })
+  return {
+    key: `derived:${auth.userId ?? 'anyone'}:${fingerprint}`,
+    fingerprint,
+    scope: { fundId: auth.fundId, clientId: ASSISTANT_DEDUPE_CLIENT, userId: auth.userId },
+  }
+}
+
+/** A staged action's current status, or null when the result is not a staged one or cannot be read. */
+async function stagedStatus(admin: SupabaseClient, fundId: string, result: unknown): Promise<string | null> {
+  const id = (result as Partial<StagedResult> | null)?.pendingActionId
+  if (!(result as Partial<StagedResult> | null)?.staged || typeof id !== 'string') return null
+  const { data, error } = await (admin as any).from('pending_actions').select('status').eq('id', id).eq('fund_id', fundId).maybeSingle()
+  return error ? null : ((data as { status?: string } | null)?.status ?? null)
+}
+
+/** What a repeat of an already-staged request returns: the first action, and what to do about it. */
+function repeatOfStaged(prior: StagedResult, status: string | null): StagedResult & { duplicate: true; status: string | null } {
+  const id = prior.pendingActionId
+  const done = status === 'approved' || status === 'applied'
+  return {
+    ...prior,
+    duplicate: true,
+    status,
+    next: done
+      ? `Nothing was staged: this exact change was already requested (pending action "${id}") and has been ${status} — possibly from another chat. ` +
+        'Do NOT approve or send it again; tell the user it is already done. Only if the user explicitly confirms they want the same change ' +
+        'made a SECOND time, call the tool again with _meta.idempotencyKey (or the Idempotency-Key header) set to a new unique value.'
+      // The first staging's own instructions still apply (they differ for an admin-only change).
+      : `Nothing new was staged: this exact change is already waiting for approval as pending action "${id}" — possibly from another chat; ` +
+        'approve it once, not once per request. ' + prior.next + ' ' +
+        'Only if the user explicitly wants the same change made twice, call the tool again with _meta.idempotencyKey set to a new unique value.',
+  }
+}
+
 export class AgentCallError extends Error {
   constructor(message: string, readonly code: string) {
     super(message)
@@ -153,13 +215,27 @@ export async function runAgentTool(call: AgentCall): Promise<unknown> {
   const refusal = adminOnlyRefusal(tool, input, auth)
   if (refusal) throw new AgentCallError(refusal, 'ADMIN_ONLY')
 
-  const scope: IdempotencyScope = { fundId: auth.fundId, clientId: auth.keyId, userId: auth.userId }
-  const key = call.idempotencyKey ?? null
+  // An explicit key always wins; without one, an assistant's staged write gets a derived one.
+  const derived = call.idempotencyKey ? null : await assistantDedupeKey(call)
+  const scope: IdempotencyScope = derived?.scope ?? { fundId: auth.fundId, clientId: auth.keyId, userId: auth.userId }
+  const key = call.idempotencyKey ?? derived?.key ?? null
   const endpoint = `agent:${tool.name}`
   if (key) {
-    const outcome = await claimIdempotentRequest(admin, scope, {
-      endpoint, key, fingerprint: requestFingerprint({ tool: tool.name, input }),
-    })
+    const claim = (): Promise<IdempotencyOutcome> => claimIdempotentRequest(admin, scope, derived
+      ? { endpoint, key, fingerprint: derived.fingerprint, windowMs: ASSISTANT_DEDUPE_WINDOW_MS }
+      : { endpoint, key, fingerprint: requestFingerprint({ tool: tool.name, input }) })
+    let outcome = await claim()
+    if (derived && outcome.kind === 'replay') {
+      const prior = (outcome.body as { result?: unknown }).result ?? null
+      const status = await stagedStatus(admin, auth.fundId, prior)
+      // Declined, or tried and failed: nothing was applied, so asking again is a new request.
+      if (status === 'rejected' || status === 'failed') {
+        await releaseIdempotentRequest(admin, scope, { endpoint, key })
+        outcome = await claim()
+      } else if (prior && (prior as StagedResult).staged) {
+        return repeatOfStaged(prior as StagedResult, status)
+      }
+    }
     if (outcome.kind === 'replay') return (outcome.body as { result?: unknown }).result ?? null
     if (outcome.kind === 'conflict') throw new AgentCallError(outcome.message, outcome.code)
   }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import type { V1Principal } from './principal'
 import {
+  canonicalJson,
   claimIdempotentRequest,
   completeIdempotentRequest,
   idempotencyKeyFrom,
@@ -165,5 +166,12 @@ describe('releasing a claim', () => {
     expect(db.rows.size).toBe(0)
     const retry = await claimIdempotentRequest(db.admin, principal, { endpoint: ENDPOINT, key: 'k1', fingerprint })
     expect(retry).toEqual({ kind: 'proceed' })
+  })
+})
+
+describe('canonicalJson', () => {
+  it('hashes the same input the same whatever its key order, at any depth', () => {
+    expect(canonicalJson({ b: 1, a: { d: [{ y: 1, x: 2 }], c: null } })).toBe(canonicalJson({ a: { c: null, d: [{ x: 2, y: 1 }] }, b: 1 }))
+    expect(canonicalJson({ a: [1, 2] })).not.toBe(canonicalJson({ a: [2, 1] }))
   })
 })

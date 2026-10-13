@@ -39,11 +39,24 @@ interface StoredRow {
   status: 'in_progress' | 'completed'
   response_status: number | null
   response_body: Record<string, unknown> | null
+  created_at?: string | null
 }
 
 /** What the caller asked for, condensed. A retry must match it; anything else is a client bug. */
 export function requestFingerprint(parts: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+}
+
+/** JSON with object keys sorted at every depth, so the same input always hashes the same. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortKeys(value))
+}
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value as object).sort().map(k => [k, sortKeys((value as Record<string, unknown>)[k])]))
+  }
+  return value
 }
 
 export function idempotencyKeyFrom(req: Request): string | null {
@@ -55,7 +68,16 @@ export function idempotencyKeyFrom(req: Request): string | null {
 export async function claimIdempotentRequest(
   admin: SupabaseClient,
   principal: IdempotencyScope,
-  args: { endpoint: string; key: string; fingerprint: string },
+  args: {
+    endpoint: string; key: string; fingerprint: string
+    /**
+     * Treat a claim older than this as gone: delete it and claim afresh. For keys the server
+     * derives itself (lib/agent/dispatch.ts), which must expire on their own — nothing sweeps the
+     * table, and an identical request a week later is a new request, not a retry.
+     */
+    windowMs?: number
+  },
+  retried = false,
 ): Promise<IdempotencyOutcome> {
   const identity = {
     fund_id: principal.fundId,
@@ -78,10 +100,18 @@ export async function claimIdempotentRequest(
 
   const { data, error: readError } = await admin
     .from('api_idempotency_keys')
-    .select('fingerprint, status, response_status, response_body')
+    .select('fingerprint, status, response_status, response_body, created_at')
     .match(identity)
     .maybeSingle()
   if (readError) throw new Error(readError.message)
+
+  const stale = (data as StoredRow | null)?.created_at
+  if (args.windowMs !== undefined && !retried && stale && Date.now() - Date.parse(stale) > args.windowMs) {
+    // Expired. Delete exactly that claim (a concurrent request may already have replaced it) and
+    // claim again, once; a second collision is a live claim and is handled as one.
+    await admin.from('api_idempotency_keys').delete().match({ ...identity, created_at: stale })
+    return claimIdempotentRequest(admin, principal, args, true)
+  }
 
   // Gone between the insert and the read — a sweep, or a delete. Treat it as contention rather
   // than re-executing a write we cannot prove is safe.

@@ -159,7 +159,8 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'allocation',
-    description: 'Compute and post a period allocation or period close: management_fee, expense, gain, distribution, carry, or close_period.',
+    description: 'Compute and post a period allocation or period close: management_fee, expense, gain, distribution, carry, or close_period. ' +
+      'Idempotent: an identical entry (same action, date and lines) already in the books is refused, naming it; a preview says so as alreadyBooked.',
     scope: 'write',
     inputSchema: {
       type: 'object',
