@@ -318,8 +318,24 @@ curl -s $URL/api/agent -H "Authorization: Bearer $KEY" -H 'Content-Type: applica
 - **`aiMode: "assistant"`** records that the fund runs with no server AI key, so the checklist stops asking for one. See [AI without a server key](#ai-without-a-server-key).
 
 AI provider keys and inbound email (Postmark or Mailgun) involve secrets or third-party accounts,
-so they are set in Settings, or for the AI key, by the bootstrap script. An AI key is optional:
+so they never go through a chat. An AI key is optional:
 see [AI without a server key](#ai-without-a-server-key).
+
+**Keys in the environment, so you never open Settings.** Every key a fund can save in Settings can
+instead be set as an environment variable on the deployment: in `.env` for a self-hosted install, or
+in your host's environment settings (on Vercel, Project → Settings → Environment Variables). The
+variables are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `RESEND_API_KEY`,
+`POSTMARK_SERVER_TOKEN`, `MAILGUN_API_KEY`, `MAILGUN_WEBHOOK_SIGNING_KEY`, `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` (all listed in `.env.example`). A key saved in Settings wins, and the environment
+fills in when Settings has none. The variables apply to every fund on the deployment and take effect
+after a redeploy.
+
+From chat, `environment_status` tells an admin which credentials are set and where (Settings, the
+environment, or missing), with the variable name for each, and never a value. `update_fund_connections`
+sets the non-secret half: the AI provider and model, the outbound and inbound email providers, the sender
+name and address, the Postmark inbound address, the Mailgun domains and the Google client id. It refuses
+anything that looks like a key. So a fund can be connected end to end by adding variables to `.env` and
+asking the assistant to do the rest.
 
 ### Verify your setup
 

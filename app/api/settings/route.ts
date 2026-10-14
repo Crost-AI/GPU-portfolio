@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { credentialSources, hasCredential } from '@/lib/credentials/env'
 import { expireTag } from '@/lib/cache/tags'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -89,14 +90,14 @@ export async function GET() {
     signInTitle: settings?.sign_in_title ?? null,
     postmarkInboundAddress: settings?.postmark_inbound_address ?? '',
     postmarkWebhookToken: webhookToken,
-    hasClaudeKey: !!settings?.claude_api_key_encrypted,
+    hasClaudeKey: hasCredential(settings, 'anthropic'),
     claudeModel: settings?.claude_model ?? 'claude-sonnet-4-6',
-    hasOpenAIKey: !!settings?.openai_api_key_encrypted,
+    hasOpenAIKey: hasCredential(settings, 'openai'),
     openaiModel: settings?.openai_model ?? 'gpt-4o',
     defaultAIProvider: settings?.default_ai_provider ?? 'anthropic',
     // Ships in 20261013170000_fund_settings_ai_mode.sql; absent, it reads as not chosen.
     aiMode: settings?.ai_mode ?? null,
-    hasOpenRouterKey: !!settings?.openrouter_api_key_encrypted,
+    hasOpenRouterKey: hasCredential(settings, 'openrouter'),
     openrouterModel: settings?.openrouter_model ?? '',
     openrouterBaseUrl: settings?.openrouter_base_url ?? '',
     retainResolvedReviews: settings?.retain_resolved_reviews ?? true,
@@ -105,7 +106,7 @@ export async function GET() {
     googleDriveConnected: !!settings?.google_refresh_token_encrypted,
     googleDriveFolderId: settings?.google_drive_folder_id ?? null,
     googleDriveFolderName: settings?.google_drive_folder_name ?? null,
-    hasGoogleCredentials: !!(settings?.google_client_id && settings?.google_client_secret_encrypted),
+    hasGoogleCredentials: hasCredential(settings, 'google_client_id') && hasCredential(settings, 'google_client_secret'),
     googleClientId: settings?.google_client_id ?? '',
     aiSummaryPrompt: settings?.ai_summary_prompt ?? null,
     outboundEmailProvider: settings?.outbound_email_provider ?? null,
@@ -114,12 +115,14 @@ export async function GET() {
     approvalEmailBody: settings?.approval_email_body ?? null,
     systemEmailFromName: settings?.system_email_from_name ?? null,
     systemEmailFromAddress: settings?.system_email_from_address ?? null,
-    hasResendKey: !!settings?.resend_api_key_encrypted,
-    hasPostmarkServerToken: !!settings?.postmark_server_token_encrypted,
+    hasResendKey: hasCredential(settings, 'resend'),
+    hasPostmarkServerToken: hasCredential(settings, 'postmark_server'),
     inboundEmailProvider: settings?.inbound_email_provider ?? null,
     mailgunInboundDomain: settings?.mailgun_inbound_domain ?? '',
-    hasMailgunSigningKey: !!settings?.mailgun_signing_key_encrypted,
-    hasMailgunApiKey: !!settings?.mailgun_api_key_encrypted,
+    hasMailgunSigningKey: hasCredential(settings, 'mailgun_signing'),
+    hasMailgunApiKey: hasCredential(settings, 'mailgun_api'),
+    // Which of those come from the deployment's environment rather than Settings (presence only).
+    credentialSources: credentialSources(settings),
     mailgunSendingDomain: settings?.mailgun_sending_domain ?? '',
     fileStorageProvider: settings?.file_storage_provider ?? null,
     analyticsFathomSiteId: settings?.analytics_fathom_site_id ?? null,

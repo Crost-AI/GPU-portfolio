@@ -42,6 +42,8 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 
 Each of these is a choice, with its reason. Revisit one only if the reason no longer holds.
 
+**Update:** secrets no longer need the web app either. Every key can be set in the deployment's environment (`.env`), `environment_status` says which are set, and `update_fund_connections` sets the non-secret provider choices from chat. See DOCS, "Keys in the environment".
+
 | Area | Action | Reason |
 |---|---|---|
 | acct-capital-tax | Delete a wrongly-entered commitment event (both legs of a transfer) | deliberate-ish: admin-only and destructive; lp_correct_commitment covers most fixes. No explicit reason recorded. |
