@@ -25,10 +25,7 @@ select distinct on (metric_id)
     + interval '1 month' - interval '1 day')::date as period_end
 from public.metric_values
 where value_number is not null
-order by metric_id,
-  (make_date(period_year, coalesce(period_month, period_quarter * 3, 12), 1)
-    + interval '1 month' - interval '1 day')::date desc,
-  created_at desc;
+order by metric_id, period_end desc, created_at desc;
 
 -- Any metric, numeric or text: the period a company last reported anything for.
 create or replace view public.metric_values_latest_by_company
@@ -38,10 +35,7 @@ select distinct on (company_id)
   (make_date(period_year, coalesce(period_month, period_quarter * 3, 12), 1)
     + interval '1 month' - interval '1 day')::date as period_end
 from public.metric_values
-order by company_id,
-  (make_date(period_year, coalesce(period_month, period_quarter * 3, 12), 1)
-    + interval '1 month' - interval '1 day')::date desc,
-  created_at desc;
+order by company_id, period_end desc, created_at desc;
 
 -- Grants — required from 2026-05-30 onward for the Data API to see a relation. Read-only views;
 -- the base table's RLS (via security_invoker) scopes the rows each role gets back.

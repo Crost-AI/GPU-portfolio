@@ -54,11 +54,12 @@ describe('metric_values_latest views', () => {
     .replace(/--.*$/gm, '').replace(/\s+/g, ' ').toLowerCase()
   const END = "(make_date(period_year, coalesce(period_month, period_quarter * 3, 12), 1) + interval '1 month' - interval '1 day')::date"
 
-  it('order by the period end periodEnd() mirrors, then created_at', () => {
+  it('compute the period end periodEnd() mirrors, and order by it, then created_at', () => {
+    expect(sql.split(`${END} as period_end`)).toHaveLength(3)   // computed once in each view
     expect(sql).toContain(`select distinct on (metric_id)`)
-    expect(sql).toContain(`order by metric_id, ${END} desc, created_at desc`)
+    expect(sql).toContain(`order by metric_id, period_end desc, created_at desc`)
     expect(sql).toContain(`select distinct on (company_id)`)
-    expect(sql).toContain(`order by company_id, ${END} desc, created_at desc`)
+    expect(sql).toContain(`order by company_id, period_end desc, created_at desc`)
   })
 
   it('read as the caller, so metric_values RLS still scopes them', () => {
