@@ -25,38 +25,31 @@ function safeTokenCompare(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
+  // Rate limit inbound webhook, in two buckets. First a coarse ceiling per sending IP (600/min),
+  // before the body is even read, so malformed requests are bounded too. Not tighter: every
+  // delivery comes from Postmark's small IP pool, so an IP bucket is one budget shared by every
+  // fund on the deployment. Then 60/min per fund, counted in handleInbound only once the webhook
+  // token has resolved the fund — so a caller without the token can only ever spend the ceiling,
+  // never a fund's budget, whatever recipient it names.
+  const ceiling = await rateLimit({ key: `inbound:ip:${getClientIp(req)}`, limit: 600, windowSeconds: 60 })
+  if (ceiling) return ceiling
+
   let payload: PostmarkPayload
-  let inbox: string
   try {
     payload = await req.json()
     if (!payload || typeof payload !== 'object') throw new Error('payload is not an object')
-    // The body is untyped JSON: a recipient that is there but not a string is malformed too, not
-    // something to normalise.
-    const recipient: unknown = payload.OriginalRecipient || payload.To || ''
-    if (typeof recipient !== 'string') throw new Error('recipient is not a string')
-    inbox = recipient.trim().toLowerCase()
+    // The body is untyped JSON: an address field that is there but not a string is malformed too.
+    for (const field of ['OriginalRecipient', 'To', 'From'] as const) {
+      if (payload[field] != null && typeof payload[field] !== 'string') throw new Error(`${field} is not a string`)
+    }
   } catch (err) {
     console.error('[inbound-email] Malformed payload:', err)
     return NextResponse.json({ ok: true })
   }
 
-  // Rate limit inbound webhook: 60 per minute per recipient inbox, per sending IP. Not per IP
-  // alone: every delivery comes from Postmark's small IP pool, so an IP bucket is one budget shared
-  // by every fund on the deployment. Not per inbox alone: the recipient is the caller's to write,
-  // and this runs before the token is checked, so anyone knowing a fund's address could spend its
-  // budget and have Postmark's real deliveries refused. Keyed on both, a caller only spends its own.
-  // The IP still gets a looser ceiling (600/min), so rotating the recipient is not unlimited. A
-  // payload naming no inbox routes nowhere, so it gets the IP bucket at the tight limit and needs no
-  // second check.
-  const ip = getClientIp(req)
-  const limited = inbox
-    ? (await rateLimit({ key: `inbound:to:${inbox}:ip:${ip}`, limit: 60, windowSeconds: 60 }))
-      ?? (await rateLimit({ key: `inbound:ip:${ip}`, limit: 600, windowSeconds: 60 }))
-    : await rateLimit({ key: `inbound:ip:${ip}`, limit: 60, windowSeconds: 60 })
-  if (limited) return limited
-
   try {
-    await handleInbound(req, payload)
+    const limited = await handleInbound(req, payload)
+    if (limited) return limited
   } catch (err) {
     console.error('[inbound-email] Unhandled error:', err)
   }
@@ -67,7 +60,8 @@ export async function POST(req: NextRequest) {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-async function handleInbound(req: NextRequest, payload: PostmarkPayload) {
+/** Returns the per-fund rate limit's 429 when it is spent; otherwise nothing, whatever happened. */
+async function handleInbound(req: NextRequest, payload: PostmarkPayload): Promise<NextResponse | void> {
   const supabase = createAdminClient()
   // Accept token from Authorization header (preferred) or query string (legacy/Postmark)
   const authHeader = req.headers.get('authorization')
@@ -85,6 +79,10 @@ async function handleInbound(req: NextRequest, payload: PostmarkPayload) {
     return
   }
   const { fundId, isGlobal } = fundInfo
+
+  // Per fund, and only now: the token has proved the caller is this fund's webhook.
+  const limited = await rateLimit({ key: `inbound:fund:${fundId}`, limit: 60, windowSeconds: 60 })
+  if (limited) return limited
 
   // Step 1b: Check if sender is a fund member (determines interaction extraction, bypasses authorized_senders)
   const fundMember = await checkFundMember(supabase, fundId, fromAddress)

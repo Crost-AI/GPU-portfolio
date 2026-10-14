@@ -2,12 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest, NextResponse } from 'next/server'
 
 /**
- * The inbound-email webhook is called by Postmark, from Postmark's small IP pool — so a rate limit
- * keyed on the client IP alone is one 60/min budget shared by every fund on the deployment. It is
- * keyed on the recipient inbox and the IP together — the inbox alone would let anyone who knows a
- * fund's address spend Postmark's budget for it before the token is checked — falling back to the
- * IP when the payload names no inbox, with a looser per-IP ceiling over the whole webhook so
- * rotating the recipient is not unlimited.
+ * The inbound-email webhook is called by Postmark, from Postmark's small IP pool — so a tight rate
+ * limit keyed on the client IP is one 60/min budget shared by every fund on the deployment. A
+ * coarse per-IP ceiling (600/min) runs first, before the body is read, so malformed requests are
+ * bounded too; the 60/min is per fund, counted only once the webhook token has resolved the fund,
+ * so a caller without the token can only ever spend the ceiling.
  *
  * And the per-fund inbound address matches case-insensitively, without the address ever acting as
  * a LIKE pattern.
@@ -18,6 +17,7 @@ const runPipeline = vi.fn(async () => {})
 let filters: { table: string; op: string; column: string; value: unknown }[] = []
 let storedAddress = 'Fund-ABC@Inbound.Test'
 let clientIp = '203.0.113.9'
+let inserts = 0
 
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: (config: { key: string; limit: number; windowSeconds: number }) => rateLimit(config),
@@ -41,7 +41,7 @@ function chain(table: string) {
     : []
   const q: any = {
     select: () => q,
-    insert: () => { rows = [{ id: 'email-1' }]; return q },
+    insert: () => { inserts++; rows = [{ id: 'email-1' }]; return q },
     update: () => q,
     eq: (column: string, value: unknown) => { filters.push({ table, op: 'eq', column, value }); return q },
     ilike: (column: string, value: string) => {
@@ -59,9 +59,9 @@ vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({ from: chain
 
 import { POST } from '@/app/api/inbound-email/route'
 
-const post = (body: string) => POST(new NextRequest('https://fund.test/api/inbound-email', {
+const post = (body: string, token = 'tok') => POST(new NextRequest('https://fund.test/api/inbound-email', {
   method: 'POST',
-  headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+  headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
   body,
 }))
 
@@ -74,74 +74,82 @@ beforeEach(() => {
   filters = []
   storedAddress = 'Fund-ABC@Inbound.Test'
   clientIp = '203.0.113.9'
+  inserts = 0
 })
 
 describe('the inbound-email rate limit', () => {
   const keys = () => rateLimit.mock.calls.map(([c]) => c)
+  const CEILING = { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 }
+  const FUND = { key: 'inbound:fund:fund-1', limit: 60, windowSeconds: 60 }
+  const refuse = (error: string) => async () => NextResponse.json({ error }, { status: 429 })
 
-  it('is keyed on the original recipient, normalised, under a looser per-IP ceiling', async () => {
-    await post(email({ OriginalRecipient: '  Fund-ABC@Inbound.Test ', To: 'someone-else@x.test' }))
-    expect(keys()).toEqual([
-      { key: 'inbound:to:fund-abc@inbound.test:ip:203.0.113.9', limit: 60, windowSeconds: 60 },
-      { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
-    ])
-  })
-
-  it('falls back to To when there is no original recipient', async () => {
-    await post(email({ To: 'Fund-ABC@inbound.test' }))
-    expect(keys()).toEqual([
-      { key: 'inbound:to:fund-abc@inbound.test:ip:203.0.113.9', limit: 60, windowSeconds: 60 },
-      { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
-    ])
-  })
-
-  it("falls back to the caller's IP, at the tight limit, when the payload names no inbox", async () => {
-    await post(email({}))
-    expect(keys()).toEqual([{ key: 'inbound:ip:203.0.113.9', limit: 60, windowSeconds: 60 }])
-  })
-
-  it("gives a caller elsewhere its own bucket for an inbox, not Postmark's", async () => {
-    // Before the token is checked, anyone can name a fund's inbox; they must not spend the budget
-    // Postmark's real deliveries to it draw on.
-    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
-    clientIp = '198.51.100.7'
-    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
-    expect(keys().filter(c => c.limit === 60).map(c => c.key)).toEqual([
-      'inbound:to:fund-abc@inbound.test:ip:203.0.113.9',
-      'inbound:to:fund-abc@inbound.test:ip:198.51.100.7',
-    ])
-  })
-
-  it('returns the first 429: a full inbox stops before the IP ceiling is counted', async () => {
-    rateLimit.mockImplementationOnce(async () => NextResponse.json({ error: 'inbox' }, { status: 429 }))
+  it('checks the per-IP ceiling, then — once the token resolves the fund — the per-fund bucket', async () => {
     const res = await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
-    expect(res.status).toBe(429)
-    expect(await res.json()).toEqual({ error: 'inbox' })
-    expect(keys()).toHaveLength(1)
+    expect(res.status).toBe(200)
+    expect(keys()).toEqual([CEILING, FUND])
+    expect(runPipeline).toHaveBeenCalledTimes(1)
+  })
+
+  it('keys the fund bucket on the fund, not on how the recipient was written', async () => {
+    await post(email({ To: 'FUND-ABC@inbound.test' }))
+    await post(email({ OriginalRecipient: ' fund-abc@INBOUND.test', To: 'someone-else@x.test' }))
+    expect(keys().filter(c => c.limit === 60)).toEqual([FUND])
+  })
+
+  it("never counts a fund's bucket for a caller without its token", async () => {
+    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }), 'wrong')
+    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }), '')
+    await post(email({ OriginalRecipient: 'nobody@inbound.test' }))
+    await post(email({}))
+    expect(keys()).toEqual([CEILING, CEILING, CEILING, CEILING])
     expect(runPipeline).not.toHaveBeenCalled()
   })
 
-  it('refuses when the IP ceiling is full even though the inbox has room', async () => {
-    rateLimit
-      .mockImplementationOnce(async () => null)
-      .mockImplementationOnce(async () => NextResponse.json({ error: 'ip' }, { status: 429 }))
+  it('returns the first 429: a full ceiling stops before the body is read or the fund counted', async () => {
+    rateLimit.mockImplementationOnce(refuse('ip'))
     const res = await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
     expect(res.status).toBe(429)
     expect(await res.json()).toEqual({ error: 'ip' })
+    expect(keys()).toEqual([CEILING])
     expect(runPipeline).not.toHaveBeenCalled()
   })
 
-  it('answers 200 to a malformed body and runs nothing', async () => {
-    for (const body of [
-      '{not json', 'null', '42',
-      // A recipient that is there but not a string.
-      email({ To: 42 }), email({ OriginalRecipient: {} }), email({ OriginalRecipient: ['fund-abc@inbound.test'] }),
-    ]) {
+  it("answers a spent fund bucket with its 429, before anything is stored", async () => {
+    rateLimit.mockImplementationOnce(async () => null).mockImplementationOnce(refuse('fund'))
+    const res = await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
+    expect(res.status).toBe(429)
+    expect(await res.json()).toEqual({ error: 'fund' })
+    expect(keys()).toEqual([CEILING, FUND])
+    expect(inserts).toBe(0)
+    expect(runPipeline).not.toHaveBeenCalled()
+  })
+
+  const MALFORMED = [
+    '{not json', 'null', '42',
+    // An address field that is there but not a string.
+    email({ To: 42 }), email({ OriginalRecipient: {} }), email({ OriginalRecipient: ['fund-abc@inbound.test'] }),
+    email({ OriginalRecipient: 'fund-abc@inbound.test', From: { Email: 'ceo@startup.test' } }),
+  ]
+
+  it('answers 200 to a malformed body and runs nothing, having counted it against the ceiling', async () => {
+    for (const body of MALFORMED) {
       const res = await post(body)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
     }
-    expect(rateLimit).not.toHaveBeenCalled()
+    expect(keys()).toEqual(MALFORMED.map(() => CEILING))
+    expect(runPipeline).not.toHaveBeenCalled()
+  })
+
+  it('throttles malformed requests once the ceiling is spent, without reading the body', async () => {
+    rateLimit.mockImplementation(refuse('ip'))
+    for (const body of MALFORMED) {
+      const req = new NextRequest('https://fund.test/api/inbound-email', { method: 'POST', body })
+      const json = vi.spyOn(req, 'json')
+      const res = await POST(req)
+      expect(res.status).toBe(429)
+      expect(json).not.toHaveBeenCalled()
+    }
     expect(runPipeline).not.toHaveBeenCalled()
   })
 })
