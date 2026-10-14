@@ -342,6 +342,33 @@ Neither `capital_contribution` nor equity funding is an intercompany charge: fun
 equity, not a balance one side can demand back, and it is booked as an ordinary entry against
 members' capital on both sets of books.
 
+## Receipts and partnership-expense invoices
+
+A management company pays a fund's expenses (filing fees, the audit, legal on a closing) and bills
+them back each quarter. Two pieces make that auditable.
+
+**Receipts** are evidence, never postings. One arrives by email (a member's mail to the inbound
+address with `Receipt:` at the start of the subject, or to the `+receipts` address), by upload on
+the entity's Receipts page or in the entry editor, or from an assistant (`add_receipt`). It is read
+(vendor, date, total) and attached to the entry it supports: the entry the bank feed drafted, one
+typed by hand, or a **draft** made from the receipt when the charge is not on the books. A receipt
+attached to an undrafted bank transaction follows it onto its entry.
+
+**Partnership invoices.** An entry on the payer's books tagged *partnership expense, bill to
+`<fund>`* (`journal_entries.rebill_vehicle_id`, optionally `rebill_amount`) is billed on that
+fund's quarterly invoice. Creating the invoice freezes every **posted**, tagged, unbilled entry in
+the quarter and stamps each with the invoice id, so an expense is billed once. Issuing it books one
+intercompany charge of kind `expense_reimbursement`:
+
+```
+payee (the manco)  Dr 1900-<fund>               Cr 4100 Expense reimbursement income
+payer (the fund)   Dr 5100 Partnership expenses  Cr 2900-<manco>
+```
+
+and the fund's payment is that charge's settlement on the manco's Intercompany tab. The manco's
+own books therefore carry the expense and the reimbursement income, gross. The PDF
+(`/api/accounting/partnership-invoices/<id>/pdf`) lists every expense and appends its receipts.
+
 ## What a management company does NOT get
 
 No capital accounts, no capital calls, no schedule of investments, no allocation terms, no

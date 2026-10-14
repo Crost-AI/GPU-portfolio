@@ -8,6 +8,7 @@ import { useLedgerFetch } from '@/components/accounting-vehicle'
 import { AccountPicker, type PickerAccount } from '@/components/accounting/account-picker'
 import { ENTRY_SOURCE_TYPES, ENTRY_SOURCE_TYPE_LABELS, isEntrySourceType } from '@/lib/accounting/source-types'
 import { reversedEntryId } from '@/lib/accounting/reversal'
+import { EntryReceipts } from '@/components/accounting/entry-receipts'
 
 interface Acct { id: string; code: string; name: string; type?: string; lp_entity_id: string | null; is_active?: boolean }
 interface PostingRow { id: string; account_id: string; amount: number; lp_entity_id: string | null }
@@ -88,6 +89,8 @@ export function EntryModal({
   const [copyOf, setCopyOf] = useState<string | null>(null)
   // The Reverse control on a posted entry: a date, then a choice of draft or post.
   const [reverseDate, setReverseDate] = useState<string | null>(null)
+  // The partnership-expense tag, saved on its own by EntryReceipts.
+  const [rebill, setRebill] = useState<{ vehicleId: string | null; amount: number | null; invoiced: boolean }>({ vehicleId: null, amount: null, invoiced: false })
 
   useEffect(() => {
     Promise.all([
@@ -104,6 +107,7 @@ export function EntryModal({
         setVendorId(entry.vendor_id ?? null)
         setAdjusting(entry.adjusting === true)
         setSourceType(entry.source_type || 'manual')
+        setRebill({ vehicleId: entry.rebill_vehicle_id ?? null, amount: entry.rebill_amount != null ? Number(entry.rebill_amount) : null, invoiced: !!entry.partnership_invoice_id })
         setMeta({ status: entry.status, postedAt: entry.posted_at ?? null, sourceRef: entry.source_ref ?? null, reversedBy: entry.reversed_by ?? null, ownedBy: entry.owned_by ?? [] })
         setLines((entry.journal_postings ?? []).map((p: PostingRow) => {
           const amt = Number(p.amount)
@@ -396,6 +400,11 @@ export function EntryModal({
                 </tr>
               </tfoot>
             </table>
+
+            {/* The evidence and the rebill tag, once the entry exists (and not on the tax book). */}
+            {id && !taxBook && (
+              <EntryReceipts key={`${id}:${rebill.vehicleId ?? ''}`} entryId={id} rebillVehicleId={rebill.vehicleId} rebillAmount={rebill.amount} invoiced={rebill.invoiced} />
+            )}
 
             {(editable || adjusting) && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground">

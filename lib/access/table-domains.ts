@@ -194,6 +194,8 @@ export const TABLE_RULES: Record<string, TableRule> = {
   // its own tables or teaching the RLS predicate about vehicle kind; until then this table — the one
   // thing that is manco-only by construction — is gated where it can be.
   intercompany_transactions: { scope: 'fund', domain: 'management_company' },
+  receipts: { scope: 'service', note: 'Receipts behind journal entries; served by the receipts routes, which resolve the receipt\'s entity (management-company grant for a manco\'s) or require every-entity visibility for an unassigned one.' },
+  partnership_invoices: { scope: 'service', note: 'Quarterly partnership-expense invoices between two entities; served by the invoices route, which checks the caller may see both.' },
 
   // ---- LP capital --------------------------------------------------------------------------
   lp_entities: { scope: 'fund', domain: 'lp_capital' },
