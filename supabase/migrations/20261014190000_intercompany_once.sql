@@ -23,6 +23,23 @@
 -- a closed period, whatever column changes. `settleIntercompanyCharge` recognises the old ref
 -- instead, so a charge whose cash was booked under it is finished, never posted again.
 --
+-- INVOICES HALF-ISSUED BEFORE THIS RELEASE ARE NOT DETECTED. A pre-release issue that booked the
+-- fund and then failed to mark the invoice left a charge with partnership_invoice_id null (the
+-- column did not exist), and nothing ties it to its invoice, so there is no link to backfill and
+-- issuing that invoice again books it a second time. To list candidates before anyone re-issues
+-- (a draft invoice whose amount and date match an unlinked fund-side charge):
+--
+--   select i.id invoice_id, i.invoice_number, i.amount, i.invoice_date, c.id charge_id, c.from_entry_id
+--     from partnership_invoices i
+--     join intercompany_transactions c
+--       on c.fund_id = i.fund_id and c.from_vehicle_id = i.to_vehicle_id and c.to_vehicle_id = i.from_vehicle_id
+--      and c.kind = 'expense_reimbursement' and c.amount = i.amount and c.charge_date = i.invoice_date
+--      and c.partnership_invoice_id is null and c.status <> 'void'
+--    where i.status = 'draft';
+--
+-- Mark each match issued by hand (status 'issued', intercompany_transaction_id = charge_id), or void
+-- its fund entry and the charge, before the invoice is issued again.
+--
 -- Existing tables: the Data API grants on both are already in place.
 
 alter table public.intercompany_transactions

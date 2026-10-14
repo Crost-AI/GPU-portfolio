@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // An in-memory Supabase with just enough PostgREST to run the real issuance, settlement and
 // balance code: filters, order, range, the 1000-row cap, and the two unique indexes from
 // 20261014190000 (one live charge per invoice, one live settlement entry per vehicle).
+//
+// The settlement index is modelled inside the persistEntry mock below, not by the fake database, so
+// its real predicate (`source_ref like 'intercompany-settlement:%' and status <> 'void'`) is checked
+// only by reading the migration. The phased tests cover the race the indexes cannot: a posted header
+// that is not yet a finished posting.
 type Row = Record<string, any>
 const FUND = 'fund'
 const MANCO = 'manco-vehicle'
@@ -15,7 +20,7 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleNameById: async (_a: unknown, _f: string, id: string) => NAMES[id] ?? null,
 }))
 vi.mock('@/lib/accounting/persist', () => ({ persistEntry: mocks.persist, liveEntryByRef: mocks.liveEntryByRef }))
-import { issuePartnershipInvoice } from '@/lib/accounting/partnership-invoices'
+import { issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
 import { intercompanyBalances, settleIntercompanyCharge } from '@/lib/accounting/intercompany'
 
 function fakeDb(tables: Record<string, Row[]>) {
@@ -72,6 +77,7 @@ function fakeDb(tables: Record<string, Row[]>) {
       eq: (c: string, v: unknown) => { filters.push(r => r[c] === v); return q },
       neq: (c: string, v: unknown) => { filters.push(r => r[c] !== v); return q },
       in: (c: string, vs: unknown[]) => { filters.push(r => vs.includes(r[c])); return q },
+      like: (c: string, pattern: string) => { const re = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`); filters.push(r => re.test(String(r[c] ?? ''))); return q },
       is: (c: string, v: unknown) => { filters.push(r => (r[c] ?? null) === v); return q },
       order: (c: string) => { order = c; return q },
       range: (lo: number, hi: number) => { range = [lo, hi]; return q },
@@ -203,20 +209,104 @@ describe('re-issuing an invoice whose charge already exists', () => {
     expect(db.tables.partnership_invoices[0].status).toBe('draft')
   })
 
-  it('repairs a charge whose link to its fund entry failed, without posting again', async () => {
+  it('never adopts a posted fund entry whose issue is still allocating it', async () => {
     const db = world()
+    // Request A: the fund entry is written and flipped to posted, then allocation runs (held here)
+    // and fails, and persistEntry deletes the entry. A posted header is not a finished posting.
+    let reached!: () => void
+    const atAllocation = new Promise<void>(r => { reached = r })
+    let finishAllocation!: () => void
+    const allocation = new Promise<void>(r => { finishAllocation = r })
+    const persist = mocks.persist.getMockImplementation()!
+    mocks.persist.mockImplementationOnce(async (...args: any[]) => {
+      const res = await persist(...args)
+      reached()
+      await allocation
+      db.tables.journal_entries = db.tables.journal_entries.filter(e => e.id !== res.entryId)
+      return { error: 'Entry was not posted because its partner allocation failed: no bridge account', allocationFailed: true }
+    })
+
+    const a = issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    await atAllocation
+    expect(fundEntry(db).status).toBe('posted')
+
+    // Request B sees the charge and A's posted entry, and must not take it as booked.
+    const b = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(b).toMatchObject({ status: 409, error: expect.stringContaining('another request') })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    expect(db.tables.intercompany_transactions[0].from_entry_id ?? null).toBeNull()
+
+    finishAllocation()
+    expect(await a).toMatchObject({ error: expect.stringContaining('allocation failed') })
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'draft', intercompany_transaction_id: null })
+    expect(db.tables.intercompany_transactions).toHaveLength(0)
+    expect(db.tables.journal_entries.filter(e => e.vehicle_id === FUNDV && String(e.source_ref).startsWith('intercompany:'))).toHaveLength(0)
+  })
+
+  it('retries a failed link once, and finishes when the retry lands', async () => {
+    const db = world()
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
+
+    const res = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    const charge = db.tables.intercompany_transactions[0]
+    expect(res).toEqual({ ok: true, intercompanyTransactionId: charge.id })
+    expect(charge.from_entry_id).toBe(fundEntry(db).id)
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+  })
+
+  it('unwinds the fund entry and the charge when the link cannot be written, leaving no orphan', async () => {
+    const db = world()
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
     db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
 
     const first = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
     expect(first).toMatchObject({ error: expect.stringContaining('could not be linked') })
-    expect(db.tables.intercompany_transactions[0].from_entry_id).toBeUndefined()
+    expect(db.tables.intercompany_transactions).toHaveLength(0)
+    expect(db.tables.journal_entries.filter(e => String(e.source_ref).startsWith('intercompany:'))).toHaveLength(0)
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
 
+    // Nothing left behind, so issuing again simply books it.
     const retry = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
-    const charge = db.tables.intercompany_transactions[0]
-    expect(retry).toEqual({ ok: true, intercompanyTransactionId: charge.id })
-    expect(mocks.persist).toHaveBeenCalledTimes(1)
-    expect(charge.from_entry_id).toBe(fundEntry(db).id)
-    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', intercompany_transaction_id: charge.id })
+    expect(retry).toMatchObject({ ok: true })
+    expect(db.tables.partnership_invoices[0].status).toBe('issued')
+  })
+})
+
+describe('voiding a draft invoice that carries a charge', () => {
+  const orphan = (db: ReturnType<typeof world>) => db.tables.intercompany_transactions.push({
+    id: 'ic-orphan', fund_id: FUND, from_vehicle_id: FUNDV, to_vehicle_id: MANCO, kind: 'expense_reimbursement',
+    charge_date: '2026-04-05', amount: 100, status: 'accrued', partnership_invoice_id: 'inv-1', from_entry_id: null,
+  })
+
+  it('refuses while an unlinked charge has a live entry on the fund, naming it', async () => {
+    const db = world()
+    orphan(db)
+    db.tables.journal_entries.push({ id: 'fund-orphan', fund_id: FUND, vehicle_id: FUNDV, book: 'actual', status: 'posted', entry_date: '2026-04-05', source_ref: 'intercompany:ic-orphan' })
+
+    const res = await voidPartnershipInvoice(db.admin, FUND, 'inv-1')
+    expect(res).toMatchObject({ status: 409, error: expect.stringContaining('fund-orphan') })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
+  })
+
+  it('voids the charge with the invoice once nothing is booked behind it', async () => {
+    const db = world()
+    orphan(db)
+
+    expect(await voidPartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
+    expect(db.tables.partnership_invoices[0].status).toBe('void')
+    expect(db.tables.intercompany_transactions[0].status).toBe('void')
+  })
+
+  it('refuses while a linked charge\'s fund entry is live', async () => {
+    const db = world()
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+
+    const res = await voidPartnershipInvoice(db.admin, FUND, 'inv-1')
+    expect(res).toMatchObject({ status: 409, error: expect.stringContaining('Void that entry first') })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
   })
 })
 
@@ -246,7 +336,7 @@ describe('settling an intercompany charge', () => {
     ])
 
     expect(results.filter(r => 'ok' in r)).toHaveLength(1)
-    expect(results.find(r => 'error' in r)).toMatchObject({ error: expect.stringContaining('another request') })
+    expect(results.find(r => 'error' in r)).toMatchObject({ error: expect.any(String) })
     // One payee entry and one payer entry: the loser posted nothing on the payer's books.
     expect(settlements(db).map(e => e.vehicle_id).sort()).toEqual([FUNDV, MANCO])
     const row = db.tables.intercompany_transactions[0]
@@ -310,15 +400,60 @@ describe('settling an intercompany charge', () => {
     expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
   })
 
-  it('refuses rather than posting when only one side of a settlement is on the books', async () => {
+  it('names an unlinked settlement entry left by a request that died before linking it', async () => {
     const db = world()
     accrued(db)
+    // Posted by persistEntry, then the request died before writing to_settlement_entry_id.
     db.tables.journal_entries.push({ id: 'orphan', fund_id: FUND, vehicle_id: MANCO, book: 'actual', status: 'posted', entry_date: '2026-05-01', source_ref: 'intercompany-settlement:ic-1' })
 
-    const res = await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
-    expect(res).toMatchObject({ error: expect.stringContaining('orphan') })
+    const res = await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-02')
+    expect(res).toMatchObject({ error: expect.stringMatching(/orphan, dated 2026-05-01.*void that entry/) })
+    // The index refused the second payee entry; nothing was posted on the payer's books either.
+    expect(settlements(db).map(e => e.id)).toEqual(['orphan'])
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued' })
+    expect(db.tables.intercompany_transactions[0].to_settlement_entry_id ?? null).toBeNull()
+  })
+
+  it('finishes from linked ids without posting when both sides are linked but the row is accrued', async () => {
+    const db = world()
+    accrued(db)
+    db.tables.journal_entries.push(
+      { id: 'set-payee', fund_id: FUND, vehicle_id: MANCO, book: 'actual', status: 'posted', entry_date: '2026-05-01', source_ref: 'intercompany-settlement:ic-1' },
+      { id: 'set-payer', fund_id: FUND, vehicle_id: FUNDV, book: 'actual', status: 'posted', entry_date: '2026-05-01', source_ref: 'intercompany-settlement:ic-1' },
+    )
+    Object.assign(db.tables.intercompany_transactions[0], { to_settlement_entry_id: 'set-payee', from_settlement_entry_id: 'set-payer' })
+
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-06-30')).toEqual({ ok: true })
     expect(mocks.persist).not.toHaveBeenCalled()
-    expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'settled', settled_date: '2026-05-01' })
+  })
+
+  it('posts only the missing side when one side is linked, dated like the side already booked', async () => {
+    const db = world()
+    accrued(db)
+    db.tables.journal_entries.push({ id: 'set-payee', fund_id: FUND, vehicle_id: MANCO, book: 'actual', status: 'posted', entry_date: '2026-05-01', source_ref: 'intercompany-settlement:ic-1' })
+    db.tables.intercompany_transactions[0].to_settlement_entry_id = 'set-payee'
+
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-06-30')).toEqual({ ok: true })
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+    const payer = settlements(db).find(e => e.vehicle_id === FUNDV)!
+    expect(payer.entry_date).toBe('2026-05-01')
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({
+      status: 'settled', settled_date: '2026-05-01', to_settlement_entry_id: 'set-payee', from_settlement_entry_id: payer.id,
+    })
+  })
+
+  it('unwinds and unlinks the payee side when the payer side fails', async () => {
+    const db = world()
+    accrued(db)
+    const persist = mocks.persist.getMockImplementation()!
+    mocks.persist.mockImplementation(async (...args: any[]) =>
+      args[2] === 'Fund I' ? { error: 'The period covering 2026-05-01 is closed' } : persist(...args))
+
+    const res = await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    expect(res).toMatchObject({ error: expect.stringContaining('closed') })
+    expect(settlements(db)).toHaveLength(0)
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', to_settlement_entry_id: null })
   })
 })
 

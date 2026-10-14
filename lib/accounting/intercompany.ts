@@ -389,7 +389,10 @@ export async function postIntercompanyCharge(
   }
   const chargeId = (row as any).id as string
 
-  const cleanup = async () => { await admin.from('intercompany_transactions' as any).delete().eq('id', chargeId) }
+  // Only while nothing is linked: a linked charge names posted entries and is never deleted here.
+  const cleanup = async () => {
+    await admin.from('intercompany_transactions' as any).delete().eq('id', chargeId).is('from_entry_id', null)
+  }
 
   // Each side's own intercompany sub-account for the OTHER side.
   let payeeAccts: SideAccounts | { error: string }
@@ -426,15 +429,12 @@ export async function postIntercompanyCharge(
   if ('error' in payerRes) {
     // Both sides or neither. A charge that exists on one ledger only is exactly the drift this
     // module was written to prevent, so unwind rather than report a partial success.
-    if (payeeEntryId) {
-      await admin.from('journal_postings' as any).delete().eq('journal_entry_id', payeeEntryId)
-      await admin.from('journal_entries' as any).delete().eq('id', payeeEntryId)
-    }
+    if (payeeEntryId) await unwindEntry(admin, args.fundId, payeeEntryId)
     await cleanup()
     return { error: `${args.payer.name}: ${payerRes.error}` }
   }
 
-  const { error: linkErr } = await admin
+  const link = () => admin
     .from('intercompany_transactions' as any)
     .update({
       to_entry_id: payeeEntryId,
@@ -442,17 +442,30 @@ export async function postIntercompanyCharge(
       // A cash kind moves the money as it is recorded; there is nothing left to settle.
       ...(isAccruingKind(args.kind) ? {} : { status: 'settled', settled_date: args.chargeDate }),
     })
-    .eq('id', chargeId)
-  if (linkErr) {
-    // Both sides are posted (and the payer's may already be allocated), so nothing is unwound.
-    // Say so: a caller that read this as "nothing happened" and posted again would book it twice.
-    return {
-      error: `Both sides were booked (charge ${chargeId}), but the charge could not be linked to its entries: ` +
-        `${linkErr.message}. Do not post it again.`,
-    }
+    .eq('id', chargeId).eq('fund_id', args.fundId).is('from_entry_id', null)
+    .select('id')
+  // THE LINK IS THE COMMIT POINT. A retry trusts a charge only through the entry ids written here,
+  // which is only ever after persistEntry has returned (a posted header alone can still be rolled
+  // back by its allocation). So a link that cannot be written is retried once, then both sides are
+  // unwound: an unlinked charge with entries behind it is an orphan nothing will ever adopt.
+  let linked = await link()
+  if (linked.error) linked = await link()
+  if (linked.error || ((linked.data as any[]) ?? []).length === 0) {
+    await unwindEntry(admin, args.fundId, payerRes.entryId)
+    if (payeeEntryId) await unwindEntry(admin, args.fundId, payeeEntryId)
+    await cleanup()
+    return { error: `The charge could not be linked to its entries, so neither side was booked: ${linked.error?.message ?? 'the charge row changed'}` }
   }
 
   return { id: chargeId }
+}
+
+/** Delete an entry this request just posted, with any partner allocation posting it generated. */
+async function unwindEntry(admin: SupabaseClient, fundId: string, entryId: string): Promise<void> {
+  const { rollbackGeneratedAllocations } = await import('./continuous-allocation')
+  await rollbackGeneratedAllocations(admin, fundId, entryId)
+  await admin.from('journal_postings' as any).delete().eq('journal_entry_id', entryId)
+  await admin.from('journal_entries' as any).delete().eq('id', entryId).eq('fund_id', fundId)
 }
 
 /**
@@ -465,11 +478,13 @@ export async function postIntercompanyCharge(
  * ONCE PER VEHICLE, ENFORCED BY THE DATABASE. The status check is a separate read, so two requests
  * can both pass it. Each settlement entry carries `intercompany-settlement:<chargeId>`, and a
  * partial unique index (20261014190000) allows one live entry per vehicle with that ref: the
- * second request's payee entry is refused before anything of its own is written.
+ * second request's entry is refused before anything of its own is written.
  *
- * RETRY FINISHES, NEVER REPOSTS. If both entries are live but the row still says accrued, an
- * earlier attempt posted the cash and failed to mark the row. Settling again links those entries
- * and marks it, posting nothing.
+ * LINKED AS IT GOES, REPLAYED ONLY FROM LINKS. Each side's entry id is written to the row the moment
+ * its persistEntry returns, and a retry trusts only those ids: both linked finishes the row, one
+ * linked posts only the other side. An entry that exists by ref but was never linked is not adopted
+ * (it may belong to a request still allocating it, which can yet delete it); it is named, for a
+ * person to void.
  */
 export async function settleIntercompanyCharge(
   admin: SupabaseClient,
@@ -492,31 +507,40 @@ export async function settleIntercompanyCharge(
   const payee = names.get(charge.to_vehicle_id)
   if (!payer || !payee) return { error: 'One side of that charge is no longer a vehicle in this fund.' }
 
-  let livePayee: LiveEntryRef | null
-  let livePayer: LiveEntryRef | null
+  // Settlements booked before 20261014190000, under the accrual's ref. Their only writer was the old
+  // code, which no longer runs, so they cannot be in flight and are safe to adopt by ref.
+  let legacyPayee: LiveEntryRef | null
+  let legacyPayer: LiveEntryRef | null
   try {
-    [livePayee, livePayer] = await Promise.all([
-      liveSettlementEntry(admin, fundId, charge.to_vehicle_id, chargeId),
-      liveSettlementEntry(admin, fundId, charge.from_vehicle_id, chargeId),
+    [legacyPayee, legacyPayer] = await Promise.all([
+      liveLegacySettlement(admin, fundId, charge.to_vehicle_id, chargeId),
+      liveLegacySettlement(admin, fundId, charge.from_vehicle_id, chargeId),
     ])
   } catch (e) {
     return { error: (e as Error).message }
   }
-  // Both posted: an earlier attempt booked the cash and never marked the row. A draft is a request
-  // still in flight (persistEntry writes a draft first), which may yet fail and delete it.
-  if (livePayee?.status === 'posted' && livePayer?.status === 'posted') {
-    return markSettled(admin, fundId, chargeId, livePayee.entryDate, livePayee.id, livePayer.id)
+  if (legacyPayee?.status === 'posted' && legacyPayer?.status === 'posted') {
+    return markSettled(admin, fundId, chargeId, legacyPayee.entryDate, legacyPayee.id, legacyPayer.id)
   }
-  const live = [{ side: payee, entry: livePayee }, { side: payer, entry: livePayer }]
-    .filter((s): s is { side: string; entry: LiveEntryRef } => s.entry !== null)
-  const pending = live.find(s => s.entry.status !== 'posted') ?? live[0]
-  if (pending) {
+  const legacy = legacyPayee ? { side: payee, entry: legacyPayee } : legacyPayer ? { side: payer, entry: legacyPayer } : null
+  if (legacy) {
     return {
-      error: `${pending.side} already has a settlement entry for this charge (${pending.entry.id}, ${pending.entry.status}) ` +
-        'without the other side posted. Another request may be settling it now: refresh. If the charge is still ' +
-        'accrued, void that entry and settle again.',
+      error: `${legacy.side} already has a settlement entry for this charge (${legacy.entry.id}, ${legacy.entry.status}) ` +
+        'without the other side posted. Void that entry in the journal, then settle again.',
     }
   }
+
+  let linked: { payee: LiveEntryRef | null; payer: LiveEntryRef | null }
+  try {
+    linked = await linkedSettlements(admin, fundId, charge.to_settlement_entry_id, charge.from_settlement_entry_id)
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+  if (linked.payee && linked.payer) {
+    return markSettled(admin, fundId, chargeId, linked.payee.entryDate, linked.payee.id, linked.payer.id)
+  }
+  // One side already booked fixes the date: the cash moved once, on the date that side records.
+  const date = linked.payee?.entryDate ?? linked.payer?.entryDate ?? settledDate
 
   const payeeIc = await ensureIntercompanyAccounts(admin, fundId, payee, { vehicleId: charge.from_vehicle_id, name: payer })
   const payerIc = await ensureIntercompanyAccounts(admin, fundId, payer, { vehicleId: charge.to_vehicle_id, name: payee })
@@ -527,41 +551,115 @@ export async function settleIntercompanyCharge(
 
   const input = {
     fundId, kind: charge.kind as IntercompanyKind, chargeDate: charge.charge_date,
-    amount: Number(charge.amount), memo: charge.memo, chargeId, settledDate,
+    amount: Number(charge.amount), memo: charge.memo, chargeId, settledDate: date,
   }
 
-  const payeeRes = await persistEntry(admin, fundId, payee, userId, buildPayeeSettlementEntry(input, payeeAccts))
-  if ('error' in payeeRes) {
-    // The unique index refused it: another request posted this settlement first. Nothing of ours
-    // was written, so there is nothing to unwind.
-    if ('duplicateOf' in payeeRes) {
-      return { error: 'This charge is being settled by another request. Refresh to see it.' }
+  let payeeId = linked.payee?.id ?? null
+  let postedPayee: string | null = null
+  if (!payeeId) {
+    const res = await persistEntry(admin, fundId, payee, userId, buildPayeeSettlementEntry(input, payeeAccts))
+    if ('error' in res) {
+      if ('duplicateOf' in res) return unlinkedSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', payee, charge.to_vehicle_id)
+      return { error: `${payee}: ${res.error}` }
     }
-    return { error: `${payee}: ${payeeRes.error}` }
-  }
-  const payerRes = await persistEntry(admin, fundId, payer, userId, buildPayerSettlementEntry(input, payerAccts))
-  if ('error' in payerRes) {
-    await admin.from('journal_postings' as any).delete().eq('journal_entry_id', payeeRes.entryId)
-    await admin.from('journal_entries' as any).delete().eq('id', payeeRes.entryId)
-    return { error: `${payer}: ${payerRes.error}` }
+    const linkErr = await linkSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', res.entryId)
+    if (linkErr) {
+      await unwindEntry(admin, fundId, res.entryId)
+      return { error: `${payee}: the settlement could not be linked to its charge, so it was not booked: ${linkErr}` }
+    }
+    payeeId = postedPayee = res.entryId
   }
 
-  return markSettled(admin, fundId, chargeId, settledDate, payeeRes.entryId, payerRes.entryId)
+  // Both sides or neither, for what this request posted.
+  const unwindPayee = async () => {
+    if (!postedPayee) return
+    await admin.from('intercompany_transactions' as any).update({ to_settlement_entry_id: null })
+      .eq('id', chargeId).eq('fund_id', fundId).eq('to_settlement_entry_id', postedPayee)
+    await unwindEntry(admin, fundId, postedPayee)
+  }
+
+  let payerId = linked.payer?.id ?? null
+  if (!payerId) {
+    const res = await persistEntry(admin, fundId, payer, userId, buildPayerSettlementEntry(input, payerAccts))
+    if ('error' in res) {
+      await unwindPayee()
+      if ('duplicateOf' in res) return unlinkedSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', payer, charge.from_vehicle_id)
+      return { error: `${payer}: ${res.error}` }
+    }
+    const linkErr = await linkSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', res.entryId)
+    if (linkErr) {
+      await unwindEntry(admin, fundId, res.entryId)
+      await unwindPayee()
+      return { error: `${payer}: the settlement could not be linked to its charge, so it was not booked: ${linkErr}` }
+    }
+    payerId = res.entryId
+  }
+
+  return markSettled(admin, fundId, chargeId, date, payeeId, payerId)
+}
+
+type SettlementLink = 'to_settlement_entry_id' | 'from_settlement_entry_id'
+
+/** Write one side's settlement entry id onto the still-accrued charge. Returns the failure, if any. */
+async function linkSettlement(
+  admin: SupabaseClient, fundId: string, chargeId: string, column: SettlementLink, entryId: string,
+): Promise<string | null> {
+  const { data, error } = await admin.from('intercompany_transactions' as any)
+    .update({ [column]: entryId }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued').select('id')
+  if (error) return error.message
+  return ((data as any[]) ?? []).length > 0 ? null : 'the charge is no longer accrued'
 }
 
 /**
- * The live settlement entry for a charge on one vehicle's books, under either ref it has carried.
- *
- * Before 20261014190000 a settlement was tagged `intercompany:<chargeId>`, the accrual's ref, and
- * told apart only by its source_type. An attempt that posted those entries and then failed to mark
- * the row left an accrued charge whose cash is already booked under the old ref; a retry that
- * looked only for the new one would post the cash a second time. THROWS on a failed read.
+ * The unique index refused this side's settlement: a live one exists by ref. If the row now links
+ * one, another request got there first. If not, name the entry: it is either a request still in
+ * flight or the remains of one that died before linking, and only a person can tell which.
  */
-async function liveSettlementEntry(
+async function unlinkedSettlement(
+  admin: SupabaseClient, fundId: string, chargeId: string, column: SettlementLink, side: string, vehicleId: string,
+): Promise<{ error: string }> {
+  const { data: now } = await admin.from('intercompany_transactions' as any)
+    .select(column).eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if ((now as any)?.[column]) return { error: 'This charge is being settled by another request. Refresh to see it.' }
+  const existing = await liveEntryByRef(admin, fundId, vehicleId, intercompanySettlementRef(chargeId)).catch(() => null)
+  const which = existing ? `${existing.id}, dated ${existing.entryDate}` : 'see the journal'
+  return {
+    error: `A settlement entry on ${side} (${which}) exists for this charge but is not linked to it. If no one else is ` +
+      'settling this charge right now, the settlement did not complete: void that entry in the journal, then settle again.',
+  }
+}
+
+/**
+ * The settlement entries the row links, each only if it is still posted. A linked id is written only
+ * after persistEntry returned, so it is a finished posting; one voided since counts as not booked.
+ * THROWS on a failed read, and on a linked entry that has gone back to draft.
+ */
+async function linkedSettlements(
+  admin: SupabaseClient, fundId: string, payeeId: string | null, payerId: string | null,
+): Promise<{ payee: LiveEntryRef | null; payer: LiveEntryRef | null }> {
+  const ids = [payeeId, payerId].filter(Boolean) as string[]
+  if (ids.length === 0) return { payee: null, payer: null }
+  const { data, error } = await admin.from('journal_entries' as any)
+    .select('id, status, entry_date').eq('fund_id', fundId).eq('book', ACTUAL_BOOK).in('id', ids)
+  if (error) throw new Error(`Could not read the charge's settlement entries: ${error.message}`)
+  const byId = new Map(((data as any[]) ?? []).map(e => [e.id as string, e]))
+  const pick = (id: string | null): LiveEntryRef | null => {
+    const e = id ? byId.get(id) : null
+    if (!e || e.status === 'void') return null
+    if (e.status !== 'posted') throw new Error(`Settlement entry ${e.id} is a ${e.status}. Post or void it, then settle again.`)
+    return { id: e.id, status: e.status, entryDate: e.entry_date }
+  }
+  return { payee: pick(payeeId), payer: pick(payerId) }
+}
+
+/**
+ * A live settlement entry booked before 20261014190000, when settlements carried the accrual's ref
+ * (`intercompany:<chargeId>`) and only source_type told them apart. Scoped exactly as liveEntryByRef
+ * is. THROWS on a failed read.
+ */
+async function liveLegacySettlement(
   admin: SupabaseClient, fundId: string, vehicleId: string, chargeId: string,
 ): Promise<LiveEntryRef | null> {
-  const current = await liveEntryByRef(admin, fundId, vehicleId, intercompanySettlementRef(chargeId))
-  if (current) return current
   const { data, error } = await admin.from('journal_entries' as any)
     .select('id, status, entry_date')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK)
