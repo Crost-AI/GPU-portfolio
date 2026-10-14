@@ -401,6 +401,12 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
     }
   },
 
+  // Always staged as the issue_capital_call pending action (its manifest's `stagesAs`): an admin
+  // approves the call in the app, as one the in-app Analyst drafts.
+  issue_capital_call: async () => {
+    throw new Error('issue_capital_call is always staged for approval in the app; it cannot run directly.')
+  },
+
   // Always staged as the publish_call_notices pending action (its manifest's `stagesAs`), so this
   // never runs; it refuses rather than publish without the app's confirmation.
   publish_call_notices: async () => {

@@ -13,7 +13,7 @@ import type { AccessContext } from '@/lib/access/effective'
 import type { ResolvedKey } from '@/lib/accounting/api-keys'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
 import {
-  approvePendingAction, listPendingActions, PendingActionServiceError, rejectPendingAction,
+  approvePendingAction, listAgentRuns, listPendingActions, PendingActionServiceError, rejectPendingAction, undoAgentRun,
 } from '@/lib/pending-actions/service'
 import { isAssistantCredential, stageAgentRun } from './dispatch'
 import { MAX_RUN_STEPS } from './run-action'
@@ -151,6 +151,50 @@ export const PENDING_TOOLS: PendingTool[] = [
     run: async (ctx, input) => {
       const out = await rejectPendingAction(ctx.admin, principalOf(ctx), requireId(input))
       return { rejected: true, replayed: out.replayed, summary: out.action.preview?.summary }
+    },
+  },
+  {
+    name: 'list_runs',
+    description:
+      'Runs (stage_run) that were approved and applied, or stopped partway: each with its title, status, what every step did, ' +
+      'the checks on the books and whether it has been undone. The Approvals page\'s Recent runs. Use when the user asks what a ' +
+      'run changed, or before undo_run.',
+    scope: 'read',
+    pendingDecision: true,
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'Max runs (default 20, at most 50)' } } },
+    run: async (ctx, input) => {
+      const limit = Math.min(Math.max(Number(input?.limit ?? 20) || 20, 1), 50)
+      const { runs } = await listAgentRuns(ctx.admin, principalOf(ctx), limit)
+      return {
+        runs: runs.map(r => ({
+          id: r.id, summary: r.preview?.summary, status: r.status, stagedVia: r.createdVia, updatedAt: r.updatedAt, result: r.appliedResult,
+        })),
+      }
+    },
+  },
+  {
+    name: 'undo_run',
+    description:
+      'Take back what an applied run created, where that is safe, as Undo on the Approvals page does: the journal entries it ' +
+      'posted are voided and the investment transactions it recorded deleted, last step first. An entry in a closed period, ' +
+      'and edits, deletes and settings changes, are left alone and reported. Voiding a posted entry needs an admin. Only call ' +
+      'this after the user has seen what the run did (list_runs) and explicitly said to undo it. The credential that staged ' +
+      'the run cannot undo it, as it cannot approve it.',
+    scope: 'write',
+    pendingDecision: true,
+    inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string', description: 'The run id, from list_runs.' } } },
+    run: async (ctx, input) => {
+      const id = requireId(input)
+      try {
+        const out = await undoAgentRun(ctx.admin, principalOf(ctx), id)
+        return { replayed: out.replayed, summary: out.action.preview?.summary, result: out.action.appliedResult }
+      } catch (e) {
+        if (e instanceof PendingActionServiceError && e.code === 'SELF_APPROVAL') {
+          const url = ctx.origin ? `${ctx.origin}/pending-actions` : null
+          throw new Error(`${e.message}${url ? ` Give the user this link to undo it in the app: ${url}` : ''}`)
+        }
+        throw e
+      }
     },
   },
 ]

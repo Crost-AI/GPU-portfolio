@@ -432,6 +432,7 @@ describe('the same access rules as the web', () => {
   const PAIRS: [tool: string, route: string][] = [
     ['post_entry', 'api/accounting/journal'],
     ['post_drafts', 'api/accounting/journal'],
+    ['discard_drafts', 'api/accounting/journal/bulk-void'],
     ['add_account', 'api/accounting/chart'],
     ['close_period', 'api/accounting/periods'],
     ['allocation', 'api/accounting/allocation'],
@@ -441,6 +442,7 @@ describe('the same access rules as the web', () => {
     ['save_journal_mapping', 'api/accounting/quickbooks/mapping'],
     ['add_partner', 'api/accounting/commitments'],
     ['book_capital_call', 'api/accounting/capital-calls'],
+    ['issue_capital_call', 'api/accounting/capital-calls'],
     ['record_investment', 'api/portfolio/investments'],
     ['update_investment', 'api/companies/[id]/investments/[txnId]'],
     ['delete_investment', 'api/companies/[id]/investments/[txnId]'],

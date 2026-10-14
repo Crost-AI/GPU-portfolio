@@ -346,6 +346,17 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return { posted: changed, skipped, warnings, hasMore, cursor }
   },
 
+  // The journal's bulk discard (api/accounting/journal/bulk-void): drafts only, never a posted entry.
+  discard_drafts: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const result = await runBulkDraftAction(admin, {
+      fundId, vehicleId, group: portfolioGroup, action: 'void', scope: readBulkScope(input), userId,
+    })
+    if (!result.ok) throw new Error(String((result.error as any)?.message ?? result.error))
+    const { changed, skipped, hasMore, cursor } = result.outcome
+    return { discarded: changed, skipped, hasMore, cursor }
+  },
+
   list_bank_transactions: async ({ admin, fundId, portfolioGroup }, input) => {
     const { limit, offset } = pageArgs(input, 500, 1000)
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)

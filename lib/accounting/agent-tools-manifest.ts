@@ -200,15 +200,15 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'close_period',
-    description: 'Close and lock a fiscal period: snapshot the ledger text and block new postings dated in the range. Body: periodStart, periodEnd, label?.',
+    description: 'Close the books through a date, month by month from the first open month to periodEnd: each month gets its partner allocation entries and is locked, so new postings dated in it are refused. Stops at the first month that fails and leaves the earlier ones closed; calling again picks up from there. close_status shows what is open and ready first.',
     scope: 'write',
     inputSchema: {
       type: 'object',
-      required: ['periodStart', 'periodEnd'],
+      required: ['periodEnd'],
       properties: {
-        periodStart: { type: 'string' },
-        periodEnd: { type: 'string' },
-        label: { type: 'string' },
+        periodEnd: { type: 'string', description: 'YYYY-MM-DD to close through.' },
+        periodStart: { type: 'string', description: 'Ignored: closing runs through periodEnd from the first open period. Accepted for older callers.' },
+        label: { type: 'string', description: 'Ignored. Accepted for older callers.' },
       },
     },
   },
@@ -381,6 +381,21 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
         allocate: { type: 'boolean', description: 'default true; false skips the partner allocation' },
+      },
+    },
+  },
+  {
+    name: 'discard_drafts',
+    description: "Void DRAFT journal entries in bulk (the journal's Discard): drafts the user does not want, such as a duplicate import or a wrong categorization. Drafts only: a posted entry is never touched, and an entry in a closed period is skipped with its reason. Give ids for exactly those drafts, or a window (start/end, sourceType) for every draft in it; pages: repeat with afterId = the returned cursor while hasMore.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'discard exactly these drafts (one shot)' },
+        start: { type: 'string', description: 'ISO date; only drafts on or after it' },
+        end: { type: 'string', description: 'ISO date; only drafts on or before it' },
+        sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
+        afterId: { type: 'string', description: 'cursor from the previous call' },
       },
     },
   },
