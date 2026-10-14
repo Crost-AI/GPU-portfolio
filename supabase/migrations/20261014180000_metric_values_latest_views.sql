@@ -8,9 +8,12 @@
 --
 -- A row's period is normalised to the day it ends: a monthly row at month end, a quarterly row at
 -- quarter end, an annual row at 31 December — so Q3 (30 Sep) beats August (31 Aug), and a monthly
--- row that also carries its quarter is still read as the month. created_at only breaks a tie
--- between rows ending the same day (a re-import of the same period). lib/metrics/period-end.ts
--- mirrors the expression; keep the two in step.
+-- row that also carries its quarter is still read as the month. Between rows ending the same day,
+-- the newer import wins (a re-import of the same period; a null created_at last). Rows written in
+-- one transaction share created_at — an email carrying both "Sep 2026" and "Q3 2026" — so the
+-- monthly row is preferred, as the old reader did, and id makes the pick deterministic: the
+-- dashboard's "last reported" label must not flip between page loads. lib/metrics/period-end.ts
+-- mirrors the period end; keep the two in step.
 --
 -- security_invoker: the views read metric_values as the CALLER, so its RLS policies ("metric_values
 -- read needs portfolio") still decide which rows anyone sees. Without it a view runs as its owner
@@ -25,7 +28,7 @@ select distinct on (metric_id)
     + interval '1 month' - interval '1 day')::date as period_end
 from public.metric_values
 where value_number is not null
-order by metric_id, period_end desc, created_at desc;
+order by metric_id, period_end desc, created_at desc nulls last, period_month desc nulls last, id desc;
 
 -- Any metric, numeric or text: the period a company last reported anything for.
 create or replace view public.metric_values_latest_by_company
@@ -35,7 +38,7 @@ select distinct on (company_id)
   (make_date(period_year, coalesce(period_month, period_quarter * 3, 12), 1)
     + interval '1 month' - interval '1 day')::date as period_end
 from public.metric_values
-order by company_id, period_end desc, created_at desc;
+order by company_id, period_end desc, created_at desc nulls last, period_month desc nulls last, id desc;
 
 -- Grants — required from 2026-05-30 onward for the Data API to see a relation. Read-only views;
 -- the base table's RLS (via security_invoker) scopes the rows each role gets back.
