@@ -10,13 +10,14 @@ const RECEIPT_ID = { type: 'string', description: 'receipt id from list_receipts
 export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'list_receipts',
-    description: "List the entity's receipts (emailed to the inbound address or uploaded) with what was read off each (vendor, date, total), whether it is attached to an entry, and for unmatched ones the entries and bank transactions it most likely belongs to. Receipts not yet filed under any entity are included for a caller who sees every entity. A receipt whose extraction_status is pending has not been read: read it with get_receipt and record what it says with update_receipt.",
+    description: "List the entity's receipts (emailed to the inbound address or uploaded) with what was read off each (vendor, date, total), and whether it is attached to an entry. With includeSuggestions, the first 40 unmatched receipts also carry the entries and bank transactions each most likely belongs to; get_receipt gives them for any one receipt. Receipts not yet filed under any entity are included for a caller who sees every entity. A receipt whose extraction_status is pending has not been read: read it with get_receipt and record what it says with update_receipt.",
     scope: 'read',
     inputSchema: {
       type: 'object',
       properties: {
         status: { type: 'string', enum: ['unmatched', 'matched', 'dismissed', 'all'], description: 'default: everything but dismissed' },
         entryId: { type: 'string', description: 'only the receipts supporting this journal entry' },
+        includeSuggestions: { type: 'boolean', description: 'add match suggestions to the first 40 unmatched receipts (default false)' },
       },
     },
   },

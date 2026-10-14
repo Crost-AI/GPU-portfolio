@@ -18,7 +18,9 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleIdByName: async (_a: unknown, _f: string, g: string) => (g === 'Fund I' ? 'v1' : g === 'Fund II' ? 'v2' : null),
   vehicleNameById: async (_a: unknown, _f: string, id: string) => (id === 'v1' ? 'Fund I' : id === 'v2' ? 'Fund II' : null),
 }))
-vi.mock('@/lib/accounting/load', () => ({
+vi.mock('@/lib/accounting/load', async orig => ({
+  // The register read (fof-load) pages through the real helper.
+  fetchAllRows: (await orig<typeof import('@/lib/accounting/load')>()).fetchAllRows,
   loadPostedLedger: async (_a: unknown, _f: string, _g: string, asOf?: string) => ({
     accounts: [{ id: 'cost', companyId: 'h1', subtype: 'investment' }, { id: 'mark', companyId: 'h1', subtype: 'unrealized' }],
     postings: [

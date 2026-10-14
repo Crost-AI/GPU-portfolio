@@ -106,9 +106,10 @@ export async function loadAllocationSkips(
   admin: SupabaseClient, fundId: string, vehicleId: string,
 ): Promise<Map<string, AllocationSkipReason>> {
   try {
+    // No `id` column: source_entry_id is the primary key, so the order below is already unique.
     const rows = await fetchAllRows<any>((from, to) => admin.from(ALLOCATION_SKIPS as any)
       .select('source_entry_id, reason').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
-      .order('source_entry_id', { ascending: true }).range(from, to))
+      .order('source_entry_id', { ascending: true }).range(from, to), 1000, { order: null })
     return new Map(rows.map(row => [row.source_entry_id as string, row.reason as AllocationSkipReason]))
   } catch (error) {
     if (isMissingSkipsTable(error as any)) return new Map()

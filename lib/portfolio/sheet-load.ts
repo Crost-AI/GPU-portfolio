@@ -35,18 +35,19 @@ export async function loadPortfolioSheet(admin: SupabaseClient, fundId: string, 
     if (m && !m.lastReportAt) m.lastReportAt = e.received_at
   }
 
-  // Latest cash: the newest value of the company's metric named "cash" — the dashboard's rule.
+  // Latest cash: the latest reporting period's value of the company's metric named "cash" — the
+  // dashboard's rule. One row per metric, so the read is bounded by the company count.
   const cashByMetric = new Map<string, string>()
   for (const m of (cashMetrics as any[]) ?? []) {
     if (/\bcash\b/i.test(m.name) && !Array.from(cashByMetric.values()).includes(m.company_id)) cashByMetric.set(m.id, m.company_id)
   }
   if (cashByMetric.size > 0) {
-    const { data: values } = await (admin as any).from('metric_values').select('metric_id, value_number')
-      .in('metric_id', Array.from(cashByMetric.keys())).not('value_number', 'is', null)
-      .order('period_year', { ascending: false }).order('created_at', { ascending: false })
+    const { data: values, error } = await (admin as any).from('metric_values_latest').select('metric_id, value_number')
+      .in('metric_id', Array.from(cashByMetric.keys()))
+    if (error) throw new Error(`latest cash: ${error.message}`)
     for (const v of (values as any[]) ?? []) {
       const m = meta.get(cashByMetric.get(v.metric_id)!)
-      if (m && m.latestCash == null) m.latestCash = Number(v.value_number)
+      if (m) m.latestCash = Number(v.value_number)
     }
   }
 

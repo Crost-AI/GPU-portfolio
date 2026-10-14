@@ -19,6 +19,30 @@ import {
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 
 const INLINE_MAX = 3 * 1024 * 1024
+const SUGGEST_CAP = 40
+const SUGGEST_CONCURRENCY = 5
+const SUGGESTIONS_NOTE = 'Match suggestions are omitted. Pass includeSuggestions: true for the first 40 unmatched receipts, or call get_receipt for one receipt.'
+
+/** fn over items with at most `limit` in flight; results in input order. The first rejection
+ *  rejects the whole call and stops the other workers taking new items. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  let failed = false
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const i = next++
+      try {
+        out[i] = await fn(items[i])
+      } catch (e) {
+        failed = true
+        throw e
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
 
 async function here(ctx: AgentToolContext): Promise<string> {
   const id = await vehicleIdByName(ctx.admin, ctx.fundId, ctx.portfolioGroup)
@@ -63,14 +87,32 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     }
     const status = ['unmatched', 'matched', 'dismissed', 'all'].includes(input?.status) ? input.status : undefined
     const receipts = await listReceipts(ctx.admin, ctx.fundId, { vehicleId, includeUnassigned: ctx.access.vehicles.all, status })
-    const out = []
-    for (const r of receipts) {
-      out.push({
-        ...r,
-        suggestions: r.status === 'unmatched' && r.vehicle_id === vehicleId ? await matchCandidates(ctx.admin, ctx.fundId, r) : undefined,
-      })
+    // Suggestions cost two reads per receipt, so they are opt-in and bounded like the Receipts
+    // page: only unmatched receipts filed here with an amount to match on, the first SUGGEST_CAP.
+    const mine = (r: ReceiptRow) => r.status === 'unmatched' && r.vehicle_id === vehicleId
+    const matchable = receipts.filter(r => mine(r) && r.amount != null)
+    // Only a real `true`: direct tool calls are not schema-validated, and "false" is truthy.
+    if (input?.includeSuggestions !== true) {
+      return {
+        receipts: receipts.map(r => ({ ...r, suggestions: undefined })),
+        ...(matchable.length ? { note: SUGGESTIONS_NOTE } : {}),
+      }
     }
-    return { receipts: out }
+    const suggest = matchable.slice(0, SUGGEST_CAP)
+    const found = new Map(suggest.map((r, i) => [r.id, i]))
+    const suggestions = await mapLimit(suggest, SUGGEST_CONCURRENCY, r => matchCandidates(ctx.admin, ctx.fundId, r))
+    const truncated = matchable.length > SUGGEST_CAP
+    return {
+      receipts: receipts.map(r => ({
+        ...r,
+        // An unmatched receipt with no amount has nothing to match on: [] as matchCandidates gives.
+        suggestions: found.has(r.id) ? suggestions[found.get(r.id)!] : mine(r) && r.amount == null ? [] : undefined,
+      })),
+      ...(truncated ? {
+        suggestionsTruncated: true,
+        note: `Suggestions cover the first ${SUGGEST_CAP} of ${matchable.length} unmatched receipts; call get_receipt for suggestions on any other.`,
+      } : {}),
+    }
   },
 
   get_receipt: async (ctx, input) => {

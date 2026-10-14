@@ -19,6 +19,6 @@ export async function POST() {
 
   // Across the caller's companies only — and the count says how many of theirs, not the fund's.
   const scope = await loadEntityScope(admin, gate)
-  const { inserted, companies } = await applyDefaultsToAllCompanies(admin, gate.fundId, scope.companyIds)
-  return NextResponse.json({ inserted, companies })
+  const { inserted, companies, errors } = await applyDefaultsToAllCompanies(admin, gate.fundId, scope.companyIds)
+  return NextResponse.json({ inserted, companies, errors })
 }

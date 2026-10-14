@@ -109,6 +109,26 @@ describe('query tools', () => {
     expect(((await carry(member({ accounting: 'read', gp_economics: 'read' }))) as any).rows).toEqual([{ lp: 'GP Carry LLC' }])
   })
 
+  it('counts every journal line, and names every LP, past the 1000-row cap', async () => {
+    const pad = (i: number) => String(i).padStart(5, '0')
+    const entries = Array.from({ length: 700 }, (_, i) => ({ id: `je${pad(i)}`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', status: 'posted', entry_date: '2026-01-01', memo: null, source_type: 'manual' }))
+    store = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
+      chart_of_accounts: [{ id: 'a2', fund_id: 'f1', vehicle_id: 'v1', code: '1000', name: 'Cash', type: 'asset' }, { id: 'a3', fund_id: 'f1', vehicle_id: 'v1', code: '3000', name: 'Partners capital', type: 'equity' }],
+      journal_entries: entries,
+      // 1400 lines; the last capital line belongs to the 1100th LP.
+      journal_postings: entries.flatMap((e, i) => [
+        { id: `${e.id}-d`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', journal_entry_id: e.id, account_id: 'a2', amount: 10 },
+        { id: `${e.id}-c`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', journal_entry_id: e.id, account_id: 'a3', amount: -10, lp_entity_id: i === 699 ? 'lp01099' : null },
+      ]),
+      lp_entities: Array.from({ length: 1100 }, (_, i) => ({ id: `lp${pad(i)}`, fund_id: 'f1', entity_name: `Partner ${i}` })),
+    }, { maxRows: 1000 })
+    const a = member({ accounting: 'read', gp_economics: 'read' })
+    expect(((await H.query_ledger(ctx(a, 'Fund I'), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([{ count: 1400 }])
+    const named = await H.query_ledger(ctx(a, 'Fund I'), { where: [{ column: 'lp', op: 'eq', value: 'Partner 1099' }], aggregates: [{ fn: 'count' }] }) as any
+    expect(named.rows).toEqual([{ count: 1 }])
+  })
+
   it('needs a dataset when an area has several, and says which', async () => {
     await expect(H.query_portfolio(ctx(member({ portfolio: 'read' })), {})).rejects.toThrow('Pass a dataset: positions, companies, transactions, kpis')
   })

@@ -227,3 +227,30 @@ describe('loadLedgerData — quotes', () => {
     expect(data.levelWarning).toMatch(/could not be read/)
   })
 })
+
+describe('loadLedgerData — investment transactions past the row cap', () => {
+  const day = (i: number) => new Date(Date.UTC(2020, 0, 1) + i * 86_400_000).toISOString().slice(0, 10)
+  // Oldest first, ending in the newest event: a proceeds receipt on the 1200th row.
+  const seed = (n: number) => ({
+    fund_vehicles: [{ id: 'v1', fund_id: 'F', name: 'Fund I', kind: 'fund' }],
+    companies: Array.from({ length: 1100 }, (_, i) => ({ id: `k${String(i).padStart(4, '0')}`, fund_id: 'F', name: `Co ${i}` })),
+    investment_transactions: Array.from({ length: n }, (_, i) => ({
+      id: `t${String(i).padStart(5, '0')}`, fund_id: 'F', company_id: 'k0000', portfolio_group: 'Fund I', transaction_date: day(i),
+      ...(i === n - 1 ? { transaction_type: 'proceeds', proceeds_received: 5_000 } : { transaction_type: 'investment', investment_cost: 100 }),
+    })),
+  })
+
+  it('loads every transaction and every company, the newest proceeds included', async () => {
+    const { admin } = memoryAdmin(seed(1200), { maxRows: 1000 })
+    const data = await loadLedgerData(admin as any, 'F', 'Fund I')
+    expect(data.txns).toHaveLength(1200)
+    expect(data.txns.at(-1)).toMatchObject({ transaction_type: 'proceeds', transaction_date: day(1199) })
+    expect(data.companies).toHaveLength(1100)
+  })
+
+  it('fails rather than reading a failed transactions read as none', async () => {
+    const m = memoryAdmin(seed(3), { maxRows: 1000 })
+    m.failNext('investment_transactions', 'select', 'boom')
+    await expect(loadLedgerData(m.admin as any, 'F', 'Fund I')).rejects.toMatchObject({ message: 'boom' })
+  })
+})

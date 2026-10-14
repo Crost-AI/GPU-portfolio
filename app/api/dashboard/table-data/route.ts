@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeCompanyRows, scopeGroups } from '@/lib/access/scope'
 
@@ -65,17 +66,25 @@ export async function GET() {
     value_text: string | null
   }[] = []
 
-  if (allMetricIds.length > 0) {
-    const { data: valuesRaw, error: valError } = await admin
+  // Ids in chunks of 200, so the GET query string stays under the gateway's URL limit, and each
+  // chunk paged past PostgREST's 1,000-row cap — ordered oldest first, a capped read would drop the
+  // NEWEST quarters. id makes the order stable across pages; a metric's rows all sit in one chunk,
+  // so its order is the same as one read would give.
+  const valueChunks: string[][] = []
+  for (let i = 0; i < allMetricIds.length; i += 200) valueChunks.push(allMetricIds.slice(i, i + 200))
+  try {
+    const pages = await Promise.all(valueChunks.map(chunk => fetchAllRows<typeof allValues[number]>((from, to) => admin
       .from('metric_values')
       .select('metric_id, period_year, period_quarter, period_month, value_number, value_text')
-      .in('metric_id', allMetricIds)
+      .in('metric_id', chunk)
       .gte('period_year', 2025)
       .order('period_year', { ascending: true })
       .order('period_month', { ascending: true, nullsFirst: true })
-
-    if (valError) return dbError(valError, 'dashboard-table-data')
-    allValues = valuesRaw ?? []
+      .order('id', { ascending: true })
+      .range(from, to))))
+    allValues = pages.flat()
+  } catch (valError) {
+    return dbError(valError as { message: string }, 'dashboard-table-data')
   }
 
   // Index values by metric_id
@@ -94,22 +103,22 @@ export async function GET() {
     if (cashMetric) cashMetricMap.set(c.id, cashMetric.id)
   }
 
-  // Fetch latest cash values
+  // Fetch latest cash values: the latest reporting period's, not the latest import — one row per
+  // metric from metric_values_latest (its migration says how "latest" is picked). Ids go in chunks
+  // of 200: each is a uuid in the GET query string, so a chunk keeps the URL under the gateway's
+  // limit, and one row per id keeps the response under PostgREST's 1,000-row cap.
   const cashMetricIds = Array.from(cashMetricMap.values())
   const cashValues = new Map<string, number>()
-  if (cashMetricIds.length > 0) {
-    const { data: cashRows } = await admin
-      .from('metric_values')
-      .select('metric_id, value_number')
-      .in('metric_id', cashMetricIds)
-      .not('value_number', 'is', null)
-      .order('period_year', { ascending: false })
-      .order('created_at', { ascending: false })
-
-    for (const row of (cashRows ?? []) as { metric_id: string; value_number: number }[]) {
-      if (!cashValues.has(row.metric_id)) {
-        cashValues.set(row.metric_id, row.value_number)
-      }
+  const cashChunks: string[][] = []
+  for (let i = 0; i < cashMetricIds.length; i += 200) cashChunks.push(cashMetricIds.slice(i, i + 200))
+  const cashReads = await Promise.all(cashChunks.map(chunk => admin
+    .from('metric_values_latest' as any)
+    .select('metric_id, value_number')
+    .in('metric_id', chunk)))
+  for (const { data: cashRows, error: cashError } of cashReads) {
+    if (cashError) return dbError(cashError, 'dashboard-table-data')
+    for (const row of (cashRows ?? []) as unknown as { metric_id: string; value_number: number }[]) {
+      cashValues.set(row.metric_id, row.value_number)
     }
   }
 

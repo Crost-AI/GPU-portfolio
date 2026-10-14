@@ -24,7 +24,7 @@ import { roundCents } from './ledger'
 import { loadCapitalPostings } from './capital-source'
 import { loadFundPreload, vehicleCapitalPreload } from './fund-preload'
 import { bucketForSourceType, computeCapitalAccounts } from './capital-account'
-import { loadEntityClasses } from './load'
+import { fetchAllRows, loadEntityClasses } from './load'
 import { txnsForVehicle } from './soi'
 import { computeSummary, investedBasis } from '@/lib/investments'
 import { xirr, type CashFlow } from '@/lib/xirr'
@@ -253,18 +253,20 @@ export async function fundTimeseries(
   const endDate = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? asOf : new Date().toISOString().slice(0, 10)
 
   const preload = await loadFundPreload(admin, fundId, endDate)
-  const [{ postings }, { data: txnRows }, { data: companyRows }] = await Promise.all([
+  // Paged in a stable order: past the 1000-row cap the unpaged reads dropped investments (and
+  // whole companies) from the gross series without an error.
+  const [{ postings }, txnRows, companyRows] = await Promise.all([
     loadCapitalPostings(admin, fundId, group, endDate, preload.idMap, vehicleCapitalPreload(preload, group)),
-    admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId),
-    admin.from('companies' as any).select('*').eq('fund_id', fundId),
+    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).range(f, t)),
   ])
 
   // Net IRR splits by partner class, so we need the LP/GP map — but only ledger vehicles carry a
   // meaningful net view (a tracking vehicle has no called capital), so skip the read otherwise.
   const classes = await loadEntityClasses(admin, fundId, group)
 
-  const txns = ((txnRows as InvestmentTransaction[]) ?? [])
-  const companies = ((companyRows as any[]) ?? [])
+  const txns = txnRows as InvestmentTransaction[]
+  const companies = companyRows
 
   // Companies this vehicle actually holds — same test the schedule of investments uses.
   const byCompany = new Map<string, InvestmentTransaction[]>()
