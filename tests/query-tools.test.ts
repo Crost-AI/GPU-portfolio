@@ -24,6 +24,7 @@ vi.mock('@/lib/access/carry-visibility', async importOriginal => ({
 
 import { QUERY_HANDLERS as H } from '@/lib/agent/query-tools'
 import { getTool } from '@/lib/accounting/agent-tools'
+import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
 
 const member = (grants: Partial<Record<Domain, AccessLevel>>, all = true, features: Partial<FeatureVisibilityMap> = {}): AccessContext => ({
   fundId: 'f1', userId: 'u1', vehicles: { all, ids: all ? [] : ['v1'] }, role: 'member',
@@ -127,7 +128,9 @@ describe('query datasets load the whole authorized set, past the 1000-row cap', 
       diligence_deals: Array.from({ length: 1100 }, (_, i) => ({
         id: `dd${pad(i)}`, fund_id: 'f1', vehicle_id: i % 2 ? 'v2' : 'v1', name: `Deal ${i}`, deal_status: 'active', created_at: '2026-01-01T00:00:00Z',
       })),
+      // 1100 other companies first, so Acme and Birch are past the cap of an unpaged companies read.
       companies: [
+        ...Array.from({ length: 1100 }, (_, i) => ({ id: `a${pad(i)}`, fund_id: 'f1', name: `Filler ${i}`, holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] })),
         { id: 'c1', fund_id: 'f1', name: 'Acme', holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] },
         { id: 'c2', fund_id: 'f1', name: 'Birch', holding_type: 'company', status: 'active', portfolio_group: ['Fund II'] },
       ],
@@ -162,5 +165,35 @@ describe('query datasets load the whole authorized set, past the 1000-row cap', 
     expect(count(await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), q))).toBe(1100)
     const named = await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), { dataset: 'transactions', group_by: ['company'], aggregates: [{ fn: 'sum', column: 'invested' }] }) as any
     expect(named.rows).toEqual([{ company: 'Acme', sum_invested: 1100 }])
+  })
+
+  it('a scoped caller with no entities sees no deals, rather than a failed query', async () => {
+    const none = { ...member({ dealflow: 'read', diligence: 'read' }, false), vehicles: { all: false, ids: [] } }
+    // PostgREST rejects `in.()`, which this client does not: so pin that no deal query is sent at all.
+    const sent: string[] = []
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => { sent.push(t); return from(t) }
+    // No rows in, no aggregate row out (the engine's answer for an empty set) — and no throw.
+    expect(((await H.query_deals(ctx(none), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([])
+    expect(((await H.query_diligence(ctx(none), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([])
+    expect(await DEALS_HANDLERS.deals_list_inbound(ctx(none), {})).toEqual([])
+    expect(sent.filter(t => t === 'inbound_deals' || t === 'diligence_deals')).toEqual([])
+  })
+
+  it('keeps the direct tool capped: 100 by default, 500 at most', async () => {
+    const a = { ...ctx(member({ dealflow: 'read' })) }
+    expect(await DEALS_HANDLERS.deals_list_inbound(a, {})).toHaveLength(100)
+    expect(await DEALS_HANDLERS.deals_list_inbound(a, { limit: 5000 })).toHaveLength(500)
+  })
+
+  it('surfaces a read that fails on a later page instead of answering over the first', async () => {
+    let pages = 0
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => {
+      if (t === 'inbound_deals' && ++pages === 2) store.failNext('inbound_deals', 'select', 'statement timeout')
+      return from(t)
+    }
+    await expect(H.query_deals(ctx(member({ dealflow: 'read' })), { aggregates: [{ fn: 'count' }] })).rejects.toMatchObject({ message: 'statement timeout' })
+    expect(pages).toBe(2)
   })
 })

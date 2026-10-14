@@ -4,19 +4,19 @@
 //
 // INVARIANT: every loader returns the WHOLE authorized set, never a page of it. The engine filters
 // and aggregates in memory, so a capped source turns `count` and `sum` into confident wrong answers
-// with `truncated: false`. A named tool that caps its list (deals_list_inbound's newest 500) or reads
-// unpaged (PostgREST's 1000-row max_rows) cannot be a loader's source; those datasets read here,
-// paged with fetchAllRows in a stable order, through the SAME scope helpers their tool applies.
+// with `truncated: false`. The source loaders page past PostgREST's 1000-row max_rows; a named tool
+// that caps its own list (deals_list_inbound) exposes an uncapped mode for this.
 
 import type { AgentToolContext } from '@/lib/accounting/agent-tools'
-import { scopeCompanyRows, scopeTransactions, visibleCompanyIds, visibleVehicleIds } from '@/lib/access/scope'
-import { entityScopeFor } from '@/lib/access/entity-scope'
+import { visibleCompanyIds } from '@/lib/access/scope'
 import { carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { fetchAllRows } from '@/lib/accounting/load'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { LP_HANDLERS } from '@/lib/agent/lp-tools'
+import { listInboundDeals } from '@/lib/agent/deals-tools'
+import { DILIGENCE_HANDLERS } from '@/lib/agent/diligence-tools'
 
 export interface DatasetParams { vehicle?: string; as_of?: string }
 type Loader = (ctx: AgentToolContext, params: DatasetParams) => Promise<Record<string, unknown>[]>
@@ -43,22 +43,12 @@ const companies: Loader = async (ctx, p) => {
   return rows.map(c => ({ company: c.name, company_id: c.id, status: c.status, stage: c.stage, industry: c.industry ?? [], vehicles: c.vehicles ?? [] }))
 }
 
-// list_investments' read and scope, paged: unpaged, it stopped at 1000 transactions.
 const transactions: Loader = async (ctx, p) => {
-  const db = ctx.admin as any
-  const scope = await entityScopeFor(ctx.admin, ctx.access)
-  const [txns, cos] = await Promise.all([
-    fetchAllRows<any>((f, t) => {
-      let q = db.from('investment_transactions').select('*').eq('fund_id', ctx.fundId)
-      if (p.vehicle) q = q.eq('portfolio_group', p.vehicle)
-      return q.order('transaction_date', { ascending: true }).order('id').range(f, t)
-    }),
-    // Names from list_companies' set: the caller's companies, holding_type 'company'.
-    fetchAllRows<any>((f, t) => db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company').order('id').range(f, t)),
+  const [rows, cos] = await Promise.all([
+    PORTFOLIO_HANDLERS.list_investments(ctx, { vehicle: p.vehicle }) as Promise<any[]>,
+    PORTFOLIO_HANDLERS.list_companies(ctx, {}) as Promise<any[]>,
   ])
-  // Only the caller's companies and entities.
-  const rows = scopeTransactions(scopeCompanyRows(txns, scope.companyIds, 'company_id'), scope.vehicleNames)
-  const names = new Map(scopeCompanyRows(cos, scope.companyIds).map(c => [c.id, c.name]))
+  const names = new Map(cos.map(c => [c.id, c.name]))
   return rows.map(t => ({
     date: date(t.transaction_date), company: names.get(t.company_id) ?? null, company_id: t.company_id, vehicle: t.portfolio_group ?? null,
     type: t.transaction_type, round: t.round_name ?? null, security: t.security_type ?? null,
@@ -124,34 +114,17 @@ const capitalCallLines: Loader = async (ctx, p) => {
 // Deals and diligence
 // ---------------------------------------------------------------------------------------------
 
-// deals_list_inbound's read and scope, without its newest-500 cap.
 const inboundDeals: Loader = async (ctx) => {
-  // The caller's entities only (filtered for a scoped caller).
-  const vehicleIds = visibleVehicleIds(ctx.access)
-  const rows = await fetchAllRows<any>((f, t) => {
-    let q = (ctx.admin as any).from('inbound_deals')
-      .select('id, company_name, founder_name, intro_source, referrer_name, thesis_fit_score, stage, industry, raise_amount, status, promoted_diligence_id, created_at')
-      .eq('fund_id', ctx.fundId)
-    if (vehicleIds !== null) q = q.in('vehicle_id', vehicleIds)
-    return q.order('created_at', { ascending: false }).order('id').range(f, t)
-  })
+  const rows = await listInboundDeals(ctx, {}, null)
   return rows.map(d => ({
-    company: d.company_name, founder: d.founder_name, intro_source: d.intro_source, referrer: d.referrer_name, thesis_fit: d.thesis_fit_score,
-    stage: d.stage, industry: d.industry, raise: d.raise_amount, status: d.status, in_diligence: !!d.promoted_diligence_id, created_at: date(d.created_at),
+    company: d.company, founder: d.founder, intro_source: d.intro_source, referrer: d.referrer, thesis_fit: d.thesis_fit,
+    stage: d.stage, industry: d.industry, raise: d.raise, status: d.status, in_diligence: !!d.in_diligence, created_at: date(d.created_at),
   }))
 }
 
-// diligence_list_deals' read and scope, paged: unpaged, it stopped at 1000 deals.
 const diligenceDeals: Loader = async (ctx) => {
-  const vehicleIds = visibleVehicleIds(ctx.access)
-  const rows = await fetchAllRows<any>((f, t) => {
-    let q = (ctx.admin as any).from('diligence_deals')
-      .select('id, name, sector, stage_at_consideration, deal_status, current_memo_stage, created_at')
-      .eq('fund_id', ctx.fundId)
-    if (vehicleIds !== null) q = q.in('vehicle_id', vehicleIds)
-    return q.order('created_at', { ascending: false }).order('id').range(f, t)
-  })
-  return rows.map(d => ({ name: d.name, sector: d.sector, stage: d.stage_at_consideration, status: d.deal_status, memo_stage: d.current_memo_stage, created_at: date(d.created_at) }))
+  const rows = await DILIGENCE_HANDLERS.diligence_list_deals(ctx, {}) as any[]
+  return rows.map(d => ({ name: d.name, sector: d.sector, stage: d.stage, status: d.status, memo_stage: d.memo_stage, created_at: date(d.created_at) }))
 }
 
 // ---------------------------------------------------------------------------------------------

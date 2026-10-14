@@ -77,10 +77,11 @@ async function resolveAnyCompany(
 
 /** A company's transactions, optionally narrowed to one vehicle. */
 async function txnsFor(admin: SupabaseClient, fundId: string, companyId: string, vehicle: string | undefined, scope: EntityScope): Promise<any[]> {
-  const { data } = await (admin as any)
-    .from('investment_transactions').select('*').eq('fund_id', fundId).eq('company_id', companyId)
+  // Paged: a company with daily marks passes the 1000-row cap on its own.
+  const data = await fetchAllRows<any>((f, t) => (admin as any)
+    .from('investment_transactions').select('*').eq('fund_id', fundId).eq('company_id', companyId).order('id').range(f, t))
   // Only the caller's entities' rows (plus company-wide price signals).
-  let rows = scopeTransactions((data as any[]) ?? [], scope.vehicleNames)
+  let rows = scopeTransactions(data, scope.vehicleNames)
   if (vehicle) {
     // Untagged pricing rows (a round the fund didn't join, a company-wide mark) re-price
     // the position in EVERY vehicle, so they must survive the filter.
@@ -91,9 +92,9 @@ async function txnsFor(admin: SupabaseClient, fundId: string, companyId: string,
 
 /** Companies in the fund, optionally narrowed to a vehicle. `portfolio_group` is text[]. */
 async function companiesIn(admin: SupabaseClient, fundId: string, vehicle: string | undefined, scope: EntityScope): Promise<any[]> {
-  const { data } = await (admin as any).from('companies').select('*').eq('fund_id', fundId).eq('holding_type', 'company')
+  const data = await fetchAllRows<any>((f, t) => (admin as any).from('companies').select('*').eq('fund_id', fundId).eq('holding_type', 'company').order('id').range(f, t))
   // Only companies linked to the caller's entities, naming only those entities.
-  const rows = scopeCompanyRows((data as any[]) ?? [], scope.companyIds)
+  const rows = scopeCompanyRows(data, scope.companyIds)
     .map(c => ({ ...c, portfolio_group: scopeGroups(c.portfolio_group, scope.vehicleNames) }))
   if (!vehicle) return rows
   return rows.filter(c => Array.isArray(c.portfolio_group) && c.portfolio_group.includes(vehicle))
@@ -162,11 +163,14 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       return await txnsFor(admin, fundId, c.id, input?.vehicle, await entityScopeFor(admin, access))
     }
     const scope = await entityScopeFor(admin, access)
-    let q = (admin as any).from('investment_transactions').select('*').eq('fund_id', fundId)
-    if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
-    const { data } = await q.order('transaction_date', { ascending: true })
+    // Paged, oldest first with id as the tie-break: unpaged, the newest past the 1000th row were lost.
+    const data = await fetchAllRows<any>((f, t) => {
+      let q = (admin as any).from('investment_transactions').select('*').eq('fund_id', fundId)
+      if (input?.vehicle) q = q.eq('portfolio_group', input.vehicle)
+      return q.order('transaction_date', { ascending: true }).order('id').range(f, t)
+    })
     // Only the caller's companies and entities.
-    return scopeTransactions(scopeCompanyRows((data as any[]) ?? [], scope.companyIds, 'company_id'), scope.vehicleNames)
+    return scopeTransactions(scopeCompanyRows(data, scope.companyIds, 'company_id'), scope.vehicleNames)
   },
 
   portfolio_summary: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
