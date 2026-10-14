@@ -132,11 +132,16 @@ describe('the inbound-email rate limit', () => {
   })
 
   it('answers 200 to a malformed body and runs nothing', async () => {
-    for (const body of ['{not json', 'null', '42']) {
+    for (const body of [
+      '{not json', 'null', '42',
+      // A recipient that is there but not a string.
+      email({ To: 42 }), email({ OriginalRecipient: {} }), email({ OriginalRecipient: ['fund-abc@inbound.test'] }),
+    ]) {
       const res = await post(body)
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ ok: true })
     }
+    expect(rateLimit).not.toHaveBeenCalled()
     expect(runPipeline).not.toHaveBeenCalled()
   })
 })

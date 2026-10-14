@@ -26,9 +26,15 @@ function safeTokenCompare(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   let payload: PostmarkPayload
+  let inbox: string
   try {
     payload = await req.json()
     if (!payload || typeof payload !== 'object') throw new Error('payload is not an object')
+    // The body is untyped JSON: a recipient that is there but not a string is malformed too, not
+    // something to normalise.
+    const recipient: unknown = payload.OriginalRecipient || payload.To || ''
+    if (typeof recipient !== 'string') throw new Error('recipient is not a string')
+    inbox = recipient.trim().toLowerCase()
   } catch (err) {
     console.error('[inbound-email] Malformed payload:', err)
     return NextResponse.json({ ok: true })
@@ -43,7 +49,6 @@ export async function POST(req: NextRequest) {
   // payload naming no inbox routes nowhere, so it gets the IP bucket at the tight limit and needs no
   // second check.
   const ip = getClientIp(req)
-  const inbox = (payload.OriginalRecipient || payload.To || '').trim().toLowerCase()
   const limited = inbox
     ? (await rateLimit({ key: `inbound:to:${inbox}:ip:${ip}`, limit: 60, windowSeconds: 60 }))
       ?? (await rateLimit({ key: `inbound:ip:${ip}`, limit: 600, windowSeconds: 60 }))
