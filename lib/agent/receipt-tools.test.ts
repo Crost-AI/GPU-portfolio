@@ -51,6 +51,16 @@ describe('list_receipts suggestions', () => {
     expect(res.note).toMatch(/get_receipt/)
   })
 
+  it('treats a non-boolean includeSuggestions (e.g. the string "false") as off', async () => {
+    s.receipts = Array.from({ length: 50 }, (_, i) => receipt(i))
+
+    for (const v of ['false', 'true', 1]) {
+      const res = await RECEIPT_HANDLERS.list_receipts(ctx, { includeSuggestions: v })
+      expect(res.receipts.every((r: any) => r.suggestions === undefined)).toBe(true)
+    }
+    expect(s.calls).toBe(0)
+  })
+
   it('with includeSuggestions, computes at most 40, at most 5 at a time, and flags the truncation', async () => {
     s.receipts = Array.from({ length: 200 }, (_, i) => receipt(i))
 

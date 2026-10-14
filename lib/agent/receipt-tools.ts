@@ -91,7 +91,8 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     // page: only unmatched receipts filed here with an amount to match on, the first SUGGEST_CAP.
     const mine = (r: ReceiptRow) => r.status === 'unmatched' && r.vehicle_id === vehicleId
     const matchable = receipts.filter(r => mine(r) && r.amount != null)
-    if (!input?.includeSuggestions) {
+    // Only a real `true`: direct tool calls are not schema-validated, and "false" is truthy.
+    if (input?.includeSuggestions !== true) {
       return {
         receipts: receipts.map(r => ({ ...r, suggestions: undefined })),
         ...(matchable.length ? { note: SUGGESTIONS_NOTE } : {}),
