@@ -11,8 +11,10 @@
 //
 // So a charge is a row (`intercompany_transactions`), and posting it writes BOTH sides in one
 // action, each entry tagged `source_ref = 'intercompany:<id>'` — the same convention the period
-// close uses to find the entries it wrote. The row keeps the two entry ids as well, so the
-// reconciliation is a lookup in either direction rather than a join on a memo string.
+// close uses to find the entries it wrote. Settlement entries carry `intercompany-settlement:<id>`,
+// a ref of their own so a unique index can allow one per vehicle (20261014040000). The row keeps
+// the entry ids as well, so the reconciliation is a lookup in either direction rather than a join
+// on a memo string.
 //
 // WHAT IS NOT HERE: the BALANCE. The outstanding due-from/due-to per counterparty is read off the
 // ledger (`intercompanyBalances` below), not summed from these rows. A register that computed its
@@ -22,7 +24,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { persistEntry } from './persist'
+import { liveEntryByRef, persistEntry, type LiveEntryRef } from './persist'
+import { fetchAllRows } from './load'
 import { vehicleIdByName } from './vehicle-id'
 import {
   INTERCOMPANY_RECEIVABLE_CODE, INTERCOMPANY_PAYABLE_CODE,
@@ -116,6 +119,9 @@ export interface ChargeInput {
 
 const sourceRef = (chargeId: string) => `intercompany:${chargeId}`
 
+/** The settlement entries' ref: one live entry per vehicle, enforced by a unique index. */
+export const intercompanySettlementRef = (chargeId: string) => `intercompany-settlement:${chargeId}`
+
 /**
  * The PAYEE's entry — the side that is owed. Debits what it is owed (or, for an advance, pays the
  * cash out) and credits the income it earned (or the cash it lent).
@@ -167,7 +173,7 @@ export function buildPayeeSettlementEntry(
   return finalizeCharge({ ...input, chargeDate: input.settledDate }, [
     { accountId: accts.cashAccountId, amount, currency: 'USD', lpEntityId: null },
     { accountId: accts.intercompanyAccountId, amount: -amount, currency: 'USD', lpEntityId: null },
-  ], 'intercompany_settlement')
+  ], 'intercompany_settlement', intercompanySettlementRef(input.chargeId))
 }
 
 export function buildPayerSettlementEntry(
@@ -178,20 +184,21 @@ export function buildPayerSettlementEntry(
   return finalizeCharge({ ...input, chargeDate: input.settledDate }, [
     { accountId: accts.intercompanyAccountId, amount, currency: 'USD', lpEntityId: null },
     { accountId: accts.cashAccountId, amount: -amount, currency: 'USD', lpEntityId: null },
-  ], 'intercompany_settlement')
+  ], 'intercompany_settlement', intercompanySettlementRef(input.chargeId))
 }
 
 function finalizeCharge(
   input: ChargeInput,
   postings: JournalEntry['postings'],
   sourceType = 'intercompany',
+  ref = sourceRef(input.chargeId),
 ): JournalEntry {
   return {
     fundId: input.fundId,
     entryDate: input.chargeDate,
     memo: input.memo ?? INTERCOMPANY_KIND_LABELS[input.kind],
     sourceType,
-    sourceRef: sourceRef(input.chargeId),
+    sourceRef: ref,
     postings,
   }
 }
@@ -329,6 +336,11 @@ export interface PostChargeArgs {
    * posted, and the charge has no payee entry. Its settlement still clears both sides.
    */
   payeeAlreadyBooked?: boolean
+  /**
+   * The partnership invoice this charge books. A unique index allows one live charge per invoice,
+   * so a second issue of the same invoice is refused at the insert, before anything is posted.
+   */
+  partnershipInvoiceId?: string | null
 }
 
 /**
@@ -343,7 +355,7 @@ export interface PostChargeArgs {
 export async function postIntercompanyCharge(
   admin: SupabaseClient,
   args: PostChargeArgs,
-): Promise<{ id: string } | { error: string }> {
+): Promise<{ id: string } | { error: string; duplicate?: true }> {
   const amount = roundCents(args.amount)
   if (!(amount > 0)) return { error: 'Amount must be greater than zero' }
   if (args.payer.vehicleId === args.payee.vehicleId) {
@@ -362,10 +374,16 @@ export async function postIntercompanyCharge(
       memo: args.memo ?? null,
       status: 'accrued',
       created_by: args.userId,
+      partnership_invoice_id: args.partnershipInvoiceId ?? null,
     })
     .select('id')
     .single()
-  if (rowErr) return { error: rowErr.message }
+  if (rowErr) {
+    if ((rowErr as { code?: string }).code === '23505' && args.partnershipInvoiceId) {
+      return { error: 'This invoice is being issued by another request. Refresh and try again.', duplicate: true }
+    }
+    return { error: rowErr.message }
+  }
   const chargeId = (row as any).id as string
 
   const cleanup = async () => { await admin.from('intercompany_transactions' as any).delete().eq('id', chargeId) }
@@ -413,7 +431,7 @@ export async function postIntercompanyCharge(
     return { error: `${args.payer.name}: ${payerRes.error}` }
   }
 
-  await admin
+  const { error: linkErr } = await admin
     .from('intercompany_transactions' as any)
     .update({
       to_entry_id: payeeEntryId,
@@ -422,6 +440,14 @@ export async function postIntercompanyCharge(
       ...(isAccruingKind(args.kind) ? {} : { status: 'settled', settled_date: args.chargeDate }),
     })
     .eq('id', chargeId)
+  if (linkErr) {
+    // Both sides are posted (and the payer's may already be allocated), so nothing is unwound.
+    // Say so: a caller that read this as "nothing happened" and posted again would book it twice.
+    return {
+      error: `Both sides were booked (charge ${chargeId}), but the charge could not be linked to its entries: ` +
+        `${linkErr.message}. Do not post it again.`,
+    }
+  }
 
   return { id: chargeId }
 }
@@ -432,6 +458,15 @@ export async function postIntercompanyCharge(
  * Refuses a charge that is already settled or void rather than posting a second pair of cash
  * entries, which would clear a balance that was already clear and leave the counterparty holding a
  * receivable that has now been paid twice on our books and once on theirs.
+ *
+ * ONCE PER VEHICLE, ENFORCED BY THE DATABASE. The status check is a separate read, so two requests
+ * can both pass it. Each settlement entry carries `intercompany-settlement:<chargeId>`, and a
+ * partial unique index (20261014040000) allows one live entry per vehicle with that ref: the
+ * second request's payee entry is refused before anything of its own is written.
+ *
+ * RETRY FINISHES, NEVER REPOSTS. If both entries are live but the row still says accrued, an
+ * earlier attempt posted the cash and failed to mark the row. Settling again links those entries
+ * and marks it, posting nothing.
  */
 export async function settleIntercompanyCharge(
   admin: SupabaseClient,
@@ -440,10 +475,11 @@ export async function settleIntercompanyCharge(
   chargeId: string,
   settledDate: string,
 ): Promise<{ ok: true } | { error: string }> {
-  const { data: row } = await admin
+  const { data: row, error: rowErr } = await admin
     .from('intercompany_transactions' as any)
     .select('*')
     .eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if (rowErr) return { error: `The charge could not be read: ${rowErr.message}` }
   if (!row) return { error: 'Charge not found' }
   const charge = row as any
   if (charge.status !== 'accrued') return { error: `That charge is already ${charge.status}.` }
@@ -452,6 +488,33 @@ export async function settleIntercompanyCharge(
   const payer = names.get(charge.from_vehicle_id)
   const payee = names.get(charge.to_vehicle_id)
   if (!payer || !payee) return { error: 'One side of that charge is no longer a vehicle in this fund.' }
+
+  const ref = intercompanySettlementRef(chargeId)
+  let livePayee: LiveEntryRef | null
+  let livePayer: LiveEntryRef | null
+  try {
+    [livePayee, livePayer] = await Promise.all([
+      liveEntryByRef(admin, fundId, charge.to_vehicle_id, ref),
+      liveEntryByRef(admin, fundId, charge.from_vehicle_id, ref),
+    ])
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+  // Both posted: an earlier attempt booked the cash and never marked the row. A draft is a request
+  // still in flight (persistEntry writes a draft first), which may yet fail and delete it.
+  if (livePayee?.status === 'posted' && livePayer?.status === 'posted') {
+    return markSettled(admin, fundId, chargeId, livePayee.entryDate, livePayee.id, livePayer.id)
+  }
+  const live = [{ side: payee, entry: livePayee }, { side: payer, entry: livePayer }]
+    .filter((s): s is { side: string; entry: LiveEntryRef } => s.entry !== null)
+  const pending = live.find(s => s.entry.status !== 'posted') ?? live[0]
+  if (pending) {
+    return {
+      error: `${pending.side} already has a settlement entry for this charge (${pending.entry.id}, ${pending.entry.status}) ` +
+        'without the other side posted. Another request may be settling it now: refresh. If the charge is still ' +
+        'accrued, void that entry and settle again.',
+    }
+  }
 
   const payeeIc = await ensureIntercompanyAccounts(admin, fundId, payee, { vehicleId: charge.from_vehicle_id, name: payer })
   const payerIc = await ensureIntercompanyAccounts(admin, fundId, payer, { vehicleId: charge.to_vehicle_id, name: payee })
@@ -466,7 +529,14 @@ export async function settleIntercompanyCharge(
   }
 
   const payeeRes = await persistEntry(admin, fundId, payee, userId, buildPayeeSettlementEntry(input, payeeAccts))
-  if ('error' in payeeRes) return { error: `${payee}: ${payeeRes.error}` }
+  if ('error' in payeeRes) {
+    // The unique index refused it: another request posted this settlement first. Nothing of ours
+    // was written, so there is nothing to unwind.
+    if ('duplicateOf' in payeeRes) {
+      return { error: 'This charge is being settled by another request. Refresh to see it.' }
+    }
+    return { error: `${payee}: ${payeeRes.error}` }
+  }
   const payerRes = await persistEntry(admin, fundId, payer, userId, buildPayerSettlementEntry(input, payerAccts))
   if ('error' in payerRes) {
     await admin.from('journal_postings' as any).delete().eq('journal_entry_id', payeeRes.entryId)
@@ -474,14 +544,41 @@ export async function settleIntercompanyCharge(
     return { error: `${payer}: ${payerRes.error}` }
   }
 
-  await admin.from('intercompany_transactions' as any).update({
+  return markSettled(admin, fundId, chargeId, settledDate, payeeRes.entryId, payerRes.entryId)
+}
+
+/**
+ * Mark an accrued charge settled with its two settlement entries. Conditional on `accrued`, so a
+ * row another request already marked is not rewritten; that is still success if it names these
+ * same entries (the other request was a retry linking ours).
+ */
+async function markSettled(
+  admin: SupabaseClient,
+  fundId: string,
+  chargeId: string,
+  settledDate: string,
+  payeeEntryId: string,
+  payerEntryId: string,
+): Promise<{ ok: true } | { error: string }> {
+  const { data: updated, error } = await admin.from('intercompany_transactions' as any).update({
     status: 'settled',
     settled_date: settledDate,
-    to_settlement_entry_id: payeeRes.entryId,
-    from_settlement_entry_id: payerRes.entryId,
-  }).eq('id', chargeId)
+    to_settlement_entry_id: payeeEntryId,
+    from_settlement_entry_id: payerEntryId,
+  }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued').select('id')
+  const booked = `The settlement entries are on both books (${payeeEntryId}, ${payerEntryId})`
+  if (error) return { error: `${booked}, but the charge could not be marked settled: ${error.message}. Settle it again to finish.` }
+  if (((updated as any[]) ?? []).length > 0) return { ok: true }
 
-  return { ok: true }
+  const { data: now, error: readErr } = await admin.from('intercompany_transactions' as any)
+    .select('status, to_settlement_entry_id, from_settlement_entry_id')
+    .eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if (readErr) return { error: `${booked}, but the charge could not be re-read: ${readErr.message}` }
+  const r = now as any
+  if (r?.status === 'settled' && r.to_settlement_entry_id === payeeEntryId && r.from_settlement_entry_id === payerEntryId) {
+    return { ok: true }
+  }
+  return { error: `${booked}, but the charge changed while it was being settled (it is now ${r?.status ?? 'gone'}). Check both entries.` }
 }
 
 async function vehicleNames(
@@ -489,8 +586,9 @@ async function vehicleNames(
   fundId: string,
   ids: string[],
 ): Promise<Map<string, string>> {
-  const { data } = await admin
+  const { data, error } = await admin
     .from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId).in('id', ids)
+  if (error) throw new Error(`The vehicles could not be read: ${error.message}`)
   return new Map(((data as any[]) ?? []).map(v => [v.id as string, v.name as string]))
 }
 
@@ -526,12 +624,13 @@ export async function intercompanyBalances(
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return []
 
-  const { data: accts } = await admin
+  const { data: accts, error: acctErr } = await admin
     .from('chart_of_accounts' as any)
     .select('id, code, subtype')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .in('subtype', [INTERCOMPANY_RECEIVABLE_SUBTYPE, INTERCOMPANY_PAYABLE_SUBTYPE])
+  if (acctErr) throw new Error(`The intercompany accounts could not be read: ${acctErr.message}`)
   // The bare parents (1900 / 2900, no suffix) carry no counterparty, so they are not part of a
   // per-counterparty breakdown. Anything posted directly to them is a bookkeeping error the
   // statements will still show; this view is about who owes whom.
@@ -540,20 +639,24 @@ export async function intercompanyBalances(
 
   // Entries and postings are loaded separately and joined here, the way every other reader in
   // lib/accounting does it — an embedded PostgREST join would be a second query shape for the same
-  // data, and this one has to agree with the trial balance exactly.
-  const [{ data: entries }, { data: postings }] = await Promise.all([
-    admin.from('journal_entries' as any)
+  // data, and this one has to agree with the trial balance exactly. Both are paged past PostgREST's
+  // 1000-row cap, ordered by id so no row lands on two pages or none: a vehicle with more posted
+  // entries than that would otherwise report a balance built from whichever thousand came back.
+  const [entries, postings] = await Promise.all([
+    fetchAllRows<any>((from, to) => admin.from('journal_entries' as any)
       .select('id')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId)
-      .eq('status', 'posted').eq('book', ACTUAL_BOOK),
-    admin.from('journal_postings' as any)
+      .eq('status', 'posted').eq('book', ACTUAL_BOOK)
+      .order('id', { ascending: true }).range(from, to)),
+    fetchAllRows<any>((from, to) => admin.from('journal_postings' as any)
       .select('journal_entry_id, account_id, amount')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK)
-      .in('account_id', subAccounts.map(a => a.id)),
+      .in('account_id', subAccounts.map(a => a.id))
+      .order('id', { ascending: true }).range(from, to)),
   ])
-  const posted = new Set(((entries as any[]) ?? []).map(e => e.id as string))
+  const posted = new Set(entries.map(e => e.id as string))
   const balance = new Map<string, number>()
-  for (const p of ((postings as any[]) ?? [])) {
+  for (const p of postings) {
     if (!posted.has(p.journal_entry_id)) continue
     balance.set(p.account_id, roundCents((balance.get(p.account_id) ?? 0) + Number(p.amount)))
   }
@@ -561,8 +664,9 @@ export async function intercompanyBalances(
   // The 8-character id prefix in the code is what ties a sub-account back to a counterparty. Match
   // it against the fund's real vehicles so a stale account (a vehicle since merged away) still
   // reports its balance rather than vanishing with the money on it.
-  const { data: vehicles } = await admin
+  const { data: vehicles, error: vehErr } = await admin
     .from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId)
+  if (vehErr) throw new Error(`The fund's vehicles could not be read: ${vehErr.message}`)
   const byPrefix = new Map(((vehicles as any[]) ?? []).map(v => [(v.id as string).slice(0, 8), v]))
 
   const out = new Map<string, IntercompanyBalance>()

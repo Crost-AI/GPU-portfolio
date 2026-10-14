@@ -115,7 +115,8 @@ describe('intercompany settlement — the cash moves and the balance clears', ()
   })
 
   it('carries the charge tag so a settlement can be traced to what it paid', () => {
-    expect(buildPayeeSettlementEntry(input, payee).sourceRef).toBe('intercompany:ic-1')
+    expect(buildPayeeSettlementEntry(input, payee).sourceRef).toBe('intercompany-settlement:ic-1')
+    expect(buildPayerSettlementEntry(input, payer).sourceRef).toBe('intercompany-settlement:ic-1')
     expect(buildPayeeSettlementEntry(input, payee).sourceType).toBe('intercompany_settlement')
   })
 })
