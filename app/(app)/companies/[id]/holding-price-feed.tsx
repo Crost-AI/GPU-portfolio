@@ -29,7 +29,28 @@ interface Mark { delta: number; price: number; quoteDate: string; shares: number
 interface EntityMark { vehicleId: string; entity: string; mark: Mark | null; problem: string | null }
 
 const EMPTY = { symbol: '', exchange: '', quoteCurrency: 'USD', quoteScale: '1', activeFrom: '', restrictionUntil: '', restrictionDiscount: '' }
-const today = todayLocalIso
+// The route's default asOf, and its refusal of a future-dated mark or quote, use the UTC day.
+const serverToday = () => new Date().toISOString().slice(0, 10)
+
+/**
+ * The marks date to open on: the user's own day, but never past the route's. West of UTC the
+ * evening is already tomorrow there; east of UTC the morning is still yesterday, and a mark booked
+ * for the local day would be refused as future-dated.
+ */
+export function defaultMarksDate(): string {
+  const local = todayLocalIso()
+  const server = serverToday()
+  return local < server ? local : server
+}
+
+/**
+ * The GET for the marks at `asOf`. The route's own default is left off the URL so the request is
+ * the same every day (the public demo answers recorded requests by their exact URL); any other
+ * date is sent, or the route would compute the marks for its day and the user would book that.
+ */
+export function marksRequestUrl(url: string, asOf: string): string {
+  return asOf === serverToday() ? url : `${url}?asOf=${asOf}`
+}
 
 /**
  * The price feed a holding marks from — a listed company's ticker or a token's — with the quotes
@@ -51,7 +72,7 @@ export function HoldingPriceFeed({ companyId, kind, initialAsOf = null, highligh
   const [feed, setFeed] = useState<Feed | null>(null)
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [marks, setMarks] = useState<EntityMark[]>([])
-  const [asOf, setAsOf] = useState(() => initialAsOf ?? today())
+  const [asOf, setAsOf] = useState(() => initialAsOf ?? defaultMarksDate())
   const [canEditFeed, setCanEditFeed] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -72,9 +93,7 @@ export function HoldingPriceFeed({ companyId, kind, initialAsOf = null, highligh
     const current = guard.begin()
     setRefreshing(true)
     try {
-      // Today is the route's default: leave it off so the request is the same every day (the
-      // public demo answers recorded requests by their exact URL).
-      const res = await fetch(asOf === today() ? url : `${url}?asOf=${asOf}`)
+      const res = await fetch(marksRequestUrl(url, asOf))
       const data = await res.json().catch(() => null)
       if (!current()) return
       if (!res.ok || !data) {
