@@ -199,16 +199,42 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: EMPTY_SCHEMA,
   },
   {
+    name: 'preview_close',
+    description: 'Preview closing a vehicle THROUGH a date without changing anything: the months the close would cover (it starts the day after the last closed period, so there are no gaps), what each month would allocate to each partner, and anything blocking it, such as drafts still sitting inside the window. Run this before close_period.',
+    scope: 'read',
+    inputSchema: {
+      type: 'object',
+      required: ['periodEnd'],
+      properties: {
+        periodEnd: { type: 'string', description: 'ISO date to close through (YYYY-MM-DD), usually a month-end' },
+      },
+    },
+  },
+  {
     name: 'close_period',
-    description: 'Close and lock a fiscal period: snapshot the ledger text and block new postings dated in the range. Body: periodStart, periodEnd, label?.',
+    description: 'Close the books THROUGH a date: every open month from the day after the last closed period up to periodEnd is closed in order, allocating its P&L to the partners and locking it against new postings. Run preview_close first. periodStart is ignored: a close cannot leave gaps.',
     scope: 'write',
     inputSchema: {
       type: 'object',
-      required: ['periodStart', 'periodEnd'],
+      required: ['periodEnd'],
       properties: {
-        periodStart: { type: 'string' },
-        periodEnd: { type: 'string' },
-        label: { type: 'string' },
+        periodEnd: { type: 'string', description: 'ISO date to close through (YYYY-MM-DD)' },
+        periodStart: { type: 'string', description: 'ignored; kept so older callers still work' },
+        label: { type: 'string', description: 'ignored; each month is labelled by the close' },
+      },
+    },
+  },
+  {
+    name: 'reopen_period',
+    description: 'Reopen a closed period so entries can be posted or changed in it. Reopens that period AND every closed period after it, newest first, voiding each one\'s close allocation; close again afterwards to re-allocate. Give either periodId (from list_periods) or fromDate (every closed period covering or after that date). A reason is required and goes on the audit trail. Admin only. Says which tax years already have issued K-1s, so the user knows what a change could affect.',
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['reason'],
+      properties: {
+        periodId: { type: 'string', description: 'id of the closed period, from list_periods' },
+        fromDate: { type: 'string', description: 'ISO date; reopen every closed period covering or after it' },
+        reason: { type: 'string', description: 'why, in the user\'s words; recorded on the audit trail' },
       },
     },
   },

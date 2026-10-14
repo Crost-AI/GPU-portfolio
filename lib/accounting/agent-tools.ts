@@ -33,7 +33,8 @@ import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
-import { closeThrough } from './close'
+import { closeThrough, previewCloseThrough } from './close'
+import { reopenWithAudit } from './reopen'
 import { summarizeBankRec, type BankTxnState } from './bank'
 import { accountBalances } from './ledger'
 import type { SupabaseClient as _Sb } from '@supabase/supabase-js'
@@ -254,6 +255,28 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const through = String(input.periodEnd ?? input.through ?? '')
     if (!through) throw new Error('periodEnd (the date to close through) is required')
     const result = await closeThrough(admin, fundId, portfolioGroup, userId, through)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  // The Periods page's preview: what closing through a date would do, changing nothing.
+  preview_close: async ({ admin, fundId, portfolioGroup }, input) => {
+    const through = String(input?.periodEnd ?? input?.through ?? '')
+    if (!through) throw new Error('periodEnd (the date to close through) is required')
+    const result = await previewCloseThrough(admin, fundId, portfolioGroup, through)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  // The Periods page's Reopen: the same reopenThrough, reason and audit event (lib/accounting/reopen.ts).
+  // Admin-only (ADMIN_ONLY_TOOLS), so from chat it is always staged for an admin to approve.
+  reopen_period: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const periodId = typeof input?.periodId === 'string' && input.periodId ? input.periodId : null
+    const fromDate = typeof input?.fromDate === 'string' && input.fromDate ? input.fromDate : null
+    if (!periodId && !fromDate) throw new Error('periodId or fromDate is required')
+    if (periodId && fromDate) throw new Error('Give periodId or fromDate, not both')
+    const target = periodId ? { periodId } : { fromDate: fromDate! }
+    const result = await reopenWithAudit(admin, fundId, portfolioGroup, userId ?? null, target, input?.reason)
     if ('error' in result) throw new Error(result.error)
     return result
   },

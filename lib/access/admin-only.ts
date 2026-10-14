@@ -94,6 +94,8 @@ export const HANDLER_CHECKED = {
 /** Agent tools that are admin-only: the same operations as the routes above, reached from chat. */
 export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: any) => boolean }> = {
   add_partner: { label: 'add a partner and commitment' },
+  // As the Periods page's Reopen (ADMIN_ONLY_ROUTES above).
+  reopen_period: { label: 'reopen a closed period' },
   diligence_finalize_memo: { label: 'finalize a memo' },
   // The Investors page lets only an admin change the register's investors and entities, and the
   // commitments page only an admin add a commitment (ADMIN_ONLY_ROUTES above).
