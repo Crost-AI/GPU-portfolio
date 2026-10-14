@@ -33,7 +33,7 @@ import { runCategorization } from './categorize-run'
 import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
-import { closeThrough } from './close'
+import { closeThrough, previewCloseThrough } from './close'
 import { summarizeBankRec, type BankTxnState } from './bank'
 import { accountBalances } from './ledger'
 import type { SupabaseClient as _Sb } from '@supabase/supabase-js'
@@ -55,6 +55,8 @@ import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
 import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
 import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
+import { LP_PORTAL_TOOL_MANIFEST } from '@/lib/agent/lp-portal-tools-manifest'
+import { LP_PORTAL_HANDLERS } from '@/lib/agent/lp-portal-tools'
 import { REPORT_TOOL_MANIFEST } from '@/lib/agent/report-tools-manifest'
 import { REPORT_HANDLERS } from '@/lib/agent/report-tools'
 import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
@@ -63,11 +65,20 @@ import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
 import { ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_TOOL_MANIFEST } from '@/lib/agent/operations-tools-manifest'
 import { OPERATIONS_HANDLERS } from '@/lib/agent/operations-tools'
+import { DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_TOOL_MANIFEST } from '@/lib/agent/destructive-tools-manifest'
+import { DESTRUCTIVE_HANDLERS } from '@/lib/agent/destructive-tools'
+
+import { UPLOAD_TOOL_MANIFEST } from '@/lib/agent/upload-tools-manifest'
+import { UPLOAD_HANDLERS } from '@/lib/agent/upload-tools'
+import { SERVER_AI_TOOL_MANIFEST } from '@/lib/agent/server-ai-tools-manifest'
+import { SERVER_AI_HANDLERS } from '@/lib/agent/server-ai-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
 import { readBulkScope, runBulkDraftAction } from './journal-bulk'
 import { addEntityDocument, entityDocumentUploadUrl, listEntityDocuments } from '@/lib/entity-documents/agent'
+import { RECEIPT_TOOL_MANIFEST } from '@/lib/agent/receipt-tools-manifest'
+import { RECEIPT_HANDLERS } from '@/lib/agent/receipt-tools'
 
 export { resolveVehicle } from './vehicle-resolver'
 
@@ -258,6 +269,15 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return result
   },
 
+  // The Periods page's preview: what closing through a date would do, changing nothing.
+  preview_close: async ({ admin, fundId, portfolioGroup }, input) => {
+    const through = String(input?.periodEnd ?? input?.through ?? '')
+    if (!through) throw new Error('periodEnd (the date to close through) is required')
+    const result = await previewCloseThrough(admin, fundId, portfolioGroup, through)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
   // Pages instead of truncating: `truncated` + `cursor` when the text would be too large to return.
   export_ledger_text: async ({ admin, fundId, portfolioGroup }, input) => {
     return exportLedgerTextPage(admin, fundId, portfolioGroup, {
@@ -346,6 +366,17 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return { posted: changed, skipped, warnings, hasMore, cursor }
   },
 
+  // The journal's bulk discard (api/accounting/journal/bulk-void): drafts only, never a posted entry.
+  discard_drafts: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const result = await runBulkDraftAction(admin, {
+      fundId, vehicleId, group: portfolioGroup, action: 'void', scope: readBulkScope(input), userId,
+    })
+    if (!result.ok) throw new Error(String((result.error as any)?.message ?? result.error))
+    const { changed, skipped, hasMore, cursor } = result.outcome
+    return { discarded: changed, skipped, hasMore, cursor }
+  },
+
   list_bank_transactions: async ({ admin, fundId, portfolioGroup }, input) => {
     const { limit, offset } = pageArgs(input, 500, 1000)
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
@@ -427,6 +458,7 @@ function bindLedger(manifest: AgentToolMeta[], handlers: Record<string, AgentToo
 export const AGENT_TOOLS: AgentTool[] = [
   ...bindLedger(AGENT_TOOL_MANIFEST, HANDLERS),
   ...bindLedger(ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
+  ...bindLedger(RECEIPT_TOOL_MANIFEST, RECEIPT_HANDLERS),
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
@@ -439,6 +471,13 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
   ...bind(OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
+  ...bind(LP_PORTAL_TOOL_MANIFEST, LP_PORTAL_HANDLERS),
+
+  // Offered only with AGENT_DESTRUCTIVE_ACTIONS=true, and always staged for an admin (lib/agent/destructive.ts).
+  ...bindLedger(DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS), ...bind(DESTRUCTIVE_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS),
+
+  ...bind(UPLOAD_TOOL_MANIFEST, UPLOAD_HANDLERS),
+  ...bind(SERVER_AI_TOOL_MANIFEST, SERVER_AI_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

@@ -50,10 +50,24 @@ export interface AgentToolMeta {
   domain?: 'ledger' | 'portfolio' | 'diligence' | 'deals' | 'lp'
   /**
    * A write that is ALWAYS staged as this pending action (lib/pending-actions/registry.ts), from
-   * any credential, a script's key included, and approved in the app. Its handler never runs.
-   * For what goes out to LPs, where a person confirms in the app (publish_call_notices).
+   * any credential, a script's key included, and approved by a person. Its handler never runs.
+   * For what goes out to LPs (publish_call_notices): an admin approves it in the app or from their
+   * own chat, never a script's key.
    */
   stagesAs?: string
+  /**
+   * Deletes, merges or undoes posted books. Offered only when the deployment sets
+   * AGENT_DESTRUCTIVE_ACTIONS=true, and then ALWAYS staged for an admin's approval, from any
+   * credential (lib/agent/destructive.ts). Every such tool is also in ADMIN_ONLY_TOOLS.
+   */
+  destructive?: true
+  /**
+   * A write that changes no record, so it runs directly even from a chat that stages writes:
+   * minting a signed upload URL (the file is only taken in by the register tool, which stages), or
+   * a preview the assistant applies with tools that stage. Still gated at write, like its route.
+   * Staging it would only lose its result: the URL or preview would reach the approver, not the chat.
+   */
+  runsDirectly?: true
   inputSchema: Record<string, any>
 }
 
@@ -199,16 +213,28 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: EMPTY_SCHEMA,
   },
   {
+    name: 'preview_close',
+    description: 'Preview closing a vehicle THROUGH a date without changing anything: the months the close would cover (it starts the day after the last closed period, so there are no gaps), what each month would allocate to each partner, and anything blocking it, such as drafts still sitting inside the window. Run this before close_period.',
+    scope: 'read',
+    inputSchema: {
+      type: 'object',
+      required: ['periodEnd'],
+      properties: {
+        periodEnd: { type: 'string', description: 'ISO date to close through (YYYY-MM-DD), usually a month-end' },
+      },
+    },
+  },
+  {
     name: 'close_period',
-    description: 'Close and lock a fiscal period: snapshot the ledger text and block new postings dated in the range. Body: periodStart, periodEnd, label?.',
+    description: 'Close the books THROUGH a date: every open month from the day after the last closed period up to periodEnd is closed in order, allocating its P&L to the partners and locking it against new postings. Stops at the first month that fails and leaves the earlier ones closed; calling again picks up from there. Run preview_close (or close_status) first. periodStart is ignored: a close cannot leave gaps.',
     scope: 'write',
     inputSchema: {
       type: 'object',
-      required: ['periodStart', 'periodEnd'],
+      required: ['periodEnd'],
       properties: {
-        periodStart: { type: 'string' },
-        periodEnd: { type: 'string' },
-        label: { type: 'string' },
+        periodEnd: { type: 'string', description: 'YYYY-MM-DD to close through.' },
+        periodStart: { type: 'string', description: 'Ignored: closing runs through periodEnd from the first open period. Accepted for older callers.' },
+        label: { type: 'string', description: 'Ignored. Accepted for older callers.' },
       },
     },
   },
@@ -385,6 +411,21 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'discard_drafts',
+    description: "Void DRAFT journal entries in bulk (the journal's Discard): drafts the user does not want, such as a duplicate import or a wrong categorization. Drafts only: a posted entry is never touched, and an entry in a closed period is skipped with its reason. Give ids for exactly those drafts, or a window (start/end, sourceType) for every draft in it; pages: repeat with afterId = the returned cursor while hasMore.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'discard exactly these drafts (one shot)' },
+        start: { type: 'string', description: 'ISO date; only drafts on or after it' },
+        end: { type: 'string', description: 'ISO date; only drafts on or before it' },
+        sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
+        afterId: { type: 'string', description: 'cursor from the previous call' },
+      },
+    },
+  },
+  {
     name: 'list_bank_transactions',
     description: 'List staged bank transactions and their status (unmatched / drafted / reconciled / ignored), newest first, one page at a time. Returns { rows, total, hasMore, nextCursor }: when hasMore is true the list is INCOMPLETE — call again with cursor = nextCursor.',
     scope: 'read',
@@ -440,8 +481,11 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'entity_document_upload_url',
-    description: 'Start uploading a governing document of any size up to 25 MB: returns a signed URL to PUT the file bytes to, and the storagePath to pass to add_entity_document afterwards.',
+    description: 'Start uploading a governing document of any size up to 25 MB: returns a signed URL to PUT the file bytes to, and the storagePath to pass to add_entity_document afterwards. ' +
+      'Never ask the person to paste or attach the file in chat: ask them for its path in a folder, PUT it from there ' +
+      '(curl -X PUT -H "Content-Type: <type>" --data-binary @"<path>" "<signedUrl>"), then call add_entity_document. The URL expires in 2 hours.',
     scope: 'write',
+    runsDirectly: true,
     inputSchema: {
       type: 'object',
       required: ['fileName'],
