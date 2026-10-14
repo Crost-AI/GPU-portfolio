@@ -67,6 +67,16 @@ describe('xirr', () => {
     expect(xirr(flows([2000, 2005, 2010, 2015]))).toBeNull()
   })
 
+  it('does not take a sub-dollar first flow for a root', () => {
+    // A $0.50 seed row: Newton ran to r ≈ 7493 with npv = 0.50, under the old absolute $1 floor.
+    expect(xirr([
+      { date: d('2010-01-01'), amount: 0.5 },
+      { date: d('2013-01-01'), amount: 100 },
+      { date: d('2016-01-01'), amount: -50 },
+      { date: d('2019-01-01'), amount: 100 },
+    ])).toBeNull()
+  })
+
   it('keeps looking past a guess that runs out of range and finds the real root', () => {
     // +100 at year 1, -10 at year 2: 1 + r = 0.1, so r = -90%. The first guess runs off past 1e6.
     const r = xirr([

@@ -38,7 +38,12 @@ export function xirr(flows: CashFlow[]): number | null {
   // Try multiple starting guesses — a single guess can fail to converge
   // for very high or very low IRRs
   const guesses = [0.1, 0.5, -0.3, -0.5, -0.9, 1.0, 5.0, 10.0, 50.0, 100.0, 0.01]
-  const totalAbsFlow = flows.reduce((s, f) => s + Math.abs(f.amount), 0)
+  // "Close enough to zero" is relative to the flows AS DISCOUNTED at that rate — an absolute
+  // floor (it was $1) passes any rate where only a sub-dollar t=0 flow is left standing.
+  const nearRoot = (rate: number) => {
+    const largest = flows.reduce((m, f, i) => Math.max(m, Math.abs(f.amount / Math.pow(1 + rate, daysFromFirst[i]))), 0)
+    return Math.abs(npv(rate)) <= largest * 1e-6
+  }
 
   for (const guess of guesses) {
     let rate = guess
@@ -62,7 +67,7 @@ export function xirr(flows: CashFlow[]): number | null {
     // derivative. At a huge rate every discounted flow but the t=0 one vanishes — out past 1e6,
     // and with flows years apart the derivative flattens in the hundreds — so a small first flow
     // (a 0 seed row) reads as a "root" at a meaningless rate.
-    if (converged || (!outOfRange && !stalled && Math.abs(npv(rate)) < Math.max(1, totalAbsFlow * 1e-6))) {
+    if (converged || (!outOfRange && !stalled && nearRoot(rate))) {
       return rate
     }
   }
