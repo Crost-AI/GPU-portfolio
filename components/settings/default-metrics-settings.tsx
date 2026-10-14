@@ -43,16 +43,19 @@ export function syncNotice({ inserted, companies, errors }: ApplyResult): string
     : `Added ${metricsWord(inserted)} across ${companies} companies.`
 }
 
-/** The notice after adding a default metric: the template is saved either way; say how far it got. */
+/**
+ * The notice after adding a default metric: the template is saved either way; say how far it got.
+ * `inserted` counts metric rows (the apply syncs every template, several per company), not companies.
+ */
 export function addNotice({ inserted, companies, errors }: ApplyResult): string {
   if (errors?.length) {
     return inserted === 0
       ? 'Added to the profile, but it could not be applied to companies yet. Use Sync to try again.'
-      : `Added to the profile and ${inserted} of ${companies} companies; some could not be updated. Use Sync to try again.`
+      : `Added to the profile and ${metricsWord(inserted)} to companies, but some companies could not be updated. Use Sync to try again.`
   }
   return inserted === 0
     ? `Added to the profile. All ${companies} companies already tracked it.`
-    : `Added to ${inserted} of ${companies} companies.`
+    : `Added to the profile; ${metricsWord(inserted)} added across ${companies} companies.`
 }
 
 const ENDPOINTS = {
