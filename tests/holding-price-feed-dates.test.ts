@@ -43,12 +43,19 @@ describe('the price feed marks date', () => {
     const now = at('Asia/Tokyo', new Date('2026-03-31T23:00:00Z')) // 2026-04-01 08:00 JST
     const asOf = defaultMarksDate()
     expect(asOf).toBe('2026-03-31')
-    expect(routeAsOf(marksRequestUrl(URL_, asOf), now)).toBe('2026-03-31')
+    const request = marksRequestUrl(URL_, asOf)
+    expect(request).toBe(`${URL_}?asOf=2026-03-31`)
+    const booked = routeAsOf(request, now)
+    expect(booked).toBe('2026-03-31')
+    expect(booked <= now.toISOString().slice(0, 10)).toBe(true) // not refused as future-dated
   })
 
-  it("leaves the route's own default off the URL, so the request is the same all day", () => {
-    at('UTC', new Date('2026-03-31T12:00:00Z'))
-    expect(marksRequestUrl(URL_, defaultMarksDate())).toBe(URL_)
+  it("sends the date even when it is the route's own default", () => {
+    const now = at('UTC', new Date('2026-03-31T12:00:00Z'))
+    const asOf = defaultMarksDate()
+    expect(asOf).toBe('2026-03-31')
+    expect(marksRequestUrl(URL_, asOf)).toBe(`${URL_}?asOf=2026-03-31`)
+    expect(routeAsOf(marksRequestUrl(URL_, asOf), now)).toBe('2026-03-31')
   })
 
   it('always sends a date the user picked', () => {

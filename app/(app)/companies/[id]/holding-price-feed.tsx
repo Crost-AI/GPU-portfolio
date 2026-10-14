@@ -44,12 +44,12 @@ export function defaultMarksDate(): string {
 }
 
 /**
- * The GET for the marks at `asOf`. The route's own default is left off the URL so the request is
- * the same every day (the public demo answers recorded requests by their exact URL); any other
- * date is sent, or the route would compute the marks for its day and the user would book that.
+ * The GET for the marks at `asOf`. Always sent: left off, the route computes the marks for its own
+ * (UTC) day, which need not be the day the picker shows — and Book submits the date the GET
+ * answered for. The public demo matches a recorded request by path when the query differs.
  */
 export function marksRequestUrl(url: string, asOf: string): string {
-  return asOf === serverToday() ? url : `${url}?asOf=${asOf}`
+  return `${url}?asOf=${asOf}`
 }
 
 /**
