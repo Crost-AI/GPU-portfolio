@@ -6,7 +6,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { lpCapitalCode } from './chart'
 import { assertBalanced } from './ledger'
-import { closedPeriodRanges, dateInAnyClosedPeriod } from './periods'
+import { closedPeriodRanges, dateInAnyClosedPeriod, type PeriodRange } from './periods'
 import { fundCurrency } from './currency'
 import { vehicleIdByName } from './vehicle-id'
 import type { JournalEntry } from './types'
@@ -103,6 +103,69 @@ export function duplicateRefMessage(sourceRef: string, existing: LiveEntryRef | 
     'Nothing was posted. Void that entry first if it is wrong; do not post it again.'
 }
 
+/**
+ * The per-vehicle lookups persistEntry makes for every entry: the fund's currency, the closed
+ * periods, the vehicle id and the vehicle's own account ids. A caller writing many entries to one
+ * vehicle (a bank import drafts one per row) reads them once with buildPersistContext and passes
+ * them in, instead of persistEntry re-reading all four per entry.
+ */
+export type PersistContext = {
+  /** The fund and vehicle the lookups were read for: persistEntry refuses a context for another. */
+  fundId: string
+  group: string
+  currency: string
+  closedRanges: PeriodRange[]
+  vehicleId: string
+  accountIds: Set<string>
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/**
+ * Read a PersistContext once. Refuses with the same texts persistEntry gives for an unreadable
+ * currency or an unknown vehicle, and refuses (rather than reading as "none") when the periods or
+ * the chart cannot be read. `known` reuses what the caller already holds — a resolved vehicle id,
+ * or the chart ids from accountIdByCode — so they are not read twice.
+ */
+export async function buildPersistContext(
+  admin: SupabaseClient,
+  fundId: string,
+  group: string,
+  known: { vehicleId?: string; accountIds?: Set<string> } = {},
+): Promise<PersistContext | { error: string }> {
+  let currency: string
+  try {
+    currency = await fundCurrency(admin, fundId)
+  } catch (e) {
+    return { error: `${message(e)}. Nothing was saved — try again.` }
+  }
+  let vehicleId: string | null
+  try {
+    vehicleId = known.vehicleId ?? await vehicleIdByName(admin, fundId, group)
+  } catch (e) {
+    return { error: message(e) }
+  }
+  if (!vehicleId) return { error: `Unknown vehicle "${group}" — add it in Settings before booking to it.` }
+
+  const [periods, chart] = await Promise.all([
+    admin.from('fiscal_periods' as any).select('period_start, period_end')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'closed'),
+    known.accountIds
+      ? Promise.resolve({ data: null, error: null })
+      : admin.from('chart_of_accounts' as any).select('id').eq('fund_id', fundId).eq('vehicle_id', vehicleId),
+  ])
+  if (periods.error) return { error: `The closed periods could not be read: ${periods.error.message}` }
+  if (chart.error) return { error: `The chart of accounts could not be read: ${chart.error.message}` }
+  return {
+    fundId,
+    group,
+    currency,
+    closedRanges: ((periods.data as any[]) ?? []).map(p => ({ period_start: p.period_start, period_end: p.period_end })),
+    vehicleId,
+    accountIds: known.accountIds ?? new Set(((chart.data as any[]) ?? []).map(a => a.id as string)),
+  }
+}
+
 /** Write a balanced entry and its postings for a vehicle. Returns id or error. */
 export async function persistEntry(
   admin: SupabaseClient,
@@ -125,6 +188,8 @@ export async function persistEntry(
   allocate: boolean = true,
   /** What the caller may do to the tracker when this entry is adopted (adoption.ts). */
   adoptOpts: AdoptOptions = {},
+  /** The lookups below, read once by a caller writing many entries (buildPersistContext). */
+  ctx?: PersistContext,
 ): Promise<{ entryId: string } | { error: string; allocationFailed?: true; adoptionRefused?: true; duplicateOf?: string }> {
   // DENOMINATE THE ENTRY IN THE FUND'S CURRENCY, here, at the one place everything is written.
   //
@@ -135,11 +200,18 @@ export async function persistEntry(
   //
   // The ledger is single-currency by design: a foreign position is translated on the way in, and
   // the rate movement lives in 1250/4300. See currency.ts.
+  // A context read for another fund or vehicle would check the wrong chart and periods.
+  if (ctx && (ctx.fundId !== fundId || ctx.group !== group)) {
+    return { error: `The lookups passed in are for ${ctx.group}, not ${group} — nothing was saved.` }
+  }
   let currency: string
-  try {
-    currency = await fundCurrency(admin, fundId)
-  } catch (e) {
-    return { error: `${e instanceof Error ? e.message : String(e)}. Nothing was saved — try again.` }
+  if (ctx) currency = ctx.currency
+  else {
+    try {
+      currency = await fundCurrency(admin, fundId)
+    } catch (e) {
+      return { error: `${e instanceof Error ? e.message : String(e)}. Nothing was saved — try again.` }
+    }
   }
   entry = { ...entry, postings: entry.postings.map(p => ({ ...p, currency })) }
 
@@ -152,7 +224,7 @@ export async function persistEntry(
   // Locking: refuse to post into a closed period (reopen it to amend). Actual book only — see
   // the `book` parameter.
   if (book === ACTUAL_BOOK) {
-    const closed = await closedPeriodRanges(admin, fundId, group)
+    const closed = ctx ? ctx.closedRanges : await closedPeriodRanges(admin, fundId, group)
     if (dateInAnyClosedPeriod(closed, entry.entryDate)) {
       return { error: `The period covering ${entry.entryDate} is closed — reopen it to post here` }
     }
@@ -163,7 +235,7 @@ export async function persistEntry(
   // filters `.eq('vehicle_id', ...)`, which matches nothing when null, so those rows became
   // invisible orphans: money on the books that no statement, no capital account and no
   // report would ever show again. Refuse instead.
-  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  const vehicleId = ctx ? ctx.vehicleId : await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) {
     return { error: `Unknown vehicle "${group}" — add it in Settings before booking to it.` }
   }
@@ -179,12 +251,16 @@ export async function persistEntry(
   // report at all.
   //
   // One check here covers the journal route, the agent, and anything written later.
-  const { data: ownAccounts } = await admin
-    .from('chart_of_accounts' as any)
-    .select('id')
-    .eq('fund_id', fundId)
-    .eq('vehicle_id', vehicleId)
-  const valid = new Set(((ownAccounts as any[]) ?? []).map(a => a.id as string))
+  let valid: Set<string>
+  if (ctx) valid = ctx.accountIds
+  else {
+    const { data: ownAccounts } = await admin
+      .from('chart_of_accounts' as any)
+      .select('id')
+      .eq('fund_id', fundId)
+      .eq('vehicle_id', vehicleId)
+    valid = new Set(((ownAccounts as any[]) ?? []).map(a => a.id as string))
+  }
 
   const foreign = entry.postings.map(p => p.accountId).filter(id => !valid.has(id))
   if (foreign.length > 0) {

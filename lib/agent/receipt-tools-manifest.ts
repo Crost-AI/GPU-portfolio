@@ -81,7 +81,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'draft_entry_from_receipt',
-    description: "Create a DRAFT journal entry from a receipt (Dr debitAccountCode, Cr creditAccountCode for its total, dated the receipt date, vendor set) and attach the receipt. For a charge that is not in the bank feed. billTo makes it a partnership expense paid for that fund: the debit is then this entity's 'Due from <fund>' account instead of debitAccountCode, which is what puts it on the fund's quarterly partnership invoice. Post it with post_drafts.",
+    description: "Create a DRAFT journal entry from a receipt (Dr debitAccountCode, Cr creditAccountCode for its total, dated the receipt date, vendor set) and attach the receipt. A receipt in a currency other than the fund's needs reportingAmount, its total in the fund's currency. For a charge that is not in the bank feed. billTo makes it a partnership expense paid for that fund: the debit is then this entity's 'Due from <fund>' account instead of debitAccountCode, which is what puts it on the fund's quarterly partnership invoice. Post it with post_drafts.",
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -92,6 +92,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
         creditAccountCode: { type: 'string', description: 'what paid it, e.g. 1000 cash or 2000 accounts payable' },
         billTo: { type: 'string', description: 'the fund (entity name) this was paid for, as a partnership expense' },
         memo: { type: 'string' },
+        reportingAmount: { type: 'number', description: "the receipt's total in the fund's currency; required when the receipt is in another currency" },
       },
     },
   },
