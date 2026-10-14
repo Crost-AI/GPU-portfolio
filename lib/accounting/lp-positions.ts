@@ -24,7 +24,7 @@ import type { CapitalPosting } from './capital-account'
 import { vehicleIdByName, type VehicleIdMap } from './vehicle-id'
 import { roundCents } from './ledger'
 import { ACTUAL_BOOK } from './books'
-import { fetchAllRows } from './load'
+import { fetchAllRows, fetchAllRowsIn } from './load'
 
 const TOLERANCE = 0.005
 
@@ -146,13 +146,14 @@ export async function loadPositionsBatch(
   const out = new Map<string, LpPosition[]>()
   if (vehicleIds.length === 0) return out
   for (const id of vehicleIds) out.set(id, [])
-  // Paged, as loadPositions: across many vehicles the position count passes the cap quickly.
-  const data = await fetchAllRows<any>((f, t) => {
+  // Paged, as loadPositions: across many vehicles the position count passes the cap quickly. And
+  // chunked by vehicle id, so the `in` filter stays under the URL limit on a firm of many vehicles.
+  const data = await fetchAllRowsIn<any>(vehicleIds, (ids, f, t) => {
     let q = admin
       .from('lp_positions' as any)
       .select('id, lp_entity_id, as_of_date, commitment, called_capital, distributions, nav, irr, vehicle_id')
       .eq('fund_id', fundId)
-      .in('vehicle_id', vehicleIds)
+      .in('vehicle_id', ids)
     if (asOf) q = q.lte('as_of_date', asOf)
     return q.order('as_of_date').range(f, t)
   })

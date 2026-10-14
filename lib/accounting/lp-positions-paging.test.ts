@@ -39,6 +39,19 @@ describe('lp positions read past the 1000-row cap', () => {
     expect(ids(one)).toEqual(ids(batch))
   })
 
+  it('the single-vehicle loader reads one vehicle past the cap on its own', async () => {
+    // 300 LPs × 4 dates = 1200 rows for Fund I alone, oldest date first.
+    const lp_positions = quarters.flatMap((d, qi) => Array.from({ length: 300 }, (_, i) => ({
+      id: `p-${String(i).padStart(3, '0')}-${qi}`, fund_id: 'f', vehicle_id: 'v1', lp_entity_id: `e${i}`, as_of_date: d, irr: qi === 3 ? 0.2 : 0.1,
+    })))
+    const { admin } = memoryAdmin({ fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'Fund I' }], lp_positions }, { maxRows: 1000 })
+    const one = await loadPositions(admin as any, 'f', 'Fund I')
+    expect(one).toHaveLength(1200)
+    const latest = latestPositionIrrFrom(one)
+    expect(latest.size).toBe(300)
+    expect([...latest.values()].every(irr => irr === 0.2)).toBe(true)
+  })
+
   it('throws on a failed read rather than returning no positions', async () => {
     const m = memoryAdmin(seed(), { maxRows: 1000 })
     m.failNext('lp_positions', 'select', 'timeout')

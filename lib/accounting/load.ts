@@ -47,6 +47,27 @@ export async function fetchAllRows<T>(
   return out
 }
 
+/** Ids per `.in()` filter. The filter rides in the GET URL, and past ~400 uuids one request
+ *  overruns Supabase's 16 KB URL limit — so a batch over every vehicle failed on a large firm. */
+export const IN_CHUNK = 200
+
+/**
+ * `fetchAllRows` for a read filtered by `.in(column, ids)`: one paged read per chunk of
+ * `IN_CHUNK` ids, concatenated. `make(chunk, from, to)` must filter on `chunk`, not on `ids`.
+ */
+export async function fetchAllRowsIn<T>(
+  ids: string[],
+  make: (chunk: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+  opts: { order?: string | null } = {},
+): Promise<T[]> {
+  const out: T[] = []
+  for (let i = 0; i < ids.length; i += IN_CHUNK) {
+    const chunk = ids.slice(i, i + IN_CHUNK)
+    out.push(...await fetchAllRows<T>((f, t) => make(chunk, f, t), 1000, opts))
+  }
+  return out
+}
+
 export interface LoadedLedger {
   accounts: Account[]
   postings: Posting[]
@@ -80,14 +101,15 @@ export async function loadLedgerRowsBatch(
 
   // Paginated: across many vehicles the posting count easily exceeds the PostgREST 1000-row cap;
   // a truncated batch would break the trial balance for whichever vehicles fell past the cut.
+  // Chunked by vehicle id, so the `in` filter stays under the URL limit on a firm of many vehicles.
   const [acctRows, entryRows, postingRows] = await Promise.all([
-    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
-    fetchAllRows((f, t) => {
-      let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).eq('status', 'posted')
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', ids).range(f, t)),
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => {
+      let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', ids).eq('status', 'posted')
       if (asOf) q = q.lte('entry_date', asOf)
       return q.range(f, t)
     }),
-    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', ids).range(f, t)),
   ])
 
   for (const r of (acctRows as any[])) out.get(r.vehicle_id)?.acctRows.push(r)
