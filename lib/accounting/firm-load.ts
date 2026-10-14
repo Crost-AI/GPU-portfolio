@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { listVehiclesWithId, listMancoVehicles, loadPostedLedger } from './load'
+import { listVehiclesWithId, listMancoVehicles, loadLedgerRowsBatch, loadPostedLedger } from './load'
 import { trialBalance, scheduleOfInvestments } from './statements'
-import { ACTUAL_BOOK } from './books'
 import { MANCO_KIND } from '@/lib/vehicle-kinds'
 import { countUnderived, vehicleNames } from './investment-backfill'
 
@@ -63,35 +62,49 @@ export async function loadFirmOverview(
     ...mancos.map(m => ({ id: m.id, name: m.name, kind: MANCO_KIND as string })),
   ].filter(v => !opts.visible || opts.visible(v.id))
 
+  // Every registered entity's ledger rows in one batch (3 paged reads in all), its counts in one
+  // grouped RPC, and the backlog counts alongside — rather than a ledger load and six count queries
+  // per entity, entity after entity.
+  const ids = all.map(v => v.id).filter((id): id is string => !!id)
+  const backlogFor = all.filter(v => opts.includeBacklog && v.id && v.kind !== MANCO_KIND)
+  const [ledgerRows, counts, backlog] = await Promise.all([
+    loadLedgerRowsBatch(admin, fundId, ids),
+    vehicleCounts(admin, fundId, ids),
+    mapLimit(backlogFor, BACKLOG_CONCURRENCY, async v => {
+      // One entity whose backlog cannot be counted must not fail the whole index: its count reads 0.
+      try {
+        const names = await vehicleNames(admin, fundId, v.id!, v.name)
+        return [v.id!, await countUnderived(admin, fundId, v.id!, names)] as const
+      } catch (err) {
+        console.error('[firm-load] could not count transactions not on the ledger', v.id, err)
+        return [v.id!, 0] as const
+      }
+    }),
+  ])
+  const underived = new Map(backlog)
+
   const rows = await Promise.all(all.map(async v => {
-    const ledger = await loadPostedLedger(admin, fundId, v.name)
+    // A legacy name-only vehicle is not in the batch: its ledger still loads by name, and with
+    // nothing to count against, its counts read zero.
+    const ledger = v.id
+      ? await loadPostedLedger(admin, fundId, v.name, undefined, undefined, ledgerRows.get(v.id))
+      : await loadPostedLedger(admin, fundId, v.name)
     const tb = trialBalance(ledger.accounts, ledger.postings)
     // Net assets are only used for the percent-of-net-assets column, which no consumer of this
     // row reads, so 0 is passed rather than computing a balance sheet for every vehicle.
     const soi = scheduleOfInvestments(ledger.accounts, ledger.postings, 0)
     const cashIds = new Set(ledger.accounts.filter(a => a.subtype === 'cash').map(a => a.id))
     const cash = tb.rows.filter(row => cashIds.has(row.accountId)).reduce((sum, row) => sum + row.balance, 0)
-    // Per-vehicle counts read by id where the vehicle is registered; a legacy name-only vehicle
-    // has nothing to count against, so its counts read zero and its ledger still loads by name.
-    const counts = v.id ? await vehicleCounts(admin, fundId, v.id) : { closedThrough: null, lastEntryDate: null, firstEntryDate: null, posted: 0, drafts: 0, openBank: 0 }
-    // One entity whose backlog cannot be counted must not fail the whole index: its count reads 0.
-    let underivedTransactions = 0
-    if (opts.includeBacklog && v.id && v.kind !== MANCO_KIND) {
-      try {
-        const names = await vehicleNames(admin, fundId, v.id, v.name)
-        underivedTransactions = await countUnderived(admin, fundId, v.id, names)
-      } catch (err) {
-        console.error('[firm-load] could not count transactions not on the ledger', v.id, err)
-      }
-    }
+    const c = (v.id && counts.get(v.id)) || NO_COUNTS
+    const underivedTransactions = (v.id && underived.get(v.id)) || 0
     return {
       id: v.id, name: v.name, kind: v.kind,
-      closedThrough: counts.closedThrough,
-      lastEntryDate: counts.lastEntryDate,
-      firstEntryDate: counts.firstEntryDate,
-      postedEntries: counts.posted,
-      draftEntries: counts.drafts,
-      openBankRows: counts.openBank,
+      closedThrough: c.closedThrough,
+      lastEntryDate: c.lastEntryDate,
+      firstEntryDate: c.firstEntryDate,
+      postedEntries: c.posted,
+      draftEntries: c.drafts,
+      openBankRows: c.openBank,
       trialBalanced: tb.balanced,
       totalDebits: tb.totalDebits,
       empty: ledger.postings.length === 0,
@@ -105,29 +118,50 @@ export async function loadFirmOverview(
   return { vehicles: rows, mancoOmitted: !opts.includeManco }
 }
 
-async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleId: string) {
-  const [{ data: periods }, { count: posted }, { count: drafts }, { data: last }, { count: openBank }, { data: first }] = await Promise.all([
-    admin.from('fiscal_periods' as any).select('period_end').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'closed'),
-    admin.from('journal_entries' as any).select('id', { count: 'exact', head: true })
-      .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted'),
-    admin.from('journal_entries' as any).select('id', { count: 'exact', head: true })
-      .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'draft'),
-    admin.from('journal_entries' as any).select('entry_date')
-      .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
-      .order('entry_date', { ascending: false }).limit(1),
-    admin.from('bank_transactions' as any).select('id', { count: 'exact', head: true })
-      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('status', ['unmatched', 'drafted']),
-    admin.from('journal_entries' as any).select('entry_date')
-      .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
-      .order('entry_date', { ascending: true }).limit(1),
-  ])
-  const closedThrough = ((periods as any[]) ?? []).reduce<string | null>((max, p) => (max && max > p.period_end ? max : p.period_end), null)
-  return {
-    closedThrough,
-    lastEntryDate: ((last as any[]) ?? [])[0]?.entry_date ?? null,
-    firstEntryDate: ((first as any[]) ?? [])[0]?.entry_date ?? null,
-    posted: posted ?? 0,
-    drafts: drafts ?? 0,
-    openBank: openBank ?? 0,
+interface VehicleCounts {
+  closedThrough: string | null
+  lastEntryDate: string | null
+  firstEntryDate: string | null
+  posted: number
+  drafts: number
+  openBank: number
+}
+
+const NO_COUNTS: VehicleCounts = { closedThrough: null, lastEntryDate: null, firstEntryDate: null, posted: 0, drafts: 0, openBank: 0 }
+
+/** Each entity's counts, by id, from one grouped query (firm_vehicle_counts, 20261014181000). A
+ *  failed read throws: zero drafts and no open bank rows would read as "all clear". */
+async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleIds: string[]): Promise<Map<string, VehicleCounts>> {
+  const out = new Map<string, VehicleCounts>()
+  if (vehicleIds.length === 0) return out
+  const { data, error } = await admin.rpc('firm_vehicle_counts' as any, { p_fund_id: fundId, p_vehicle_ids: vehicleIds } as any)
+  if (error) throw new Error(`firm_vehicle_counts: ${error.message}`)
+  for (const r of (data as any[]) ?? []) {
+    out.set(r.vehicle_id, {
+      closedThrough: r.closed_through ?? null,
+      lastEntryDate: r.last_entry_date ?? null,
+      firstEntryDate: r.first_entry_date ?? null,
+      posted: Number(r.posted_entries ?? 0),
+      drafts: Number(r.draft_entries ?? 0),
+      openBank: Number(r.open_bank_rows ?? 0),
+    })
   }
+  return out
+}
+
+// Backlog counts are a few queries per entity; a handful at a time keeps a large firm from opening
+// every one at once.
+const BACKLOG_CONCURRENCY = 5
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
 }
