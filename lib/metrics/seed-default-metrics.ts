@@ -156,6 +156,7 @@ function describeCompanies(ids: string[]): string {
  * Reads the templates once and the companies' existing slugs/exclusions in batched `.in()` reads,
  * then inserts the missing rows in chunks. A failed read or insert is recorded in `errors` (naming
  * the companies it covered) and skips only that batch; `inserted` counts the rows that landed.
+ * `errors` reaches the client, so the database's own message is logged here, never put in it.
  */
 export async function applyDefaultsToAllCompanies(
   admin: SupabaseClient,
@@ -182,7 +183,9 @@ export async function applyDefaultsToAllCompanies(
     try {
       state = await readSeedState(admin, chunk)
     } catch (e) {
-      errors.push(`Reading existing metrics for ${chunk.length} companies (${describeCompanies(chunk)}) failed: ${errMessage(e)}`)
+      const msg = `Reading existing metrics for ${chunk.length} companies (${describeCompanies(chunk)}) failed`
+      console.error('[applyDefaultsToAllCompanies]', `${msg}:`, errMessage(e))
+      errors.push(msg)
       continue
     }
     for (const companyId of chunk) {
@@ -196,8 +199,8 @@ export async function applyDefaultsToAllCompanies(
     const { error } = await admin.from('metrics').insert(chunk)
     if (error) {
       const companyIds = Array.from(new Set(chunk.map(r => r.company_id)))
-      const msg = `Inserting ${chunk.length} metrics for ${companyIds.length} companies (${describeCompanies(companyIds)}) failed: ${error.message}`
-      console.error('[applyDefaultsToAllCompanies]', msg)
+      const msg = `Inserting ${chunk.length} metrics for ${companyIds.length} companies (${describeCompanies(companyIds)}) failed`
+      console.error('[applyDefaultsToAllCompanies]', `${msg}:`, error.message)
       errors.push(msg)
       continue
     }

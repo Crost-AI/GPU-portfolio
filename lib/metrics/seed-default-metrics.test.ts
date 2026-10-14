@@ -176,7 +176,8 @@ describe('applyDefaultsToAllCompanies — batching', () => {
     expect(res.errors).toHaveLength(1)
     expect(res.errors[0]).toMatch(/500 metrics for 250 companies/)
     expect(res.errors[0]).toMatch(/co-000/)
-    expect(res.errors[0]).toMatch(/duplicate key value violates unique constraint/)
+    // the DB's own text is logged, not returned to the client
+    expect(res.errors[0]).not.toMatch(/duplicate key/)
   })
 
   it('still skips existing slugs and exclusions per company when batched', async () => {
