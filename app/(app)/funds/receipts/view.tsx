@@ -112,6 +112,19 @@ function ReceiptsList() {
     return r.ok
   }
 
+  /** Draft an entry from a receipt. Returns the route's refusal, for the form to show beside its fields. */
+  async function draft(id: string, body: object): Promise<string | null> {
+    setBusy(id); setError(null)
+    try {
+      const r = await lf(`/api/accounting/receipts/${id}`, json('PATCH', { action: 'draft', ...body }))
+      const failed = r.ok ? null : await errOf(r, 'Could not draft the entry')
+      if (!failed) await load()
+      return failed
+    } finally {
+      setBusy(null)
+    }
+  }
+
   async function remove(id: string) {
     if (!window.confirm('Delete this receipt and its file?')) return
     setBusy(id); setError(null)
@@ -153,6 +166,7 @@ function ReceiptsList() {
           {receipts.map(r => {
             const sugg = suggestions[r.id] ?? []
             const unfiled = !r.vehicle_id
+            const rCurrency = foreignCurrency(r.currency, currency)
             return (
               <li key={r.id} className="space-y-2 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -170,7 +184,7 @@ function ReceiptsList() {
                     {unfiled && <p className="text-sm text-warning">Not filed under an entity yet.</p>}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-sm tabular-nums">{r.amount != null ? fmt(Number(r.amount)) : '—'}</span>
+                    <span className="text-sm tabular-nums">{r.amount == null ? '—' : rCurrency ? `${rCurrency} ${Number(r.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : fmt(Number(r.amount))}</span>
                     {busy === r.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                   </div>
                 </div>
@@ -179,7 +193,9 @@ function ReceiptsList() {
                   <ReceiptFieldsForm r={r} onCancel={() => setEditing(null)} onSave={async patch => { if (await act(r.id, { action: 'update', ...patch }, 'Could not save')) setEditing(null) }} />
                 ) : drafting === r.id ? (
                   <DraftForm r={r} onCancel={() => setDrafting(null)} onDraft={async body => {
-                    if (await act(r.id, { action: 'draft', ...body }, 'Could not draft the entry')) setDrafting(null)
+                    const failed = await draft(r.id, body)
+                    if (!failed) setDrafting(null)
+                    return failed
                   }} />
                 ) : (
                   <>
@@ -254,9 +270,62 @@ function ReceiptFieldsForm({ r, onSave, onCancel }: { r: ReceiptRow; onSave: (p:
   )
 }
 
-function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: object) => void; onCancel: () => void }) {
+/** The receipt's currency when it is not the books' (the fund's), or null. */
+export function foreignCurrency(receiptCurrency: string | null, booksCurrency: string): string | null {
+  const c = receiptCurrency?.trim().toUpperCase() || null
+  return c && c !== booksCurrency.toUpperCase() ? c : null
+}
+
+/**
+ * The typed total in the books' currency as a number, or null until it is a whole amount of at
+ * least a cent. A comma is read only as a thousands separator in its grouping positions, and at
+ * most two decimals are accepted: "108,50" or "1.234,50" (a decimal comma) is refused rather than
+ * read as 10850 or 1.2345, and "108.505" rather than left for the server to round. The route and
+ * draftEntryFromReceipt refuse a bad amount too; this keeps the button from offering one.
+ */
+export function parseReportingAmount(text: string): number | null {
+  const t = text.trim()
+  if (!/^(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$/.test(t)) return null
+  const n = Number(t.replace(/,/g, ''))
+  return Math.round(n * 100) >= 1 ? n : null
+}
+
+export const DRAFT_CONNECTION_ERROR = 'Could not draft the entry. Check your connection and try again.'
+
+/**
+ * Submit a draft and return the refusal to show, or null. A dropped connection REJECTS rather than
+ * returning a response; caught here, so the form always gets a message and its controls back.
+ */
+export async function runDraft(onDraft: (b: object) => Promise<string | null>, body: object): Promise<string | null> {
+  try {
+    return await onDraft(body)
+  } catch {
+    return DRAFT_CONNECTION_ERROR
+  }
+}
+
+/** Whether the draft form has everything the route needs. */
+export function canDraft(f: { debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null }): boolean {
+  return !!(f.debit || f.billTo) && !!f.credit && (!f.foreign || f.reportingAmount != null)
+}
+
+/** The draft request body: billed to a fund or debited to an account, with the books-currency total for a foreign receipt. */
+export function draftBody(f: { debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null }): object {
+  const base = f.billTo ? { creditAccountId: f.credit, billToVehicleId: f.billTo } : { debitAccountId: f.debit, creditAccountId: f.credit }
+  return f.foreign ? { ...base, reportingAmount: f.reportingAmount } : base
+}
+
+export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: object) => Promise<string | null>; onCancel: () => void }) {
   const lf = useLedgerFetch()
   const { vehicleId } = useVehicle()
+  const books = useCurrency()
+  // A receipt in another currency is booked at its total in the fund's: the ledger is single-currency
+  // and nothing converts. Ask for that total rather than drafting the receipt's own figure.
+  const foreign = foreignCurrency(r.currency, books)
+  const [reporting, setReporting] = useState('')
+  const reportingAmount = parseReportingAmount(reporting)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   const [accounts, setAccounts] = useState<PickerAccount[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [debit, setDebit] = useState('')
@@ -288,9 +357,35 @@ function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: objec
           ? <span className="w-56 pb-1.5 text-xs text-muted-foreground">Debit: Due from {entities.find(e => e.id === billTo)?.name ?? 'the fund'}</span>
           : <label className="w-56 text-xs text-muted-foreground">Debit (the cost)<AccountPicker accounts={accounts.filter(a => a.type === 'expense' || a.type === 'asset')} value={debit} onChange={setDebit} /></label>}
         <label className="w-56 text-xs text-muted-foreground">Credit (what paid it)<AccountPicker accounts={accounts.filter(a => a.type === 'asset' || a.type === 'liability')} value={credit} onChange={setCredit} /></label>
+        {foreign && (
+          <label className="w-36 text-xs text-muted-foreground" title={`The receipt says ${foreign} ${Number(r.amount ?? 0).toFixed(2)}. The books are kept in ${books}.`}>
+            Total in {books}
+            <input
+              required inputMode="decimal" value={reporting} onChange={e => setReporting(e.target.value)}
+              aria-invalid={reporting !== '' && reportingAmount == null}
+              placeholder={`${foreign} ${Number(r.amount ?? 0).toFixed(2)}`}
+              className="mt-0.5 block w-full rounded-md border border-input bg-transparent px-2 py-1 text-right text-sm tabular-nums"
+            />
+            {/* The amount as it will be booked, so a misread entry is visible before it is drafted. */}
+            {reportingAmount != null && <span className="mt-0.5 block text-right tabular-nums">= {books} {reportingAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+          </label>
+        )}
         <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
-        <Button size="sm" disabled={!(debit || billTo) || !credit} onClick={() => onDraft(billTo ? { creditAccountId: credit, billToVehicleId: billTo } : { debitAccountId: debit, creditAccountId: credit })}>Draft entry</Button>
+        <Button
+          size="sm"
+          disabled={submitting || !canDraft({ debit, credit, billTo, foreign, reportingAmount })}
+          onClick={async () => {
+            setSubmitting(true); setFailed(null)
+            // The form's fields, the typed total included, are left as they are on a failure.
+            try {
+              setFailed(await runDraft(onDraft, draftBody({ debit, credit, billTo, foreign, reportingAmount })))
+            } finally {
+              setSubmitting(false)
+            }
+          }}
+        >Draft entry</Button>
       </div>
+      {failed && <p role="alert" className="text-sm text-destructive">{failed}</p>}
     </div>
   )
 }
