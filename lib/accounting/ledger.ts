@@ -8,9 +8,22 @@
 import type { Account, AccountType, JournalEntry, Posting } from './types'
 import { NORMAL_SIDE } from './types'
 
-/** Round to cents to avoid binary-float drift when summing money. */
+/**
+ * Round to cents to avoid binary-float drift when summing money.
+ *
+ * Halves round AWAY FROM ZERO, so roundCents(-x) === -roundCents(x). Entry builders write
+ * roundCents(amount) on one leg and roundCents(-amount) on the other; Math.round alone rounds
+ * halves toward +infinity (0.125 → 0.13 but -0.125 → -0.12), and those legs would not balance.
+ * -0 is returned as 0.
+ *
+ * The 1e-9 nudge rounds a half cent the binary float stores as ...4999 up to the decimal-correct
+ * cent (1000.005 → 1000.01, 66286.635 → 66286.64 where the old EPSILON nudge gave .63). It is
+ * below the float's resolution past about 1,000,000, so a half cent there can still round down
+ * (1234567.005 → 1234567.00) — symmetrically, so entries still balance.
+ */
 export function roundCents(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100
+  const r = (Math.sign(n) * Math.round(Math.abs(n) * 100 + 1e-9)) / 100
+  return r === 0 ? 0 : r
 }
 
 /**

@@ -18,6 +18,34 @@ describe('roundCents', () => {
     expect(roundCents(0.1 + 0.2)).toBe(0.3)
     expect(roundCents(1000.005)).toBe(1000.01)
   })
+
+  it('is symmetric: a half cent rounds away from zero on both sides', () => {
+    // Math.round rounds halves toward +infinity, so 0.125 → 0.13 but -0.125 → -0.12, and an
+    // entry with roundCents(x) on one leg and roundCents(-x) on the other was off by a cent.
+    for (const x of [0.125, 2.675, 1000.005, 1234.125]) {
+      expect(roundCents(-x)).toBe(-roundCents(x))
+      expect(roundCents(x) + roundCents(-x)).toBe(0)
+    }
+    expect(roundCents(1234.125)).toBe(1234.13)
+    expect(roundCents(-1234.125)).toBe(-1234.13)
+  })
+
+  it('never returns -0', () => {
+    for (const x of [-0, -0.001, -0.004999]) expect(Object.is(roundCents(x), 0)).toBe(true)
+  })
+
+  it('balances an entry whose legs are rounded separately from a half-cent amount', () => {
+    // The entries.ts pattern: roundCents(amount) on one leg, roundCents(-amount) on the other.
+    const amount = 1234.125
+    const e: JournalEntry = {
+      ...base,
+      postings: [
+        { accountId: 'expense', amount: roundCents(amount), currency: 'USD' },
+        { accountId: 'cash', amount: roundCents(-amount), currency: 'USD' },
+      ],
+    }
+    expect(() => assertBalanced(e)).not.toThrow()
+  })
 })
 
 describe('balance invariant', () => {
