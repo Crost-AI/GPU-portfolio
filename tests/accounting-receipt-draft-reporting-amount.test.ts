@@ -33,10 +33,10 @@ describe('drafting a receipt through the route', () => {
     expect(s.draft).toHaveBeenCalledWith(expect.anything(), 'f1', 'Fund I', 'v1', 'u1', 'r1', expect.objectContaining({ reportingAmount: null }))
   })
 
-  it.each([0, -5, '108.50', 'abc', true, {}])('refuses reportingAmount %j without drafting', async value => {
+  it.each([0, 0.004, -5, '108.50', 'abc', true, {}])('refuses reportingAmount %j without drafting', async value => {
     const res = await patch({ reportingAmount: value })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'reportingAmount must be a positive number' })
+    expect(await res.json()).toEqual({ error: 'reportingAmount must be a positive amount of at least 0.01' })
     expect(s.draft).not.toHaveBeenCalled()
   })
 })

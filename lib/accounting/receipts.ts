@@ -459,7 +459,8 @@ export async function draftEntryFromReceipt(
   const foreign = receiptCurrency != null && receiptCurrency !== books.toUpperCase()
   if (foreign) {
     const reporting = Number(input.reportingAmount)
-    if (input.reportingAmount == null || !Number.isFinite(reporting) || !(reporting > 0)) {
+    // At least a cent once rounded: 0.004 is "positive" and books as a zero entry.
+    if (input.reportingAmount == null || !Number.isFinite(reporting) || !(roundCents(reporting) >= 0.01)) {
       return {
         error: `This receipt is in ${receiptCurrency}; the books are kept in ${books}. Enter the ${books} amount to draft it, or set the receipt's total in ${books}.`,
         status: 400,

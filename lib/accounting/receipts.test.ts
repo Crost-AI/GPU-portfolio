@@ -43,6 +43,12 @@ describe('drafting an entry from a receipt in another currency', () => {
     expect(mocks.persist).not.toHaveBeenCalled()
   })
 
+  it('refuses a reporting amount that rounds to zero cents rather than booking a zero entry', async () => {
+    const res = await draft(receipt(), 0.004)
+    expect(res).toMatchObject({ status: 400, error: expect.stringContaining('Enter the USD amount') })
+    expect(mocks.persist).not.toHaveBeenCalled()
+  })
+
   it('books the reporting-currency amount and keeps the receipt figure in the memo', async () => {
     const res = await draft(receipt(), 108.5)
     expect(res).toMatchObject({ entryId: 'entry-1' })

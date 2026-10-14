@@ -12,6 +12,7 @@ import {
 } from '@/lib/accounting/receipts'
 import { authorizeReceipt } from '@/lib/accounting/receipt-access'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
+import { roundCents } from '@/lib/accounting/ledger'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -125,8 +126,8 @@ export async function PATCH(req: NextRequest, props: Params) {
       return NextResponse.json({ error: 'creditAccountId, and debitAccountId or billToVehicleId, are required' }, { status: 400 })
     }
     const reportingAmount = body?.reportingAmount ?? null
-    if (reportingAmount !== null && !(typeof reportingAmount === 'number' && Number.isFinite(reportingAmount) && reportingAmount > 0)) {
-      return NextResponse.json({ error: 'reportingAmount must be a positive number' }, { status: 400 })
+    if (reportingAmount !== null && !(typeof reportingAmount === 'number' && Number.isFinite(reportingAmount) && roundCents(reportingAmount) >= 0.01)) {
+      return NextResponse.json({ error: 'reportingAmount must be a positive amount of at least 0.01' }, { status: 400 })
     }
     const billToName = billToVehicleId ? await vehicleNameById(admin, gate.fundId, billToVehicleId) : null
     if (billToVehicleId && !billToName) return NextResponse.json({ error: 'That entity is not in this fund.' }, { status: 400 })
