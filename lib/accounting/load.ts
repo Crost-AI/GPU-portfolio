@@ -18,17 +18,27 @@ export type SourcedPosting = Posting & { sourceType: string | null; entryId: str
  * Fetch every row of a query, paging past PostgREST's 1000-row default cap. A vehicle with more
  * than 1000 journal postings would otherwise load a TRUNCATED ledger — silently producing a false
  * trial-balance imbalance, phantom unallocated income, and a wrong NAV. `make(from, to)` must apply
- * the same filters each page, a STABLE UNIQUE ORDER (e.g. `.order('id')`, or `.order(date).order('id')`)
- * and then `.range(from, to)`: offset paging over an unordered (or non-unique) sort lets Postgres
- * return rows in a different order per page, so a row can repeat on one page and vanish from the set.
+ * the same filters each page and add `.range(from, to)`.
+ *
+ * Offset paging needs a STABLE UNIQUE order: over an unordered (or non-unique) sort Postgres may
+ * return rows in a different order per page, so a row repeats on one page and vanishes from the set.
+ * So this appends `.order(opts.order ?? 'id')` to every page's builder itself — the whole order when
+ * the caller gave none, the unique tie-break after the caller's own `.order(...)` (supabase-js
+ * appends each `.order()` to one ORDER BY; it is a query parameter, so its place in the chain does
+ * not matter). A table without an `id` column must pass its own unique key, or `order: null` when
+ * the caller's order is already unique.
  */
 export async function fetchAllRows<T>(
   make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
   page = 1000,
+  opts: { order?: string | null } = {},
 ): Promise<T[]> {
+  const key = opts.order === undefined ? 'id' : opts.order
   const out: T[] = []
   for (let from = 0; ; from += page) {
-    const { data, error } = await make(from, from + page - 1)
+    let q: any = make(from, from + page - 1)
+    if (key && typeof q?.order === 'function') q = q.order(key)
+    const { data, error } = await q
     if (error) throw error
     const rows = data ?? []
     out.push(...rows)
@@ -71,13 +81,13 @@ export async function loadLedgerRowsBatch(
   // Paginated: across many vehicles the posting count easily exceeds the PostgREST 1000-row cap;
   // a truncated batch would break the trial balance for whichever vehicles fell past the cut.
   const [acctRows, entryRows, postingRows] = await Promise.all([
-    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', vehicleIds).order('id').range(f, t)),
+    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
     fetchAllRows((f, t) => {
       let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).eq('status', 'posted')
       if (asOf) q = q.lte('entry_date', asOf)
-      return q.order('id').range(f, t)
+      return q.range(f, t)
     }),
-    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).order('id').range(f, t)),
+    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
   ])
 
   for (const r of (acctRows as any[])) out.get(r.vehicle_id)?.acctRows.push(r)
@@ -178,13 +188,13 @@ export async function loadPostedLedger(
   // Paginated: a vehicle can hold more than 1000 postings (and a big chart / many entries), which
   // the PostgREST default would silently truncate — a truncated ledger fails the trial balance.
   const [acctRows, entryRows, postingRows] = await Promise.all([
-    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id').eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('id').range(f, t)),
+    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id').eq('fund_id', fundId).eq('vehicle_id', vehicleId).range(f, t)),
     fetchAllRows((f, t) => {
       let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo').in('book', books).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
       if (asOf) q = q.lte('entry_date', asOf)
-      return q.order('id').range(f, t)
+      return q.range(f, t)
     }),
-    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id').in('book', books).eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('id').range(f, t)),
+    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id').in('book', books).eq('fund_id', fundId).eq('vehicle_id', vehicleId).range(f, t)),
   ])
   return assembleLoadedLedger(fundId, {
     acctRows: acctRows as any[],

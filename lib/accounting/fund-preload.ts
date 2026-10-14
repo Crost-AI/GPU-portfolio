@@ -47,12 +47,12 @@ export async function loadFundPreload(admin: SupabaseClient, fundId: string, asO
   // partners or keeps a superseded commitment. Same reads as the per-vehicle loaders in load.ts.
   const db = admin as any
   const [vehRows, entRows, invRows, periodRows] = await Promise.all([
-    fetchAllRows<any>((f, t) => db.from('fund_vehicles').select('id, name, aliases, vintage_year').eq('fund_id', fundId).order('id').range(f, t)),
-    fetchAllRows<any>((f, t) => db.from('lp_entities').select('id, entity_name, partner_class').eq('fund_id', fundId).order('id').range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('fund_vehicles').select('id, name, aliases, vintage_year').eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('lp_entities').select('id, entity_name, partner_class').eq('fund_id', fundId).range(f, t)),
     fetchAllRows<any>((f, t) => db.from('lp_investments')
       .select('id, entity_id, portfolio_group, commitment, paid_in_capital, distributions, snapshot_id, updated_at, lp_snapshots(as_of_date, created_at)')
-      .eq('fund_id', fundId).order('id').range(f, t)),
-    fetchAllRows<any>((f, t) => db.from('fiscal_periods').select('vehicle_id, period_start, period_end').eq('fund_id', fundId).eq('status', 'closed').order('id').range(f, t)),
+      .eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('fiscal_periods').select('vehicle_id, period_start, period_end').eq('fund_id', fundId).eq('status', 'closed').range(f, t)),
   ])
 
   // fund_vehicles → idMap (name + aliases) and vintage, from the one read.

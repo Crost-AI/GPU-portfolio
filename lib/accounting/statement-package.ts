@@ -144,11 +144,11 @@ export async function loadLedgerData(
     loadEntityNames(admin, fundId, group),
     // Paged: oldest first, so past the 1000-row cap the NEWEST investments and proceeds fell off
     // the schedule of investments with no error.
-    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).order('id').range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).range(f, t)),
     // Every holding, fund and company alike: both carry 1100/1200 balances, so the SOI's
     // ledger control total only ties if both are present. The SOI splits them for DISPLAY by
     // holding_type — see SoiPosition.holdingType — rather than by excluding either here.
-    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).order('id').range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).range(f, t)),
     loadFofRaw(admin, fundId, group),
     (admin as any).from('price_feeds').select('*').eq('fund_id', fundId),
     vehicleKindByName(admin, fundId, group),

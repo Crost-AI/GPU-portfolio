@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { memoryAdmin } from '../../tests/helpers/memory-admin'
 import { loadFundPreload } from './fund-preload'
-import { loadEntityClasses, loadEntityNames, loadLedgerRowsBatch, loadOwnership, loadPostedLedger } from './load'
+import { fetchAllRows, loadEntityClasses, loadEntityNames, loadLedgerRowsBatch, loadOwnership, loadPostedLedger } from './load'
 import { trialBalance } from './statements'
+import { loadAllocationSkips } from './continuous-allocation'
 
 /**
  * The fund-wide preload and the ledger loaders must read every row, not the first 1000 (PostgREST
@@ -77,8 +78,49 @@ describe('loadFundPreload reads past the 1000-row cap', () => {
   )
 })
 
+/** A fake builder that records its chain: `order` and `range` calls, in call order. */
+function fakeBuilder(rows: unknown[], log: string[][]) {
+  const calls: string[] = []
+  log.push(calls)
+  let page: unknown[] = rows
+  const q: any = {
+    order: (k: string, o?: { ascending?: boolean }) => { calls.push(`order:${k}${o?.ascending === false ? ':desc' : ''}`); return q },
+    range: (f: number, t: number) => { calls.push(`range:${f}-${t}`); page = rows.slice(f, t + 1); return q },
+    then: (resolve: any) => resolve({ data: page, error: null }),
+  }
+  return q
+}
+
+describe('fetchAllRows orders every page by a unique key', () => {
+  const rows = ['a', 'b', 'c']
+
+  it("orders by id when the caller gives no order, on every page", async () => {
+    const log: string[][] = []
+    expect(await fetchAllRows((f, t) => fakeBuilder(rows, log).range(f, t), 2)).toEqual(rows)
+    expect(log).toEqual([['range:0-1', 'order:id'], ['range:2-3', 'order:id']])
+  })
+
+  it("appends id as the tie-break after the caller's own order", async () => {
+    const log: string[][] = []
+    await fetchAllRows((f, t) => fakeBuilder(rows, log).order('entry_date', { ascending: false }).range(f, t), 2)
+    expect(log[0]).toEqual(['order:entry_date:desc', 'range:0-1', 'order:id'])
+  })
+
+  it('uses an explicit key, or none, for a table without an id', async () => {
+    const log: string[][] = []
+    await fetchAllRows((f, t) => fakeBuilder(rows, log).range(f, t), 2, { order: 'wallet_id' })
+    await fetchAllRows((f, t) => fakeBuilder(rows, log).order('k').range(f, t), 2, { order: null })
+    expect(log[0]).toEqual(['range:0-1', 'order:wallet_id'])
+    expect(log.at(-1)).toEqual(['order:k', 'range:2-3'])
+  })
+
+  it('leaves a non-builder result alone', async () => {
+    expect(await fetchAllRows(async () => ({ data: ['x'], error: null }))).toEqual(['x'])
+  })
+})
+
 describe('the ledger loaders page in a stable order', () => {
-  // One wrapper per chain, so `.eq().order().range()` keeps recording on the same chain.
+  /** Wraps a client so every query chain records its calls. */
   function recorder(admin: any) {
     const chains: { table: string; calls: string[] }[] = []
     const wrap = (table: string) => {
@@ -90,7 +132,7 @@ describe('the ledger loaders page in a stable order', () => {
           const v = target[prop]
           if (typeof v !== 'function' || prop === 'then') return v
           return (...args: unknown[]) => {
-            chain.calls.push(String(prop))
+            chain.calls.push(prop === 'order' ? `order:${String(args[0])}` : String(prop))
             const out = v.apply(target, args)
             return out === target ? proxy : out
           }
@@ -100,17 +142,22 @@ describe('the ledger loaders page in a stable order', () => {
     }
     return { chains, admin: { ...admin, from: wrap } }
   }
-  const pagedWithoutOrder = (chains: { table: string; calls: string[] }[]) =>
-    chains.filter(c => c.calls.includes('range') && !c.calls.slice(0, c.calls.indexOf('range')).includes('order')).map(c => c.table)
 
-  it('orders every paged chart, entry and posting read (batched and single-vehicle)', async () => {
+  it('orders every paged chart, entry and posting read by id (batched and single-vehicle)', async () => {
     const { admin } = memoryAdmin({ fund_vehicles: [{ id: 'v1', fund_id: FUND, name: 'Fund I' }] })
     const r = recorder(admin)
     await loadLedgerRowsBatch(r.admin as any, FUND, ['v1'])
     await loadPostedLedger(r.admin as any, FUND, 'Fund I')
-    const paged = r.chains.filter(c => c.calls.includes('range')).map(c => c.table).sort()
-    expect(paged).toEqual(['chart_of_accounts', 'chart_of_accounts', 'journal_entries', 'journal_entries', 'journal_postings', 'journal_postings'])
-    expect(pagedWithoutOrder(r.chains)).toEqual([])
+    const paged = r.chains.filter(c => c.calls.includes('range'))
+    expect(paged.map(c => c.table).sort()).toEqual(['chart_of_accounts', 'chart_of_accounts', 'journal_entries', 'journal_entries', 'journal_postings', 'journal_postings'])
+    expect(paged.filter(c => !c.calls.includes('order:id'))).toEqual([])
+  })
+
+  it('never orders journal_entry_allocation_skips by id, a column it does not have', async () => {
+    const { admin } = memoryAdmin({ journal_entry_allocation_skips: [{ source_entry_id: 'je1', fund_id: FUND, vehicle_id: 'v1', reason: 'manual' }] })
+    const r = recorder(admin)
+    expect((await loadAllocationSkips(r.admin as any, FUND, 'v1')).get('je1')).toBe('manual')
+    expect(r.chains.map(c => c.calls.filter(k => k.startsWith('order')))).toEqual([['order:source_entry_id']])
   })
 
   it('loads a >1000-posting ledger with every posting exactly once, and it ties', async () => {

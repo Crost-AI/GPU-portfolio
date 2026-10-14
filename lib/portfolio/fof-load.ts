@@ -71,9 +71,9 @@ export async function loadFofRaw(
   const db = admin as any
   const scoped = (q: any) => (vehicleId ? q.eq('vehicle_id', vehicleId) : q)
   const [terms, events, navs, ledgerAccounts] = await Promise.all([
-    fetchAllRows<any>((f, t) => db.from('fund_holding_terms').select('*').eq('fund_id', fundId).order('id').range(f, t)),
-    fetchAllRows<any>((f, t) => scoped(db.from('fund_capital_events').select('*').eq('fund_id', fundId)).order('event_date').order('id').range(f, t)),
-    fetchAllRows<any>((f, t) => scoped(db.from('fund_nav_statements').select('*').eq('fund_id', fundId)).order('as_of_date').order('id').range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('fund_holding_terms').select('*').eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => scoped(db.from('fund_capital_events').select('*').eq('fund_id', fundId)).order('event_date').range(f, t)),
+    fetchAllRows<any>((f, t) => scoped(db.from('fund_nav_statements').select('*').eq('fund_id', fundId)).order('as_of_date').range(f, t)),
     // THE LEDGER IS THE THIRD WITNESS, and usually the first one to exist. A holding imported
     // from a general ledger has its own 1100-<id>/1200-<id> accounts carrying cost and marks
     // before anybody records a single notice — so the books know which entity holds it even
@@ -82,7 +82,7 @@ export async function loadFofRaw(
     // Indexed by chart_of_accounts (fund_id, vehicle_id, company_id) where company_id is not null.
     vehicleId
       ? fetchAllRows<any>((f, t) => db.from('chart_of_accounts').select('id, company_id')
-          .eq('fund_id', fundId).eq('vehicle_id', vehicleId).not('company_id', 'is', null).order('id').range(f, t))
+          .eq('fund_id', fundId).eq('vehicle_id', vehicleId).not('company_id', 'is', null).range(f, t))
       : Promise.resolve([] as any[]),
   ]).catch((e: any) => { throw new Error(`The fund register could not be loaded: ${e?.message ?? e}`) })
 

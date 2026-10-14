@@ -257,8 +257,8 @@ export async function fundTimeseries(
   // whole companies) from the gross series without an error.
   const [{ postings }, txnRows, companyRows] = await Promise.all([
     loadCapitalPostings(admin, fundId, group, endDate, preload.idMap, vehicleCapitalPreload(preload, group)),
-    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).order('id').range(f, t)),
-    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).order('id').range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).range(f, t)),
   ])
 
   // Net IRR splits by partner class, so we need the LP/GP map — but only ledger vehicles carry a
