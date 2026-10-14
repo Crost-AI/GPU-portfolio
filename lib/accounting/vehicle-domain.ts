@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { hasAccess, loadAccessContext } from '@/lib/access/effective'
+import { hasAccess, loadAccessContext, type AccessContext } from '@/lib/access/effective'
 import { isManagementCompany, type VehicleKind } from '@/lib/vehicle-kinds'
 import type { Domain } from '@/lib/access/domains'
 
@@ -86,16 +86,20 @@ export interface VehicleGate {
  * The refusal is 403 with a message that names the grant, not a 404: pretending the vehicle does
  * not exist would be a worse lie than the one this replaces, since the caller can see the name in
  * their own vehicle list.
+ *
+ * `access`, when given, is this request's already-loaded context for the same gate, used instead of
+ * loading it again.
  */
 export async function assertVehicleDomain(
   admin: SupabaseClient,
   gate: VehicleGate,
   group: string,
+  access?: AccessContext,
 ): Promise<NextResponse | null> {
   const kind = await vehicleKindByName(admin, gate.fundId, group)
   if (!isManagementCompany(kind)) return null
 
-  const ctx = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  const ctx = access ?? await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   if (hasAccess(ctx, 'management_company', gate.need)) return null
 
   return NextResponse.json(

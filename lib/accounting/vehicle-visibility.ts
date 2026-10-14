@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { loadAccessContext } from '@/lib/access/effective'
+import { loadAccessContext, type AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, visibleVehicleIds } from '@/lib/access/scope'
 import { vehicleIdByName } from './vehicle-id'
 import type { VehicleGate } from './vehicle-domain'
@@ -13,13 +13,17 @@ import type { VehicleGate } from './vehicle-domain'
  * Name in, because every vehicle-scoped route still keys on the name the client sends; resolved to
  * the registry id (alias-aware) before deciding. A legacy name with no registry row cannot be
  * granted, so only a caller who sees everything reaches it.
+ *
+ * `access`, when given, is this request's already-loaded context for the same gate — passed so one
+ * request resolves it once. Omitted, it is loaded here.
  */
 export async function assertVehicleVisible(
   admin: SupabaseClient,
   gate: VehicleGate,
   name: string,
+  access?: AccessContext,
 ): Promise<NextResponse | null> {
-  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  access ??= await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   if (access.vehicles.all) return null
   // A failed registry read is an error, not "no such entity" (which would read as a 403).
   let id: string | null
@@ -34,13 +38,15 @@ export async function assertVehicleVisible(
 
 /**
  * The names of the entities this caller may see, or null when they see every entity. Names, not
- * ids, because the vehicle-scoped tables and routes still key on `portfolio_group`.
+ * ids, because the vehicle-scoped tables and routes still key on `portfolio_group`. `access` as for
+ * assertVehicleVisible.
  */
 export async function visibleVehicleNames(
   admin: SupabaseClient,
   gate: Pick<VehicleGate, 'fundId' | 'userId' | 'role'>,
+  access?: AccessContext,
 ): Promise<string[] | null> {
-  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  access ??= await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   const ids = visibleVehicleIds(access)
   if (ids === null) return null
   if (ids.length === 0) return []
