@@ -11,7 +11,9 @@ export function xirr(flows: CashFlow[]): number | null {
   const hasNeg = flows.some(f => f.amount < 0)
   if (!hasPos || !hasNeg) return null
 
-  const daysFromFirst = flows.map(f => (f.date.getTime() - flows[0].date.getTime()) / (365.25 * 86400000))
+  // ACTUAL/365, as Excel/Sheets XIRR and the LPA (lib/accounting/carry.ts preferredTarget) count a
+  // year — 365.25 made a calendar year 0.9993 of one and every IRR disagree with the spreadsheet.
+  const daysFromFirst = flows.map(f => (f.date.getTime() - flows[0].date.getTime()) / (365 * 86400000))
 
   // No time spread → IRR is undefined. Every flow is at the same instant, so npv(rate) is the
   // (rate-independent) SUM of the amounts: it has no root in `rate` at all. When that sum is also
@@ -20,7 +22,7 @@ export function xirr(flows: CashFlow[]): number | null {
   // 10%). Bail here instead: you cannot compute a return from a single point in time.
   let minT = daysFromFirst[0], maxT = daysFromFirst[0]
   for (const t of daysFromFirst) { if (t < minT) minT = t; if (t > maxT) maxT = t }
-  if (maxT - minT < 1 / 365.25) return null // under a day of spread
+  if (maxT - minT < 1 / 365) return null // under a day of spread
 
   function npv(rate: number): number {
     return flows.reduce((sum, f, i) => sum + f.amount / Math.pow(1 + rate, daysFromFirst[i]), 0)
@@ -41,6 +43,7 @@ export function xirr(flows: CashFlow[]): number | null {
   for (const guess of guesses) {
     let rate = guess
     let converged = false
+    let outOfRange = false
     for (let iter = 0; iter < 200; iter++) {
       const val = npv(rate)
       const deriv = dnpv(rate)
@@ -52,9 +55,12 @@ export function xirr(flows: CashFlow[]): number | null {
         break
       }
       rate = next
-      if (rate < -0.9999 || rate > 1e6) break
+      if (rate < -0.9999 || rate > 1e6) { outOfRange = true; break }
     }
-    if (converged || Math.abs(npv(rate)) < Math.max(1, totalAbsFlow * 1e-6)) {
+    // A near-zero npv only counts when Newton stopped inside the range. Out past 1e6 every
+    // discounted flow but the t=0 one vanishes, so a small first flow (a 0 seed row) reads as a
+    // "root" at a meaningless rate.
+    if (converged || (!outOfRange && Math.abs(npv(rate)) < Math.max(1, totalAbsFlow * 1e-6))) {
       return rate
     }
   }
