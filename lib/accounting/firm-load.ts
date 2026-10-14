@@ -129,7 +129,7 @@ interface VehicleCounts {
 
 const NO_COUNTS: VehicleCounts = { closedThrough: null, lastEntryDate: null, firstEntryDate: null, posted: 0, drafts: 0, openBank: 0 }
 
-/** Each entity's counts, by id, from one grouped query (firm_vehicle_counts, 20261014181000). A
+/** Each entity's counts, by id, from one grouped query (firm_vehicle_counts, 20261014182000). A
  *  failed read throws: zero drafts and no open bank rows would read as "all clear". */
 async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleIds: string[]): Promise<Map<string, VehicleCounts>> {
   const out = new Map<string, VehicleCounts>()
