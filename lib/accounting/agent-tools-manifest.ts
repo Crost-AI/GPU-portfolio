@@ -97,7 +97,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   // LP identities + commitments — the lp_capital tier, not plain bookkeeping.
   { name: 'list_entities', description: 'List LP entities with committed capital.', scope: 'read', accessDomain: 'lp_capital', inputSchema: EMPTY_SCHEMA },
   { name: 'capital_accounts', description: 'Per-LP capital-account roll-forward (beginning, contributions, distributions, fees, gains, ending) plus fund NAV.', scope: 'read', accessDomain: 'lp_capital', inputSchema: EMPTY_SCHEMA },
-  { name: 'financial_statements', description: 'Trial balance, balance sheet, and income statement derived from posted entries.', scope: 'read', inputSchema: EMPTY_SCHEMA },
+  { name: 'financial_statements', description: 'Trial balance, balance sheet, and income statement derived from posted entries. For a management company, also each member\'s capital roll-forward since inception (changesInMembersCapital).', scope: 'read', inputSchema: EMPTY_SCHEMA },
   {
     name: 'list_journal',
     description: 'List journal entries with their postings, newest first, one page at a time. Returns { rows, total, hasMore, nextCursor }: when hasMore is true the list is INCOMPLETE — call again with cursor = nextCursor before drawing any conclusion from the whole journal.',
