@@ -13,6 +13,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
 import { persistEntry } from './persist'
+import { fundCurrency } from './currency'
 import { ensureVendor } from './vendors'
 import { ensureIntercompanyAccounts } from './intercompany'
 import { vehicleNameById } from './vehicle-id'
@@ -416,6 +417,11 @@ export interface DraftFromReceiptInput {
    */
   billTo?: { vehicleId: string; name: string } | null
   memo?: string | null
+  /**
+   * The receipt's total in the fund's currency, for a receipt in another currency. Required then:
+   * the ledger is single-currency (currency.ts), so the receipt's own figure cannot be booked as is.
+   */
+  reportingAmount?: number | null
 }
 
 /**
@@ -439,6 +445,29 @@ export async function draftEntryFromReceipt(
   if (r.journal_entry_id) return { error: 'This receipt is already attached to an entry.', status: 409 }
   if (r.amount == null) return { error: 'Fill in the receipt\'s total first.', status: 400 }
 
+  // A FOREIGN RECEIPT NEEDS ITS AMOUNT IN THE BOOKS' CURRENCY. persistEntry stamps the fund's
+  // currency on every posting without converting anything, so drafting a EUR 100 receipt in a USD
+  // fund used to book USD 100. Refuse unless the caller says what it cost in the fund's currency.
+  // A receipt with no currency (extraction found none) is taken to be in the fund's currency.
+  let books: string
+  try {
+    books = await fundCurrency(admin, fundId)
+  } catch (e) {
+    return { error: (e as Error).message, status: 400 }
+  }
+  const receiptCurrency = r.currency?.trim().toUpperCase() || null
+  const foreign = receiptCurrency != null && receiptCurrency !== books.toUpperCase()
+  if (foreign) {
+    const reporting = Number(input.reportingAmount)
+    // At least a cent once rounded: 0.004 is "positive" and books as a zero entry.
+    if (input.reportingAmount == null || !Number.isFinite(reporting) || !(roundCents(reporting) >= 0.01)) {
+      return {
+        error: `This receipt is in ${receiptCurrency}; the books are kept in ${books}. Enter the ${books} amount to draft it, or set the receipt's total in ${books}.`,
+        status: 400,
+      }
+    }
+  }
+
   let debitAccountId = input.debitAccountId ?? null
   if (input.billTo) {
     if (input.billTo.vehicleId === vehicleId) return { error: 'An entity cannot bill its own expense to itself.', status: 400 }
@@ -451,9 +480,11 @@ export async function draftEntryFromReceipt(
   if (!debitAccountId) return { error: 'Choose the account to debit, or the fund to bill.', status: 400 }
   if (debitAccountId === input.creditAccountId) return { error: 'Debit and credit must be different accounts.', status: 400 }
 
-  const amount = roundCents(r.amount)
+  const amount = roundCents(foreign ? Number(input.reportingAmount) : r.amount)
   const vendor = r.vendor_name ? await ensureVendor(admin, fundId, r.vendor_name) : null
-  const memo = input.memo?.trim() || [r.vendor_name, r.description].filter(Boolean).join(' — ') || 'Receipt'
+  const baseMemo = input.memo?.trim() || [r.vendor_name, r.description].filter(Boolean).join(' — ') || 'Receipt'
+  // The receipt's own figure stays on the entry: it is the evidence the converted amount came from.
+  const memo = foreign ? `${baseMemo} (${receiptCurrency} ${Number(r.amount).toFixed(2)} on receipt)` : baseMemo
   const res = await persistEntry(admin, fundId, group, userId, {
     fundId,
     entryDate: r.receipt_date ?? new Date().toISOString().slice(0, 10),
@@ -462,8 +493,8 @@ export async function draftEntryFromReceipt(
     sourceRef: `receipt:${r.id}`,
     vendorId: vendor?.id ?? null,
     postings: [
-      { accountId: debitAccountId, amount, currency: 'USD', lpEntityId: null },
-      { accountId: input.creditAccountId, amount: -amount, currency: 'USD', lpEntityId: null },
+      { accountId: debitAccountId, amount, currency: books, lpEntityId: null },
+      { accountId: input.creditAccountId, amount: -amount, currency: books, lpEntityId: null },
     ],
   }, 'draft')
   if ('error' in res) return { error: res.error, status: 400 }

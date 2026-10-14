@@ -12,6 +12,7 @@ import {
 } from '@/lib/accounting/receipts'
 import { authorizeReceipt } from '@/lib/accounting/receipt-access'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
+import { roundCents } from '@/lib/accounting/ledger'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -48,9 +49,10 @@ export async function GET(req: NextRequest, props: Params) {
  *   { action: 'attach', journalEntryId? | bankTransactionId? }
  *   { action: 'detach' }
  *   { action: 'dismiss' } / { action: 'restore' }
- *   { action: 'draft', creditAccountId, debitAccountId? | billToVehicleId?, memo? }
+ *   { action: 'draft', creditAccountId, debitAccountId? | billToVehicleId?, memo?, reportingAmount? }
  *       draft the entry it describes on its entity's books and attach it. billToVehicleId makes it
- *       a partnership expense: the debit is that fund's Due-from account, not an expense
+ *       a partnership expense: the debit is that fund's Due-from account, not an expense.
+ *       reportingAmount is the total in the fund's currency, required for a receipt in another one
  */
 export async function PATCH(req: NextRequest, props: Params) {
   const { id } = await props.params
@@ -123,12 +125,17 @@ export async function PATCH(req: NextRequest, props: Params) {
     if (!creditAccountId || !(debitAccountId || billToVehicleId)) {
       return NextResponse.json({ error: 'creditAccountId, and debitAccountId or billToVehicleId, are required' }, { status: 400 })
     }
+    const reportingAmount = body?.reportingAmount ?? null
+    if (reportingAmount !== null && !(typeof reportingAmount === 'number' && Number.isFinite(reportingAmount) && roundCents(reportingAmount) >= 0.01)) {
+      return NextResponse.json({ error: 'reportingAmount must be a positive amount of at least 0.01' }, { status: 400 })
+    }
     const billToName = billToVehicleId ? await vehicleNameById(admin, gate.fundId, billToVehicleId) : null
     if (billToVehicleId && !billToName) return NextResponse.json({ error: 'That entity is not in this fund.' }, { status: 400 })
     const res = await draftEntryFromReceipt(admin, gate.fundId, ok.group, r.vehicle_id, user.id, id, {
       debitAccountId, creditAccountId,
       billTo: billToVehicleId && billToName ? { vehicleId: billToVehicleId, name: billToName } : null,
       memo: typeof body?.memo === 'string' ? body.memo : null,
+      reportingAmount,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json(res)
