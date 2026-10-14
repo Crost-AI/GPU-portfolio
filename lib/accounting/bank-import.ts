@@ -4,8 +4,9 @@ import { ensureVehicleAccounts } from './provision-accounts'
 // and agents ingest through the identical path: parse → dedup → stage → draft.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { accountIdByCode, persistEntry } from './persist'
+import { accountIdByCode, buildPersistContext, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
+import { ACTUAL_BOOK } from './books'
 import { parseTransactionsCsv, dedupHash, legacyDedupHash, bankEntryPostings } from './bank'
 import { categorizeBankRow, categorizationRecord, type CategorizeContext } from './bank-categorize'
 import { loadCategorizeContext } from './bank-categorize-context'
@@ -52,6 +53,10 @@ export async function importBankTransactions(
 
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return { error: 'Unknown vehicle' }
+  // persistEntry's per-entry lookups (currency, closed periods, vehicle, chart), read once for the
+  // whole file rather than once per drafted row. The chart is the one accountIdByCode just read.
+  const persistCtx = await buildPersistContext(admin, fundId, group, { vehicleId, accountIds: new Set(codes.values()) })
+  if ('error' in persistCtx) return { error: persistCtx.error }
   let existing: any[]
   let qbEntries: Awaited<ReturnType<typeof loadQuickBooksCashEntries>>
   let owned: OwnedCashEntry[]
@@ -184,7 +189,7 @@ export async function importBankTransactions(
       vendorId: await resolveVendor(row.counterparty),
       postings: bankEntryPostings(row.amount, cashId, otherId),
     }
-    const result = await persistEntry(admin, fundId, group, userId, entry, 'draft')
+    const result = await persistEntry(admin, fundId, group, userId, entry, 'draft', ACTUAL_BOOK, true, {}, persistCtx)
     if ('error' in result) { errors.push(`${row.date} ${row.description}: ${result.error}`); continue }
 
     const { error: insErr } = await admin.from('bank_transactions' as any).insert({

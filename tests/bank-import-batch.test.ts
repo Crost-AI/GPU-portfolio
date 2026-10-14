@@ -6,6 +6,7 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 const s = vi.hoisted(() => ({ m: null as any, drafts: 0, bankInserts: [] as any[] }))
 vi.mock('@/lib/accounting/persist', () => ({
   accountIdByCode: async () => new Map([['1000', 'cash'], ['5100', 'expense']]),
+  buildPersistContext: async (_a: any, _f: string, _g: string, known: any) => ({ currency: 'USD', closedRanges: [], vehicleId: known.vehicleId, accountIds: known.accountIds }),
   persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: any, entry: any, status: string) => {
     const id = `draft-${++s.drafts}`
     s.m.tables.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v', book: 'actual', status, source_type: entry.sourceType, entry_date: entry.entryDate })
