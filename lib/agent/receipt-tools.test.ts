@@ -17,7 +17,8 @@ vi.mock('@/lib/accounting/receipts', () => ({
     s.calls++
     s.inFlight++
     s.maxInFlight = Math.max(s.maxInFlight, s.inFlight)
-    await new Promise(res => setTimeout(res, 1))
+    // The failing lookup rejects first, while the others are still pending.
+    await new Promise(res => setTimeout(res, r.id === s.failOn ? 0 : 5))
     s.inFlight--
     if (r.id === s.failOn) throw new Error('match failed')
     return [{ kind: 'entry', id: `je-${r.id}` }]
@@ -77,12 +78,15 @@ describe('list_receipts suggestions', () => {
   })
 
   it('stops taking new receipts once one suggestion fails', async () => {
-    s.receipts = Array.from({ length: 200 }, (_, i) => receipt(i))
+    s.receipts = Array.from({ length: 8 }, (_, i) => receipt(i))
     s.failOn = 'r0'
 
     await expect(RECEIPT_HANDLERS.list_receipts(ctx, { includeSuggestions: true })).rejects.toThrow('match failed')
+    // The call rejected while 4 lookups were still pending. Let them settle, then give any worker
+    // the chance to dequeue more: a worker that ignored the failure would start r5..r7.
+    await vi.waitFor(() => expect(s.inFlight).toBe(0))
+    await new Promise(res => setTimeout(res, 20))
 
-    // the 5 already in flight finish; nothing past them is started
     expect(s.calls).toBe(5)
   })
 
