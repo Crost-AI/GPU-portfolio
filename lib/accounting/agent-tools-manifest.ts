@@ -61,7 +61,7 @@ export interface AgentToolMeta {
    * credential (lib/agent/destructive.ts). Every such tool is also in ADMIN_ONLY_TOOLS.
    */
   destructive?: true
-
+  /**
    * A write that changes no record, so it runs directly even from a chat that stages writes:
    * minting a signed upload URL (the file is only taken in by the register tool, which stages), or
    * a preview the assistant applies with tools that stage. Still gated at write, like its route.
