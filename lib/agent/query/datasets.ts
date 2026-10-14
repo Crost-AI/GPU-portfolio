@@ -60,10 +60,14 @@ const transactions: Loader = async (ctx, p) => {
 const kpis: Loader = async (ctx) => {
   const db = ctx.admin as any
   const visible = await visibleCompanyIds(ctx.admin, ctx.access)
-  let q = db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
-  if (visible !== null) q = q.in('id', visible.length ? visible : ['00000000-0000-0000-0000-000000000000'])
-  const { data: cos } = await q
-  const names = new Map(((cos ?? []) as any[]).map(c => [c.id, c.name]))
+  // Paged (throws on error): unpaged, companies past the 1000th had no KPIs, and a failed read
+  // answered as "no companies". Chunking the visible-id list and metrics' company ids follows #10.
+  const cos = await fetchAllRows<any>((f, t) => {
+    let q = db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
+    if (visible !== null) q = q.in('id', visible.length ? visible : ['00000000-0000-0000-0000-000000000000'])
+    return q.order('id').range(f, t)
+  })
+  const names = new Map(cos.map(c => [c.id, c.name]))
   if (names.size === 0) return []
   const metrics = await fetchAllRows<any>((f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', [...names.keys()]).range(f, t))
   const byId = new Map(metrics.map(m => [m.id, m]))

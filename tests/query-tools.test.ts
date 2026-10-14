@@ -25,6 +25,7 @@ vi.mock('@/lib/access/carry-visibility', async importOriginal => ({
 import { QUERY_HANDLERS as H } from '@/lib/agent/query-tools'
 import { getTool } from '@/lib/accounting/agent-tools'
 import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
+import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 
 const member = (grants: Partial<Record<Domain, AccessLevel>>, all = true, features: Partial<FeatureVisibilityMap> = {}): AccessContext => ({
   fundId: 'f1', userId: 'u1', vehicles: { all, ids: all ? [] : ['v1'] }, role: 'member',
@@ -134,6 +135,9 @@ describe('query datasets load the whole authorized set, past the 1000-row cap', 
         { id: 'c1', fund_id: 'f1', name: 'Acme', holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] },
         { id: 'c2', fund_id: 'f1', name: 'Birch', holding_type: 'company', status: 'active', portfolio_group: ['Fund II'] },
       ],
+      // Acme sorts after the 1100 fillers, so its KPIs sit past an unpaged companies read's cap.
+      metrics: [{ id: 'm1', company_id: 'c1', name: 'ARR', unit: 'USD' }],
+      metric_values: [{ id: 'mv1', metric_id: 'm1', period_label: 'Q2 2026', period_year: 2026, period_quarter: 2, value_number: 150 }],
       investment_transactions: [
         ...Array.from({ length: 1100 }, (_, i) => ({ id: `t${pad(i)}`, fund_id: 'f1', company_id: 'c1', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
         ...Array.from({ length: 50 }, (_, i) => ({ id: `u${pad(i)}`, fund_id: 'f1', company_id: 'c2', portfolio_group: 'Fund II', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
@@ -195,5 +199,20 @@ describe('query datasets load the whole authorized set, past the 1000-row cap', 
     }
     await expect(H.query_deals(ctx(member({ dealflow: 'read' })), { aggregates: [{ fn: 'count' }] })).rejects.toMatchObject({ message: 'statement timeout' })
     expect(pages).toBe(2)
+  })
+
+  it('reads KPIs for companies past the 1000-row cap', async () => {
+    const out = await H.query_portfolio(ctx(member({ portfolio: 'read' })), { dataset: 'kpis', group_by: ['company'], aggregates: [{ fn: 'sum', column: 'value' }] }) as any
+    expect(out.rows).toEqual([{ company: 'Acme', sum_value: 150 }])
+  })
+
+  it('rejects when the KPI companies read fails, rather than answering "no companies"', async () => {
+    store.failNext('companies', 'select', 'statement timeout')
+    await expect(H.query_portfolio(ctx(member({ portfolio: 'read' })), { dataset: 'kpis' })).rejects.toMatchObject({ message: 'statement timeout' })
+  })
+
+  it("reads one company's whole transaction history past the cap (txnsFor)", async () => {
+    const rows = await PORTFOLIO_HANDLERS.list_investments(ctx(member({ portfolio: 'read' })), { company: 'Acme' }) as any[]
+    expect(rows).toHaveLength(1100)
   })
 })
