@@ -17,6 +17,7 @@ import { FiltersSheet } from '@/components/filters-sheet'
 import { AnalystToggleButton } from '@/components/analyst-button'
 import { AnalystPanel } from '@/components/analyst-panel'
 import { EmailReviewModal } from '@/components/email-review-modal'
+import { toLocalIsoDate } from '@/lib/local-date'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,7 +159,7 @@ export default function EmailsPage() {
           else if (dateRange === '90d') from.setDate(now.getDate() - 90)
           else if (dateRange === '6m') from.setMonth(now.getMonth() - 6)
           else if (dateRange === '12m') from.setFullYear(now.getFullYear() - 1)
-          params.set('date_from', from.toISOString().slice(0, 10))
+          params.set('date_from', toLocalIsoDate(from))
         }
       }
 

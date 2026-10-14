@@ -5,6 +5,7 @@ import { Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useCurrency, formatCurrencyPrice } from '@/components/currency-context'
 import { useLedgerFetch } from '@/components/accounting-vehicle'
+import { todayLocalIso } from '@/lib/local-date'
 
 export type AllocationAction = 'management_fee' | 'expense' | 'gain' | 'distribution' | 'carry'
 
@@ -20,7 +21,7 @@ interface Partner { lpEntityId: string; name: string; commitment: number }
 interface PreviewLine { accountCode: string; accountName: string; amount: number }
 interface Preview { entryDate: string; memo: string | null; sourceType: string | null; postings: PreviewLine[] }
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = todayLocalIso
 const num = (s: string) => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0 }
 
 /**
