@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const load = vi.hoisted(() => ({
   vehicles: [] as { id: string | null; name: string; kind: string }[],
   loadLedgerRowsBatch: vi.fn(async (_a: any, _f: string, ids: string[]) =>
-    new Map(ids.map(id => [id, { acctRows: [], entryRows: [], postingRows: [] }]))),
+    new Map(ids.map(id => [id, { acctRows: [], entryRows: [], postingRows: [], vehicleId: id }]))),
   loadPostedLedger: vi.fn(async () => ({ accounts: [], postings: [], capitalPostings: [] })),
 }))
 vi.mock('./load', () => ({
@@ -58,7 +58,7 @@ describe('loadFirmOverview', () => {
     expect(rpc).toHaveBeenCalledWith('firm_vehicle_counts', { p_fund_id: 'f', p_vehicle_ids: ['v1', 'v2', 'v3'] })
     // Each ledger is assembled from its batched slice — no by-name reads.
     expect(load.loadPostedLedger).toHaveBeenCalledTimes(3)
-    for (const call of load.loadPostedLedger.mock.calls as any[]) expect(call[5]).toEqual({ acctRows: [], entryRows: [], postingRows: [] })
+    expect((load.loadPostedLedger.mock.calls as any[]).map(c => c[5]?.vehicleId)).toEqual(['v1', 'v2', 'v3'])
   })
 
   it('maps each vehicle\'s counts and dates onto its row', async () => {
@@ -94,6 +94,18 @@ describe('loadFirmOverview', () => {
     const o = await loadFirmOverview(admin(), 'f', { includeManco: false })
     expect(rpc.mock.calls.every(([, a]) => a.p_vehicle_ids.length <= 200)).toBe(true)
     expect(o.vehicles.filter(v => v.postedEntries !== 1)).toEqual([])
+  })
+
+  it('bounds each ledger batch to 200 ids and keeps every vehicle\'s own slice', async () => {
+    load.vehicles = Array.from({ length: 450 }, (_, i) => ({ id: `v${i}`, name: `Fund ${i}`, kind: 'fund' }))
+    await loadFirmOverview(admin(), 'f', { includeManco: false })
+    const batches = load.loadLedgerRowsBatch.mock.calls.map(c => c[2])
+    expect(batches.map(b => b.length)).toEqual([200, 200, 50])
+    expect(batches.flat()).toEqual(load.vehicles.map(v => v.id))
+    // Each ledger is assembled from the slice for its own id, whichever batch it came back in.
+    const calls = load.loadPostedLedger.mock.calls as any[]
+    expect(calls).toHaveLength(450)
+    for (const c of calls) expect(c[5]?.vehicleId).toBe(load.vehicles.find(v => v.name === c[2])!.id)
   })
 
   it('an entity missing from the counts rejects rather than looking clear', async () => {

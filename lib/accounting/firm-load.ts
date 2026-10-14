@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { listVehiclesWithId, listMancoVehicles, loadLedgerRowsBatch, loadPostedLedger } from './load'
+import { listVehiclesWithId, listMancoVehicles, loadLedgerRowsBatch, loadPostedLedger, type LedgerRows } from './load'
 import { trialBalance, scheduleOfInvestments } from './statements'
 import { MANCO_KIND } from '@/lib/vehicle-kinds'
 import { countUnderived, vehicleNames } from './investment-backfill'
@@ -62,13 +62,13 @@ export async function loadFirmOverview(
     ...mancos.map(m => ({ id: m.id, name: m.name, kind: MANCO_KIND as string })),
   ].filter(v => !opts.visible || opts.visible(v.id))
 
-  // Every registered entity's ledger rows in one batch (3 paged reads in all), its counts in one
-  // grouped RPC, and the backlog counts alongside — rather than a ledger load and six count queries
-  // per entity, entity after entity.
+  // Every registered entity's ledger rows in batches (3 paged reads per 200 entities), its counts in
+  // one grouped RPC per 200, and the backlog counts alongside — rather than a ledger load and six
+  // count queries per entity, entity after entity.
   const ids = all.map(v => v.id).filter((id): id is string => !!id)
   const backlogFor = all.filter(v => opts.includeBacklog && v.id && v.kind !== MANCO_KIND)
   const [ledgerRows, counts, backlog] = await Promise.all([
-    loadLedgerRowsBatch(admin, fundId, ids),
+    ledgerRowsFor(admin, fundId, ids),
     vehicleCounts(admin, fundId, ids),
     mapLimit(backlogFor, BACKLOG_CONCURRENCY, async v => {
       // One entity whose backlog cannot be counted must not fail the whole index: its count reads 0.
@@ -134,9 +134,7 @@ const NO_COUNTS: VehicleCounts = { closedThrough: null, lastEntryDate: null, fir
 async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleIds: string[]): Promise<Map<string, VehicleCounts>> {
   // The RPC returns one row per id, and PostgREST caps any response at max_rows (1,000), so the
   // ids go in chunks well under it — a firm can have more entities than that.
-  const chunks: string[][] = []
-  for (let i = 0; i < vehicleIds.length; i += COUNTS_CHUNK) chunks.push(vehicleIds.slice(i, i + COUNTS_CHUNK))
-  const results = await Promise.all(chunks.map(chunk =>
+  const results = await Promise.all(chunked(vehicleIds).map(chunk =>
     admin.rpc('firm_vehicle_counts' as any, { p_fund_id: fundId, p_vehicle_ids: chunk } as any)))
   const out = new Map<string, VehicleCounts>()
   for (const { data, error } of results) {
@@ -159,7 +157,22 @@ async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleIds: 
   return out
 }
 
-const COUNTS_CHUNK = 200
+/** Ledger rows for every entity, batched by chunk: loadLedgerRowsBatch puts its ids in the GET
+ *  URL of each read, and every id is ~37 characters, so all of a large firm's ids at once would
+ *  pass the gateway's URL limit (16 KB) and fail the page. */
+async function ledgerRowsFor(admin: SupabaseClient, fundId: string, vehicleIds: string[]): Promise<Map<string, LedgerRows>> {
+  const maps = await Promise.all(chunked(vehicleIds).map(chunk => loadLedgerRowsBatch(admin, fundId, chunk)))
+  return new Map(maps.flatMap(m => Array.from(m)))
+}
+
+// Ids per request: about 7.5 KB of URL, and one counts row per id is far under the 1,000-row cap.
+const ID_CHUNK = 200
+
+function chunked(ids: string[]): string[][] {
+  const out: string[][] = []
+  for (let i = 0; i < ids.length; i += ID_CHUNK) out.push(ids.slice(i, i + ID_CHUNK))
+  return out
+}
 
 // Backlog counts are a few queries per entity; a handful at a time keeps a large firm from opening
 // every one at once.
