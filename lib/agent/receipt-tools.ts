@@ -23,14 +23,21 @@ const SUGGEST_CAP = 40
 const SUGGEST_CONCURRENCY = 5
 const SUGGESTIONS_NOTE = 'Match suggestions are omitted. Pass includeSuggestions: true for the first 40 unmatched receipts, or call get_receipt for one receipt.'
 
-/** fn over items with at most `limit` in flight; results in input order. */
+/** fn over items with at most `limit` in flight; results in input order. The first rejection
+ *  rejects the whole call and stops the other workers taking new items. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length)
   let next = 0
+  let failed = false
   const worker = async () => {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const i = next++
-      out[i] = await fn(items[i])
+      try {
+        out[i] = await fn(items[i])
+      } catch (e) {
+        failed = true
+        throw e
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
@@ -84,7 +91,8 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     // page: only unmatched receipts filed here with an amount to match on, the first SUGGEST_CAP.
     const mine = (r: ReceiptRow) => r.status === 'unmatched' && r.vehicle_id === vehicleId
     const matchable = receipts.filter(r => mine(r) && r.amount != null)
-    if (!input?.includeSuggestions) {
+    // Only a real `true`: direct tool calls are not schema-validated, and "false" is truthy.
+    if (input?.includeSuggestions !== true) {
       return {
         receipts: receipts.map(r => ({ ...r, suggestions: undefined })),
         ...(matchable.length ? { note: SUGGESTIONS_NOTE } : {}),
