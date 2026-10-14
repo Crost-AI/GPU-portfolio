@@ -125,7 +125,9 @@ export async function runCategorization(
       .eq('journal_entry_id', t.journal_entry_id)
     if (postingsErr) { errors.push(`${t.id}: ${postingsErr.message}`); continue }
     const counter = counterPosting((postings as any[]) ?? [], cashId, Number(t.amount))
-    if (!counter) continue
+    // Not a simple two-line draft any more (counterPosting): leave it, but say so. The draft check
+    // lives in the function now, so an entry posted and reshaped meanwhile lands here.
+    if (!counter) { errors.push(`${t.id}: skipped - its entry is no longer a simple two-line draft`); continue }
 
     // ONE TRANSACTION, AND ONLY WHILE IT IS STILL A DRAFT. The categorization ran against a
     // snapshot taken before the (slow) model call — in the meantime a user may have posted this

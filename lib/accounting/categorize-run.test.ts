@@ -21,14 +21,20 @@ import { runCategorization } from './categorize-run'
 const TXN = { id: 'txn-1', journal_entry_id: 'entry-1', txn_date: '2026-03-01', amount: -500, description: 'Law firm', counterparty: null, raw: {} }
 
 /** A mocked admin: the bank read, the postings read, the RPC, and a record of every direct write. */
-function admin(opts: { rpc?: { data: unknown; error: unknown }; bankError?: { message: string } } = {}) {
+const TWO_LINES = [{ id: 'p-cash', account_id: 'cash', amount: -500 }, { id: 'p-counter', account_id: 'suspense', amount: 500 }]
+
+function admin(opts: {
+  rpc?: { data: unknown; error: unknown }
+  bankError?: { message: string }
+  postings?: { data: unknown; error: unknown }
+} = {}) {
   const writes: { table: string; op: string }[] = []
   const rpc = vi.fn(async () => opts.rpc ?? { data: true, error: null })
   const from = (table: string) => {
     const result = table === 'bank_transactions'
       ? { data: opts.bankError ? null : [TXN], error: opts.bankError ?? null }
       : table === 'journal_postings'
-        ? { data: [{ id: 'p-cash', account_id: 'cash', amount: -500 }, { id: 'p-counter', account_id: 'suspense', amount: 500 }], error: null }
+        ? opts.postings ?? { data: TWO_LINES, error: null }
         : { data: null, error: null }
     const q: any = {
       select: () => q, eq: () => q, in: () => q, not: () => q, maybeSingle: async () => result,
@@ -73,6 +79,25 @@ describe('runCategorization applies each result in one draft-guarded call', () =
     const res = await runCategorization(a.client, 'fund', 'Fund I')
     expect(res).toEqual({ considered: 1, updated: 0, errors: ['txn-1: Posting p-counter is no longer on entry entry-1'] })
     expect(a.writes).toEqual([])
+  })
+
+  it('reports, rather than silently dropping, an entry that is no longer a simple two-line draft', async () => {
+    // Posted and split meanwhile: two non-cash lines, so there is no single posting to re-point.
+    const a = admin({ postings: { data: [
+      { id: 'p-cash', account_id: 'cash', amount: -500 },
+      { id: 'p-a', account_id: 'suspense', amount: 300 },
+      { id: 'p-b', account_id: 'legal', amount: 200 },
+    ], error: null } })
+    const res = await runCategorization(a.client, 'fund', 'Fund I')
+    expect(res).toEqual({ considered: 1, updated: 0, errors: ['txn-1: skipped - its entry is no longer a simple two-line draft'] })
+    expect(a.rpc).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed postings read and applies nothing for that row', async () => {
+    const a = admin({ postings: { data: null, error: { message: 'connection reset' } } })
+    const res = await runCategorization(a.client, 'fund', 'Fund I')
+    expect(res).toEqual({ considered: 1, updated: 0, errors: ['txn-1: connection reset'] })
+    expect(a.rpc).not.toHaveBeenCalled()
   })
 
   it('returns the error when the bank transactions cannot be read, rather than "nothing to do"', async () => {
