@@ -61,6 +61,13 @@ export interface AgentToolMeta {
    * credential (lib/agent/destructive.ts). Every such tool is also in ADMIN_ONLY_TOOLS.
    */
   destructive?: true
+
+   * A write that changes no record, so it runs directly even from a chat that stages writes:
+   * minting a signed upload URL (the file is only taken in by the register tool, which stages), or
+   * a preview the assistant applies with tools that stage. Still gated at write, like its route.
+   * Staging it would only lose its result: the URL or preview would reach the approver, not the chat.
+   */
+  runsDirectly?: true
   inputSchema: Record<string, any>
 }
 
@@ -474,8 +481,11 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'entity_document_upload_url',
-    description: 'Start uploading a governing document of any size up to 25 MB: returns a signed URL to PUT the file bytes to, and the storagePath to pass to add_entity_document afterwards.',
+    description: 'Start uploading a governing document of any size up to 25 MB: returns a signed URL to PUT the file bytes to, and the storagePath to pass to add_entity_document afterwards. ' +
+      'Never ask the person to paste or attach the file in chat: ask them for its path in a folder, PUT it from there ' +
+      '(curl -X PUT -H "Content-Type: <type>" --data-binary @"<path>" "<signedUrl>"), then call add_entity_document. The URL expires in 2 hours.',
     scope: 'write',
+    runsDirectly: true,
     inputSchema: {
       type: 'object',
       required: ['fileName'],

@@ -9,14 +9,14 @@ Audited 2026-10-14 against `main` at a162894. This compares every action a membe
 | Area | Actions | Covered | Partial | Gap | n/a |
 |---|---:|---:|---:|---:|---:|
 | Accounting: ledger, bank, close, statements | 97 | 36 | 20 | 36 | 5 |
-| LP capital, carry, tax, LP relations, management company | 116 | 34 | 17 | 56 | 9 |
-| Portfolio: companies, updates, metrics, emails, compliance | 128 | 26 | 24 | 64 | 14 |
-| Deal flow and diligence | 66 | 21 | 12 | 33 | 0 |
+| LP capital, carry, tax, LP relations, management company | 116 | 35 | 17 | 55 | 9 |
+| Portfolio: companies, updates, metrics, emails, compliance | 128 | 29 | 22 | 63 | 14 |
+| Deal flow and diligence | 66 | 23 | 10 | 33 | 0 |
 | Settings, team, approvals, AI usage | 90 | 17 | 10 | 38 | 25 |
 | Investor portal (separate portal MCP) | 20 | 8 | 1 | 6 | 5 |
-| **Total** | **517** | **142** | **84** | **233** | **58** |
+| **Total** | **517** | **148** | **80** | **231** | **58** |
 
-Of the 317 gaps and partials, **31 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, browser-only uploads, deleting all fund data, and cosmetic settings. The other **286 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
+Of the 311 gaps and partials, **25 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, the remaining browser-only uploads, deleting all fund data, and cosmetic settings. The other **286 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
 
 ## What would most help running the fund headless
 
@@ -44,6 +44,11 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 - Proposed capital calls: `lp_proposed_calls`, `lp_proposed_call_propose`, `lp_proposed_call_revise`, `lp_proposed_call_discard` and `lp_proposed_call_approve`. All four writes are admin-only. Approving issues the call and publishes its notices, as the app's button does.
 - The two parts that stayed web-only because `/api/mcp` ships no headless Chromium now run from chat. `lp_send_item` attaches a statement or letter PDF, fetched from `/api/agent/reports/<token>` with a signed link (`lib/agent/remote-pdf.ts`). `lp_proposed_call_approve` and an approved `publish_call_notices` publish through `/api/agent/call-notices/publish`, using a signed token that the route re-checks live (`lib/agent/notice-publish-link.ts`). An admin can approve `publish_call_notices` from chat with `approve_action`; a script's key cannot.
 
+## Closed in feat/agent-uploads
+
+- **Uploads without passing the file through chat.** Each `*_upload_url` tool returns a two-hour signed Supabase Storage upload URL at a server-chosen path, with the exact `curl -X PUT` form, headers and size limit; the assistant uploads the file from the person's folder and a register tool takes it in through the web route's own function (now in `lib/`). `diligence_document_upload_url` (then `diligence_add_documents` with `uploaded_files`), `company_document_upload_url` + `add_company_document`, `deals_deck_upload_url` (then `deals_create_inbound`), `company_update_upload_url` (then `submit_company_update`), `email_attachment_upload_url` + `add_email_attachment`, and `lp_document_upload_url` + `lp_add_document` (admin-only). URL tools change no record and run directly (`runsDirectly`); register tools stage from a chat. `entity_document_upload_url` now runs directly too (it was staged from a chat, so the URL never reached it).
+- **The server's model from chat.** `company_generate_summary` (the Summarise button's `generateCompanySummary`) and `portfolio_import_preview` (the AI import's `parsePortfolioImport`, returned as a proposal, nothing written). Both refuse with no server key and name the chat tools to use instead.
+
 ## Deliberately not on the headless surface
 
 Each of these is a choice, with its reason. Revisit one only if the reason no longer holds.
@@ -57,13 +62,7 @@ Each of these is a choice, with its reason. Revisit one only if the reason no lo
 | acct-capital-tax | Sort a batch of uploaded onboarding docs and confirm filing | deliberate: browser-only file upload batch (signed upload to lp-documents) |
 | acct-core | Preview / apply / revert LP-snapshot cutover to capital events (fund-wide) | deliberate-ish: one-off fund-wide migration, admin-only (DELETE in admin-only list) |
 | acct-core | LP closings: list/add/rename/redate/set members/delete | deliberate: add_partner comment 'admission to a closing stays a decision for the UI'; POST/DELETE admin-only |
-| deals-diligence | Add an inbound deal by hand (with deck files) | deliberate: browser-only for big files (tool takes max 5 files x 3 MB base64) |
-| deals-diligence | Upload documents to data room (multipart, or signed URL then record) | deliberate: tool payload limit (5 files x 3 MB); large files/recordings browser-only |
-| portfolio | Generate an AI summary server-side | deliberate: headless agent writes the summary itself (keyless design) and saves it via company_save_summary; server-AI generation not exposed |
-| portfolio | Upload a document to a company (text extracted, virus-scanned) | deliberate-ish: browser uploads direct to storage then registers path; agent can only push small files as an update |
-| portfolio | Attach a document to an inbound email | deliberate-ish: browser file upload |
 | portfolio | Save email attachments to Google Drive | deliberate-ish: depends on fund's Google OAuth credential; low value for an agent with its own Drive connector |
-| portfolio | AI import of portfolio (companies + investments) from pasted spreadsheet text | deliberate: agent parses the sheet itself and calls the write tools row by row (or stage_run); server AI import not exposed |
 | settings-admin | Upload/remove fund logo | deliberate-ish: image payload (data:image URL up to 200KB) not a natural tool arg; UI cosmetic |
 | settings-admin | Set/replace AI provider API keys (Claude, OpenAI, OpenRouter) | deliberate: credential/secret should not pass through a chat (setup-tools.ts WEB_ONLY ai_key note; setup_fund says never pass keys) |
 | settings-admin | Configure outbound email provider and its keys (Resend key, Postmark server token, Mailgun API key) | deliberate: credentials + third-party account setup |
@@ -73,7 +72,7 @@ Each of these is a choice, with its reason. Revisit one only if the reason no lo
 | settings-admin | Set analytics IDs (Fathom, GA) and custom head script | deliberate: custom head script is arbitrary script injection into every page; agent must not set it. IDs are UI-only |
 | settings-admin | Delete all fund data | deliberate: admin-only, irreversible, destructive. Not offered even with `AGENT_DESTRUCTIVE_ACTIONS=true`, which brings the other destructive admin changes to chat (see below) |
 | settings-admin | Generate/revoke public deal submission link | deliberate-ish: mints a bearer-style public URL (shown once); reasonable to keep in browser |
-| settings-admin | Upload a style-anchor memo | deliberate-ish: file upload (signed URL) - but entity_document_upload_url shows a headless upload pattern exists |
+| settings-admin | Upload a style-anchor memo | deliberate-ish: file upload (signed URL); the signed-upload pattern (lib/uploads/signed-upload.ts) now covers data rooms, company documents, decks, email attachments and LP documents, so this one could follow it |
 | settings-admin | Configure inbound email / Postmark during onboarding | deliberate: third-party credentials + webhook (same as settings inbound row) |
 | portal(LP) | Upload onboarding document | deliberate: browser-only file upload ('a file is not something to hand an assistant', lib/portal/mcp-tools.ts header) |
 | portal(LP) | Withdraw an uploaded onboarding document | deliberate-ish: tied to uploads, which stay on web |
@@ -214,7 +213,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Send capital-call receipts for funded lines (preview, portal, email) | `/api/accounting/notices/receipt (POST)` | gap | - | Goes out to LPs (email); no tool or staged action | preview via receiptCandidates as read tool; send staged (sendReceipts) | M |
 | Set carry (waterfall) terms | `/api/accounting/waterfall-terms (PUT)` | gap | - | Admin-only; changes carry accrual. Defensible but could be staged. | set_carry_terms tool, staged | M |
 | Set the fund's required onboarding document kinds | `/api/lps/onboarding (PUT)` | gap | - | Settings-like; no reason found | Optional tool | S |
-| Upload an LP document (signed URL) and record/share it (fund, investor or vehicle scope) | `/api/lps/documents/upload-url (POST); /api/lps/documents (POST)` | gap | entity_document_upload_url; add_entity_document (entity governing docs only) | Entity-document tools write a different store, not lp_documents shares; LP docs are admin-only and go to LPs. Likely oversight given the upload-URL pattern already exists. | lp_document_upload_url + add_lp_document tools mirroring lib/entity-documents/agent | M |
+| Upload an LP document (signed URL) and record/share it (fund, investor or vehicle scope) | `/api/lps/documents/upload-url (POST); /api/lps/documents (POST)` | covered | lp_document_upload_url; lp_add_document (both admin-only) | Closed in feat/agent-uploads: signed URL in the fund's folder, then lib/lps/documents.ts recordLpDocument (scan, share by scope, index), the route's own function | - | - |
 | View K-1 furnishing plan (electronic vs paper, consent status) | `/api/accounting/k1-deliveries (GET)` | gap | - | No UI caller yet (feature not surfaced in app); parity not required | Revisit when UI ships | - |
 | View capital-account roll-forward (period + ITD, IRR, advances, stranded capital) | `/api/accounting/capital-accounts (GET)` | partial | capital_accounts; lp_statement; lp_capital_summary | capital_accounts gives ITD roll-forward + NAV only; no statement-period column, IRR, advance balances or stranded-capital warnings (lp_statement covers one LP with periods) | Add period/start/end and irr to capital_accounts using resolvePeriod + reportingIrr | S |
 | View deal-by-deal (American) carry entitlement | `/api/accounting/deal-carry (GET)` | gap | run_waterfall (European only, pure calc) | No reason found - likely oversight | Move the route's assembly into lib (dealByDealCarry over txnsForVehicle + capital accounts) and expose deal_carry read tool | M |
@@ -247,7 +246,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Approve all / reject all reviews for an email | `emails/[id]/reviews (POST)` | gap | - | no reason found | bulk mode on resolve_review | S |
 | Assign an email to a company / set processing status | `emails/[id] (PATCH)` | partial | inbox_done | inbox_done only for waiting emails and forces routed_to=reporting | email_assign_company tool reusing PATCH logic | S |
 | Browse inbound emails (all routes, statuses) | `emails (GET)` | partial | inbox_waiting (keyless waiting only), get_updates | only emails waiting for a keyless fund, or captured updates; no general inbox listing; no reason found | list_inbound_emails tool | S |
-| Bulk import documents and AI-match them to companies | `import/documents (POST)` | partial | submit_company_update | submit_company_update limited to 5 files x 3 MB per call | - | - |
+| Bulk import documents and AI-match them to companies | `import/documents (POST)` | partial | submit_company_update; company_document_upload_url + add_company_document | One company per call: submit_company_update takes 5 files (uploaded with company_update_upload_url, up to 25 MB each), and company documents are added one at a time; no bulk AI matching of many files to companies | - | - |
 | Clear stored summaries | `companies/[id]/summary (DELETE)` | gap | - | UI-only housekeeping | low priority | S |
 | Configure a price feed / record a quote / book the quoted mark | `companies/[id]/price-feed (POST action=set\|record-quote\|book)` | partial | record_investment(valuation_change_source=quote) | record_investment can book a hand-computed quote mark, but feed config, quote recording and bookQuoteMark (Level 1/2 valuation evidence read by close checks) are not exposed; no reason found | book_quote_mark tool wrapping lib/portfolio/quote-marks.bookQuoteMark (easy-win); set_price_feed later | S |
 | Confirm (book) an underlying-fund capital event | `portfolio/fund-holdings/[id]/events (PATCH)` | gap | - | no reason found | easy-win: tool calling lib/portfolio/fof-register.confirmFundCapitalEvent | S |
@@ -319,13 +318,13 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View vehicle groups | `vehicle-groups (GET)` | gap | - | read-only, minor | add groups to list_vehicles | S |
 | View vehicles with letterhead and reporting profile | `vehicles (GET)` | partial | list_vehicles, entity_profile | letterhead not readable | - | S |
 | View/download an update attachment (original file) | `company-updates/[id]/artifacts/[artifactId] (GET)` | partial | get_updates(artifact) | agent gets extracted text only, never the original file/download link | add a short-lived signed download URL (report-links pattern) | S |
-| AI import of portfolio (companies + investments) from pasted spreadsheet text | `import (POST)` | partial | create_company, record_investment, record_metric_value | deliberate: agent parses the sheet itself and calls the write tools row by row (or stage_run); server AI import not exposed | none needed; document the pattern | - |
-| Attach a document to an inbound email | `emails/[id]/attachments (POST)` | gap | - | deliberate-ish: browser file upload | upload-url + register pattern | M |
+| AI import of portfolio (companies + investments) from pasted spreadsheet text | `import (POST)` | partial | portfolio_import_preview; create_company, record_metric_value, record_investment, stage_run | feat/agent-uploads: with a server key, portfolio_import_preview runs the route's parse (lib/portfolio/ai-import.ts) and returns the proposal, writing nothing; without one the agent parses the rows itself. Applying it is partial: no tool creates a new metric or updates an existing company's fields, which the web import does | metric create and company edit tools (see 'Company and metric upkeep') | M |
+| Attach a document to an inbound email | `emails/[id]/attachments (POST)` | covered | email_attachment_upload_url; add_email_attachment | Closed in feat/agent-uploads: signed URL in the email's folder, then lib/emails/attachments.ts registerEmailAttachment (verify size, scan, list), the route's own function. Also by inbound deal (its source email) | - | - |
 | Delete a company (admin-only) | `companies/[id] (DELETE)` | covered | delete_company | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
-| Generate an AI summary server-side | `companies/[id]/summary (POST)` | partial | company_save_summary | deliberate: headless agent writes the summary itself (keyless design) and saves it via company_save_summary; server-AI generation not exposed | none needed; optionally summarise_company that calls same generator when fund has AI key | S |
+| Generate an AI summary server-side | `companies/[id]/summary (POST)` | covered | company_generate_summary; company_save_summary | Closed in feat/agent-uploads: company_generate_summary calls lib/companies/summary.ts generateCompanySummary, the Summarise button's function; with no server key it refuses and points to company_save_summary | - | - |
 | Merge one vehicle into another | `vehicles (PATCH mergeIntoId)` | covered | merge_vehicles | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve; the route is now in ADMIN_ONLY_ROUTES too | - | - |
 | Save email attachments to Google Drive | `emails/save-to-drive (POST)` | gap | - | deliberate-ish: depends on fund's Google OAuth credential; low value for an agent with its own Drive connector | - | M |
-| Upload a document to a company (text extracted, virus-scanned) | `companies/[id]/documents (POST)` | partial | submit_company_update (files as an update) | deliberate-ish: browser uploads direct to storage then registers path; agent can only push small files as an update | mirror entity_document_upload_url pattern: company_document_upload_url + add_company_document | M |
+| Upload a document to a company (text extracted, virus-scanned) | `companies/[id]/documents (POST)` | covered | company_document_upload_url; add_company_document | Closed in feat/agent-uploads: signed URL in the company's folder, then lib/companies/documents.ts registerCompanyDocument (scan, extract, record), the route's own function | - | - |
 
 ### Deal flow and diligence
 
@@ -374,9 +373,9 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View / edit per-stage memo-agent prompt guidance | `/api/diligence/prompts (GET, PATCH)` | gap | - | no reason found (could be deliberate: steers AI prompts, but web lets any member edit) | diligence_stage_guidance get/set (upsert memo_agent_prompts) | S |
 | View diligence analytics (admin: pipeline by partner, cycle times) | `/api/diligence/analytics (GET)` | partial | query_diligence (raw rows only) | No aggregate analytics tool; agent can compute from query_diligence rows | diligence_analytics read tool (admin) reusing route aggregation moved to lib | S |
 | View per-deal AI usage and cost | `/api/diligence/[id]/usage (GET)` | gap | - | no reason found | diligence_usage read tool (move pricing calc to lib) | S |
-| Add an inbound deal by hand (with deck files) | `/api/deals/manual (POST)` | partial | deals_create_inbound | deliberate: browser-only for big files (tool takes max 5 files x 3 MB base64) | Accept a signed upload URL flow for decks (same pattern as entity_document_upload_url) | S |
+| Add an inbound deal by hand (with deck files) | `/api/deals/manual (POST)` | covered | deals_deck_upload_url; deals_create_inbound (uploaded_files) | Closed in feat/agent-uploads: decks up to 10 MB each are PUT to a fund staging folder and read back into createManualDeal, as the form's files are | - | - |
 | Delete a diligence deal (admin; cascades docs, drafts, notes) | `/api/diligence/[id] (DELETE)` | covered | diligence_delete_deal | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve; the route is now in ADMIN_ONLY_ROUTES too | - | - |
-| Upload documents to data room (multipart, or signed URL then record) | `/api/diligence/[id]/documents (POST); /api/diligence/[id]/documents/upload-url (POST)` | partial | diligence_add_documents | deliberate: tool payload limit (5 files x 3 MB); large files/recordings browser-only | diligence_document_upload_url returning signed URL + record step via recordDiligenceDocument() (pattern of entity_document_upload_url) | S |
+| Upload documents to data room (multipart, or signed URL then record) | `/api/diligence/[id]/documents (POST); /api/diligence/[id]/documents/upload-url (POST)` | covered | diligence_document_upload_url; diligence_add_documents (uploaded_files) | Closed in feat/agent-uploads: createDiligenceUploadUrl and registerUploadedDiligenceDocument, the routes' own functions (existence and size check, scan, classify, record, queue transcription), up to 100 MB | - | - |
 
 ### Settings, team, approvals, AI usage
 

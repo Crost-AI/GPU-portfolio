@@ -149,6 +149,11 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   reverse_entry: { label: 'unpost or reverse a posted entry' },
   void_entry: { label: HANDLER_CHECKED.voidPostedEntry },
   reopen_period: { label: 'reopen a closed period' },
+
+  // As api/lps/documents and its upload-url, which only an admin may call: recording an LP document
+  // is what shows it in LPs' portals. The URL tool runs directly from a chat, so its handler checks too.
+  lp_document_upload_url: { label: 'upload an LP document' },
+  lp_add_document: { label: 'publish an LP document' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

@@ -478,6 +478,21 @@ describe('the same access rules as the web', () => {
     ['diligence_delete_deal', 'api/diligence/[id]'],
     ['remove_member', 'api/settings/members/[id]'],
     ['merge_vehicles', 'api/vehicles'],
+
+    // Uploads: the signed URL and the register step, each like the page's own pair of calls.
+    ['diligence_document_upload_url', 'api/diligence/[id]/documents/upload-url'],
+    ['diligence_add_documents', 'api/diligence/[id]/documents'],
+    ['company_document_upload_url', 'api/companies/[id]/documents'],
+    ['add_company_document', 'api/companies/[id]/documents'],
+    ['deals_deck_upload_url', 'api/deals/manual'],
+    ['deals_create_inbound', 'api/deals/manual'],
+    ['email_attachment_upload_url', 'api/emails/[id]/attachments'],
+    ['add_email_attachment', 'api/emails/[id]/attachments'],
+    ['lp_document_upload_url', 'api/lps/documents/upload-url'],
+    ['lp_add_document', 'api/lps/documents'],
+    // The server's model, as the web buttons.
+    ['company_generate_summary', 'api/companies/[id]/summary'],
+    ['portfolio_import_preview', 'api/import'],
   ]
 
   it.each(PAIRS)('%s is gated like %s', async (toolName, route) => {

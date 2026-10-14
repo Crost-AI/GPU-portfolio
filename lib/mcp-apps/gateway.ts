@@ -116,6 +116,7 @@ function effectFor(tool: McpTool, auth: ResolvedKey): Record<string, unknown> {
   const agentTool = getTool(tool.name)
   if (agentTool?.destructive) return { staged: true, destructive: true, note: 'Always waits for an admin\'s approval, from any connection or key.' }
   if (!agentTool || !isAssistantCredential(auth)) return { staged: false }
+  if (agentTool.runsDirectly) return { staged: false, note: 'Changes no record; the tool that takes its result in waits for approval.' }
   return hasDraftMode(tool.name)
     ? { staged: true, note: 'Calls that only make drafts or previews run directly; the rest wait for approval.' }
     : { staged: true }

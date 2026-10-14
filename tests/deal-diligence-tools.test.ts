@@ -63,9 +63,19 @@ describe('deal and diligence tools', () => {
     for (const name of RUN_ON_ASSISTANT) expect(isDraftOnlyCall({ name }, {}), name).toBe(true)
   })
 
+  // Minting an upload URL changes no record; the register call (diligence_add_documents,
+  // deals_create_inbound) is the one that stages.
+  const UPLOAD_URLS = ['diligence_document_upload_url', 'deals_deck_upload_url']
+  it('mints an upload URL directly, from a chat or a key', () => {
+    for (const name of UPLOAD_URLS) {
+      expect(shouldStage(getTool(name)!, {}, oauth), name).toBe(false)
+      expect(shouldStage(getTool(name)!, {}, key), name).toBe(false)
+    }
+  })
+
   // A destructive one (deleting a deal room) is staged from a key too: lib/agent/destructive.ts.
   const DESTRUCTIVE = WRITES.filter(n => getTool(n)!.destructive)
-  it.each(WRITES.filter(n => !RUN_ON_ASSISTANT.includes(n) && !DESTRUCTIVE.includes(n)))('%s is staged from a chat and runs directly from a key', name => {
+  it.each(WRITES.filter(n => !RUN_ON_ASSISTANT.includes(n) && !UPLOAD_URLS.includes(n) && !DESTRUCTIVE.includes(n)))('%s is staged from a chat and runs directly from a key', name => {
     const tool = getTool(name)!
     expect(shouldStage(tool, {}, oauth)).toBe(true)
     expect(shouldStage(tool, {}, key)).toBe(false)

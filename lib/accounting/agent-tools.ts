@@ -67,6 +67,11 @@ import { ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_TOOL_MANIFEST } from '@/lib
 import { OPERATIONS_HANDLERS } from '@/lib/agent/operations-tools'
 import { DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_TOOL_MANIFEST } from '@/lib/agent/destructive-tools-manifest'
 import { DESTRUCTIVE_HANDLERS } from '@/lib/agent/destructive-tools'
+
+import { UPLOAD_TOOL_MANIFEST } from '@/lib/agent/upload-tools-manifest'
+import { UPLOAD_HANDLERS } from '@/lib/agent/upload-tools'
+import { SERVER_AI_TOOL_MANIFEST } from '@/lib/agent/server-ai-tools-manifest'
+import { SERVER_AI_HANDLERS } from '@/lib/agent/server-ai-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -467,6 +472,9 @@ export const AGENT_TOOLS: AgentTool[] = [
 
   // Offered only with AGENT_DESTRUCTIVE_ACTIONS=true, and always staged for an admin (lib/agent/destructive.ts).
   ...bindLedger(DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS), ...bind(DESTRUCTIVE_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS),
+
+  ...bind(UPLOAD_TOOL_MANIFEST, UPLOAD_HANDLERS),
+  ...bind(SERVER_AI_TOOL_MANIFEST, SERVER_AI_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {
