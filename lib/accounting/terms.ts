@@ -317,8 +317,10 @@ async function readCommitmentEvents(
   }
 }
 
+const VEHICLE_ID_CHUNK = 200
+
 /**
- * Batch-load commitment events for MANY vehicles: one `vehicle_id IN (...)` query, grouped by
+ * Batch-load commitment events for MANY vehicles: a `vehicle_id IN (...)` query per 200 ids, grouped by
  * vehicle_id, each group oldest-first (the global order-by preserves per-vehicle order on push).
  * THROWS if the read fails.
  */
@@ -330,15 +332,20 @@ export async function loadCommitmentEventsBatch(
   const out = new Map<string, CommitmentEvent[]>()
   if (vehicleIds.length === 0) return out
   for (const id of vehicleIds) out.set(id, [])
-  const rows = await readCommitmentEvents((from, to) => admin
-    .from('commitment_events' as any)
-    .select('lp_entity_id, effective_date, amount, kind, vehicle_id')
-    .eq('fund_id', fundId)
-    .in('vehicle_id', vehicleIds)
-    .order('effective_date', { ascending: true })
-    .order('id', { ascending: true })
-    .range(from, to))
-  for (const e of rows) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
+  // 200 ids per request keeps the `in.(...)` filter inside the request-URL limit. A vehicle's
+  // events all come back in the same chunk, so each group is still oldest-first.
+  for (let i = 0; i < vehicleIds.length; i += VEHICLE_ID_CHUNK) {
+    const chunk = vehicleIds.slice(i, i + VEHICLE_ID_CHUNK)
+    const rows = await readCommitmentEvents((from, to) => admin
+      .from('commitment_events' as any)
+      .select('lp_entity_id, effective_date, amount, kind, vehicle_id')
+      .eq('fund_id', fundId)
+      .in('vehicle_id', chunk)
+      .order('effective_date', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to))
+    for (const e of rows) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
+  }
   return out
 }
 

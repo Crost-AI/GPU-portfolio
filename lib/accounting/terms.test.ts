@@ -209,6 +209,30 @@ describe('the commitment event loaders', () => {
     expect(oldestFirst(out.get('v1')!) && oldestFirst(out.get('v2')!)).toBe(true)
   })
 
+  it('loadCommitmentEventsBatch reads more than 200 vehicles in chunks, every one complete', async () => {
+    const ids = Array.from({ length: 450 }, (_, i) => `v${i}`)
+    const events = ids.flatMap((v, i) => [
+      { id: `${v}-b`, fund_id: 'f', vehicle_id: v, lp_entity_id: 'lp', effective_date: '2025-06-30', amount: i + 1, kind: 'increase' },
+      { id: `${v}-a`, fund_id: 'f', vehicle_id: v, lp_entity_id: 'lp', effective_date: '2024-01-01', amount: i, kind: 'initial' },
+    ])
+    const m = memoryAdmin({ commitment_events: events }, { maxRows: 1000 })
+    const inSizes: number[] = []
+    const from = m.admin.from
+    m.admin.from = (table: string) => {
+      const q = from(table)
+      const inner = q.in
+      q.in = (k: string, vs: unknown[]) => { inSizes.push(vs.length); return inner(k, vs) }
+      return q
+    }
+    const out = await loadCommitmentEventsBatch(m.admin, 'f', ids)
+    expect(Math.max(...inSizes)).toBeLessThanOrEqual(200)
+    expect(out.size).toBe(450)
+    for (const [v, list] of out) {
+      expect(list.map(e => e.effectiveDate)).toEqual(['2024-01-01', '2025-06-30'])
+      expect(list[0].amount).toBe(Number(v.slice(1)))
+    }
+  })
+
   it('loadCommitmentEvents returns every row past the row cap, oldest first', async () => {
     const m = memoryAdmin({ ...seed(), commitment_events: commitment_events.map(e => ({ ...e, vehicle_id: 'v1' })) }, { maxRows: 1000 })
     const out = await loadCommitmentEvents(m.admin, 'f', 'Fund I')
