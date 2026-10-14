@@ -96,11 +96,14 @@ export function buildDistributionEntry(
   cashAccountId: string,
   currency = 'USD'
 ): JournalEntry {
+  // Round each partner's leg once and total the ROUNDED legs, so the cash leg is exactly what
+  // the capital legs add up to — never a total of the unrounded amounts rounded separately.
   let total = 0
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perLp.entries())) {
-    total = roundCents(total + amt)
-    postings.push(lpDebit(capMap, lpEntityId, amt, currency))
+    const leg = lpDebit(capMap, lpEntityId, amt, currency)
+    total = roundCents(total + leg.amount)
+    postings.push(leg)
   }
   postings.push({ accountId: cashAccountId, amount: roundCents(-total), currency, lpEntityId: null })
   return finalize(base, 'distribution', postings)
