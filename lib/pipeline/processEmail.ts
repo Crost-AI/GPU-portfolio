@@ -73,6 +73,25 @@ export async function runPipeline(
   // Step 4: Extract text from email body and attachments
   const extracted = await extractAttachmentText(payload)
 
+  // Step 4.2: A receipt a member sent in (lib/pipeline/processReceipt.ts). Decided before the
+  // classifier and whatever deal intake is set to: a receipt is a member's own paperwork, and none
+  // of the portfolio destinations below is the right home for it.
+  if (!options?.forcedRoute) {
+    const { looksLikeReceipt, receiptSignal, processReceiptEmail } = await import('@/lib/pipeline/processReceipt')
+    if (looksLikeReceipt(receiptSignal(payload, extracted.emailBody, !!fundMember))) {
+      await removeCompanyUpdate(supabase, { emailId, fundId })
+      await supabase.from('inbound_emails').update({ routed_to: 'receipts' } as any).eq('id', emailId)
+      const res = await processReceiptEmail(supabase as any, {
+        emailId, fundId, payload, emailBody: extracted.emailBody, userId: fundMember?.userId ?? null,
+      })
+      await finalizeEmail(supabase, emailId, {
+        status: res.stored > 0 ? 'success' : 'failed',
+        warnings: res.warnings,
+      })
+      return
+    }
+  }
+
   // Step 4.5: Routing classifier. Settings determine whether the result is
   // acted on (active routing) or merely recorded (shadow mode — when
   // deal_intake_enabled is false). A classifier failure must never break the

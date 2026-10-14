@@ -124,6 +124,12 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/realized-gains': { domain: 'accounting' },
   // Vendors (the payee dimension) and cash paid per vendor — the 1099 worksheet.
   'api/accounting/vendors': { domain: 'accounting' },
+  // Receipts, the partnership-expense tag and the quarterly invoices. Each handler also resolves the
+  // entity through resolveGroupOr400, so a management company's side needs management_company too.
+  'api/accounting/receipts': { domain: 'accounting' },
+  'api/accounting/receipts/[id]': { domain: 'accounting' },
+  'api/accounting/partnership-invoices': { domain: 'accounting' },
+  'api/accounting/partnership-invoices/[id]/pdf': { domain: 'accounting' },
   'api/accounting/vendor-payments': { domain: 'accounting' },
   // Every entity's books at a glance: closed through, trial balance, drafts, unmatched bank rows.
   // Management companies appear only for a caller holding that grant — checked in the handler.
