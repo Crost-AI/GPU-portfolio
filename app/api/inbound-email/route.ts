@@ -250,18 +250,31 @@ async function resolveFund(
 ): Promise<{ fundId: string; isGlobal: boolean } | null> {
   if (!toAddress) return null
 
-  // Case-insensitive: mail addresses are, and a sender's client may have changed the case of the
-  // inbox. ilike finds the candidates, but the pattern is not trusted to be literal — PostgREST may
-  // drop the escapes, and reads `*` as `%` — so it is a bounded list, never maybeSingle (which
-  // errors on a second row and would drop the message), and the fund is the row whose address
-  // equals the recipient exactly, ignoring case.
-  const { data: candidates } = await supabase
+  // The recipient exactly as written first: literal, so an address with `*`, `%` or `_` in it
+  // resolves as it always did, whatever else is configured.
+  const columns = 'fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted'
+  const { data: exact } = await supabase
     .from('fund_settings')
-    .select('fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
-    .ilike('postmark_inbound_address', toAddress.replace(/[\\%_]/g, '\\$&'))
-    .limit(5)
-  const recipient = toAddress.toLowerCase()
-  const fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient)
+    .select(columns)
+    .eq('postmark_inbound_address', toAddress)
+    .maybeSingle()
+  let fundSettings = exact
+
+  // Then case-insensitively — mail addresses are, and a sender's client may have changed the case
+  // of the inbox. An ilike pattern's escapes are not trusted (PostgREST may drop them, and reads `*`
+  // as `%`), so every character that could be a wildcard becomes `_`, which matches exactly one:
+  // the candidates are addresses of the recipient's length that agree with it elsewhere, and the
+  // fund is the one equal to it ignoring case. The bound (fund_settings is one row per fund) is a
+  // backstop only: the delivery as written was already matched literally above.
+  if (!fundSettings) {
+    const recipient = toAddress.toLowerCase()
+    const { data: candidates } = await supabase
+      .from('fund_settings')
+      .select(columns)
+      .ilike('postmark_inbound_address', toAddress.replace(/[\\%_*]/g, '_'))
+      .limit(50)
+    fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient) ?? null
+  }
 
   if (fundSettings) {
     // Prefer encrypted token; fall back to plaintext for legacy

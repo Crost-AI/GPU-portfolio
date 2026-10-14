@@ -17,6 +17,8 @@ const runPipeline = vi.fn(async () => {})
 let filters: { table: string; op: string; column: string; value: unknown }[] = []
 let storedAddress = 'Fund-ABC@Inbound.Test'
 let otherFunds: { fund_id: string; address: string }[] = []
+let globalInbound: { global_inbound_address: string; global_inbound_token: string } | null = null
+let senders: { fund_id: string; email: string }[] = []
 let clientIp = '203.0.113.9'
 let inserts = 0
 
@@ -38,15 +40,21 @@ const settingsRow = (fund_id: string, address: string, token: string) =>
   ({ fund_id, postmark_inbound_address: address, postmark_webhook_token: token, postmark_webhook_token_encrypted: null, encryption_key_encrypted: null })
 
 function chain(table: string) {
-  let rows: Record<string, unknown>[] = table === 'fund_settings'
-    ? [...otherFunds.map(f => settingsRow(f.fund_id, f.address, `tok-${f.fund_id}`)), settingsRow('fund-1', storedAddress, 'tok')]
+  let rows: Record<string, unknown>[] =
+    table === 'fund_settings' ? [...otherFunds.map(f => settingsRow(f.fund_id, f.address, `tok-${f.fund_id}`)), settingsRow('fund-1', storedAddress, 'tok')]
+    : table === 'app_settings' ? (globalInbound ? [{ ...globalInbound, global_inbound_token_encrypted: null }] : [])
+    : table === 'authorized_senders' ? [...senders]
     : []
   const q: any = {
     select: () => q,
     insert: () => { inserts++; rows = [{ id: 'email-1' }]; return q },
     update: () => q,
-    limit: () => q,
-    eq: (column: string, value: unknown) => { filters.push({ table, op: 'eq', column, value }); return q },
+    limit: (n: number) => { rows = rows.slice(0, n); return q },
+    eq: (column: string, value: unknown) => {
+      filters.push({ table, op: 'eq', column, value })
+      rows = rows.filter(r => r[column] === value)
+      return q
+    },
     ilike: (column: string, value: string) => {
       filters.push({ table, op: 'ilike', column, value })
       rows = rows.filter(r => likeToRegExp(value).test(String(r[column] ?? '')))
@@ -79,6 +87,8 @@ beforeEach(() => {
   filters = []
   storedAddress = 'Fund-ABC@Inbound.Test'
   otherFunds = []
+  globalInbound = null
+  senders = []
   clientIp = '203.0.113.9'
   inserts = 0
 })
@@ -98,8 +108,8 @@ describe('the inbound-email rate limit', () => {
 
   it('keys the fund bucket on the fund, not on how the recipient was written', async () => {
     await post(email({ To: 'FUND-ABC@inbound.test' }))
-    await post(email({ OriginalRecipient: ' fund-abc@INBOUND.test', To: 'someone-else@x.test' }))
-    expect(keys().filter(c => c.limit === 60)).toEqual([FUND])
+    await post(email({ OriginalRecipient: 'fund-abc@INBOUND.TEST', To: 'someone-else@x.test' }))
+    expect(keys().filter(c => c.limit === 60)).toEqual([FUND, FUND])
   })
 
   it("never counts a fund's bucket for a caller without its token", async () => {
@@ -127,6 +137,25 @@ describe('the inbound-email rate limit', () => {
     expect(await res.json()).toEqual({ error: 'fund' })
     expect(keys()).toEqual([CEILING, FUND])
     expect(inserts).toBe(0)
+    expect(runPipeline).not.toHaveBeenCalled()
+  })
+
+  it('counts the per-fund bucket for a global-inbound delivery, against the sender\'s fund', async () => {
+    globalInbound = { global_inbound_address: 'inbox@global.test', global_inbound_token: 'global-tok' }
+    senders = [{ fund_id: 'fund-9', email: 'ceo@startup.test' }]
+    const res = await post(email({ OriginalRecipient: 'inbox@global.test' }), 'global-tok')
+    expect(res.status).toBe(200)
+    expect(keys()).toEqual([CEILING, { key: 'inbound:fund:fund-9', limit: 60, windowSeconds: 60 }])
+    expect(runPipeline).toHaveBeenCalledTimes(1)
+    expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-9')
+  })
+
+  it('spends only the ceiling on a global-inbound delivery with the wrong token', async () => {
+    globalInbound = { global_inbound_address: 'inbox@global.test', global_inbound_token: 'global-tok' }
+    senders = [{ fund_id: 'fund-9', email: 'ceo@startup.test' }]
+    const res = await post(email({ OriginalRecipient: 'inbox@global.test' }), 'wrong')
+    expect(res.status).toBe(200)
+    expect(keys()).toEqual([CEILING])
     expect(runPipeline).not.toHaveBeenCalled()
   })
 
@@ -171,18 +200,30 @@ describe('resolving the fund from the inbound address', () => {
   it("doesn't let an address act as a pattern on another fund's", async () => {
     storedAddress = 'fund_a@inbound.test'
     await post(email({ OriginalRecipient: 'fund%@inbound.test' }))
-    expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund\\%@inbound.test' })
+    // The fallback never sends a multi-character wildcard: `%` became `_`.
+    expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund_@inbound.test' })
     expect(runPipeline).not.toHaveBeenCalled()
 
     filters = []
     await post(email({ OriginalRecipient: 'fund_a@inbound.test' }))
-    expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund\\_a@inbound.test' })
+    expect(filters).toContainEqual({ table: 'fund_settings', op: 'eq', column: 'postmark_inbound_address', value: 'fund_a@inbound.test' })
+    expect(filters.some(f => f.op === 'ilike')).toBe(false)
     expect(runPipeline).toHaveBeenCalledTimes(1)
   })
 
+  it('resolves an address with a wildcard in it literally, however many others its pattern matches', async () => {
+    // Read as a pattern, `fund*@` matches all six, and a bound of five could drop the right one.
+    storedAddress = 'fund*@inbound.test'
+    otherFunds = [1, 2, 3, 4, 5].map(n => ({ fund_id: `fund-${n + 1}`, address: `fund${n}@inbound.test` }))
+    const res = await post(email({ OriginalRecipient: 'fund*@inbound.test' }))
+    expect(res.status).toBe(200)
+    expect(runPipeline).toHaveBeenCalledTimes(1)
+    expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-1')
+  })
+
   it('picks the exact address when the pattern matches several funds', async () => {
-    // `_` stays a wildcard once PostgREST drops the escape: both rows come back, the other first.
-    // maybeSingle would have errored on the second row and dropped the message.
+    // No literal match (the case differs), and `_` is a wildcard: both rows come back, the other
+    // first. The fund is the one equal to the recipient ignoring case.
     storedAddress = 'fund_a@inbound.test'
     otherFunds = [{ fund_id: 'fund-2', address: 'fundxa@inbound.test' }]
     const res = await post(email({ OriginalRecipient: 'FUND_A@inbound.test' }))
@@ -199,7 +240,8 @@ describe('resolving the fund from the inbound address', () => {
   })
 
   it("does not route on PostgREST's `*` wildcard", async () => {
-    // PostgREST reads `*` in a like pattern as `%`; the exact comparison after the lookup refuses it.
+    // PostgREST reads `*` in a like pattern as `%`; the fallback sends `_` instead, and the exact
+    // comparison after it refuses what that matches.
     storedAddress = 'fund-abc@inbound.test'
     await post(email({ OriginalRecipient: '*@inbound.test' }))
     expect(runPipeline).not.toHaveBeenCalled()
