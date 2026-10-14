@@ -15,6 +15,7 @@ import {
 import { deleteInvestmentTransaction } from '@/lib/delete-investment-transaction'
 import type { InvestmentTransaction, CompanyStatus } from '@/lib/types/database'
 import type { CompanyInvestmentSummary } from '@/lib/types/investments'
+import { todayLocalIso } from '@/lib/local-date'
 
 interface Props {
   companyId: string
@@ -63,7 +64,7 @@ export function CompanyInvestments({ companyId, companyStatus, portfolioGroups, 
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [ledger, setLedger] = useState<LedgerResult | null>(null)
-  const [asOfDate, setAsOfDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [asOfDate, setAsOfDate] = useState(todayLocalIso)
 
   const load = useCallback(async () => {
     try {

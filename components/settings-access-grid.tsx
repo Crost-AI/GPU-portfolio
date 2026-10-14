@@ -452,6 +452,8 @@ function PresetPicker({ presets, onApply, busy }: { presets: PresetInfo[]; onApp
  */
 function ExpiryPicker({ value, onChange, busy }: { value: string | null; onChange: (date: string) => void; busy?: boolean }) {
   const date = value ? value.slice(0, 10) : ''
+  // The UTC day, deliberately: a date-only end date ends at 23:59:59 UTC (normalizeExpiry), so
+  // west of UTC in the evening the local day has already ended and the server refuses it.
   const today = new Date().toISOString().slice(0, 10)
   return (
     <label className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
