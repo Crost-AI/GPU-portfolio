@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import { AGENT_TOOLS, getTool, isLedgerTool } from '@/lib/accounting/agent-tools'
 import { isDraftOnlyCall, shouldStage } from '@/lib/agent/dispatch'
 import { adminOnlyToolLabel } from '@/lib/access/admin-only'
+import { isToolOffered } from '@/lib/agent/destructive'
 
 describe('agent tool registry', () => {
   it('every tool has a unique name', () => {
@@ -94,7 +95,7 @@ describe('agent tool registry', () => {
     const destructive = AGENT_TOOLS.filter(t => t.destructive)
     expect(destructive.map(t => t.name).sort()).toEqual([
       'delete_company', 'delete_lp_positions', 'diligence_delete_deal', 'lp_delete_commitment', 'lp_delete_entity', 'lp_delete_investor',
-      'lp_merge_investors', 'merge_vehicles', 'remove_member', 'reopen_period', 'reverse_entry', 'unpost_entry', 'void_entry',
+      'lp_merge_investors', 'merge_vehicles', 'remove_member', 'reverse_entry', 'unpost_entry', 'void_entry',
     ])
     for (const t of destructive) {
       expect(t.scope, t.name).toBe('write')
@@ -110,6 +111,15 @@ describe('agent tool registry', () => {
     }
     // "Delete all fund data" is deliberately not a tool.
     expect(AGENT_TOOLS.some(t => /delete_(all|fund)/.test(t.name))).toBe(false)
+  })
+
+  it('reopen_period is always offered, admin-only, and staged from a chat', () => {
+    const tool = getTool('reopen_period')!
+    expect(tool.destructive).toBeUndefined()
+    expect(isLedgerTool(tool)).toBe(true)
+    expect(isToolOffered(tool)).toBe(true)
+    expect(adminOnlyToolLabel('reopen_period', {})).toBeTruthy()
+    expect(shouldStage(tool, {}, { keyId: 'oauth:abc' })).toBe(true)
   })
 
   it('document templates are fund-scoped, gated on LP letters, and only generating skips staging', () => {

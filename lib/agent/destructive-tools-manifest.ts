@@ -8,6 +8,10 @@ import type { AgentToolMeta } from '@/lib/accounting/agent-tools-manifest'
 // approval, whatever the credential (lib/agent/destructive.ts). The staged preview says what the
 // change would remove (lib/agent/destructive-tools.ts, DESTRUCTIVE_PREVIEWS).
 //
+// Reopening a closed period is NOT here: it is an ordinary admin-only ledger tool
+// (lib/accounting/agent-tools-manifest.ts), always offered and staged for an admin from chat. Its
+// staged preview still lives in DESTRUCTIVE_PREVIEWS (lib/agent/destructive-tools.ts).
+//
 // Deliberately absent: deleting all fund data (irreversible, one click in Settings with a typed
 // confirmation), LP closings and the LP-snapshot cutover.
 
@@ -75,26 +79,6 @@ export const DESTRUCTIVE_LEDGER_TOOL_MANIFEST: AgentToolMeta[] = [
       required: ['entry_id', 'reason'],
       properties: {
         entry_id: { type: 'string', description: 'The posted journal entry id.' },
-        reason: REASON,
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'reopen_period',
-    description:
-      'Reopen closed fiscal period(s): the period named (or every closed period covering or after from_date) and every closed period ' +
-      'after it, newest first, voiding each one\'s close allocation entries. A reason is required. Refused inside a closed tax year. ' +
-      'What cannot be undone: the voided allocation entries stay void (closing again books new ones), and K-1s already issued for ' +
-      'those years are named in the result but not withdrawn. Find periods with list_periods.' + STAGED,
-    scope: 'write',
-    destructive: true,
-    inputSchema: {
-      type: 'object',
-      required: ['reason'],
-      properties: {
-        period_id: { type: 'string', description: 'A closed period id from list_periods. Or pass from_date.' },
-        from_date: { type: 'string', description: 'YYYY-MM-DD: reopen every closed period covering or after this date.' },
         reason: REASON,
       },
       additionalProperties: false,

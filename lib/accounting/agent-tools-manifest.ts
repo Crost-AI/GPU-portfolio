@@ -239,6 +239,27 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'reopen_period',
+    description:
+      'Reopen closed fiscal period(s) so entries can be posted or changed in them: the period named (or every closed period covering ' +
+      'or after from_date) and every closed period after it, newest first, voiding each one\'s close allocation entries. Close again ' +
+      'afterwards to re-allocate. A reason is required and goes on the audit trail. Refused inside a closed tax year. The voided ' +
+      'allocation entries stay void (closing again books new ones), and K-1s already issued for those years are named in the result ' +
+      'but not withdrawn. Find periods with list_periods. Admin only: from chat it is staged for an admin to approve; show the ' +
+      'person the staged preview, which lists the periods it would reopen.',
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['reason'],
+      properties: {
+        period_id: { type: 'string', description: 'A closed period id from list_periods. Or pass from_date.' },
+        from_date: { type: 'string', description: 'YYYY-MM-DD: reopen every closed period covering or after this date.' },
+        reason: { type: 'string', description: 'Why, in a sentence. Recorded in the audit trail.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'export_ledger_text',
     description: "Export the vehicle's ledger (every non-void entry, oldest first) as plain-text double-entry. Returns { text, entries, total, truncated }: a large ledger comes in pages — when truncated is true, call again with the returned cursor (and the same start/end) until it is false; the text alone is NOT the whole ledger.",
     scope: 'read',

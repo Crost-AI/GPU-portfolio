@@ -72,6 +72,7 @@ import { UPLOAD_TOOL_MANIFEST } from '@/lib/agent/upload-tools-manifest'
 import { UPLOAD_HANDLERS } from '@/lib/agent/upload-tools'
 import { SERVER_AI_TOOL_MANIFEST } from '@/lib/agent/server-ai-tools-manifest'
 import { SERVER_AI_HANDLERS } from '@/lib/agent/server-ai-tools'
+import { reopenClosedPeriods } from './reopen'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -276,6 +277,17 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const result = await previewCloseThrough(admin, fundId, portfolioGroup, through)
     if ('error' in result) throw new Error(result.error)
     return result
+  },
+
+  // The Periods page's Reopen: the same lib function, reason and audit event (lib/accounting/reopen.ts).
+  // Admin-only (ADMIN_ONLY_TOOLS), so from chat it is staged for an admin to approve.
+  reopen_period: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    if (!userId) throw new Error('Reopening a period needs a signed-in user to record on the audit trail.')
+    const result = await reopenClosedPeriods(admin, { fundId, userId }, portfolioGroup, {
+      id: input?.period_id, fromDate: input?.from_date, reason: input?.reason,
+    })
+    if (!result.ok) throw new Error(result.error)
+    return { vehicle: portfolioGroup, ...result.value }
   },
 
   // Pages instead of truncating: `truncated` + `cursor` when the text would be too large to return.
