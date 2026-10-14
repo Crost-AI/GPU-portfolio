@@ -119,6 +119,9 @@ export interface ChargeInput {
 
 const sourceRef = (chargeId: string) => `intercompany:${chargeId}`
 
+/** The accrual entries' ref (both sides of the charge). */
+export const intercompanyChargeRef = sourceRef
+
 /** The settlement entries' ref: one live entry per vehicle, enforced by a unique index. */
 export const intercompanySettlementRef = (chargeId: string) => `intercompany-settlement:${chargeId}`
 
@@ -489,13 +492,12 @@ export async function settleIntercompanyCharge(
   const payee = names.get(charge.to_vehicle_id)
   if (!payer || !payee) return { error: 'One side of that charge is no longer a vehicle in this fund.' }
 
-  const ref = intercompanySettlementRef(chargeId)
   let livePayee: LiveEntryRef | null
   let livePayer: LiveEntryRef | null
   try {
     [livePayee, livePayer] = await Promise.all([
-      liveEntryByRef(admin, fundId, charge.to_vehicle_id, ref),
-      liveEntryByRef(admin, fundId, charge.from_vehicle_id, ref),
+      liveSettlementEntry(admin, fundId, charge.to_vehicle_id, chargeId),
+      liveSettlementEntry(admin, fundId, charge.from_vehicle_id, chargeId),
     ])
   } catch (e) {
     return { error: (e as Error).message }
@@ -545,6 +547,29 @@ export async function settleIntercompanyCharge(
   }
 
   return markSettled(admin, fundId, chargeId, settledDate, payeeRes.entryId, payerRes.entryId)
+}
+
+/**
+ * The live settlement entry for a charge on one vehicle's books, under either ref it has carried.
+ *
+ * Before 20261014190000 a settlement was tagged `intercompany:<chargeId>`, the accrual's ref, and
+ * told apart only by its source_type. An attempt that posted those entries and then failed to mark
+ * the row left an accrued charge whose cash is already booked under the old ref; a retry that
+ * looked only for the new one would post the cash a second time. THROWS on a failed read.
+ */
+async function liveSettlementEntry(
+  admin: SupabaseClient, fundId: string, vehicleId: string, chargeId: string,
+): Promise<LiveEntryRef | null> {
+  const current = await liveEntryByRef(admin, fundId, vehicleId, intercompanySettlementRef(chargeId))
+  if (current) return current
+  const { data, error } = await admin.from('journal_entries' as any)
+    .select('id, status, entry_date')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK)
+    .eq('source_ref', sourceRef(chargeId)).eq('source_type', 'intercompany_settlement').neq('status', 'void')
+    .order('entry_date', { ascending: true }).limit(1)
+  if (error) throw new Error(`Could not check for a settlement already in the books: ${error.message}`)
+  const row = ((data as any[]) ?? [])[0]
+  return row ? { id: row.id, status: row.status, entryDate: row.entry_date } : null
 }
 
 /**

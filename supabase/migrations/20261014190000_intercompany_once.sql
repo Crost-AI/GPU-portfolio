@@ -17,6 +17,12 @@
 -- index. No release before this one wrote the `intercompany-settlement:` prefix; the check below
 -- still refuses with a readable list rather than a bare 23505 if that is ever not true.
 --
+-- LEGACY SETTLEMENTS ARE NOT BACKFILLED. Settlement entries written before this release carry
+-- `intercompany:<chargeId>` with source_type 'intercompany_settlement'. Renaming them here would run
+-- into journal_entries_period_lock (20260714000004), which refuses any update to an entry dated in
+-- a closed period, whatever column changes. `settleIntercompanyCharge` recognises the old ref
+-- instead, so a charge whose cash was booked under it is finished, never posted again.
+--
 -- Existing tables: the Data API grants on both are already in place.
 
 alter table public.intercompany_transactions

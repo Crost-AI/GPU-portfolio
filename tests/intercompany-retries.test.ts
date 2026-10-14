@@ -124,11 +124,11 @@ function world() {
       e.vehicle_id === vehicle_id && e.source_ref === entry.sourceRef && e.status !== 'void' && String(entry.sourceRef).startsWith('intercompany-settlement:'))
     if (live) return { error: `This entry is already in the books as entry ${live.id}`, duplicateOf: live.id }
     const id = `je-${db.tables.journal_entries.length}`
-    db.tables.journal_entries.push({ id, fund_id: fundId, vehicle_id, book: 'actual', status: 'posted', entry_date: entry.entryDate, source_ref: entry.sourceRef })
+    db.tables.journal_entries.push({ id, fund_id: fundId, vehicle_id, book: 'actual', status: 'posted', entry_date: entry.entryDate, source_ref: entry.sourceRef, source_type: entry.sourceType })
     return { entryId: id }
   })
-  mocks.liveEntryByRef.mockImplementation(async (_a: unknown, _f: string, vehicleId: string, ref: string) => {
-    const e = db.tables.journal_entries.find(r => r.vehicle_id === vehicleId && r.source_ref === ref && r.status !== 'void')
+  mocks.liveEntryByRef.mockImplementation(async (_a: unknown, fundId: string, vehicleId: string, ref: string) => {
+    const e = db.tables.journal_entries.find(r => r.fund_id === fundId && r.vehicle_id === vehicleId && r.book === 'actual' && r.source_ref === ref && r.status !== 'void')
     return e ? { id: e.id, status: e.status, entryDate: e.entry_date } : null
   })
   return db
@@ -173,6 +173,50 @@ describe('issuing a partnership invoice', () => {
     expect(mocks.persist).toHaveBeenCalledTimes(1)
     expect(db.tables.intercompany_transactions).toHaveLength(1)
     expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', intercompany_transaction_id: chargeId })
+  })
+})
+
+describe('re-issuing an invoice whose charge already exists', () => {
+  const fundEntry = (db: ReturnType<typeof world>) => db.tables.journal_entries.find(e => e.vehicle_id === FUNDV && String(e.source_ref).startsWith('intercompany:'))!
+
+  it('does not mark the invoice issued when the fund entry was voided in between', async () => {
+    const db = world()
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    fundEntry(db).status = 'void'
+
+    const retry = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(retry).toMatchObject({ status: 409, error: expect.stringContaining('was voided') })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    expect(db.tables.intercompany_transactions[0].status).toBe('void')
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses while the linked fund entry is only a draft', async () => {
+    const db = world()
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    fundEntry(db).status = 'draft'
+
+    const retry = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(retry).toMatchObject({ status: 409, error: expect.stringContaining('is a draft') })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+  })
+
+  it('repairs a charge whose link to its fund entry failed, without posting again', async () => {
+    const db = world()
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
+
+    const first = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(first).toMatchObject({ error: expect.stringContaining('could not be linked') })
+    expect(db.tables.intercompany_transactions[0].from_entry_id).toBeUndefined()
+
+    const retry = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    const charge = db.tables.intercompany_transactions[0]
+    expect(retry).toEqual({ ok: true, intercompanyTransactionId: charge.id })
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+    expect(charge.from_entry_id).toBe(fundEntry(db).id)
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', intercompany_transaction_id: charge.id })
   })
 })
 
@@ -228,6 +272,42 @@ describe('settling an intercompany charge', () => {
     expect(db.tables.intercompany_transactions[0]).toMatchObject({
       status: 'settled', settled_date: '2026-05-01', to_settlement_entry_id: payeeEntry.id,
     })
+  })
+
+  // Before 20261014190000 settlement entries carried the accrual's ref; only source_type told them apart.
+  const legacy = (db: ReturnType<typeof world>, vehicle_id: string, id: string) => db.tables.journal_entries.push({
+    id, fund_id: FUND, vehicle_id, book: 'actual', status: 'posted', entry_date: '2026-05-01',
+    source_ref: 'intercompany:ic-1', source_type: 'intercompany_settlement',
+  })
+
+  it('finishes a pre-migration half-settled charge without posting the cash again', async () => {
+    const db = world()
+    accrued(db)
+    // The accrual entries share the legacy ref and must not be mistaken for settlements.
+    db.tables.journal_entries.push({ id: 'accrual-fund', fund_id: FUND, vehicle_id: FUNDV, book: 'actual', status: 'posted', entry_date: '2026-04-05', source_ref: 'intercompany:ic-1', source_type: 'intercompany' })
+    legacy(db, MANCO, 'legacy-payee')
+    legacy(db, FUNDV, 'legacy-payer')
+
+    const results = await Promise.all([
+      settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-06-30'),
+      settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-06-30'),
+    ])
+    expect(results).toEqual([{ ok: true }, { ok: true }])
+    expect(mocks.persist).not.toHaveBeenCalled()
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({
+      status: 'settled', settled_date: '2026-05-01', to_settlement_entry_id: 'legacy-payee', from_settlement_entry_id: 'legacy-payer',
+    })
+  })
+
+  it('refuses a pre-migration one-sided settlement, naming the orphan', async () => {
+    const db = world()
+    accrued(db)
+    legacy(db, FUNDV, 'legacy-orphan')
+
+    const res = await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    expect(res).toMatchObject({ error: expect.stringContaining('legacy-orphan') })
+    expect(mocks.persist).not.toHaveBeenCalled()
+    expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
   })
 
   it('refuses rather than posting when only one side of a settlement is on the books', async () => {

@@ -24,7 +24,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { postIntercompanyCharge } from './intercompany'
+import { intercompanyChargeRef, postIntercompanyCharge } from './intercompany'
+import { liveEntryByRef } from './persist'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
 import { INTERCOMPANY_RECEIVABLE_CODE, intercompanyCode } from './chart'
@@ -370,11 +371,7 @@ export async function issuePartnershipInvoice(
   const { data: prior, error: priorErr } = await admin.from('intercompany_transactions' as any)
     .select('id, from_entry_id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
   if (priorErr) return { error: `Could not check whether this invoice is already booked: ${priorErr.message}`, status: 500 }
-  if (prior) {
-    // No fund entry on it yet: another request is between creating the charge and posting it.
-    if (!(prior as any).from_entry_id) return { error: 'This invoice is being issued by another request. Refresh and try again.', status: 409 }
-    return markIssued(admin, fundId, id, (prior as any).id)
-  }
+  if (prior) return replayIssue(admin, fundId, id, inv.to.vehicleId, prior as { id: string; from_entry_id: string | null })
 
   // The lines are re-read, not trusted from creation: an entry voided or changed since cannot be
   // billed as it was, and the fund must not be charged for what the books no longer say.
@@ -396,6 +393,58 @@ export async function issuePartnershipInvoice(
   })
   if ('error' in res) return { error: res.error, status: res.duplicate ? 409 : 400 }
   return markIssued(admin, fundId, id, res.id)
+}
+
+/**
+ * A live charge already books this invoice: finish the issue from what the fund's books say, never
+ * by posting again.
+ *
+ *   linked entry posted         an earlier attempt booked it and failed to mark the invoice: mark it.
+ *   linked entry void or gone   someone unbooked it since. The charge is dead; void it and refuse,
+ *                               so the next issue books afresh as a deliberate act.
+ *   linked entry a draft        refuse and name it: it is not a cost until it is posted.
+ *   no entry linked             the ledger decides. A posted `intercompany:<charge>` entry on the
+ *                               fund means the link update failed: repair it and mark the invoice.
+ *                               Nothing there means another request is still posting.
+ */
+async function replayIssue(
+  admin: SupabaseClient,
+  fundId: string,
+  id: string,
+  payerVehicleId: string,
+  charge: { id: string; from_entry_id: string | null },
+): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
+  if (!charge.from_entry_id) {
+    let live
+    try {
+      live = await liveEntryByRef(admin, fundId, payerVehicleId, intercompanyChargeRef(charge.id))
+    } catch (e) {
+      return { error: (e as Error).message, status: 500 }
+    }
+    if (live?.status !== 'posted') return { error: 'This invoice is being issued by another request. Refresh and try again.', status: 409 }
+    const { error } = await admin.from('intercompany_transactions' as any)
+      .update({ from_entry_id: live.id }).eq('id', charge.id).eq('fund_id', fundId).is('from_entry_id', null)
+    if (error) return { error: `The fund's side is booked (entry ${live.id}), but the charge could not be linked to it: ${error.message}. Issue it again to finish.`, status: 500 }
+    return markIssued(admin, fundId, id, charge.id)
+  }
+
+  const { data: entry, error } = await admin.from('journal_entries' as any)
+    .select('id, status').eq('id', charge.from_entry_id).eq('fund_id', fundId).eq('vehicle_id', payerVehicleId).eq('book', ACTUAL_BOOK)
+    .maybeSingle()
+  if (error) return { error: `Could not check the fund's entry for this invoice: ${error.message}`, status: 500 }
+  const status = (entry as any)?.status as string | undefined
+  if (status === 'posted') return markIssued(admin, fundId, id, charge.id)
+  if (status === 'draft') {
+    return { error: `The fund's entry for this invoice (${charge.from_entry_id}) is a draft. Post or delete it, then issue the invoice again.`, status: 409 }
+  }
+  const { error: voidErr } = await admin.from('intercompany_transactions' as any)
+    .update({ status: 'void', updated_at: new Date().toISOString() })
+    .eq('id', charge.id).eq('fund_id', fundId).eq('status', 'accrued')
+  if (voidErr) return { error: `Could not void the charge whose fund entry was voided: ${voidErr.message}`, status: 500 }
+  return {
+    error: `The fund's entry for this invoice (${charge.from_entry_id}) was voided after it was booked, so the invoice was not issued and its charge was voided too. Issue it again to book it afresh.`,
+    status: 409,
+  }
 }
 
 /**
