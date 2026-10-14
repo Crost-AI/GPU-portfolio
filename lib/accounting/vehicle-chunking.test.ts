@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { memoryAdmin } from '../../tests/helpers/memory-admin'
-import { IN_CHUNK, loadLedgerRowsBatch } from './load'
+import { fetchAllRowsIn, IN_CHUNK, loadLedgerRowsBatch } from './load'
 import { loadPositionsBatch } from './lp-positions'
 
 /**
@@ -64,5 +64,26 @@ describe('batch loaders chunk the vehicle id list (#26)', () => {
     expect(positions.size).toBe(N)
     for (const [i, v] of ids.entries()) expect(positions.get(v)!.map(p => p.lpEntityId)).toEqual([`ent${i}`])
     expect(sent.map(s => s.n)).toEqual([200, 200, 50])
+  })
+})
+
+describe('fetchAllRowsIn appends a chunk of any size', () => {
+  it('returns a chunk whose rows far exceed the argument limit of one push(...spread)', async () => {
+    // IN_CHUNK bounds the ids, not the rows: one chunk of vehicles with long histories returns
+    // hundreds of pages. A synthetic 300,000-row table, served 1000 rows a page.
+    const TOTAL = 300_000
+    const row = { vehicle_id: vid(0) }
+    let reads = 0
+    const make = (_ids: string[], from: number, to: number) => {
+      reads++
+      const q: any = {
+        order: () => q,
+        then: (resolve: any) => resolve({ data: Array.from({ length: Math.max(0, Math.min(to, TOTAL - 1) - from + 1) }, () => row), error: null }),
+      }
+      return q
+    }
+    const rows = await fetchAllRowsIn([vid(0)], make)
+    expect(rows).toHaveLength(TOTAL)
+    expect(reads).toBe(TOTAL / 1000 + 1)
   })
 })

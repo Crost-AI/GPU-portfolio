@@ -63,7 +63,9 @@ export async function fetchAllRowsIn<T>(
   const out: T[] = []
   for (let i = 0; i < ids.length; i += IN_CHUNK) {
     const chunk = ids.slice(i, i + IN_CHUNK)
-    out.push(...await fetchAllRows<T>((f, t) => make(chunk, f, t), 1000, opts))
+    // Row by row, not push(...rows): a chunk bounds the ids, not the rows, and one chunk of long
+    // histories can be hundreds of thousands of rows — past what one call's arguments can hold.
+    for (const row of await fetchAllRows<T>((f, t) => make(chunk, f, t), 1000, opts)) out.push(row)
   }
   return out
 }
