@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const s = vi.hoisted(() => ({ receipts: [] as any[], calls: 0, inFlight: 0, maxInFlight: 0 }))
+const s = vi.hoisted(() => ({ receipts: [] as any[], calls: 0, inFlight: 0, maxInFlight: 0, failOn: null as string | null }))
 
 vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: async () => 'v1' }))
 vi.mock('@/lib/accounting/persist', () => ({ accountIdByCode: async () => new Map() }))
@@ -19,6 +19,7 @@ vi.mock('@/lib/accounting/receipts', () => ({
     s.maxInFlight = Math.max(s.maxInFlight, s.inFlight)
     await new Promise(res => setTimeout(res, 1))
     s.inFlight--
+    if (r.id === s.failOn) throw new Error('match failed')
     return [{ kind: 'entry', id: `je-${r.id}` }]
   },
 }))
@@ -34,6 +35,7 @@ beforeEach(() => {
   s.calls = 0
   s.inFlight = 0
   s.maxInFlight = 0
+  s.failOn = null
 })
 
 describe('list_receipts suggestions', () => {
@@ -62,6 +64,16 @@ describe('list_receipts suggestions', () => {
     // the first 40 in list order carry their own suggestions; the rest carry none
     expect(res.receipts.slice(0, 40).every((r: any) => r.suggestions?.[0]?.id === `je-${r.id}`)).toBe(true)
     expect(res.receipts.slice(40).every((r: any) => r.suggestions === undefined)).toBe(true)
+  })
+
+  it('stops taking new receipts once one suggestion fails', async () => {
+    s.receipts = Array.from({ length: 200 }, (_, i) => receipt(i))
+    s.failOn = 'r0'
+
+    await expect(RECEIPT_HANDLERS.list_receipts(ctx, { includeSuggestions: true })).rejects.toThrow('match failed')
+
+    // the 5 already in flight finish; nothing past them is started
+    expect(s.calls).toBe(5)
   })
 
   it('only suggests for unmatched receipts filed here, and does not flag a list under the cap', async () => {
