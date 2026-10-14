@@ -41,7 +41,7 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 ## Closed in feat/lp-portal-tools
 
 - LP onboarding and outreach, previously listed as deliberately web-only: `lp_portal_accounts`, `lp_portal_invite`, `lp_portal_invite_bulk` (including a `missing` mode that invites every LP with a contact email and no portal account, previewed first), `lp_portal_account_status`, `lp_portal_resend_invite`, `lp_portal_unlink`, `lp_authorized_users`, `lp_authorized_user_add`, `lp_authorized_user_remove`, `lp_announce`, `lp_send_item_recipients`, `lp_send_item` and `lp_portal_settings`. All admin-only (`ADMIN_ONLY_TOOLS`); every email has a preview that changes nothing.
-- Proposed capital calls: `lp_proposed_calls`, `lp_proposed_call_propose`, `lp_proposed_call_revise`, `lp_proposed_call_discard`, `lp_proposed_call_approve` (admin-only).
+- Proposed capital calls: `lp_proposed_calls`, `lp_proposed_call_propose`, `lp_proposed_call_revise`, `lp_proposed_call_discard`, `lp_proposed_call_approve` (all four writes admin-only).
 
 ## Deliberately not on the headless surface
 
@@ -175,7 +175,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Preview a distribution split (waterfall or pro-rata) | `/api/accounting/distributions (POST action=preview)` | partial | run_waterfall (pure calc, terms passed in) | run_waterfall needs caller-supplied terms/state; does not read the vehicle's carry terms or capital like previewDistribution | preview_distribution tool calling previewDistribution | S easy-win |
 | Preview a pro-rata capital call split | `/api/accounting/capital-calls (POST action=preview)` | gap | - | proRataCall is used only by the in-app Analyst's staged issue_capital_call, which is not on the MCP/REST registry. Likely oversight. | Expose proRataCall as preview_capital_call read tool | S easy-win |
 | Preview book-to-tax adjustments for a year | `/api/accounting/tax-adjustments (GET)` | gap | - | No reason found | tax_adjustments tool (postTaxAdjustments preview:true) | S easy-win |
-| Propose / revise / discard a capital call proposal | `/api/accounting/proposed-calls (POST action=propose\|revise\|discard)` | covered | lp_proposed_call_propose; lp_proposed_call_revise; lp_proposed_call_discard | Closed in feat/lp-portal-tools | - | - |
+| Propose / revise / discard a capital call proposal | `/api/accounting/proposed-calls (POST action=propose\|revise\|discard)` | covered | lp_proposed_call_propose; lp_proposed_call_revise; lp_proposed_call_discard (admin-only, as the route) | Closed in feat/lp-portal-tools | - | - |
 | Read LP inbox messages and replies | `/api/lps/messages (GET)` | gap | - | No reason found - likely oversight | lp_messages read tool | S easy-win |
 | Record a carry payment to a GP member | `/api/accounting/gp-economics (POST)` | gap | - | Admin-only; no tool | record_carry_payment tool (recordCarryPayment), staged | S easy-win |
 | Review a settlement: link wires to an obligation line, split remainder | `/api/accounting/settlements (POST)` | gap | reconcile; book_capital_call (adjacent) | No reason found - likely oversight | review_settlement tool calling the review_capital_settlement RPC | S easy-win |

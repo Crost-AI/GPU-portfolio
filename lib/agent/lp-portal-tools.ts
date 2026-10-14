@@ -281,6 +281,7 @@ export const LP_PORTAL_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_proposed_call_propose: async (ctx, input) => {
+    requireAdmin(ctx, 'propose a capital call')
     const parsed = proposedCallRequestFrom(input)
     if ('error' in parsed) throw new Error(parsed.error)
     const group = await proposalGroup(ctx, input)
@@ -288,6 +289,7 @@ export const LP_PORTAL_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_proposed_call_revise: async (ctx, input) => {
+    requireAdmin(ctx, 'revise a capital call')
     const parsed = proposedCallRequestFrom(input, { partial: true })
     if ('error' in parsed) throw new Error(parsed.error)
     const group = await proposalGroup(ctx, input)
@@ -295,6 +297,7 @@ export const LP_PORTAL_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_proposed_call_discard: async (ctx, input) => {
+    requireAdmin(ctx, 'discard a capital call')
     const group = await proposalGroup(ctx, input)
     return unwrap(await discardProposedCall(ctx.admin, { fundId: ctx.fundId, group, userId: ctx.userId }, str(input?.id)))
   },

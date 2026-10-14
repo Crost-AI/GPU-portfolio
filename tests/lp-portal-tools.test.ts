@@ -204,14 +204,14 @@ describe('the tools', () => {
     'lp_authorized_user_add', 'lp_authorized_user_remove', 'lp_announce', 'lp_send_item', 'lp_portal_settings',
   ]
 
-  it('every portal write, and approving a proposed call, is admin-only; proposing is not', () => {
-    for (const name of [...PORTAL_WRITES, 'lp_proposed_call_approve']) {
+  it('every portal write and every proposed-call write is admin-only; viewing proposals is not', () => {
+    const CALL_WRITES = ['lp_proposed_call_propose', 'lp_proposed_call_revise', 'lp_proposed_call_discard', 'lp_proposed_call_approve']
+    for (const name of [...PORTAL_WRITES, ...CALL_WRITES]) {
       expect(getTool(name)?.scope, name).toBe('write')
       expect(ADMIN_ONLY_TOOLS[name], name).toBeDefined()
     }
-    for (const name of ['lp_proposed_call_propose', 'lp_proposed_call_revise', 'lp_proposed_call_discard']) {
-      expect(ADMIN_ONLY_TOOLS[name], name).toBeUndefined()
-    }
+    expect(getTool('lp_proposed_calls')?.scope).toBe('read')
+    expect(ADMIN_ONLY_TOOLS.lp_proposed_calls).toBeUndefined()
   })
 
   it('are gated like the LP Portal page: LP relations under the portal switch, the switches as admin settings', () => {

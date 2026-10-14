@@ -308,7 +308,7 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
     description:
       'Propose a capital call for review: the total and what it is for. The split comes from the register (pro rata by commitment); ' +
       'the result shows each partner\'s line and anything missing or wrong. Nothing is issued: an admin approves it with ' +
-      'lp_proposed_call_approve.',
+      'lp_proposed_call_approve. Admin only.',
     scope: 'write',
     ...CAPITAL,
     inputSchema: {
@@ -320,7 +320,7 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'lp_proposed_call_revise',
-    description: 'Change an open proposed capital call. Only the fields given change; the checks run again.',
+    description: 'Change an open proposed capital call. Only the fields given change; the checks run again. Admin only.',
     scope: 'write',
     ...CAPITAL,
     inputSchema: {
@@ -332,7 +332,7 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'lp_proposed_call_discard',
-    description: 'Discard an open proposed capital call.',
+    description: 'Discard an open proposed capital call. Admin only.',
     scope: 'write',
     ...CAPITAL,
     inputSchema: {

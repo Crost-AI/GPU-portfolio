@@ -53,6 +53,8 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
   // ── Move money ─────────────────────────────────────────────────────────────
   { route: 'api/accounting/capital-calls', method: 'POST', when: action('issue'), label: 'issue a capital call' },
   { route: 'api/accounting/proposed-calls', method: 'POST', when: action('approve'), label: 'approve a capital call notice' },
+  // Drafting a call is an admin's job too; members with LP capital access can view proposals.
+  { route: 'api/accounting/proposed-calls', method: 'POST', when: action('propose', 'revise', 'discard'), label: 'propose, revise or discard a capital call' },
   { route: 'api/accounting/distributions', method: 'POST', when: action('declare'), label: 'declare a distribution' },
 
   // ── Tell LPs something ─────────────────────────────────────────────────────
@@ -118,7 +120,11 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_announce: { label: 'announce to LPs' },
   lp_send_item: { label: 'send to LPs' },
   lp_portal_settings: { label: 'change the LP portal settings' },
-  // As the proposed-calls route's approve (ADMIN_ONLY_ROUTES above): it issues the call.
+  // As the proposed-calls route (ADMIN_ONLY_ROUTES above): approving issues the call, and proposing,
+  // revising and discarding one are admin-only too. Members can view proposals.
+  lp_proposed_call_propose: { label: 'propose, revise or discard a capital call' },
+  lp_proposed_call_revise: { label: 'propose, revise or discard a capital call' },
+  lp_proposed_call_discard: { label: 'propose, revise or discard a capital call' },
   lp_proposed_call_approve: { label: 'approve a capital call notice' },
 }
 
