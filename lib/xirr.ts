@@ -44,10 +44,11 @@ export function xirr(flows: CashFlow[]): number | null {
     let rate = guess
     let converged = false
     let outOfRange = false
+    let stalled = false
     for (let iter = 0; iter < 200; iter++) {
       const val = npv(rate)
       const deriv = dnpv(rate)
-      if (Math.abs(deriv) < 1e-12) break
+      if (Math.abs(deriv) < 1e-12) { stalled = true; break }
       const next = rate - val / deriv
       if (Math.abs(next - rate) < 1e-8) {
         rate = next
@@ -57,10 +58,11 @@ export function xirr(flows: CashFlow[]): number | null {
       rate = next
       if (rate < -0.9999 || rate > 1e6) { outOfRange = true; break }
     }
-    // A near-zero npv only counts when Newton stopped inside the range. Out past 1e6 every
-    // discounted flow but the t=0 one vanishes, so a small first flow (a 0 seed row) reads as a
-    // "root" at a meaningless rate.
-    if (converged || (!outOfRange && Math.abs(npv(rate)) < Math.max(1, totalAbsFlow * 1e-6))) {
+    // A near-zero npv only counts when Newton neither left the range nor stalled on a flat
+    // derivative. At a huge rate every discounted flow but the t=0 one vanishes — out past 1e6,
+    // and with flows years apart the derivative flattens in the hundreds — so a small first flow
+    // (a 0 seed row) reads as a "root" at a meaningless rate.
+    if (converged || (!outOfRange && !stalled && Math.abs(npv(rate)) < Math.max(1, totalAbsFlow * 1e-6))) {
       return rate
     }
   }

@@ -54,6 +54,19 @@ describe('xirr', () => {
     expect(xirr(flows)).toBeNull()
   })
 
+  it('returns null rather than a rate where the derivative went flat', () => {
+    // Flows years apart: dnpv drops under 1e-12 at rates in the hundreds, long before 1e6, and
+    // npv has decayed to the zero t=0 term there. No root exists. Used to return ~5438.7 and ~297.
+    const flows = (years: number[]): CashFlow[] => [
+      { date: d(`${years[0]}-01-01`), amount: 0 },
+      { date: d(`${years[1]}-01-01`), amount: 100 },
+      { date: d(`${years[2]}-01-01`), amount: -50 },
+      { date: d(`${years[3]}-01-01`), amount: 100 },
+    ]
+    expect(xirr(flows([2010, 2013, 2016, 2019]))).toBeNull()
+    expect(xirr(flows([2000, 2005, 2010, 2015]))).toBeNull()
+  })
+
   it('keeps looking past a guess that runs out of range and finds the real root', () => {
     // +100 at year 1, -10 at year 2: 1 + r = 0.1, so r = -90%. The first guess runs off past 1e6.
     const r = xirr([
