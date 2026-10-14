@@ -6,7 +6,7 @@ import type { AgentToolContext } from '@/lib/accounting/agent-tools'
 import { visibleCompanyIds } from '@/lib/access/scope'
 import { carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { fetchAllRows } from '@/lib/accounting/load'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { LP_HANDLERS } from '@/lib/agent/lp-tools'
@@ -60,7 +60,7 @@ const kpis: Loader = async (ctx) => {
   const { data: cos } = await q
   const names = new Map(((cos ?? []) as any[]).map(c => [c.id, c.name]))
   if (names.size === 0) return []
-  const metrics = await fetchAllRows<any>((f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', [...names.keys()]).range(f, t))
+  const metrics = await fetchAllRowsIn<any>([...names.keys()], (ids, f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', ids).range(f, t))
   const byId = new Map(metrics.map(m => [m.id, m]))
   if (byId.size === 0) return []
   const values: any[] = []

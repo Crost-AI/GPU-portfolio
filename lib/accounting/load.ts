@@ -62,8 +62,10 @@ export async function fetchAllRowsIn<T>(
   opts: { order?: string | null } = {},
 ): Promise<T[]> {
   const out: T[] = []
-  for (let i = 0; i < ids.length; i += IN_CHUNK) {
-    const chunk = ids.slice(i, i + IN_CHUNK)
+  // Deduped, so a repeated id cannot return its rows twice.
+  const unique = Array.from(new Set(ids))
+  for (let i = 0; i < unique.length; i += IN_CHUNK) {
+    const chunk = unique.slice(i, i + IN_CHUNK)
     // Row by row, not push(...rows): a chunk bounds the ids, not the rows, and one chunk of long
     // histories can be hundreds of thousands of rows — past what one call's arguments can hold.
     for (const row of await fetchAllRows<T>((f, t) => make(chunk, f, t), 1000, opts)) out.push(row)
@@ -241,7 +243,7 @@ export async function loadEntityNames(
   const out = new Map<string, string>()
   if (entityIds.length === 0) return out
 
-  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, entity_name').in('id', entityIds).order('id').range(f, t))
+  const data = await fetchAllRowsIn<any>(entityIds, (chunk, f, t) => admin.from('lp_entities' as any).select('id, entity_name').in('id', chunk).range(f, t))
   for (const e of data) out.set(e.id, e.entity_name ?? e.id)
   return out
 }
@@ -256,7 +258,7 @@ export async function loadEntityClasses(
   const ids = Array.from(new Set(inv.map(r => r.entity_id)))
   const out = new Map<string, string>()
   if (ids.length === 0) return out
-  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, partner_class').in('id', ids).order('id').range(f, t))
+  const data = await fetchAllRowsIn<any>(ids, (chunk, f, t) => admin.from('lp_entities' as any).select('id, partner_class').in('id', chunk).range(f, t))
   for (const e of data) out.set(e.id, (e.partner_class as string) ?? 'lp')
   return out
 }

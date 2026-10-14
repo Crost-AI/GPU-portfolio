@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { memoryAdmin } from '../../tests/helpers/memory-admin'
-import { fetchAllRowsIn, IN_CHUNK, loadLedgerRowsBatch } from './load'
+import { fetchAllRowsIn, IN_CHUNK, loadEntityClasses, loadEntityNames, loadLedgerRowsBatch } from './load'
 import { loadPositionsBatch } from './lp-positions'
+import { loadOpeningLinks, loadOpeningLinksBatch } from './capital-source'
+import { loadFundPreload } from './fund-preload'
 
 /**
  * The batch loaders filter by `vehicle_id IN (...)`, and that list rides in the GET URL: past ~400
@@ -85,5 +87,74 @@ describe('fetchAllRowsIn appends a chunk of any size', () => {
     const rows = await fetchAllRowsIn([vid(0)], make)
     expect(rows).toHaveLength(TOTAL)
     expect(reads).toBe(TOTAL / 1000 + 1)
+  })
+})
+
+describe('opening links read past the row cap', () => {
+  it('loadOpeningLinksBatch returns every link across vehicles, matching the single-vehicle loader', async () => {
+    // 3 vehicles × 400 partners = 1200 links; the table has no id, so the order is position_id.
+    const capital_opening_links = ids.slice(0, 3).flatMap((v, vi) => Array.from({ length: 400 }, (_, i) => ({
+      fund_id: FUND, vehicle_id: v, lp_entity_id: `ent${vi}-${i}`, position_id: `pos${vi}-${String(i).padStart(3, '0')}`,
+      journal_entry_id: `je${vi}-${i}`, observed_on: '2025-03-31', observed_nav: 100, booked_amount: 100,
+    })))
+    const { admin } = memoryAdmin({ capital_opening_links }, { maxRows: 1000 })
+    const batch = await loadOpeningLinksBatch(admin as any, FUND, ids.slice(0, 3))
+    for (const v of ids.slice(0, 3)) {
+      expect(batch.get(v)).toHaveLength(400)
+      expect(batch.get(v)).toEqual(await loadOpeningLinks(admin as any, FUND, v))
+    }
+  })
+
+  it('throws on a failed read', async () => {
+    const m = memoryAdmin({ capital_opening_links: [] }, { maxRows: 1000 })
+    m.failNext('capital_opening_links', 'select', 'timeout')
+    await expect(loadOpeningLinksBatch(m.admin as any, FUND, ids.slice(0, 1))).rejects.toMatchObject({ message: 'timeout' })
+  })
+})
+
+describe('loadFundPreload with more vehicles than one request can name', () => {
+  it('chunks every batch read at IN_CHUNK ids, and every vehicle gets its rows', async () => {
+    const base = seed()
+    const { admin } = memoryAdmin({
+      ...base,
+      fund_vehicles: ids.map((v, i) => ({ id: v, fund_id: FUND, name: `Fund ${i}`, aliases: [] })),
+      capital_opening_links: ids.map((v, i) => ({ fund_id: FUND, vehicle_id: v, lp_entity_id: `ent${i}`, position_id: `lp${i}`, journal_entry_id: `e${i}`, observed_on: '2025-03-31', booked_amount: 1 })),
+    }, { maxRows: 1000 })
+    const sent = recordIn(admin)
+    const p = await loadFundPreload(admin as any, FUND)
+
+    for (const [i, v] of ids.entries()) {
+      expect(p.ledgerByVehicleId.get(v)!.postingRows).toHaveLength(2)
+      expect(p.positionsByVehicleId.get(v)!.map(x => x.lpEntityId)).toEqual([`ent${i}`])
+      expect(p.openingLinksByVehicleId.get(v)!.map(x => x.positionId)).toEqual([`lp${i}`])
+    }
+    // commitment_events (terms.ts loadCommitmentEventsBatch) is chunked in #24, not here.
+    for (const table of ['chart_of_accounts', 'journal_entries', 'journal_postings', 'lp_positions', 'capital_opening_links']) {
+      expect(sent.filter(s => s.table === table).map(s => s.n), table).toEqual([200, 200, 50])
+    }
+  })
+})
+
+describe('entity names and classes for more entities than one request can name', () => {
+  it('loadEntityNames and loadEntityClasses chunk the entity ids and name every partner', async () => {
+    const entities = Array.from({ length: N }, (_, i) => ({ id: `ent${String(i).padStart(4, '0')}`, fund_id: FUND, entity_name: `Partner ${i}`, partner_class: 'lp' }))
+    const { admin } = memoryAdmin({
+      lp_entities: entities,
+      lp_investments: entities.map(e => ({ id: `inv-${e.id}`, fund_id: FUND, portfolio_group: 'Fund I', entity_id: e.id })),
+    }, { maxRows: 1000 })
+    const sent = recordIn(admin)
+    const names = await loadEntityNames(admin as any, FUND, 'Fund I')
+    const classes = await loadEntityClasses(admin as any, FUND, 'Fund I')
+    expect(names.size).toBe(N)
+    expect(names.get('ent0449')).toBe('Partner 449')
+    expect(classes.size).toBe(N)
+    expect(sent.filter(s => s.table === 'lp_entities').map(s => s.n)).toEqual([200, 200, 50, 200, 200, 50])
+  })
+
+  it('fetchAllRowsIn dedupes its ids', async () => {
+    const asked: string[][] = []
+    const make = (chunk: string[]) => { asked.push(chunk); const q: any = { order: () => q, then: (r: any) => r({ data: [], error: null }) }; return q }
+    await fetchAllRowsIn(['a', 'b', 'a', 'b', 'c'], make)
+    expect(asked).toEqual([['a', 'b', 'c']])
   })
 })
