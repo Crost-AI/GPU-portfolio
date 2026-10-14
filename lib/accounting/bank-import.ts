@@ -98,6 +98,11 @@ export async function importBankTransactions(
   // Two identical wire fees on one day are two transactions, not one — see dedupHash.
   const occurrences = new Map<string, number>()
 
+  // Matched and held rows need no entry of their own, so they are written together after the
+  // loop rather than one request each. Nothing later in the loop depends on them landing: an
+  // entry (or QuickBooks claim) is matched only when exactly one row in the file wants it.
+  const pending: PendingBankRow[] = []
+
   for (const row of rows) {
     const base = dedupHash(row, 0)
     const n = occurrences.get(base) ?? 0
@@ -121,19 +126,20 @@ export async function importBankTransactions(
         txn_date: row.date, amount: row.amount, description: row.description, counterparty: row.counterparty ?? null,
         imported_by: userId, raw: { ...row, importDifferences: differencesFor(row.date), bankImportHash: hash, investmentReview: true },
       }
-      let held = !only
-      let { error } = await admin.from('bank_transactions' as any)
-        .insert({ ...base, status: only ? 'reconciled' : 'unmatched', journal_entry_id: only?.id ?? null })
-      if (error && only && /duplicate|unique/i.test(error.message)) {
+      const onlyId = only?.id
+      pending.push({
+        label: `${row.date} ${row.description}`,
+        insert: { ...base, status: only ? 'reconciled' : 'unmatched', journal_entry_id: onlyId ?? null },
+        held: !only,
         // Another row claimed the entry first (a concurrent import). Hold this one for review.
-        held = true
-        ;({ error } = await admin.from('bank_transactions' as any).insert({ ...base, status: 'unmatched', journal_entry_id: null }))
-      }
-      if (error) { errors.push(`${row.date} ${row.description}: ${error.message}`); continue }
-      seen.add(hash)
-      imported++
-      if (held) needsReview++
-      else { matched++; linked.add(only!.id) }
+        holdInstead: only ? { ...base, status: 'unmatched', journal_entry_id: null } : undefined,
+        settle: held => {
+          seen.add(hash)
+          imported++
+          if (held) needsReview++
+          else { matched++; linked.add(onlyId!) }
+        },
+      })
       continue
     }
     const candidates = quickBooksCandidates(row, qbEntries)
@@ -141,18 +147,23 @@ export async function importBankTransactions(
     const claimKey = confident ? quickBooksClaimHash(confident.id, confident.amount) : ''
     const match = confident && !claimed.has(claimKey) && !quickBooksAlreadyClaimed(confident, existing) && demand.get(claimKey) === 1 ? confident : null
     if (candidates.length) {
-      const { error } = await admin.from('bank_transactions' as any).insert({
-        fund_id: fundId, portfolio_group: group, vehicle_id: vehicleId, source,
-        dedup_hash: match ? quickBooksClaimHash(match.id, match.amount) : hash,
-        txn_date: row.date, amount: row.amount, description: row.description,
-        counterparty: row.counterparty ?? null, status: match ? 'reconciled' : 'unmatched',
-        journal_entry_id: match?.id ?? null, imported_by: userId,
-        raw: { ...row, importDifferences: differencesFor(row.date), bankImportHash: hash, quickbooksReview: true, quickbooksCashAmount: match?.amount ?? null },
+      pending.push({
+        label: `${row.date} ${row.description}`,
+        insert: {
+          fund_id: fundId, portfolio_group: group, vehicle_id: vehicleId, source,
+          dedup_hash: match ? quickBooksClaimHash(match.id, match.amount) : hash,
+          txn_date: row.date, amount: row.amount, description: row.description,
+          counterparty: row.counterparty ?? null, status: match ? 'reconciled' : 'unmatched',
+          journal_entry_id: match?.id ?? null, imported_by: userId,
+          raw: { ...row, importDifferences: differencesFor(row.date), bankImportHash: hash, quickbooksReview: true, quickbooksCashAmount: match?.amount ?? null },
+        },
+        held: !match,
+        settle: held => {
+          seen.add(hash)
+          imported++
+          if (!held) { matched++; claimed.add(claimKey) } else needsReview++
+        },
       })
-      if (error) { errors.push(`${row.date} ${row.description}: ${error.message}`); continue }
-      seen.add(hash)
-      imported++
-      if (match) { matched++; claimed.add(claimKey) } else needsReview++
       continue
     }
 
@@ -209,5 +220,44 @@ export async function importBankTransactions(
     imported++
   }
 
+  await insertPending(admin, pending, errors)
+
   return { importReview, imported, skipped, matched, needsReview, skippedRows, errors }
+}
+
+const INSERT_CHUNK = 500
+
+/** A matched or held bank row waiting for the batched insert. */
+interface PendingBankRow {
+  label: string
+  insert: Record<string, unknown>
+  /** Held for review rather than matched, as first inserted. */
+  held: boolean
+  /** The held-for-review row to write instead when the matched one loses its claim to another. */
+  holdInstead?: Record<string, unknown>
+  /** The row landed: count it and record its claim. `held` says whether it ended up held. */
+  settle: (held: boolean) => void
+}
+
+/**
+ * Insert the pending rows in chunks. A chunk is one INSERT, so one failing row (most often a claim
+ * lost to a concurrent import) fails all of it; that chunk is then retried row by row, which is
+ * exactly the per-row path — a lost claim is held for review, any other failure is reported.
+ */
+async function insertPending(admin: SupabaseClient, pending: PendingBankRow[], errors: string[]) {
+  for (let i = 0; i < pending.length; i += INSERT_CHUNK) {
+    const chunk = pending.slice(i, i + INSERT_CHUNK)
+    const { error } = await admin.from('bank_transactions' as any).insert(chunk.map(p => p.insert))
+    if (!error) { for (const p of chunk) p.settle(p.held); continue }
+    for (const p of chunk) {
+      let held = p.held
+      let { error } = await admin.from('bank_transactions' as any).insert(p.insert)
+      if (error && p.holdInstead && /duplicate|unique/i.test(error.message)) {
+        held = true
+        ;({ error } = await admin.from('bank_transactions' as any).insert(p.holdInstead))
+      }
+      if (error) { errors.push(`${p.label}: ${error.message}`); continue }
+      p.settle(held)
+    }
+  }
 }
