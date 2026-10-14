@@ -50,8 +50,9 @@ export interface AgentToolMeta {
   domain?: 'ledger' | 'portfolio' | 'diligence' | 'deals' | 'lp'
   /**
    * A write that is ALWAYS staged as this pending action (lib/pending-actions/registry.ts), from
-   * any credential, a script's key included, and approved in the app. Its handler never runs.
-   * For what goes out to LPs, where a person confirms in the app (publish_call_notices).
+   * any credential, a script's key included, and approved by a person. Its handler never runs.
+   * For what goes out to LPs (publish_call_notices): an admin approves it in the app or from their
+   * own chat, never a script's key.
    */
   stagesAs?: string
   inputSchema: Record<string, any>

@@ -243,10 +243,13 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'lp_send_item',
     description:
-      'Email a portal item (a snapshot, a letter, or an uploaded document) to LPs it is shared with, as a secure portal link, or ' +
-      'for a document as an attachment. Authorized users are Cc\'d. Only investors the item is shared with are emailed. A ' +
-      'statement or letter as a rendered PDF attachment is sent from the LP Portal page. Admin only. ' + PREVIEW_FIRST +
-      ' The preview returns the exact To and Cc addresses, the subject and the rendered HTML.',
+      'Email a portal item (a snapshot, a letter, or an uploaded document) to LPs it is shared with, as a secure portal link, ' +
+      'as an attachment, or both. A snapshot is attached as each recipient\'s own statement PDF (only their investors), a letter ' +
+      'as its PDF, a document as the uploaded file, exactly as the LP Portal page sends them. Authorized users are Cc\'d. Only ' +
+      'investors the item is shared with are emailed. Admin only. ' + PREVIEW_FIRST +
+      ' The preview returns the exact To and Cc addresses, the subject, the rendered HTML and the attachment\'s file name. ' +
+      'A recipient whose PDF could not be rendered is not emailed (never sent without it): the result lists them in failures ' +
+      'and why in attachment_errors.',
     scope: 'write',
     ...PORTAL,
     inputSchema: {
@@ -257,7 +260,7 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
         investors: { type: 'array', items: { type: 'string' }, description: 'Investors by id or name. Default: everyone the item is shared with.' },
         subject: { type: 'string', description: 'Default "<fund>: <item title>".' },
         message: { type: 'string', description: 'A note above the link.' },
-        delivery: { type: 'string', enum: ['link', 'attachment', 'both'], description: 'Default link. attachment/both: documents only from here.' },
+        delivery: { type: 'string', enum: ['link', 'attachment', 'both'], description: 'Default link. attachment: the PDF or file only (works with the portal off); both: link and attachment.' },
         preview: { type: 'boolean', description: 'Return the recipients and the email, and send nothing.' },
       },
       required: ['kind', 'id'],
@@ -347,9 +350,10 @@ export const LP_PORTAL_TOOL_MANIFEST: AgentToolMeta[] = [
     description:
       'Approve a proposed capital call: re-checks it against today\'s records and issues the call (each partner\'s line, advances ' +
       'applied). Show the person lp_proposed_calls with the id first and get an explicit yes. If it has warnings, approving needs ' +
-      'acknowledge: true, after the person has accepted them. The app\'s Approve button also publishes each LP\'s notice; from ' +
-      'here that is the next step: preview_call_notices then publish_call_notices with the capitalCallId this returns (an admin ' +
-      'confirms that in the app, where the notice PDFs are rendered). Admin only.',
+      'acknowledge: true, after the person has accepted them. Then, as the app\'s Approve button does, it publishes each LP\'s ' +
+      'notice to their portal (no email) and returns noticesPublished, noticesReused and publishErrors. If publishing fails ' +
+      'after the call is issued, the result says so (publishFailed) with the capitalCallId: the call stands, and calling this ' +
+      'again with the same id retries the notices without issuing it twice. Admin only.',
     scope: 'write',
     ...CAPITAL,
     inputSchema: {

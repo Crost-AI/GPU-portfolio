@@ -396,7 +396,8 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
         ? 'Nothing can be published until the blockers in flags are resolved. Tell the user what they are.'
         : 'Nothing has been published. Show the user every partner, amount and draftPdf link above, and every missing item and flag, ' +
           'in plain words. Ask them to confirm. Only if they do, call publish_call_notices with this vehicle, callId, the same ' +
-          'lpEntityIds and this previewToken. That stages the request; an admin then approves it in the app and confirms it a second time. ' +
+          'lpEntityIds and this previewToken. That stages the request; an admin then approves it (approve_action from their chat, ' +
+          'on their explicit yes, or in the app, confirming twice). ' +
           'The draftPdf links open for an hour.',
     }
   },
@@ -408,9 +409,9 @@ export const LP_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   // Always staged as the publish_call_notices pending action (its manifest's `stagesAs`), so this
-  // never runs; it refuses rather than publish without the app's confirmation.
+  // never runs; it refuses rather than publish without an admin's approval (approve_action or the app).
   publish_call_notices: async () => {
-    throw new Error('publish_call_notices is always staged for approval in the app; it cannot run directly.')
+    throw new Error('publish_call_notices is always staged for an admin to approve; it cannot run directly.')
   },
 
   lp_statement: async ({ admin, fundId, access }: AgentToolContext, input: any) => {

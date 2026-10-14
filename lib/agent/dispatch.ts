@@ -119,7 +119,8 @@ export function hasDraftMode(name: string): boolean {
 
 /**
  * Whether this write waits for a person. Reads never do. A tool that `stagesAs` a pending action
- * (what goes out to LPs) always does, from a script's key too: a person confirms it in the app.
+ * (what goes out to LPs) always does, from a script's key too: a person approves it, in the app or
+ * from their own chat.
  */
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
   if (tool.scope !== 'write') return false

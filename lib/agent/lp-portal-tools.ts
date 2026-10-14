@@ -7,6 +7,12 @@
 // (ADMIN_ONLY_TOOLS: a member's chat call is staged for an admin, a member's key refused); the
 // handler checks again, because a read or a preview runs directly from any chat, and because an
 // approved staged call runs here as the approver.
+//
+// This function ships no headless Chromium (lib/pdf-routes.mjs), so the two things that render a PDF
+// ask a route that does, with a signed short-lived token, and that route re-checks the member's live
+// access: a statement or letter attached to an email (lib/agent/remote-pdf.ts, through
+// app/api/agent/reports/[token]) and the notices an approved proposed call publishes
+// (lib/agent/notice-publish-link.ts, through app/api/agent/call-notices/publish).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
@@ -25,7 +31,10 @@ import {
   unlinkPortalAccount, type PortalActor,
 } from '@/lib/lps/portal-access'
 import { announceToLps, sendItemRecipients, sendPortalItem } from '@/lib/lps/outreach'
+import { attachmentNameFor } from '@/lib/lps/attachment-names'
 import { resolveInvestor } from './lp-record-tools'
+import { remotePdfRenderers } from './remote-pdf'
+import { publishNoticesRemotely } from './notice-publish-link'
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
@@ -240,12 +249,23 @@ export const LP_PORTAL_HANDLERS: Record<string, AgentToolHandler> = {
     } else {
       ids = await investorIds(ctx.admin, ctx.fundId, input.investors)
     }
-    // No PDF renderer here: this function does not ship headless Chromium (lib/lps/outreach.ts).
-    const out = unwrap(await sendPortalItem(ctx.admin, actor, {
+    // A statement or letter attachment is rendered by a Chromium-bundled route (see the header).
+    const renderers = remotePdfRenderers({ userId: actor.userId, origin: ctx.origin })
+    const sent = await sendPortalItem(ctx.admin, actor, {
       kind: input?.kind, id: str(input?.id), lp_investor_ids: ids, subject: input?.subject, message: input?.message,
       delivery: input?.delivery, preview: input?.preview === true,
-    }, null))
-    return 'preview' in out ? { ...out, next: NEXT_AFTER_PREVIEW } : out
+    }, renderers)
+    // A letter that could not be rendered refuses the whole send; say why, not only that it failed.
+    if (!sent.ok && renderers.errors.length) throw new Error(`${sent.error} ${renderers.errors[0]}`)
+    const out = unwrap(sent)
+    if ('preview' in out) {
+      const attachment_name = out.attachment ? await attachmentNameFor(ctx.admin, ctx.fundId, input?.kind, str(input?.id)) : null
+      return { ...out, ...(attachment_name ? { attachment_name } : {}), next: NEXT_AFTER_PREVIEW }
+    }
+    // A recipient whose statement could not be rendered was not emailed at all (never sent without it).
+    return renderers.errors.length
+      ? { ...out, attachment_errors: Array.from(new Set(renderers.errors)), note: 'The recipients in failures were not emailed: their attachment could not be rendered. Nothing was sent to them without it.' }
+      : out
   },
 
   // ── Switches ─────────────────────────────────────────────────────────────────────────────
@@ -302,20 +322,46 @@ export const LP_PORTAL_HANDLERS: Record<string, AgentToolHandler> = {
     return unwrap(await discardProposedCall(ctx.admin, { fundId: ctx.fundId, group, userId: ctx.userId }, str(input?.id)))
   },
 
+  // As the app's Approve button: issue the call, then publish each LP's notice to their portal. The
+  // notices are rendered PDFs, so a Chromium-bundled route publishes them (see the header).
   lp_proposed_call_approve: async (ctx, input) => {
     const group = await proposalGroup(ctx, input)
-    const approved = await approveProposedCall(ctx.admin, { fundId: ctx.fundId, group, userId: ctx.userId }, str(input?.id), {
+    const id = str(input?.id)
+    const approved = await approveProposedCall(ctx.admin, { fundId: ctx.fundId, group, userId: ctx.userId }, id, {
       role: ctx.access.role, acknowledge: input?.acknowledge === true,
     })
     if (!approved.ok) {
       // The checks that stopped it, so the assistant can show them rather than just the refusal.
       throw new Error(approved.extra ? `${approved.error} ${JSON.stringify(approved.extra)}` : approved.error)
     }
-    return {
-      ...approved.value,
-      vehicle: group,
-      next: 'The call is issued. Its notices are not in the LPs\' portals yet: call preview_call_notices with this capitalCallId, ' +
-        'show the person what it returns, and on their yes call publish_call_notices (an admin confirms it in the app).',
+    const callId = approved.value.capitalCallId
+    try {
+      const notices = await publishNoticesRemotely(
+        { mode: 'proposed_call', fundId: ctx.fundId, userId: ctx.userId!, vehicle: group, callId, proposedCallId: id },
+        { origin: ctx.origin },
+      )
+      return {
+        ...approved.value,
+        vehicle: group,
+        noticesPublished: notices.published,
+        noticesReused: notices.reused,
+        publishErrors: notices.errors,
+        ...(notices.errors.length
+          ? { next: `The call is issued and ${notices.published + notices.reused} notices are in the LPs' portals, but some could not be published: ` +
+              'tell the person each error. Calling lp_proposed_call_approve again with the same id retries them; notices already published are reused.' }
+          : {}),
+      }
+    } catch (e) {
+      // The call IS issued: this must not read as a failed approval, or it gets approved twice.
+      return {
+        ...approved.value,
+        vehicle: group,
+        noticesPublished: 0,
+        publishFailed: (e as Error)?.message ?? 'The notices could not be published.',
+        next: `The call is issued (capitalCallId ${callId}), but its notices were NOT published to the LPs' portals: ` +
+          `${(e as Error)?.message ?? 'publishing failed'} Tell the person exactly that. To retry, call lp_proposed_call_approve again ` +
+          'with the same id (it does not issue the call twice; it publishes the notices), or use preview_call_notices then publish_call_notices.',
+      }
     }
   },
 }

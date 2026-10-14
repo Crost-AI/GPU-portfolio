@@ -189,7 +189,7 @@ describe('email to LPs', () => {
     expect(tables.lp_deliveries).toHaveLength(1)
   })
 
-  it('sending a statement or letter as a rendered attachment needs the app', async () => {
+  it('sending a statement or letter as a rendered attachment needs a renderer (the tool passes remote ones: agent-remote-pdf.test.ts)', async () => {
     const { admin } = memoryAdmin(seed())
     for (const kind of ['snapshot', 'letter']) {
       expect(await sendPortalItem(admin, actor, { kind, id: 'x', lp_investor_ids: ['iB'], delivery: 'attachment' }, null))

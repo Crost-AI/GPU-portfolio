@@ -5,10 +5,11 @@
 // Both have a preview that returns the exact addresses (To, and the authorized users Cc'd) and the
 // rendered email without sending: the review step before anything goes out.
 //
-// Rendering a statement or letter as a PDF attachment launches headless Chromium, which only the
-// send route ships (lib/pdf-routes.mjs). So this module never imports the PDF renderer: the route
-// passes it in as `renderers`, and a caller without one (the agent tools) can send links and
-// uploaded documents, and is told to use the app for a rendered attachment.
+// Rendering a statement or letter as a PDF attachment launches headless Chromium, which only some
+// routes ship (lib/pdf-routes.mjs). So this module never imports the PDF renderer: the caller passes
+// it in as `renderers`. The send route renders in-process; lp_send_item, whose function ships no
+// Chromium, passes renderers that fetch the same PDF from a route that does (lib/agent/remote-pdf.ts).
+// A caller with none can still send links and uploaded documents.
 
 import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -144,14 +145,19 @@ export type SendKind = 'snapshot' | 'letter' | 'document'
 export type SendDelivery = 'link' | 'attachment' | 'both'
 export const SEND_KINDS: SendKind[] = ['snapshot', 'letter', 'document']
 
-/** The PDF renderers an attachment needs. Only the send route has them (see the header). */
+/**
+ * The PDF renderers an attachment needs (see the header). A renderer that cannot produce the PDF
+ * should throw: a snapshot's recipient is then counted as failed and not emailed, and a letter's
+ * send is refused, rather than either going out without the attachment.
+ */
 export interface SendPdfRenderers {
   snapshotPdf(admin: SupabaseClient, opts: { fundId: string; snapshotId: string; investorIds: string[] }): Promise<{ pdf: Buffer; fileName: string } | null>
   letterPdf(admin: SupabaseClient, opts: { fundId: string; letterId: string }): Promise<{ pdf: Buffer; fileName: string } | null>
 }
 
+/** For a caller that passes no renderers. */
 export const NO_PDF_RENDERER_MESSAGE =
-  'Attaching a statement or letter renders a PDF, which only the app can do. Send it as a secure link (delivery "link"), ' +
+  'Attaching a statement or letter renders a PDF, which this caller cannot do. Send it as a secure link (delivery "link"), ' +
   'or send it with the attachment from the LP Portal page.'
 
 // Each snapshot attachment spins up its own headless Chrome, so keep this low to avoid exhausting
