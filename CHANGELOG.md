@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Reopen and preview period closes from chat
+- **`reopen_period`.** An assistant can now reopen a closed period, as the Periods page's Reopen does: by `periodId` (from `list_periods`) or `fromDate`, with a required `reason`. It reopens that period and every closed period after it, voids their close allocations, and returns the reopened periods and any tax years with issued K-1s. It is admin-only (`ADMIN_ONLY_TOOLS`), so from chat it is always staged for an admin to approve. The route and the tool share one path, `lib/accounting/reopen.ts`, so both write the same `period.reopen` audit event.
+- **`preview_close`.** A read-only preview of closing through a date (`previewCloseThrough`): the months covered, what each would allocate, and what blocks it.
+- **`close_period` says what it does.** Its description and schema claimed it locked an arbitrary `periodStart`–`periodEnd` range; it has closed THROUGH `periodEnd` with allocation since the legacy path was retired. `periodStart` is now optional and documented as ignored.
+
 ### Approve a chat's changes in the chat
 - **Say yes in the chat that staged it.** A change Claude or ChatGPT stages can now be approved in the same conversation: the assistant shows the change, asks, and calls `approve_action` only on the person's explicit yes. Before, `approve_action` refused any change the same credential staged, so every change needed a click under Approvals and a fund could not run from chat. A script's key still cannot approve what it staged, approvals still re-check the approver's write access and admin-only rules, and changes marked confirm-in-app (publishing to LPs) still go through the browser. The audit trail marks an approval made by the staging chat (`approvedFromChat`).
 

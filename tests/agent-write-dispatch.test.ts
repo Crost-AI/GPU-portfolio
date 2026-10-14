@@ -434,6 +434,7 @@ describe('the same access rules as the web', () => {
     ['post_drafts', 'api/accounting/journal'],
     ['add_account', 'api/accounting/chart'],
     ['close_period', 'api/accounting/periods'],
+    ['reopen_period', 'api/accounting/periods'],
     ['allocation', 'api/accounting/allocation'],
     ['post_bank_transaction', 'api/accounting/bank'],
     ['import_bank_transactions', 'api/accounting/bank'],
