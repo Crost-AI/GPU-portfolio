@@ -20,6 +20,21 @@ export function sortForRollup(txns: InvestmentTransaction[]): InvestmentTransact
     .map(x => x.t)
 }
 
+/**
+ * The invested basis of one `investment` row — the ONE definition of invested capital: cash cost,
+ * plus capitalised acquisition fees (gas, brokerage), plus interest that rolled into equity on a
+ * conversion row. Interest converted is real cost basis (recognized as income while accruing, then
+ * capitalized into the position) and is counted only on the conversion row.
+ *
+ * `computeSummary`'s totalInvested, the schedule of investments' new/follow-on split and the fund
+ * time-series all sum this, so new + follow-on ties to invested capital on every surface.
+ */
+export function investedBasis(
+  t: Pick<InvestmentTransaction, 'investment_cost' | 'interest_converted'> & { fee_amount?: number | null; converts_from_txn_id?: string | null },
+): number {
+  return (t.investment_cost ?? 0) + Number(t.fee_amount ?? 0) + (t.converts_from_txn_id ? (t.interest_converted ?? 0) : 0)
+}
+
 export function computeSummary(
   rawTransactions: InvestmentTransaction[],
   companyStatus: CompanyStatus,
@@ -78,13 +93,9 @@ export function computeSummary(
 
   for (const txn of transactions) {
     if (txn.transaction_type === 'investment') {
-      const isConversion = !!(txn as { converts_from_txn_id?: string | null }).converts_from_txn_id
-      totalInvested += (txn.investment_cost ?? 0) + Number((txn as any).fee_amount ?? 0)
+      // Converted interest is basis but NOT cash: it is counted here and never pushed as a cash flow.
+      totalInvested += investedBasis(txn)
       totalShares += txn.shares_acquired ?? 0
-      // Interest that rolled into equity at conversion is real cost basis (it was recognized as
-      // income while accruing, and now capitalizes into the position). It is NOT cash, so it is
-      // added to basis here but never pushed as a cash flow. Only counted on the conversion row.
-      if (isConversion) totalInvested += txn.interest_converted ?? 0
 
       if (txn.transaction_date && txn.investment_cost) {
         const cf = { date: new Date(txn.transaction_date), amount: -(txn.investment_cost) }
