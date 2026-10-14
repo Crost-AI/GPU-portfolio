@@ -15,6 +15,21 @@ export type DashboardPageData = Awaited<ReturnType<typeof loadDashboardPage>>
 export async function loadDashboardPage({ supabase, admin, user, page }: PageContext) {
   const isAdmin = page.isAdmin
 
+  // The latest-row views return one row per id asked for, so a chunk of ids stays under PostgREST's
+  // 1,000-row cap whatever the fund's size — no row can be cut off by it. A failed read throws: a
+  // blank cash column must mean "never reported", not "could not be read".
+  const LATEST_CHUNK = 500
+  async function latestRows<T>(view: string, column: string, ids: string[], columns: string): Promise<T[]> {
+    const chunks: string[][] = []
+    for (let i = 0; i < ids.length; i += LATEST_CHUNK) chunks.push(ids.slice(i, i + LATEST_CHUNK))
+    const results = await Promise.all(chunks.map(chunk =>
+      supabase.from(view as any).select(columns).in(column, chunk) as unknown as Promise<{ data: T[] | null; error: { message: string } | null }>))
+    return results.flatMap(({ data, error }) => {
+      if (error) throw new Error(`${view}: ${error.message}`)
+      return data ?? []
+    })
+  }
+
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
   // Only the companies linked to the viewer's entities, and only their entities' transactions. An
@@ -49,38 +64,37 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
     if (cashMetric) cashMetricMap.set(c.id, cashMetric.id)
   }
 
-  // Batch fetch latest cash values
+  // Everything below needs only the company list, so it is read at once rather than in turn: the
+  // latest cash per metric, the last reporting period per company, the transactions, and the entity
+  // picker's three reads.
+  const companyIds = (companiesRaw ?? []).map(c => c.id)
   const cashMetricIds = Array.from(cashMetricMap.values())
+  const [cashRows, latestPeriodRows, { data: allTxns }, [entityOptions, savedExcluded, fundDefaultExcluded]] = await Promise.all([
+    latestRows<{ metric_id: string; value_number: number }>('metric_values_latest', 'metric_id', cashMetricIds, 'metric_id, value_number'),
+    latestRows<{ company_id: string; period_year: number; period_quarter: number | null; period_month: number | null }>(
+      'metric_values_latest_by_company', 'company_id', companyIds, 'company_id, period_year, period_quarter, period_month'),
+    // Investment transactions for ALL companies (first investment date + summaries for exited)
+    admin
+      .from('investment_transactions' as any)
+      .select('*')
+      .in('company_id', companyIds)
+      .order('transaction_date', { ascending: true }) as unknown as Promise<{ data: InvestmentTransaction[] | null }>,
+    // The entity picker: the viewer's entities holding an active position (companies, fund holdings,
+    // digital assets), and the selection in force — their saved one, else the fund default, else all.
+    Promise.all([
+      loadActiveEntityOptions(admin, page.access),
+      // The read-only demo shares one login, so a row saved for it (e.g. straight through the Data
+      // API) would be every visitor's selection. The demo always starts from the fund default.
+      page.role === 'viewer' ? Promise.resolve(null) : loadSavedExcluded(admin, page.fundId, user.id),
+      loadFundDefaultExcluded(admin, page.fundId),
+    ]),
+  ])
+
   const cashValues = new Map<string, number>()
-  if (cashMetricIds.length > 0) {
-    const { data: cashRows } = await supabase
-      .from('metric_values')
-      .select('metric_id, value_number')
-      .in('metric_id', cashMetricIds)
-      .not('value_number', 'is', null)
-      .order('period_year', { ascending: false })
-      .order('created_at', { ascending: false }) as { data: { metric_id: string; value_number: number }[] | null }
-
-    // Keep only the first (latest) value per metric
-    for (const row of cashRows ?? []) {
-      if (!cashValues.has(row.metric_id)) {
-        cashValues.set(row.metric_id, row.value_number)
-      }
-    }
-  }
-
-  // Batch fetch latest metric period per company
-  const { data: latestPeriodRows } = await supabase
-    .from('metric_values')
-    .select('company_id, period_year, period_quarter, period_month')
-    .in('company_id', (companiesRaw ?? []).map(c => c.id))
-    .order('period_year', { ascending: false })
-    .order('period_quarter', { ascending: false, nullsFirst: false })
-    .order('period_month', { ascending: false, nullsFirst: false }) as { data: { company_id: string; period_year: number; period_quarter: number | null; period_month: number | null }[] | null }
+  for (const row of cashRows) cashValues.set(row.metric_id, row.value_number)
 
   const lastMetricPeriod = new Map<string, string>()
-  for (const row of latestPeriodRows ?? []) {
-    if (lastMetricPeriod.has(row.company_id)) continue
+  for (const row of latestPeriodRows) {
     if (row.period_month) {
       // Use last day of the month
       const lastDay = new Date(row.period_year, row.period_month, 0)
@@ -119,14 +133,6 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
       latestCash,
     }
   })
-
-  // Fetch investment transactions for ALL companies (first investment date + summaries for exited)
-  const allCompanyIds = companies.map(c => c.id)
-  const { data: allTxns } = await admin
-    .from('investment_transactions' as any)
-    .select('*')
-    .in('company_id', allCompanyIds)
-    .order('transaction_date', { ascending: true }) as { data: InvestmentTransaction[] | null }
 
   // Group transactions by company — only the viewer's entities' rows (plus company-wide price
   // signals), so a shared company's figures are the viewer's position, not every fund's.
@@ -183,15 +189,6 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
     unrealizedValue: investmentSummaries.get(c.id)?.unrealizedValue ?? null,
   }))
 
-  // The entity picker: the viewer's entities holding an active position (companies, fund holdings,
-  // digital assets), and the selection in force — their saved one, else the fund default, else all.
-  const [entityOptions, savedExcluded, fundDefaultExcluded] = await Promise.all([
-    loadActiveEntityOptions(admin, page.access),
-    // The read-only demo shares one login, so a row saved for it (e.g. straight through the Data
-    // API) would be every visitor's selection. The demo always starts from the fund default.
-    page.role === 'viewer' ? Promise.resolve(null) : loadSavedExcluded(admin, page.fundId, user.id),
-    loadFundDefaultExcluded(admin, page.fundId),
-  ])
   const selection = resolveExcluded({ options: entityOptions, saved: savedExcluded, fundDefault: fundDefaultExcluded })
 
   return {
