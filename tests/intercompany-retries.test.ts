@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // An in-memory Supabase with just enough PostgREST to run the real issuance, settlement and
 // balance code: filters, order, range, the 1000-row cap, and the two unique indexes from
-// 20261014040000 (one live charge per invoice, one live settlement entry per vehicle).
+// 20261014190000 (one live charge per invoice, one live settlement entry per vehicle).
 type Row = Record<string, any>
 const FUND = 'fund'
 const MANCO = 'manco-vehicle'

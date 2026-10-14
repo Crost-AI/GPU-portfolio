@@ -12,7 +12,7 @@
 // So a charge is a row (`intercompany_transactions`), and posting it writes BOTH sides in one
 // action, each entry tagged `source_ref = 'intercompany:<id>'` — the same convention the period
 // close uses to find the entries it wrote. Settlement entries carry `intercompany-settlement:<id>`,
-// a ref of their own so a unique index can allow one per vehicle (20261014040000). The row keeps
+// a ref of their own so a unique index can allow one per vehicle (20261014190000). The row keeps
 // the entry ids as well, so the reconciliation is a lookup in either direction rather than a join
 // on a memo string.
 //
@@ -461,7 +461,7 @@ export async function postIntercompanyCharge(
  *
  * ONCE PER VEHICLE, ENFORCED BY THE DATABASE. The status check is a separate read, so two requests
  * can both pass it. Each settlement entry carries `intercompany-settlement:<chargeId>`, and a
- * partial unique index (20261014040000) allows one live entry per vehicle with that ref: the
+ * partial unique index (20261014190000) allows one live entry per vehicle with that ref: the
  * second request's payee entry is refused before anything of its own is written.
  *
  * RETRY FINISHES, NEVER REPOSTS. If both entries are live but the row still says accrued, an

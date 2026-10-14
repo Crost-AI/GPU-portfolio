@@ -353,7 +353,7 @@ export async function listPartnershipInvoices(admin: SupabaseClient, fundId: str
  *
  * ONCE, AND A RETRY FINISHES RATHER THAN REPOSTS. The draft check is a separate read, so two
  * requests can both pass it. The charge carries the invoice id, and a unique index allows one live
- * charge per invoice (20261014040000): the second request's insert is refused before it posts. A
+ * charge per invoice (20261014190000): the second request's insert is refused before it posts. A
  * charge that is already booked while the invoice still says draft means an earlier attempt failed
  * to mark it; issuing again marks it and posts nothing (the shape of issueCapitalCall's replay).
  */
