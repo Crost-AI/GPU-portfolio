@@ -212,15 +212,15 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'close_period',
-    description: 'Close the books THROUGH a date: every open month from the day after the last closed period up to periodEnd is closed in order, allocating its P&L to the partners and locking it against new postings. Run preview_close first. periodStart is ignored: a close cannot leave gaps.',
+    description: 'Close the books THROUGH a date: every open month from the day after the last closed period up to periodEnd is closed in order, allocating its P&L to the partners and locking it against new postings. Stops at the first month that fails and leaves the earlier ones closed; calling again picks up from there. Run preview_close (or close_status) first. periodStart is ignored: a close cannot leave gaps.',
     scope: 'write',
     inputSchema: {
       type: 'object',
       required: ['periodEnd'],
       properties: {
-        periodEnd: { type: 'string', description: 'ISO date to close through (YYYY-MM-DD)' },
-        periodStart: { type: 'string', description: 'ignored; kept so older callers still work' },
-        label: { type: 'string', description: 'ignored; each month is labelled by the close' },
+        periodEnd: { type: 'string', description: 'YYYY-MM-DD to close through.' },
+        periodStart: { type: 'string', description: 'Ignored: closing runs through periodEnd from the first open period. Accepted for older callers.' },
+        label: { type: 'string', description: 'Ignored. Accepted for older callers.' },
       },
     },
   },
@@ -407,6 +407,21 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
         allocate: { type: 'boolean', description: 'default true; false skips the partner allocation' },
+      },
+    },
+  },
+  {
+    name: 'discard_drafts',
+    description: "Void DRAFT journal entries in bulk (the journal's Discard): drafts the user does not want, such as a duplicate import or a wrong categorization. Drafts only: a posted entry is never touched, and an entry in a closed period is skipped with its reason. Give ids for exactly those drafts, or a window (start/end, sourceType) for every draft in it; pages: repeat with afterId = the returned cursor while hasMore.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'discard exactly these drafts (one shot)' },
+        start: { type: 'string', description: 'ISO date; only drafts on or after it' },
+        end: { type: 'string', description: 'ISO date; only drafts on or before it' },
+        sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
+        afterId: { type: 'string', description: 'cursor from the previous call' },
       },
     },
   },

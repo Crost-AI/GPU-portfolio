@@ -7,6 +7,12 @@
 - **`preview_close`.** A read-only preview of closing through a date (`previewCloseThrough`): the months covered, what each would allocate, and what blocks it.
 - **`close_period` says what it does.** Its description and schema claimed it locked an arbitrary `periodStart`–`periodEnd` range; it has closed THROUGH `periodEnd` with allocation since the legacy path was retired. `periodStart` is now optional and documented as ignored.
 
+### Headless parity: an audit, and four tools it found missing
+- **What the app can do that chat can't, and why.** `PARITY.md` maps all 517 actions the web app offers (every route under `app/api`) to the MCP and API tools. Each gap carries a reason, either deliberate (secrets, outbound email to LPs, browser-only uploads, destructive admin deletes) or none recorded, plus the fix and a size.
+- **Issue a capital call from chat or a script.** `issue_capital_call` stages the in-app Analyst's existing pending action: fund-wide, pro-rata by commitment, with purposes and a due date. An admin approves it in the app, from any connection. Per-LP lines and charges are still issued on the web.
+- **Recent runs and Undo from chat.** `list_runs` and `undo_run` do what the Approvals page's *Recent runs* and *Undo* do, under the same rules. The credential that staged a run cannot undo it.
+- **Discard drafts.** `discard_drafts` is the journal's bulk discard. It voids draft entries only and skips any in a closed period.
+
 ### Approve a chat's changes in the chat
 - **Say yes in the chat that staged it.** A change Claude or ChatGPT stages can now be approved in the same conversation: the assistant shows the change, asks, and calls `approve_action` only on the person's explicit yes. Before, `approve_action` refused any change the same credential staged, so every change needed a click under Approvals and a fund could not run from chat. A script's key still cannot approve what it staged, approvals still re-check the approver's write access and admin-only rules, and changes marked confirm-in-app (publishing to LPs) still go through the browser. The audit trail marks an approval made by the staging chat (`approvedFromChat`).
 
