@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, Fragment, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -32,9 +32,11 @@ interface VehicleCtx {
   setVehicle: (name: string, id: string | null) => void
   /** Set the name only, leaving the id untouched — back-compat for name-only callers. */
   setGroup: (name: string) => void
+  /** The fund's vehicles, loaded once by the provider. Empty until loaded. */
+  vehicles: VehicleOption[]
 }
 const VehicleContext = createContext<VehicleCtx>({
-  group: null, vehicleId: null, kind: null, setVehicle: () => {}, setGroup: () => {},
+  group: null, vehicleId: null, kind: null, setVehicle: () => {}, setGroup: () => {}, vehicles: [],
 })
 
 const NAME_KEY = 'acct_vehicle'
@@ -98,7 +100,7 @@ export function VehicleProvider({ children }: { children: React.ReactNode }) {
   const kind = index.find(v => (vehicleId && v.id === vehicleId) || (!vehicleId && v.name === group))?.kind ?? null
 
   return (
-    <VehicleContext.Provider value={{ group, vehicleId, kind, setVehicle, setGroup }}>
+    <VehicleContext.Provider value={{ group, vehicleId, kind, setVehicle, setGroup, vehicles: index }}>
       {children}
     </VehicleContext.Provider>
   )
@@ -106,6 +108,26 @@ export function VehicleProvider({ children }: { children: React.ReactNode }) {
 
 export function useVehicle() {
   return useContext(VehicleContext)
+}
+
+/**
+ * Pins the vehicle for everything under it to the one the URL names, from the FIRST render.
+ *
+ * The app-wide selection is synced from the URL in an effect, which runs after the page's own
+ * effects. So a view that loads on mount used to fire its first request with whatever the
+ * selection was before — nothing on a fresh load (a 400 "specify a vehicle" on a multi-entity
+ * firm), or the PREVIOUS entity after switching — and then fire it again once the sync landed.
+ * Every fund page paid for a wasted request, and a slow stale response could land last. Under
+ * this scope the views read the URL's vehicle directly, so their first request is the right one.
+ */
+export function VehicleScope({ vehicle, vehicleId, children }: { vehicle: string; vehicleId: string | null; children: React.ReactNode }) {
+  const parent = useContext(VehicleContext)
+  const kind = parent.vehicles.find(v => (vehicleId && v.id === vehicleId) || (!vehicleId && v.name === vehicle))?.kind ?? null
+  const value = useMemo(
+    () => ({ ...parent, group: vehicle, vehicleId, kind }),
+    [parent, vehicle, vehicleId, kind],
+  )
+  return <VehicleContext.Provider value={value}>{children}</VehicleContext.Provider>
 }
 
 /**
@@ -162,17 +184,10 @@ export function useLedgerFetch() {
 export function FundSwitcher() {
   const pathname = usePathname()
   const router = useRouter()
-  const { group, setVehicle } = useVehicle()
-  const [vehicles, setVehicles] = useState<VehicleOption[]>([])
+  // The provider already loaded the vehicle index; reading it here saves every fund page a request.
+  const { group, setVehicle, vehicles } = useVehicle()
   const [open, setOpen] = useState(false)
   const vehicleGroups = useVehicleGroups()
-
-  useEffect(() => {
-    fetch('/api/accounting/vehicle-index')
-      .then(r => (r.ok ? r.json() : []))
-      .then(v => setVehicles(Array.isArray(v) ? v : []))
-      .catch(() => setVehicles([]))
-  }, [])
 
   if (vehicles.length <= 1) return null
 

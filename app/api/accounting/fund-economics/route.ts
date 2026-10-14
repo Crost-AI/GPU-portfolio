@@ -3,13 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
-import { fundEconomics } from '@/lib/accounting/fund-economics'
+import { fundEconomics, vehicleEconomics } from '@/lib/accounting/fund-economics'
+import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { canSeeVehicle } from '@/lib/access/scope'
 
 // Fund-level performance per vehicle, derived from the ledger.
 //
-// FUND-WIDE — it reports every vehicle, so there is no `group` to resolve. `asOf` is a real
-// as-of: the terminal value in the IRR lands on that date, not on today.
+// FUND-WIDE by default — it reports every vehicle. `?group=` narrows it to that one vehicle (the
+// entity's lead page shows one, and deriving every fund's economics to pick out one was most of
+// that page's load time); the response keeps the same `{ vehicles: [...] }` shape either way.
+// `asOf` is a real as-of: the terminal value in the IRR lands on that date, not on today.
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -27,8 +30,18 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Only the caller's entities.
-    const vehicles = (await fundEconomics(admin, gate.fundId, asOf)).filter(v => canSeeVehicle(access, v.id))
+    // Only the caller's entities. A named one is resolved through the same gate every
+    // vehicle-scoped route uses, which refuses an entity the caller cannot see.
+    const requested = req.nextUrl.searchParams.get('group')
+    let all
+    if (requested) {
+      const group = await resolveGroupOr400(admin, gate, requested)
+      if (group instanceof NextResponse) return group
+      all = [await vehicleEconomics(admin, gate.fundId, group, asOf)]
+    } else {
+      all = await fundEconomics(admin, gate.fundId, asOf)
+    }
+    const vehicles = all.filter(v => canSeeVehicle(access, v.id))
 
     // `carryAccrued` and the GP-class block are gp_economics. The fund overview is otherwise
     // ordinary accounting, and the `lp` metrics are already net-to-LP with the carry removed —
