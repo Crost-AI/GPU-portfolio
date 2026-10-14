@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { commitmentsAsOf, allocationWeights, resolveCommitmentMap, type PartnerTerms } from './terms'
+import { commitmentsAsOf, allocationWeights, resolveCommitmentMap, loadAllocationBasis, loadPartnerTerms, type PartnerTerms } from './terms'
+import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import { allocateAmount } from './allocation'
 
 describe('commitmentsAsOf', () => {
@@ -149,5 +150,33 @@ describe('resolveCommitmentMap', () => {
   it('ignores an empty positions map even for a tracking vehicle', () => {
     const m = resolveCommitmentMap({ source: 'events', owners, events, positions: new Map() })
     expect(m.get('b')).toBe(5750) // empty positions → base ladder
+  })
+})
+
+describe('the settings loaders on a failed read', () => {
+  const vehicles = { fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'Fund I' }] }
+
+  // A failed read used to come back as the default — commitment basis, no side letters — and a
+  // close on it still balanced, so nothing noticed the partners were allocated on the wrong terms.
+  it('loadAllocationBasis rejects instead of defaulting to commitment', async () => {
+    const m = memoryAdmin({ ...vehicles, vehicle_accounting_settings: [{ fund_id: 'f', vehicle_id: 'v1', allocation_basis: 'capital_balance' }] })
+    m.failNext('vehicle_accounting_settings', 'select', 'boom')
+    await expect(loadAllocationBasis(m.admin, 'f', 'Fund I')).rejects.toThrow(/boom/)
+    expect(await loadAllocationBasis(m.admin, 'f', 'Fund I')).toBe('capital_balance')
+  })
+
+  it('loadAllocationBasis still defaults to commitment when no row exists', async () => {
+    expect(await loadAllocationBasis(memoryAdmin(vehicles).admin, 'f', 'Fund I')).toBe('commitment')
+  })
+
+  it('loadPartnerTerms rejects instead of reading as no side letters', async () => {
+    const m = memoryAdmin({ ...vehicles, partner_allocation_terms: [{ fund_id: 'f', vehicle_id: 'v1', lp_entity_id: 'a', category: 'management_fee', participates: false }] })
+    m.failNext('partner_allocation_terms', 'select', 'boom')
+    await expect(loadPartnerTerms(m.admin, 'f', 'Fund I')).rejects.toThrow(/boom/)
+    expect(await loadPartnerTerms(m.admin, 'f', 'Fund I')).toHaveLength(1)
+  })
+
+  it('loadPartnerTerms still returns [] when there are no terms', async () => {
+    expect(await loadPartnerTerms(memoryAdmin(vehicles).admin, 'f', 'Fund I')).toEqual([])
   })
 })

@@ -212,15 +212,23 @@ export async function previewClose(
     return { error: 'This period overlaps an already-closed period — reopen it first' }
   }
 
-  const [{ accounts, capitalPostings, sourcedPostings }, owners, names, basis, terms, commitmentEvents, kind] = await Promise.all([
-    loadPostedLedger(admin, fundId, group),
-    loadOwnership(admin, fundId, group),
-    loadEntityNames(admin, fundId, group),
-    loadAllocationBasis(admin, fundId, group),
-    loadPartnerTerms(admin, fundId, group),
-    loadCommitmentEvents(admin, fundId, group),
-    vehicleKindByName(admin, fundId, group),
-  ])
+  // A failed settings read refuses the preview: allocating on a defaulted basis or without the
+  // side letters would still balance, so nothing downstream would notice.
+  let loaded
+  try {
+    loaded = await Promise.all([
+      loadPostedLedger(admin, fundId, group),
+      loadOwnership(admin, fundId, group),
+      loadEntityNames(admin, fundId, group),
+      loadAllocationBasis(admin, fundId, group),
+      loadPartnerTerms(admin, fundId, group),
+      loadCommitmentEvents(admin, fundId, group),
+      vehicleKindByName(admin, fundId, group),
+    ])
+  } catch (error) {
+    return { error: `Could not read the books and allocation settings, so nothing was allocated: ${(error as any)?.message ?? String(error)}` }
+  }
+  const [{ accounts, capitalPostings, sourcedPostings }, owners, names, basis, terms, commitmentEvents, kind] = loaded
 
   const warnings: string[] = []
 
@@ -1522,7 +1530,7 @@ async function accrueNoteInterest(
  *
  * The GP partner is excluded from the LP economics — it is receiving the carry, not paying it.
  */
-async function accrueCarry(
+export async function accrueCarry(
   admin: SupabaseClient,
   fundId: string,
   group: string,
@@ -1530,7 +1538,12 @@ async function accrueCarry(
   periodEnd: string,
   sourceRef: string
 ): Promise<{ entryId?: string } | { error: string }> {
-  const terms = await loadCarryTerms(admin, fundId, group)
+  let terms
+  try {
+    terms = await loadCarryTerms(admin, fundId, group)
+  } catch (error) {
+    return { error: `Could not read the carry terms: ${(error as any)?.message ?? String(error)}` }
+  }
   if (terms.kind === 'none' || terms.carryRate <= 0) return {}
   if (terms.recipients.length === 0) {
     return { error: `${group} has carry terms but no recipient set to receive the carry.` }
@@ -1657,12 +1670,19 @@ async function accrueAssociateEconomics(
   const unrealizedInFundId = codes.get('1550') ?? investmentId
   const carryReceivableId = codes.get('1600') ?? investmentId
 
-  const [served, own, ownership, terms] = await Promise.all([
-    loadCapitalPostings(admin, fundId, link.servesVehicle, periodEnd),
-    loadCapitalPostings(admin, fundId, group, periodEnd),
-    loadOwnershipBasis(admin, fundId, link, periodEnd),
-    loadPartnerTerms(admin, fundId, group),
-  ])
+  let loaded
+  try {
+    loaded = await Promise.all([
+      loadCapitalPostings(admin, fundId, link.servesVehicle, periodEnd),
+      loadCapitalPostings(admin, fundId, group, periodEnd),
+      loadOwnershipBasis(admin, fundId, link, periodEnd),
+      loadPartnerTerms(admin, fundId, group),
+    ])
+  } catch (error) {
+    // Without the carry points the markup would split carry by ownership instead.
+    return { error: `Could not read the associate's books and carry points: ${(error as any)?.message ?? String(error)}` }
+  }
+  const [served, own, ownership, terms] = loaded
 
   // Target: the associate's fund-book position, split among members (capital by ownership, carry
   // by points). Booked: what its own books already carry for each line.

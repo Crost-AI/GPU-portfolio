@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { carryTarget, carryAccrual, preferredTarget, NO_CARRY, type VehicleCarryTerms } from './carry'
+import { carryTarget, carryAccrual, preferredTarget, loadCarryTerms, NO_CARRY, type VehicleCarryTerms } from './carry'
+import { memoryAdmin } from '@/tests/helpers/memory-admin'
 
 const straight = (rate = 0.2): VehicleCarryTerms => ({
   ...NO_CARRY, kind: 'straight', carryRate: rate,
@@ -187,5 +188,24 @@ describe('carryAccrual', () => {
     const a = carryAccrual({ lps: [lp('a', 1_000_000, 3_000_000)] }, straight(0.2), 400_000)
     expect(a.delta).toBe(0)
     expect(a.perLp.size).toBe(0)
+  })
+})
+
+describe('loadCarryTerms', () => {
+  const vehicles = { fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'Fund I' }] }
+
+  it('rejects on a failed read instead of reading as no carry', async () => {
+    // NO_CARRY on a failed read closed the period with no accrual — and the books still balanced.
+    const m = memoryAdmin({
+      ...vehicles,
+      vehicle_waterfall_terms: [{ fund_id: 'f', vehicle_id: 'v1', kind: 'straight', carry_rate: 0.2, gp_entity_id: 'gp' }],
+    })
+    m.failNext('vehicle_waterfall_terms', 'select', 'boom')
+    await expect(loadCarryTerms(m.admin, 'f', 'Fund I')).rejects.toThrow(/boom/)
+    expect((await loadCarryTerms(m.admin, 'f', 'Fund I')).kind).toBe('straight')
+  })
+
+  it('is NO_CARRY when the vehicle has no terms row', async () => {
+    expect(await loadCarryTerms(memoryAdmin(vehicles).admin, 'f', 'Fund I')).toEqual(NO_CARRY)
   })
 })

@@ -174,7 +174,7 @@ export function carryTarget(input: CarryTargetInput, terms: VehicleCarryTerms): 
 }
 
 /** A vehicle's carry terms. Absent row = no carry, which is the only safe default:
- *  accruing carry nobody agreed to is worse than accruing none. */
+ *  accruing carry nobody agreed to is worse than accruing none. THROWS if the read fails. */
 export async function loadCarryTerms(
   admin: SupabaseClient,
   fundId: string,
@@ -183,12 +183,14 @@ export async function loadCarryTerms(
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return NO_CARRY
 
-  const { data } = await admin
+  const { data, error } = await admin
     .from('vehicle_waterfall_terms' as any)
     .select('kind, carry_rate, pref_rate, catchup_rate, pref_compounds, gp_entity_id, carry_recipients')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .maybeSingle()
+  // A failed read is not "no carry": closing on it would skip the accrual and still balance.
+  if (error) throw new Error(`vehicle_waterfall_terms read failed: ${error.message}`)
 
   if (!data) return NO_CARRY
   const d = data as any

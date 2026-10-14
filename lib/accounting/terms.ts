@@ -191,19 +191,21 @@ export function allocationWeights(
 // Loaders
 // ---------------------------------------------------------------------------
 
-/** The vehicle's allocation basis. Defaults to commitment when unset. */
+/** The vehicle's allocation basis. Defaults to commitment when unset; THROWS if the read fails. */
 export async function loadAllocationBasis(
   admin: SupabaseClient,
   fundId: string,
   group: string
 ): Promise<AllocationBasis> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
-  const { data } = await admin
+  const { data, error } = await admin
     .from('vehicle_accounting_settings' as any)
     .select('allocation_basis')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .maybeSingle()
+  // A failed read is not "unset": allocating on the default basis would still balance.
+  if (error) throw new Error(`vehicle_accounting_settings read failed: ${error.message}`)
   const basis = (data as any)?.allocation_basis
   return basis === 'capital_balance' ? 'capital_balance' : 'commitment'
 }
@@ -232,11 +234,13 @@ export async function loadPartnerTerms(
   idMap?: VehicleIdMap
 ): Promise<PartnerTerms[]> {
   const vehicleId = await vehicleIdByName(admin, fundId, group, idMap)
-  const { data } = await admin
+  const { data, error } = await admin
     .from('partner_allocation_terms' as any)
     .select('lp_entity_id, category, participates, weight_override, rate_override')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
+  // A failed read is not "no side letters": it would charge an exempt partner.
+  if (error) throw new Error(`partner_allocation_terms read failed: ${error.message}`)
   return ((data as any[]) ?? []).map(t => ({
     lpEntityId: t.lp_entity_id,
     category: t.category,
