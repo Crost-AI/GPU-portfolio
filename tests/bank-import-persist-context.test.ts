@@ -11,7 +11,7 @@ import { importBankTransactions } from '@/lib/accounting/bank-import'
 const LOOKUPS = ['fund_settings', 'fiscal_periods', 'fund_vehicles', 'chart_of_accounts'] as const
 
 // A fresh fund per run: fundCurrency caches by fund id, which would hide the fund_settings read.
-async function importDrafts(fund: string, n: number) {
+async function importDrafts(fund: string, n: number, prepare?: (m: ReturnType<typeof memoryAdmin>) => void) {
   const m = memoryAdmin({
     fund_settings: [{ fund_id: fund, currency: 'USD' }],
     fund_vehicles: [{ id: 'v', fund_id: fund, name: 'Fund I', aliases: [] }],
@@ -23,6 +23,7 @@ async function importDrafts(fund: string, n: number) {
     ],
     journal_entries: [], journal_postings: [], bank_transactions: [],
   })
+  prepare?.(m)
   const reads: Record<string, number> = {}
   const from = m.admin.from
   m.admin.from = (t: string) => {
@@ -53,5 +54,13 @@ describe('bank import and persistEntry lookups', () => {
     expect(m.tables.journal_entries.map((e: any) => [e.status, e.vehicle_id])).toEqual([['draft', 'v'], ['draft', 'v'], ['draft', 'v']])
     expect(m.tables.bank_transactions.map((b: any) => b.status)).toEqual(['drafted', 'drafted', 'drafted'])
     expect(m.tables.journal_postings).toHaveLength(6)
+  })
+
+  it('refuses the whole import when the closed periods cannot be read, rather than reading them as none', async () => {
+    const { res, m } = await importDrafts('f-periods', 3, m => m.failNext('fiscal_periods', 'select', 'connection reset'))
+
+    expect(res).toEqual({ error: 'The closed periods could not be read: connection reset' })
+    expect(m.tables.journal_entries).toEqual([])
+    expect(m.tables.bank_transactions).toEqual([])
   })
 })
