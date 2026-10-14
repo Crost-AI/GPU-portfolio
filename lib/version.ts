@@ -36,7 +36,9 @@ export async function checkForUpdate(
 
     const res = await fetch(
       'https://api.github.com/repos/tdavidson/portfolio/releases/latest',
-      { headers, next: { revalidate: 3600 } }
+      // Bounded: this runs on the admin layout's render path (getUpdateAvailable, cold cache). A
+      // timeout lands in the catch below as "no update".
+      { headers, next: { revalidate: 3600 }, signal: AbortSignal.timeout(1500) }
     )
     if (!res.ok) return null
 

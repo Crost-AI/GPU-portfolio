@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveVehicle, VehicleResolutionError } from './vehicle-resolver'
 import { listVehicles as resolveVehicleList } from './load'
 import { assertVehicleDomain, assertMancoVehicle, vehicleKindByName, type VehicleGate } from './vehicle-domain'
-import { hasAccess, type AccessContext } from '@/lib/access/effective'
+import { hasAccess, loadAccessContext, type AccessContext } from '@/lib/access/effective'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
 import { assertVehicleVisible, visibleVehicleNames } from './vehicle-visibility'
 
@@ -28,12 +28,28 @@ export async function resolveGroupOr400(
   gate: VehicleGate,
   requested?: string | null
 ): Promise<string | NextResponse> {
+  const r = await resolveGroupWithAccess(admin, gate, requested)
+  return r instanceof NextResponse ? r : r.group
+}
+
+/**
+ * `resolveGroupOr400`, also handing back the caller's AccessContext it checked against — for a
+ * route that needs more from it (receipts: whether the caller sees every entity). The context is
+ * loaded once, here, and is the same one every check below used: one `access_context` round trip
+ * per request rather than one per helper.
+ */
+export async function resolveGroupWithAccess(
+  admin: SupabaseClient,
+  gate: VehicleGate,
+  requested?: string | null
+): Promise<{ group: string; access: AccessContext } | NextResponse> {
+  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   let group: string
   // No entity named: the "sole vehicle" default counts only the entities this caller can see. A
   // member granted one fund of several gets that one — and one granted none is told so, rather than
   // shown a list of entities they cannot see.
   if (!requested) {
-    const visible = await visibleVehicleNames(admin, gate)
+    const visible = await visibleVehicleNames(admin, gate, access)
     if (visible !== null) {
       const funds = await resolveVehicleList(admin, gate.fundId)
       const mine = visible.filter(name => funds.includes(name))
@@ -51,12 +67,12 @@ export async function resolveGroupOr400(
   }
   // Independent reads, so they run together; the visibility answer still wins when both refuse.
   const [hidden, denied] = await Promise.all([
-    assertVehicleVisible(admin, gate, group),
-    assertVehicleDomain(admin, gate, group),
+    assertVehicleVisible(admin, gate, group, access),
+    assertVehicleDomain(admin, gate, group, access),
   ])
   if (hidden) return hidden
   if (denied) return denied
-  return group
+  return { group, access }
 }
 
 /**
