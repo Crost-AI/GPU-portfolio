@@ -97,6 +97,15 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   // Always a NEW letter, status draft, shared with no one (lib/lp-letters/draft-from-brief.ts). Editing,
   // completing and sharing a letter still stage.
   lp_draft_letter: () => true,
+  // The LP portal tools' previews and dry runs (lib/agent/lp-portal-tools.ts): they send and change
+  // nothing, and exist so the person sees the recipients and the email before saying yes. The send
+  // or commit itself stages. Admin-only like the rest of these tools: the handler checks the role.
+  lp_portal_invite: input => input.preview === true,
+  lp_portal_resend_invite: input => input.preview === true,
+  lp_authorized_user_add: input => input.preview === true,
+  lp_announce: input => input.preview === true,
+  lp_send_item: input => input.preview === true,
+  lp_portal_invite_bulk: input => input.commit !== true,
 }
 
 export function isDraftOnlyCall(tool: Pick<AgentTool, 'name'>, input: Record<string, unknown>): boolean {

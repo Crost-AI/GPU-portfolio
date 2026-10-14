@@ -60,11 +60,14 @@ describe('agent tool registry', () => {
     }
   })
 
-  it('LP writes are the register and letter tools, and issuing a call and publishing notices, which are always staged', () => {
+  it('LP writes are the register, letter, portal and proposed-call tools, and issuing a call and publishing notices, which are always staged', () => {
     const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
     expect(writable.map(t => t.name).sort()).toEqual([
-      'issue_capital_call', 'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_draft_letter', 'lp_record_commitment',
-      'lp_share_letter', 'lp_update_entity', 'lp_update_investor', 'lp_update_profile', 'lp_write_letter',
+      'issue_capital_call', 'lp_announce', 'lp_authorized_user_add', 'lp_authorized_user_remove',
+      'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_draft_letter',
+      'lp_portal_account_status', 'lp_portal_invite', 'lp_portal_invite_bulk', 'lp_portal_resend_invite', 'lp_portal_settings', 'lp_portal_unlink',
+      'lp_proposed_call_approve', 'lp_proposed_call_discard', 'lp_proposed_call_propose', 'lp_proposed_call_revise',
+      'lp_record_commitment', 'lp_send_item', 'lp_share_letter', 'lp_update_entity', 'lp_update_investor', 'lp_update_profile', 'lp_write_letter',
       'publish_call_notices',
     ])
     // What goes out to LPs is staged from any credential and approved in the app, gated like the

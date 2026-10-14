@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### LP onboarding and outreach from chat
+- **Invite every LP who is missing, in two calls.** `lp_portal_invite_bulk` (mode `missing`, the default) finds every LP investor in the fund, or in named vehicles, with a contact email on file (or one notice email across its entities) and no portal account, and previews who would be invited and the invite email. `commit: true` creates the accounts, links them and emails the invites. LPs with no usable address are listed so someone can add one. Mode `rows` takes the LP Portal page's bulk sheet.
+- **The rest of the LP Portal page.** `lp_portal_accounts`, `lp_portal_invite`, `lp_portal_account_status` (disable or re-enable), `lp_portal_resend_invite`, `lp_portal_unlink`, `lp_authorized_users`, `lp_authorized_user_add`, `lp_authorized_user_remove`, `lp_announce`, `lp_send_item` and `lp_send_item_recipients`, and `lp_portal_settings` (the LP portal and investor connector switches). All admin-only, as on the page: from a chat they are staged for an admin to approve; a member's key is refused.
+- **A preview before anything is emailed.** Every tool that emails has a preview that returns the exact To and Cc addresses and the rendered email and changes nothing, and tells the assistant to get an explicit yes first. A statement or letter as a rendered PDF attachment is still sent from the page.
+- **Proposed capital calls.** `lp_proposed_calls`, `lp_proposed_call_propose`, `lp_proposed_call_revise`, `lp_proposed_call_discard`, and `lp_proposed_call_approve` (admin-only), which issues the call; the notices then go through `preview_call_notices` and `publish_call_notices`.
+- The routes' logic moved to `lib/lps/portal-access.ts` and `lib/lps/outreach.ts`, which the routes and the tools share; the routes behave as before. `/api/lps/announce` no longer bundles headless Chromium, which it only imported for a helper.
+
 ### Keys from the environment, so a fund can be connected without opening Settings
 - **Every key can live in `.env`.** That covers `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `RESEND_API_KEY`, `POSTMARK_SERVER_TOKEN`, `MAILGUN_API_KEY`, `MAILGUN_WEBHOOK_SIGNING_KEY`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A key saved in Settings still wins; the environment fills in when Settings has none (`lib/credentials/env.ts`). Settings, the setup checklist, `/setup` and `setup_status` count a key from the environment as configured. When nobody has picked an AI provider, the first one with a key is used.
 - **`environment_status`** (admin) says which credentials are set, and whether each comes from Settings or the environment, with the variable name. It never returns a value.

@@ -24,7 +24,7 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 
 1. **Cleaning up after automation.** The review queue (`/api/review`, resolve) cannot be read or cleared, yet `submit_company_update` sends uncertain figures there. A misrouted email cannot be rerouted. Bank rows cannot be ignored, unposted or restored. A draft journal entry cannot be edited.
 2. **Bank matching.** There is no tool to link an inflow to an existing entry (`linkInflowToEntry`), book an outflow as a distribution, run auto-match, or resolve duplicates.
-3. **Capital and distributions.** A distribution can only be posted as journal lines: there is no register, carry entry, or waterfall preview. There are no tools for proposed calls or settlement review. Issuing a call is now possible (fund-wide pro-rata, this PR).
+3. **Capital and distributions.** A distribution can only be posted as journal lines: there is no register, carry entry, or waterfall preview. Proposed calls are covered (feat/lp-portal-tools); settlement review has no tool. Issuing a call is now possible (fund-wide pro-rata, this PR).
 4. **Intercompany and vendors.** `/api/manco/intercompany` and the vendor list have no tools, and `post_entry` cannot set a vendor. These underpin partnership-expense invoicing, which the receipts work picks up.
 5. **Tax season.** None of these have tools: the tax-year close, book-to-tax adjustments, generating K-1 packages, the received-K-1 chase list, and tax forms.
 6. **Company and metric upkeep.** There is no tool to edit a company (status, aliases, contact emails), create or delete a metric, or manage default metrics. The `record_investment` schema lacks several types and fields.
@@ -38,6 +38,11 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 - `discard_drafts`: the journal's bulk discard (`runBulkDraftAction` with `void`). Drafts only.
 - `close_period`: the description and schema now say what the handler does (close through a date, month by month). The old text promised a `periodStart`/`periodEnd` range lock.
 
+## Closed in feat/lp-portal-tools
+
+- LP onboarding and outreach, previously listed as deliberately web-only: `lp_portal_accounts`, `lp_portal_invite`, `lp_portal_invite_bulk` (including a `missing` mode that invites every LP with a contact email and no portal account, previewed first), `lp_portal_account_status`, `lp_portal_resend_invite`, `lp_portal_unlink`, `lp_authorized_users`, `lp_authorized_user_add`, `lp_authorized_user_remove`, `lp_announce`, `lp_send_item_recipients`, `lp_send_item` and `lp_portal_settings`. All admin-only (`ADMIN_ONLY_TOOLS`); every email has a preview that changes nothing.
+- Proposed capital calls: `lp_proposed_calls`, `lp_proposed_call_propose`, `lp_proposed_call_revise`, `lp_proposed_call_discard`, `lp_proposed_call_approve` (admin-only).
+
 ## Deliberately not on the headless surface
 
 Each of these is a choice, with its reason. Revisit one only if the reason no longer holds.
@@ -47,15 +52,10 @@ Each of these is a choice, with its reason. Revisit one only if the reason no lo
 | Area | Action | Reason |
 |---|---|---|
 | acct-capital-tax | Delete a wrongly-entered commitment event (both legs of a transfer) | deliberate-ish: admin-only and destructive; lp_correct_commitment covers most fixes. No explicit reason recorded. |
-| acct-capital-tax | Approve a proposed call (issues it + publishes notices) | deliberate: admin-only approval of money movement; should remain a human click in the app |
 | acct-capital-tax | Merge one investor into another | deliberate: tool error text says 'Merging investors is done on the Investors page' |
 | acct-capital-tax | Delete an investor | deliberate: admin-only and destructive |
-| acct-capital-tax | Send an announcement email to chosen LPs (preview + send) | deliberate: admin-only outbound email to LPs |
-| acct-capital-tax | Invite an LP to the portal / disable or re-enable / unlink / resend invite / bulk invite | deliberate: admin-only access grants to an external portal (security setting) and outbound email |
-| acct-capital-tax | View/grant/revoke LP authorized users (advisors) | deliberate: admin-only portal access grant (security) |
 | acct-capital-tax | Delete an LP entity | deliberate: admin-only and destructive |
 | acct-capital-tax | Sort a batch of uploaded onboarding docs and confirm filing | deliberate: browser-only file upload batch (signed upload to lp-documents) |
-| acct-capital-tax | Email an LP portal item (snapshot/letter/document) to selected LPs | deliberate: admin-only outbound email to LPs |
 | acct-core | Unpost a posted entry back to draft (reason required) | deliberate-ish: admin-only (lib/access/admin-only.ts); no staged/pending path either |
 | acct-core | Reverse a posted entry with a dated contra-entry (reason, admin-only) | deliberate: admin-only correction |
 | acct-core | Reopen closed period(s) (reason, admin-only) | deliberate: admin-only and dangerous |
@@ -79,7 +79,6 @@ Each of these is a choice, with its reason. Revisit one only if the reason no lo
 | settings-admin | Set Google Drive OAuth client id/secret | deliberate: credential |
 | settings-admin | Choose file storage provider | deliberate-ish: infra choice coupled to Drive OAuth connection, which is browser-only |
 | settings-admin | Set analytics IDs (Fathom, GA) and custom head script | deliberate: custom head script is arbitrary script injection into every page; agent must not set it. IDs are UI-only |
-| settings-admin | Turn LP portal on/off; turn investor connector (LP MCP) on/off | deliberate-ish: exposes data to LPs ('tell LPs something' class in admin-only.ts); no explicit rationale for omission |
 | settings-admin | Delete all fund data | deliberate: admin-only, irreversible, destructive |
 | settings-admin | Remove a team member | deliberate-ish: admin-only, removes access (not self, not other admins); no explicit rationale |
 | settings-admin | Generate/revoke public deal submission link | deliberate-ish: mints a bearer-style public URL (shown once); reasonable to keep in browser |
@@ -176,7 +175,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Preview a distribution split (waterfall or pro-rata) | `/api/accounting/distributions (POST action=preview)` | partial | run_waterfall (pure calc, terms passed in) | run_waterfall needs caller-supplied terms/state; does not read the vehicle's carry terms or capital like previewDistribution | preview_distribution tool calling previewDistribution | S easy-win |
 | Preview a pro-rata capital call split | `/api/accounting/capital-calls (POST action=preview)` | gap | - | proRataCall is used only by the in-app Analyst's staged issue_capital_call, which is not on the MCP/REST registry. Likely oversight. | Expose proRataCall as preview_capital_call read tool | S easy-win |
 | Preview book-to-tax adjustments for a year | `/api/accounting/tax-adjustments (GET)` | gap | - | No reason found | tax_adjustments tool (postTaxAdjustments preview:true) | S easy-win |
-| Propose / revise / discard a capital call proposal | `/api/accounting/proposed-calls (POST action=propose\|revise\|discard)` | gap | - | No reason found; proposals are non-binding drafts, a natural agent action | propose_capital_call tool(s) wrapping proposeCapitalCall/reviseProposedCall/discardProposedCall | S easy-win |
+| Propose / revise / discard a capital call proposal | `/api/accounting/proposed-calls (POST action=propose\|revise\|discard)` | covered | lp_proposed_call_propose; lp_proposed_call_revise; lp_proposed_call_discard | Closed in feat/lp-portal-tools | - | - |
 | Read LP inbox messages and replies | `/api/lps/messages (GET)` | gap | - | No reason found - likely oversight | lp_messages read tool | S easy-win |
 | Record a carry payment to a GP member | `/api/accounting/gp-economics (POST)` | gap | - | Admin-only; no tool | record_carry_payment tool (recordCarryPayment), staged | S easy-win |
 | Review a settlement: link wires to an obligation line, split remainder | `/api/accounting/settlements (POST)` | gap | reconcile; book_capital_call (adjacent) | No reason found - likely oversight | review_settlement tool calling the review_capital_settlement RPC | S easy-win |
@@ -190,7 +189,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View K-1 packages for a vehicle/year | `/api/accounting/k1-packages (GET)` | partial | schedule_k_pdf (resolves latest package) | No list of packages/versions/status/blockers; schedule_k_pdf only fetches one partner's PDF | k1_packages read tool | S easy-win |
 | View K-1s owed to us by fund holdings (chase list) | `/api/accounting/received-k1s (GET)` | gap | compliance_calendar / whats_due (dates only) | No reason found - likely oversight | received_k1s read tool (loadK1Dependencies) | S easy-win |
 | View LP onboarding checklist / facts / history | `/api/lps/onboarding (GET); /onboarding/facts (GET); /onboarding/history (GET)` | gap | - | No reason found | lp_onboarding_status read tool | S easy-win |
-| View LP portal accounts and invite status | `/api/lps/invites (GET)` | gap | - | No reason found for read; writes are credential-like | lp_portal_accounts read tool | S easy-win |
+| View LP portal accounts and invite status | `/api/lps/invites (GET)` | covered | lp_portal_accounts | Closed in feat/lp-portal-tools (admin-only, as the route) | - | - |
 | View LP portal activity log (logins, views, downloads) | `/api/lp-activity (GET)` | gap | - | No reason found; feature-gated admin view | lp_portal_activity read tool | S easy-win |
 | View allocation basis, partner terms and current commitments | `/api/accounting/allocation-terms (GET)` | partial | lp_commitments; capital_accounts | Commitments are readable; allocation basis and per-partner fee/carry terms (participates, weight/rate overrides) are not exposed by any tool. No reason found - likely oversight. | Add allocation_terms read tool wrapping loadResolvedCommitments + terms loader | S easy-win |
 | View capital settlements (payments matched to call/distribution lines) and reviews | `/api/accounting/settlements (GET)` | partial | query_lps(capital_call_lines) (funded/outstanding only) | No payment-link detail or review state | settlements read tool (loadSettlements + loadSettlementReviews) | S easy-win |
@@ -199,7 +198,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View intercompany charge register and balances | `/api/manco/intercompany (GET)` | gap | - | No reason found - likely oversight. Central to the owner's quarterly partnership-expense invoicing goal. | intercompany_charges read tool (listIntercompanyCharges + intercompanyBalances) | S easy-win |
 | View management company overview (cash, quarterly cycle, expense breakdown, intercompany balances) | `/api/manco/overview (GET)` | partial | financial_statements; query_ledger | Statements available per manco vehicle, but not the assembled overview (cycle, intercompany balances) | manco_overview read tool calling loadMancoOverview | S easy-win |
 | View partners' tax form (W-9/W-8) standing | `/api/accounting/tax-forms (GET)` | gap | - | No reason found | tax_forms read tool | S easy-win |
-| View proposed capital calls (list / one, re-checked) | `/api/accounting/proposed-calls (GET)` | gap | - | No reason found - likely oversight | proposed_calls read tool | S easy-win |
+| View proposed capital calls (list / one, re-checked) | `/api/accounting/proposed-calls (GET)` | covered | lp_proposed_calls | Closed in feat/lp-portal-tools | - | - |
 | View tax-year state (what a close is waiting on) | `/api/accounting/tax-year (GET)` | gap | - | No reason found | tax_year_status read tool (taxYearState) | S easy-win |
 | View/create/edit/delete letter templates (style guide) | `/api/lp-letters/templates (GET/POST); /templates/[id] (GET/PATCH/DELETE)` | gap | lp_draft_letter (uses template by id) | No reason found; templates can be chosen but not managed | lp_letter_templates list/save tools | S easy-win |
 | Batch export LP report cards as a ZIP of PDFs | `/api/lps/export/pdf (POST)` | partial | lp_report_card_pdf (one investor) | One investor per call; no batch zip | Loop lp_report_card_pdf or add zip report-link kind | S |
@@ -231,16 +230,16 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View/add/remove GP links (which entity is GP of a vehicle, as which partner) | `/api/accounting/vehicle-gp-links (GET/POST/DELETE)` | gap | - | No reason found; setup-type config. DELETE admin-only. | gp_links tool (list/add; remove staged) | S |
 | View/create/edit/delete legacy LP snapshots (reports) | `/api/lps/snapshots (GET/POST/PUT/DELETE)` | partial | lp_list_snapshots; lp_snapshot (read) | Reads covered; writes have no UI caller (legacy), DELETE admin-only | n/a for writes | - |
 | View/set live LP report card header and footer | `/api/lps/live-settings (GET/PUT)` | gap | - | UI-only cosmetic | Optional | S |
-| Approve a proposed call (issues it + publishes notices) | `/api/accounting/proposed-calls (POST action=approve)` | gap | approve_action (only for staged actions) | deliberate: admin-only approval of money movement; should remain a human click in the app | Keep in app (n/a by design) | - |
+| Approve a proposed call (issues it + publishes notices) | `/api/accounting/proposed-calls (POST action=approve)` | covered | lp_proposed_call_approve (admin-only); notices via preview_call_notices + publish_call_notices | Closed in feat/lp-portal-tools. The tool issues the call; publishing the notices renders PDFs (headless Chromium, which /api/mcp does not ship), so it is the existing staged publish_call_notices, confirmed in the app | - | - |
 | Delete a wrongly-entered commitment event (both legs of a transfer) | `/api/accounting/commitments (DELETE)` | gap | - | deliberate-ish: admin-only and destructive; lp_correct_commitment covers most fixes. No explicit reason recorded. | Optional lp_delete_commitment tool, always staged (admin approval) | S |
 | Delete an LP entity | `/api/lps/entities (DELETE)` | gap | - | deliberate: admin-only and destructive | Keep in app or staged | S |
 | Delete an investor | `/api/lps/investors (DELETE)` | gap | - | deliberate: admin-only and destructive | Keep in app or staged delete | S |
-| Email an LP portal item (snapshot/letter/document) to selected LPs | `/api/lps/send (GET recipients, POST send)` | gap | - | deliberate: admin-only outbound email to LPs | staged send_to_lps (preview recipients) | M |
-| Invite an LP to the portal / disable or re-enable / unlink / resend invite / bulk invite | `/api/lps/invites (POST/PATCH/DELETE); /invites/resend (POST); /invites/bulk (POST)` | gap | - | deliberate: admin-only access grants to an external portal (security setting) and outbound email | Keep in app; at most a staged invite | M |
+| Email an LP portal item (snapshot/letter/document) to selected LPs | `/api/lps/send (GET recipients, POST send)` | covered | lp_send_item_recipients; lp_send_item (admin-only, preview first) | Closed in feat/lp-portal-tools. A statement or letter as a rendered PDF attachment stays in the app (Chromium); links and uploaded-document attachments are covered | - | - |
+| Invite an LP to the portal / disable or re-enable / unlink / resend invite / bulk invite | `/api/lps/invites (POST/PATCH/DELETE); /invites/resend (POST); /invites/bulk (POST)` | covered | lp_portal_invite; lp_portal_account_status; lp_portal_unlink; lp_portal_resend_invite; lp_portal_invite_bulk (all admin-only; bulk also invites every LP missing an account) | Closed in feat/lp-portal-tools | - | - |
 | Merge one investor into another | `/api/lps/investors (PATCH)` | gap | - | deliberate: tool error text says 'Merging investors is done on the Investors page' | Keep in app, or staged lp_merge_investors | M |
-| Send an announcement email to chosen LPs (preview + send) | `/api/lps/announce (POST)` | gap | - | deliberate: admin-only outbound email to LPs | Optional staged announce_to_lps (preview returned for approval) | M |
+| Send an announcement email to chosen LPs (preview + send) | `/api/lps/announce (POST)` | covered | lp_announce (admin-only, preview first) | Closed in feat/lp-portal-tools | - | - |
 | Sort a batch of uploaded onboarding docs and confirm filing | `/api/lps/onboarding/sort (POST); /sort/confirm (POST)` | gap | - | deliberate: browser-only file upload batch (signed upload to lp-documents) | Possible with an LP-doc upload-url tool; low priority | L |
-| View/grant/revoke LP authorized users (advisors) | `/api/lps/authorized-users (GET/POST/DELETE)` | gap | - | deliberate: admin-only portal access grant (security) | Keep in app; read tool optional | S |
+| View/grant/revoke LP authorized users (advisors) | `/api/lps/authorized-users (GET/POST/DELETE)` | covered | lp_authorized_users; lp_authorized_user_add; lp_authorized_user_remove (admin-only) | Closed in feat/lp-portal-tools | - | - |
 
 ### Portfolio: companies, updates, metrics, emails, compliance
 
@@ -438,7 +437,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Set Google Drive OAuth client id/secret | `/api/settings (PATCH googleClientId, googleClientSecret)` | gap | - | deliberate: credential | Keep web-only | - |
 | Set analytics IDs (Fathom, GA) and custom head script | `/api/settings (PATCH analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript)` | gap | - | deliberate: custom head script is arbitrary script injection into every page; agent must not set it. IDs are UI-only | Keep web-only | - |
 | Set/replace AI provider API keys (Claude, OpenAI, OpenRouter) | `/api/settings (PATCH claudeApiKey, openaiApiKey, openrouterApiKey)` | gap | - | deliberate: credential/secret should not pass through a chat (setup-tools.ts WEB_ONLY ai_key note; setup_fund says never pass keys) | Keep web-only; bootstrap script is the headless path | - |
-| Turn LP portal on/off; turn investor connector (LP MCP) on/off | `/api/settings (PATCH lpPortalEnabled, lpAgentEnabled)` | gap | - | deliberate-ish: exposes data to LPs ('tell LPs something' class in admin-only.ts); no explicit rationale for omission | Admin-only staged tool if wanted; else keep web-only | S |
+| Turn LP portal on/off; turn investor connector (LP MCP) on/off | `/api/settings (PATCH lpPortalEnabled, lpAgentEnabled)` | covered | lp_portal_settings (admin-only) | Closed in feat/lp-portal-tools | - | - |
 | Upload a style-anchor memo | `/api/firm/style-anchors/upload-url (POST), /api/firm/style-anchors (POST)` | gap | - | deliberate-ish: file upload (signed URL) - but entity_document_upload_url shows a headless upload pattern exists | Mirror entity_document_upload_url + add_entity_document for style anchors | M |
 | Upload/remove fund logo | `/api/settings (PATCH fundLogo)` | gap | - | deliberate-ish: image payload (data:image URL up to 200KB) not a natural tool arg; UI cosmetic | Optional: accept a URL/upload-url flow; low priority | M |
 

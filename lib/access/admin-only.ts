@@ -104,6 +104,22 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_record_commitment: { label: 'add a commitment' },
   // As the letter's share route (ADMIN_ONLY_ROUTES above): what an LP sees in their portal.
   lp_share_letter: { label: 'share an LP letter' },
+  // The LP Portal page's actions (lib/agent/lp-portal-tools.ts). Every one is admin-only on the web:
+  // the invites, authorized-users and send routes check the role in their handler, announce is in
+  // ADMIN_ONLY_ROUTES above, and the portal switches are admin fields on /api/settings. They grant an
+  // outsider access to fund data or email LPs, so a member can only propose them, from chat.
+  lp_portal_invite: { label: 'invite an LP to the portal' },
+  lp_portal_invite_bulk: { label: 'invite LPs to the portal' },
+  lp_portal_account_status: { label: 'change an LP\'s portal access' },
+  lp_portal_resend_invite: { label: 'resend an LP portal invite' },
+  lp_portal_unlink: { label: 'remove an LP\'s portal link' },
+  lp_authorized_user_add: { label: 'grant an authorized user portal access' },
+  lp_authorized_user_remove: { label: 'revoke an authorized user' },
+  lp_announce: { label: 'announce to LPs' },
+  lp_send_item: { label: 'send to LPs' },
+  lp_portal_settings: { label: 'change the LP portal settings' },
+  // As the proposed-calls route's approve (ADMIN_ONLY_ROUTES above): it issues the call.
+  lp_proposed_call_approve: { label: 'approve a capital call notice' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */
