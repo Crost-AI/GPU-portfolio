@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeCompanyRows, scopeGroups } from '@/lib/access/scope'
 
@@ -65,17 +66,25 @@ export async function GET() {
     value_text: string | null
   }[] = []
 
-  if (allMetricIds.length > 0) {
-    const { data: valuesRaw, error: valError } = await admin
+  // Ids in chunks of 200, so the GET query string stays under the gateway's URL limit, and each
+  // chunk paged past PostgREST's 1,000-row cap — ordered oldest first, a capped read would drop the
+  // NEWEST quarters. id makes the order stable across pages; a metric's rows all sit in one chunk,
+  // so its order is the same as one read would give.
+  const valueChunks: string[][] = []
+  for (let i = 0; i < allMetricIds.length; i += 200) valueChunks.push(allMetricIds.slice(i, i + 200))
+  try {
+    const pages = await Promise.all(valueChunks.map(chunk => fetchAllRows<typeof allValues[number]>((from, to) => admin
       .from('metric_values')
       .select('metric_id, period_year, period_quarter, period_month, value_number, value_text')
-      .in('metric_id', allMetricIds)
+      .in('metric_id', chunk)
       .gte('period_year', 2025)
       .order('period_year', { ascending: true })
       .order('period_month', { ascending: true, nullsFirst: true })
-
-    if (valError) return dbError(valError, 'dashboard-table-data')
-    allValues = valuesRaw ?? []
+      .order('id', { ascending: true })
+      .range(from, to))))
+    allValues = pages.flat()
+  } catch (valError) {
+    return dbError(valError as { message: string }, 'dashboard-table-data')
   }
 
   // Index values by metric_id
