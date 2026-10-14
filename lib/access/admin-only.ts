@@ -45,6 +45,12 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
   { route: 'api/lps/snapshots', method: 'DELETE', label: 'delete an LP report' },
   { route: 'api/accounting/vehicle-gp-links', method: 'DELETE', label: 'remove a GP link' },
   { route: 'api/accounting/cutover', method: 'DELETE', label: 'undo a cutover' },
+  // Each handler also checks the role itself; listed here so the web, the API and MCP agree
+  // (diligence_delete_deal, remove_member and merge_vehicles in ADMIN_ONLY_TOOLS below).
+  { route: 'api/diligence/[id]', method: 'DELETE', label: 'delete a diligence deal' },
+  { route: 'api/settings/members/[id]', method: 'DELETE', label: 'remove a team member' },
+  // PATCH multiplexes: only a body with `mergeIntoId` is a merge; a rename or a logo is not.
+  { route: 'api/vehicles', method: 'PATCH', when: body => !!body?.mergeIntoId, label: 'merge entities' },
 
   // ── Undo the books ─────────────────────────────────────────────────────────
   { route: 'api/accounting/journal', method: 'PATCH', when: action('unpost', 'reverse'), label: 'unpost or reverse a posted entry' },
@@ -106,8 +112,7 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_share_letter: { label: 'share an LP letter' },
   // The destructive tools (lib/agent/destructive-tools-manifest.ts): offered only with
   // AGENT_DESTRUCTIVE_ACTIONS=true and always staged, so this is who may APPROVE them. The same
-  // operations as the routes above; merging vehicles, deleting a deal room and removing a member
-  // are admin-only in their own routes' handlers.
+  // operations, with the same labels, as the routes above.
   delete_company: { label: 'delete a company' },
   lp_delete_investor: { label: 'delete an LP investor' },
   lp_delete_entity: { label: 'delete an LP entity' },

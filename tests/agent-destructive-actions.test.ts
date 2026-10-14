@@ -281,6 +281,20 @@ describe('with AGENT_DESTRUCTIVE_ACTIONS=true', () => {
     expect(store.tables.lp_entities[0].investor_id).toBe('inv-1')
   })
 
+  it('refuses to stage voiding a draft, alone or as a run step, and points to discard_drafts', async () => {
+    store.tables.journal_entries = [{ id: 'je-draft', fund_id: 'fund-1', vehicle_id: 'v1', book: 'actual', status: 'draft', entry_date: '2026-03-31' }]
+    const alone = await callTool('void_entry', { entry_id: 'je-draft', reason: 'Duplicate' })
+    expect(alone.isError).toBe(true)
+    expect(alone.text).toMatch(/discard_drafts/)
+    const run = await callTool('stage_run', {
+      title: 'Clear duplicates', rationale: 'Imported twice.', steps: [{ tool: 'void_entry', input: { entry_id: 'je-draft', reason: 'Duplicate' } }],
+    })
+    expect(run.isError).toBe(true)
+    expect(run.text).toMatch(/discard_drafts/)
+    expect(store.tables.pending_actions).toHaveLength(0)
+    expect(store.tables.journal_entries[0].status).toBe('draft')
+  })
+
   it('applies the route\'s own refusal on approval: an entity with ledger activity is not deleted', async () => {
     const out = await callTool('lp_delete_entity', { lp: 'Acme FO LP' })
     expect(out.json.summary).toMatch(/so the delete will be refused/)

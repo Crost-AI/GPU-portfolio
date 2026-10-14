@@ -205,6 +205,21 @@ describe('the journal and period tools', () => {
     expect(changeEntryState.mock.calls[2][4]).toMatchObject({ action: 'void' })
   })
 
+  it('void_entry refuses a draft, in the handler and the preview, and points to discard_drafts', async () => {
+    store.tables.journal_entries.push(
+      { id: 'je-draft', fund_id: 'fund-1', vehicle_id: 'v1', book: 'actual', status: 'draft', entry_date: '2026-03-31', memo: 'Dup' },
+      { id: 'je-posted', fund_id: 'fund-1', vehicle_id: 'v1', book: 'actual', status: 'posted', entry_date: '2026-03-31', memo: 'Fee', source_ref: null },
+    )
+    await expect(run('void_entry', { entry_id: 'je-draft', reason: 'dup' }, 'Fund I')).rejects.toThrow(/discard_drafts/)
+    await expect(preview('void_entry', { vehicle: 'Fund I', entry_id: 'je-draft', reason: 'dup' })).rejects.toThrow(/discard_drafts/)
+    expect(changeEntryState).not.toHaveBeenCalled()
+
+    // A posted entry goes through; unpost and reverse are unaffected.
+    expect((await preview('void_entry', { vehicle: 'Fund I', entry_id: 'je-posted', reason: 'dup' })).summary).toMatch(/^Void journal entry 2026-03-31 "Fee" \(posted/)
+    await run('void_entry', { entry_id: 'je-posted', reason: 'dup' }, 'Fund I')
+    expect(changeEntryState).toHaveBeenCalledTimes(1)
+  })
+
   it('turn a refusal into an error the assistant reads', async () => {
     changeEntryState.mockResolvedValueOnce({ status: 400, body: { error: 'That entry is in a closed period — reopen it first.' } })
     await expect(run('void_entry', { entry_id: 'je1', reason: 'dup' }, 'Fund I')).rejects.toThrow('That entry is in a closed period')

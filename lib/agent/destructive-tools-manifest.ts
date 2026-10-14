@@ -67,7 +67,7 @@ export const DESTRUCTIVE_LEDGER_TOOL_MANIFEST: AgentToolMeta[] = [
       'Void a posted journal entry: it stays in the journal marked void and stops counting in every balance, and a bank row pointing ' +
       'at it is set to ignored. A reason is required. Refused in a closed period (use reverse_entry there). The investment ' +
       'transactions the entry recorded are deleted, and a void entry cannot be posted again: that cannot be undone. ' +
-      'To discard drafts, use discard_drafts instead.' + STAGED,
+      'A draft is refused, alone or in a run: discard drafts with discard_drafts, which needs no admin.' + STAGED,
     scope: 'write',
     destructive: true,
     inputSchema: {

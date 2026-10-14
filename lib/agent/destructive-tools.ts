@@ -96,10 +96,26 @@ const vehicleOf = (input: any, access: AccessContext, admin: SupabaseClient, fun
 
 // ── Journal state changes ───────────────────────────────────────────────────────────────────
 
+/**
+ * void_entry is for POSTED entries. The shared journal route also discards a draft by voiding it,
+ * but from chat that is discard_drafts' job, which needs no admin; refused here (and in the
+ * preview, so staging one, alone or as a run step, fails at once) rather than in the shared lib.
+ */
+export const VOID_DRAFT_REFUSAL =
+  'That entry is a draft, and void_entry is for posted entries. Discard drafts with discard_drafts (pass its id in ids), ' +
+  'which needs no admin approval.'
+
+async function refuseDraftVoid(admin: SupabaseClient, fundId: string, vehicleId: string | null, entryId: string): Promise<void> {
+  const { data } = await (admin as any).from('journal_entries').select('status')
+    .eq('book', ACTUAL_BOOK).eq('id', entryId).eq('fund_id', fundId).eq('vehicle_id', vehicleId).maybeSingle()
+  if (data?.status === 'draft') throw new Error(VOID_DRAFT_REFUSAL)
+}
+
 function entryStateHandler(action: 'unpost' | 'void' | 'reverse'): AgentToolHandler {
   return async (ctx: AgentToolContext, input: any) => {
     const userId = requireUser(ctx.userId)
     const vehicleId = await vehicleIdByName(ctx.admin, ctx.fundId, ctx.portfolioGroup)
+    if (action === 'void') await refuseDraftVoid(ctx.admin, ctx.fundId, vehicleId, text(input?.entry_id, 'entry_id'))
     const out = await changeEntryState(ctx.admin, {
       fundId: ctx.fundId, role: ctx.access.role, userId,
       mayTouchInvestments: async () => mayTouchInvestments(ctx.access),
@@ -219,6 +235,7 @@ function entryPreview(verb: string): Previewer {
       .select('id, status, entry_date, memo, reference, source_ref, reversed_by')
       .eq('book', ACTUAL_BOOK).eq('id', id).eq('fund_id', deps.fundId).eq('vehicle_id', vehicleId).maybeSingle()
     if (!entry) throw new Error(`No journal entry ${id} on ${vehicle}.`)
+    if (verb === 'Void' && entry.status === 'draft') throw new Error(VOID_DRAFT_REFUSAL)
     const { data: postings } = await (deps.admin as any).from('journal_postings').select('amount').eq('book', ACTUAL_BOOK).eq('journal_entry_id', id)
     const debits = ((postings as any[]) ?? []).reduce((s, p) => s + Math.max(0, Number(p.amount)), 0)
     const plan = await planRelease(deps.admin, deps.fundId, entry)
