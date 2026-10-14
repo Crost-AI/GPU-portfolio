@@ -4,14 +4,13 @@ import { createAdminClient } from '@/lib/supabase/admin'
 // accounting domain (lib/access/route-domains.ts). The middleware has already checked the caller's
 // grant for this route + method; these resolve identity and keep the demo out of writes.
 import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupOr400, resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { scanFileAsync } from '@/lib/security/scan-file'
 import {
   listReceipts, storeReceipt, extractReceipt, matchCandidates, receiptsForEntry, attachReceipt,
   MAX_RECEIPT_BYTES,
 } from '@/lib/accounting/receipts'
-import { seesEveryEntity } from '@/lib/accounting/receipt-access'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 
 const ALLOWED = /^(application\/pdf|image\/(png|jpe?g|heic|heif|webp|gif))$/i
@@ -30,8 +29,9 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
-  const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
-  if (group instanceof NextResponse) return group
+  const resolved = await resolveGroupWithAccess(admin, gate, req.nextUrl.searchParams.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
   if (!vehicleId) return NextResponse.json({ error: `Unknown vehicle "${group}".` }, { status: 400 })
 
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
 
   const statusParam = req.nextUrl.searchParams.get('status')
   const status = (['unmatched', 'matched', 'dismissed', 'all'] as const).find(s => s === statusParam)
-  const includeUnassigned = await seesEveryEntity(admin, gate)
+  const includeUnassigned = access.vehicles.all
   const receipts = await listReceipts(admin, gate.fundId, { vehicleId, includeUnassigned, status })
 
   // Suggestions only where they can help: unmatched, filed here, with an amount to match on.
