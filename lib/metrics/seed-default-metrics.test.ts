@@ -6,6 +6,7 @@ import { seedCompanyFromDefaults, applyDefaultsToAllCompanies } from './seed-def
  *   .from('default_metrics').select(..).eq(..).eq(..).order(..)                  → templates
  *   .from('metrics').select(..).in('company_id', ids).order('id').range(f, t)    → existing slugs (paged)
  *   .from('metrics').insert(rows)                                                → capture rows
+ *   .from('metrics').upsert(rows, { ignoreDuplicates }).select('id')             → capture new rows, skip dup (company_id, slug)
  *   .from('default_metric_exclusions').select(..).in('company_id', ids)...       → excluded default ids
  *   .from('companies').select('id').eq('fund_id', ..)                            → company ids
  * Every read is recorded in `reads` so tests can assert how many round trips were made.
@@ -42,6 +43,16 @@ function makeClient(opts: {
         if (err) return Promise.resolve({ data: null, error: { message: err } })
         inserted.push(...rows)
         return Promise.resolve({ data: rows, error: null })
+      },
+      upsert(rows: any[], o: { onConflict?: string; ignoreDuplicates?: boolean }) {
+        const err = opts.failInsert?.(rows, insertCalls++) ?? null
+        const taken = (r: any) => (opts.existingByCompany[r.company_id] ?? []).includes(r.slug)
+          || inserted.some(x => x.company_id === r.company_id && x.slug === r.slug)
+        const ignore = o.onConflict === 'company_id,slug' && o.ignoreDuplicates
+        const fresh = ignore ? rows.filter(r => !taken(r)) : rows
+        const dup = !ignore && rows.some(taken) ? 'duplicate key value violates unique constraint' : null
+        const fail = err ?? dup
+        return { select: () => Promise.resolve(fail ? { data: null, error: { message: fail } } : (inserted.push(...fresh), { data: fresh, error: null })) }
       },
       then(resolve: (v: any) => void) {
         const page = (rows: any[]) => state.range ? rows.slice(state.range[0], state.range[1] + 1) : rows
@@ -251,5 +262,28 @@ describe('a failed template read', () => {
 
     expect(res).toEqual({ inserted: 0, companies: 0, errors: ['Reading the companies failed; no defaults were applied'] })
     expect(inserted).toHaveLength(0)
+  })
+})
+
+describe('a concurrent apply', () => {
+  it('skips a slug another request seeded first instead of failing the whole chunk', async () => {
+    const existing: Record<string, string[]> = { 'co-1': [] }
+    const { client, inserted } = makeClient({
+      templates: [T('cash'), T('arr')], existingByCompany: existing, companies: ['co-1', 'co-2'],
+    })
+    // Between our read and our write, a double-click seeds co-1's cash.
+    const from = client.from
+    client.from = (t: string) => {
+      const q = from(t)
+      const upsert = q.upsert
+      q.upsert = (rows: any[], o: any) => { existing['co-1'] = ['cash']; return upsert(rows, o) }
+      return q
+    }
+
+    const res = await applyDefaultsToAllCompanies(client, 'fund-1', null)
+
+    expect(res.errors).toEqual([])
+    expect(res.inserted).toBe(3) // only the rows actually written
+    expect(inserted.filter(r => r.company_id === 'co-1').map(r => r.slug)).toEqual(['arr'])
   })
 })

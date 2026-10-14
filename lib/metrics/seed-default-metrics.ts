@@ -214,7 +214,12 @@ export async function applyDefaultsToAllCompanies(
   let inserted = 0
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
     const chunk = rows.slice(i, i + INSERT_CHUNK)
-    const { error } = await admin.from('metrics').insert(chunk)
+    // ignoreDuplicates (ON CONFLICT DO NOTHING) on the table's unique(company_id, slug): a concurrent
+    // apply or a double-click that seeded the same slug first costs that one row, not the chunk.
+    // Only the rows actually written come back, so they are what gets counted.
+    const { data, error } = await admin.from('metrics')
+      .upsert(chunk, { onConflict: 'company_id,slug', ignoreDuplicates: true })
+      .select('id')
     if (error) {
       const companyIds = Array.from(new Set(chunk.map(r => r.company_id)))
       const msg = `Inserting ${chunk.length} metrics for ${companyIds.length} companies (${describeCompanies(companyIds)}) failed`
@@ -222,7 +227,7 @@ export async function applyDefaultsToAllCompanies(
       errors.push(msg)
       continue
     }
-    inserted += chunk.length
+    inserted += (data ?? []).length
   }
   return { inserted, companies: ids.length, errors }
 }
