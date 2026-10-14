@@ -16,6 +16,7 @@ const rateLimit = vi.fn(async (_config: { key: string; limit: number; windowSeco
 const runPipeline = vi.fn(async () => {})
 let filters: { table: string; op: string; column: string; value: unknown }[] = []
 let storedAddress = 'Fund-ABC@Inbound.Test'
+let otherFunds: { fund_id: string; address: string }[] = []
 let clientIp = '203.0.113.9'
 let inserts = 0
 
@@ -28,28 +29,32 @@ vi.mock('@/lib/pipeline/checkFundMember', () => ({ checkFundMember: async () => 
 vi.mock('@/lib/pipeline/isAuthorizedSender', () => ({ isAuthorizedSender: async () => true }))
 vi.mock('@/lib/security/scan-file', () => ({ scanFileAsync: async () => ({ safe: true }) }))
 
-// LIKE semantics for the one ilike the route issues: `\` escapes, `%`/`_` are wildcards, and
-// PostgREST reads `*` as `%`.
-const likeToRegExp = (pattern: string) => new RegExp(`^${pattern.replace(/\\(.)|([%_])|([^\\%_]+)/g,
-  (_m, escaped, wild, literal) => escaped ? escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    : wild ? (wild === '%' ? '.*' : '.')
-    : literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))}$`, 'i')
+// LIKE semantics for the one ilike the route issues, as PostgREST applies it per the review: the
+// route's `\` escapes are dropped, so `%`/`_` stay wildcards, and `*` reads as `%`.
+const likeToRegExp = (pattern: string) => new RegExp(`^${pattern.replace(/\\/g, '').replace(/\*/g, '%').replace(/([%_])|([^%_]+)/g,
+  (_m, wild, literal) => wild ? (wild === '%' ? '.*' : '.') : literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))}$`, 'i')
+
+const settingsRow = (fund_id: string, address: string, token: string) =>
+  ({ fund_id, postmark_inbound_address: address, postmark_webhook_token: token, postmark_webhook_token_encrypted: null, encryption_key_encrypted: null })
 
 function chain(table: string) {
   let rows: Record<string, unknown>[] = table === 'fund_settings'
-    ? [{ fund_id: 'fund-1', postmark_inbound_address: storedAddress, postmark_webhook_token: 'tok', postmark_webhook_token_encrypted: null, encryption_key_encrypted: null }]
+    ? [...otherFunds.map(f => settingsRow(f.fund_id, f.address, `tok-${f.fund_id}`)), settingsRow('fund-1', storedAddress, 'tok')]
     : []
   const q: any = {
     select: () => q,
     insert: () => { inserts++; rows = [{ id: 'email-1' }]; return q },
     update: () => q,
+    limit: () => q,
     eq: (column: string, value: unknown) => { filters.push({ table, op: 'eq', column, value }); return q },
     ilike: (column: string, value: string) => {
       filters.push({ table, op: 'ilike', column, value })
-      rows = rows.filter(r => likeToRegExp(value.replace(/\*/g, '%')).test(String(r[column] ?? '')))
+      rows = rows.filter(r => likeToRegExp(value).test(String(r[column] ?? '')))
       return q
     },
-    maybeSingle: async () => ({ data: rows[0] ?? null, error: null }),
+    maybeSingle: async () => rows.length > 1
+      ? { data: null, error: { message: 'JSON object requested, multiple (or no) rows returned' } }
+      : { data: rows[0] ?? null, error: null },
     single: async () => ({ data: rows[0] ?? null, error: null }),
     then: (ok: (v: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(ok),
   }
@@ -73,6 +78,7 @@ beforeEach(() => {
   runPipeline.mockClear()
   filters = []
   storedAddress = 'Fund-ABC@Inbound.Test'
+  otherFunds = []
   clientIp = '203.0.113.9'
   inserts = 0
 })
@@ -162,7 +168,7 @@ describe('resolving the fund from the inbound address', () => {
     expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-1')
   })
 
-  it("escapes LIKE metacharacters, so an address can't match another fund's", async () => {
+  it("doesn't let an address act as a pattern on another fund's", async () => {
     storedAddress = 'fund_a@inbound.test'
     await post(email({ OriginalRecipient: 'fund%@inbound.test' }))
     expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund\\%@inbound.test' })
@@ -172,6 +178,24 @@ describe('resolving the fund from the inbound address', () => {
     await post(email({ OriginalRecipient: 'fund_a@inbound.test' }))
     expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund\\_a@inbound.test' })
     expect(runPipeline).toHaveBeenCalledTimes(1)
+  })
+
+  it('picks the exact address when the pattern matches several funds', async () => {
+    // `_` stays a wildcard once PostgREST drops the escape: both rows come back, the other first.
+    // maybeSingle would have errored on the second row and dropped the message.
+    storedAddress = 'fund_a@inbound.test'
+    otherFunds = [{ fund_id: 'fund-2', address: 'fundxa@inbound.test' }]
+    const res = await post(email({ OriginalRecipient: 'FUND_A@inbound.test' }))
+    expect(res.status).toBe(200)
+    expect(runPipeline).toHaveBeenCalledTimes(1)
+    expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-1')
+  })
+
+  it('routes nowhere, without failing, when a wildcard matches several funds and none exactly', async () => {
+    otherFunds = [{ fund_id: 'fund-2', address: 'b@inbound.test' }, { fund_id: 'fund-3', address: 'c@inbound.test' }]
+    const res = await post(email({ OriginalRecipient: '%@inbound.test' }))
+    expect(res.status).toBe(200)
+    expect(runPipeline).not.toHaveBeenCalled()
   })
 
   it("does not route on PostgREST's `*` wildcard", async () => {

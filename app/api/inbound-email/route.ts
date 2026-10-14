@@ -251,15 +251,19 @@ async function resolveFund(
   if (!toAddress) return null
 
   // Case-insensitive: mail addresses are, and a sender's client may have changed the case of the
-  // inbox. ilike with LIKE's metacharacters escaped, then an exact comparison, so the address can
-  // never act as a pattern (PostgREST also reads `*` as `%`).
-  const { data: fundSettings } = await supabase
+  // inbox. ilike finds the candidates, but the pattern is not trusted to be literal — PostgREST may
+  // drop the escapes, and reads `*` as `%` — so it is a bounded list, never maybeSingle (which
+  // errors on a second row and would drop the message), and the fund is the row whose address
+  // equals the recipient exactly, ignoring case.
+  const { data: candidates } = await supabase
     .from('fund_settings')
     .select('fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
     .ilike('postmark_inbound_address', toAddress.replace(/[\\%_]/g, '\\$&'))
-    .maybeSingle()
+    .limit(5)
+  const recipient = toAddress.toLowerCase()
+  const fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient)
 
-  if (fundSettings && fundSettings.postmark_inbound_address?.toLowerCase() === toAddress.toLowerCase()) {
+  if (fundSettings) {
     // Prefer encrypted token; fall back to plaintext for legacy
     let expectedToken = fundSettings.postmark_webhook_token ?? ''
     if (fundSettings.postmark_webhook_token_encrypted && fundSettings.encryption_key_encrypted) {
