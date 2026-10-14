@@ -14,7 +14,7 @@ import {
   type TrialBalance, type BalanceSheet, type IncomeStatement,
   type ScheduleOfInvestments, type ChangesInPartnersCapital, type StatementOfCashFlows,
 } from './statements'
-import { loadPostedLedger, loadEntityNames, type SourcedPosting } from './load'
+import { loadPostedLedger, loadEntityNames, fetchAllRows, type SourcedPosting } from './load'
 import { buildSoiPositions, withFundHoldingFigures, withChainBalances, type SoiCompany } from './soi'
 import { holdersAsOf, walletsForEntity } from '@/lib/portfolio/holding-entities'
 import { walletFromRow, balanceFromRow, type Wallet, type WalletBalance } from '@/lib/portfolio/wallets'
@@ -136,17 +136,19 @@ export async function loadLedgerData(
 ): Promise<LedgerData> {
   const [
     { accounts, postings, capitalPostings, sourcedPostings }, names,
-    { data: txns }, { data: companies }, fofRaw,
+    txns, companies, fofRaw,
     { data: feedRows, error: feedsError }, kind,
     { data: walletRows, error: walletsError },
   ] = await Promise.all([
     loadPostedLedger(admin, fundId, group, undefined, undefined, undefined, booksForBasis(opts.basis ?? 'book')),
     loadEntityNames(admin, fundId, group),
-    admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }),
+    // Paged: oldest first, so past the 1000-row cap the NEWEST investments and proceeds fell off
+    // the schedule of investments with no error.
+    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).range(f, t)),
     // Every holding, fund and company alike: both carry 1100/1200 balances, so the SOI's
     // ledger control total only ties if both are present. The SOI splits them for DISPLAY by
     // holding_type — see SoiPosition.holdingType — rather than by excluding either here.
-    admin.from('companies' as any).select('*').eq('fund_id', fundId),
+    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).range(f, t)),
     loadFofRaw(admin, fundId, group),
     (admin as any).from('price_feeds').select('*').eq('fund_id', fundId),
     vehicleKindByName(admin, fundId, group),
@@ -213,8 +215,8 @@ export async function loadLedgerData(
     fofRaw,
     feeds, observations, levelWarning,
     walletRows: walletRowsKept, balances, chainWarning,
-    txns: (txns as any[]) ?? [],
-    companies: (companies as any[]) ?? [],
+    txns,
+    companies,
     group,
     cashAccount: accounts.find(a => a.code === '1000'),
     gpAccount: accounts.find(a => a.code === '3000'),
