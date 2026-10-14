@@ -148,6 +148,7 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   unpost_entry: { label: 'unpost or reverse a posted entry' },
   reverse_entry: { label: 'unpost or reverse a posted entry' },
   void_entry: { label: HANDLER_CHECKED.voidPostedEntry },
+  // Not a destructive tool (always offered), but admin-only like the Periods page's Reopen.
   reopen_period: { label: 'reopen a closed period' },
 
   // As api/lps/documents and its upload-url, which only an admin may call: recording an LP document

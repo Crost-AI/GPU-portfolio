@@ -145,7 +145,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | LP closings: list/add/rename/redate/set members/delete | `closings(GET/POST/PATCH/DELETE)` | gap | add_partner (no closing) | deliberate: add_partner comment 'admission to a closing stays a decision for the UI'; POST/DELETE admin-only | staged closing actions if wanted | M |
 | LP positions: delete a dated set | `positions(DELETE)` | covered | delete_lp_positions | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Preview / apply / revert LP-snapshot cutover to capital events (fund-wide) | `cutover(GET/POST/DELETE)` | gap | - | deliberate-ish: one-off fund-wide migration, admin-only (DELETE in admin-only list) | preview tool is a safe easy-win (previewCutover); apply via staged action | S/M |
-| Reopen closed period(s) (reason, admin-only) | `periods(POST action=reopen)` | covered | reopen_period | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
+| Reopen closed period(s) (reason, admin-only) | `periods(POST action=reopen)` | covered | reopen_period | Always offered; admin-only, so staged for an admin from chat | - | - |
 | Reverse a posted entry with a dated contra-entry (reason, admin-only) | `journal(PATCH action=reverse)` | covered | reverse_entry | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Unpost a posted entry back to draft (reason required) | `journal(PATCH action=unpost)` | covered | unpost_entry | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 
@@ -460,7 +460,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | acct-core | Unpost a posted entry back to draft (reason required) | unpost_entry (flag; staged for an admin) |
 | acct-core | Reverse a posted entry with a dated contra-entry (reason) | reverse_entry (flag; staged for an admin) |
 | acct-core | Void a posted entry (reason) | void_entry (flag; staged for an admin) |
-| acct-core | Reopen closed period(s) (reason) | reopen_period (flag; staged for an admin) |
+| acct-core | Reopen closed period(s) (reason) | reopen_period (staged for an admin from chat) |
 | acct-core | LP positions: delete a dated set | delete_lp_positions (flag; staged for an admin) |
 | deals-diligence | Delete a diligence deal (cascades docs, drafts, notes) | diligence_delete_deal (flag; staged for an admin) |
 | portfolio | Delete a company | delete_company (flag; staged for an admin) |

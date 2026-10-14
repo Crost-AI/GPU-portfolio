@@ -21,7 +21,6 @@ import { changeEntryState } from '@/lib/accounting/journal-state'
 import { mayTouchInvestments } from '@/lib/accounting/investment-access'
 import { planRelease } from '@/lib/accounting/ownership'
 import { deleteLpPositions } from '@/lib/accounting/positions-delete'
-import { reopenClosedPeriods } from '@/lib/accounting/reopen'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { deleteCompany } from '@/lib/companies/delete'
@@ -134,14 +133,6 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
   unpost_entry: entryStateHandler('unpost'),
   reverse_entry: entryStateHandler('reverse'),
   void_entry: entryStateHandler('void'),
-
-  reopen_period: async (ctx: AgentToolContext, input: any) => {
-    const userId = requireUser(ctx.userId)
-    const result = unwrap(await reopenClosedPeriods(ctx.admin, { fundId: ctx.fundId, userId }, ctx.portfolioGroup, {
-      id: input?.period_id, fromDate: input?.from_date, reason: input?.reason,
-    }))
-    return { vehicle: ctx.portfolioGroup, ...result }
-  },
 
   delete_lp_positions: async (ctx: AgentToolContext, input: any) => {
     const asOf = String(input?.as_of_date ?? '')
@@ -257,6 +248,8 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
   void_entry: entryPreview('Void'),
   reverse_entry: entryPreview('Reverse'),
 
+  // Not a destructive tool (it is always offered), but staged for an admin the same way, with the
+  // periods it would reopen in the preview.
   reopen_period: async (deps, input) => {
     const vehicle = String(input.vehicle ?? '')
     const vehicleId = await vehicleIdByName(deps.admin, deps.fundId, vehicle)

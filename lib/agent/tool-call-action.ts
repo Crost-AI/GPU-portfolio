@@ -171,6 +171,13 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
   const destructive = DESTRUCTIVE_PREVIEWS[tool.name]
   if (destructive) {
     const p = await destructive(deps, args.input)
+    // reopen_period previews the same way but is not a destructive tool: it can be closed again.
+    if (!tool.destructive) {
+      return {
+        summary: `${p.summary} Needs an admin's approval.`,
+        details: { tool: tool.name, vehicle, input: args.input, impact: p.impact },
+      }
+    }
     return {
       summary: `${p.summary} Cannot be undone; needs an admin's approval.`,
       details: { tool: tool.name, vehicle, input: args.input, destructive: true, impact: p.impact },
