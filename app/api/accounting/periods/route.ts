@@ -8,7 +8,8 @@ import { assertWriteAccess, assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { listPeriods } from '@/lib/accounting/periods'
 import { previewCloseThrough, closeThrough, loadCloseEntries, nextCloseStart } from '@/lib/accounting/close'
-import { reopenWithAudit } from '@/lib/accounting/reopen'
+import { reopenClosedPeriods } from '@/lib/accounting/reopen'
+import { outcomeResponse } from '@/lib/service-outcome'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { createSuggestedDrafts } from '@/lib/accounting/close-suggestions'
 
@@ -83,11 +84,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (body?.action === 'reopen') {
-    if (!body?.id && !body?.fromDate) return NextResponse.json({ error: 'id or fromDate is required' }, { status: 400 })
-    const target = body.id ? { periodId: String(body.id) } : { fromDate: String(body.fromDate) }
-    const result = await reopenWithAudit(admin, gate.fundId, group, user.id, target, body?.reason)
-    if ('error' in result) return NextResponse.json({ error: result.error }, { status: 400 })
-    return NextResponse.json(result)
+    // Shared with the reopen_period tool (lib/accounting/reopen.ts).
+    return outcomeResponse(await reopenClosedPeriods(admin, { fundId: gate.fundId, userId: user.id }, group, {
+      id: body?.id, fromDate: body?.fromDate, reason: body?.reason,
+    }))
   }
 
   if (body?.action === 'approve') {

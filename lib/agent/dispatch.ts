@@ -32,6 +32,7 @@ import {
   IDEMPOTENCY_MAX_KEY_LENGTH, type IdempotencyOutcome, type IdempotencyScope,
 } from '@/lib/api-v1/idempotency'
 import { AGENT_TOOL_CALL, stageToolCall } from './tool-call-action'
+import { destructiveRefusal } from './destructive'
 import { AGENT_RUN, runAdminOnlyLabel, stageRun, type RunArgs } from './run-action'
 import { notifyAdminsOfStagedChange } from '@/lib/pending-actions/notify'
 import { ADMIN_ONLY_ACTIONS, adminOnlyMessage, adminOnlyToolLabel } from '@/lib/access/admin-only'
@@ -120,11 +121,13 @@ export function hasDraftMode(name: string): boolean {
 /**
  * Whether this write waits for a person. Reads never do. A tool that `stagesAs` a pending action
  * (what goes out to LPs) always does, from a script's key too: a person approves it, in the app or
- * from their own chat.
+ * from their own chat. So does a `destructive` tool (a delete, a merge, undoing posted books), from
+ * any credential, an admin's own API key included: it is staged as the ordinary tool call, and an
+ * admin approves it (lib/agent/destructive.ts).
  */
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
   if (tool.scope !== 'write') return false
-  if (tool.stagesAs) return true
+  if (tool.stagesAs || tool.destructive) return true
   return isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
 }
 
@@ -240,6 +243,10 @@ export class AgentCallError extends Error {
  */
 export async function runAgentTool(call: AgentCall): Promise<unknown> {
   const { admin, tool, input, auth, access, origin } = call
+  // Destructive tools exist only where the deployment turned them on (AGENT_DESTRUCTIVE_ACTIONS).
+  // Every door reaches here: a direct MCP call, call_tool, and POST /api/agent.
+  const disabled = destructiveRefusal(tool)
+  if (disabled) throw new AgentCallError(disabled, 'DESTRUCTIVE_DISABLED')
   if (tool.scope === 'read') {
     const portfolioGroup = await resolveVehicleForTool(tool, admin, auth.fundId, input.vehicle as string | undefined, access)
     return tool.handler({ admin, fundId: auth.fundId, portfolioGroup, userId: auth.userId, access, origin }, input)
@@ -422,7 +429,8 @@ export async function stageAgentRun(call: RunCall, input: unknown): Promise<Stag
   const deps = { admin, fundId: auth.fundId, userId: auth.userId, access }
   const { args, vehicleId, preview } = await stageRun(deps, input, (name, stepInput) => {
     const tool = getTool(name)!
-    return authorizeToolUse(tool.scope, auth, access, accessDomainForCall(tool, stepInput), accessFeatureFor(tool))
+    return destructiveRefusal(tool)
+      ?? authorizeToolUse(tool.scope, auth, access, accessDomainForCall(tool, stepInput), accessFeatureFor(tool))
       ?? adminOnlyRefusal(tool, stepInput, auth)
   })
   const first = getTool(args.steps[0].tool)!

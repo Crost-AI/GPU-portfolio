@@ -206,20 +206,8 @@ describe('period tools', () => {
   const run = (name: string, input: any) =>
     getTool(name)!.handler({ admin: {} as any, fundId: 'f', portfolioGroup: 'Fund I', userId: 'u' } as any, input)
 
-  it('reads a close preview and writes a reopen', () => {
+  it('reads a close preview', () => {
     expect(getTool('preview_close')?.scope).toBe('read')
-    expect(getTool('reopen_period')?.scope).toBe('write')
-    expect(accessDomainFor(getTool('reopen_period')!)).toBe('accounting')
-  })
-
-  it('needs a period or a date to reopen, not both', async () => {
-    await expect(run('reopen_period', { reason: 'fix March' })).rejects.toThrow(/periodId or fromDate/)
-    await expect(run('reopen_period', { periodId: 'p', fromDate: '2023-03-01', reason: 'x' })).rejects.toThrow(/not both/)
-  })
-
-  it('needs a reason to reopen, as the Periods page does', async () => {
-    await expect(run('reopen_period', { fromDate: '2023-03-01' })).rejects.toThrow(/reason is required/)
-    await expect(run('reopen_period', { fromDate: '2023-03-01', reason: '   ' })).rejects.toThrow(/reason is required/)
   })
 
   it('needs a date to preview a close through', async () => {

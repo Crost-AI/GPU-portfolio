@@ -132,6 +132,24 @@ export async function updateDiligenceDeal(
   return done({ updated: Object.keys(updates) })
 }
 
+/** The tables a deal room's delete takes with it (ON DELETE CASCADE on deal_id). */
+export const DILIGENCE_CASCADE_TABLES = [
+  'diligence_documents', 'diligence_memo_drafts', 'diligence_notes', 'diligence_attention_items',
+  'diligence_checklist_items', 'diligence_agent_sessions', 'diligence_qa_chats', 'diligence_call_transcripts', 'memo_agent_jobs',
+] as const
+
+/**
+ * Delete a deal room. Admin-only on every surface (the route's own admin check; the
+ * `diligence_delete_deal` tool through lib/access/admin-only.ts). ON DELETE CASCADE handles
+ * documents, drafts, attention items, sessions, notes. Storage objects under {dealId}/* will
+ * dangle; cleaning them is async (TODO).
+ */
+export async function deleteDiligenceDeal(admin: SupabaseClient, fundId: string, dealId: string): Promise<Outcome<{ ok: true }>> {
+  const { error } = await (admin as any).from('diligence_deals').delete().eq('id', dealId).eq('fund_id', fundId)
+  if (error) return dbFail(error, 'diligence-deal-delete')
+  return done({ ok: true })
+}
+
 /** One partner-added checklist item, under a section found by name or created for it. */
 export async function addChecklistItem(
   admin: SupabaseClient, fundId: string, dealId: string, input: { label: unknown; sectionLabel?: unknown },

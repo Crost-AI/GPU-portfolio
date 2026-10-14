@@ -34,7 +34,6 @@ import { bookCapitalCallFromInflow } from './bank-match'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
 import { closeThrough, previewCloseThrough } from './close'
-import { reopenWithAudit } from './reopen'
 import { summarizeBankRec, type BankTxnState } from './bank'
 import { accountBalances } from './ledger'
 import type { SupabaseClient as _Sb } from '@supabase/supabase-js'
@@ -66,6 +65,8 @@ import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
 import { ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_TOOL_MANIFEST } from '@/lib/agent/operations-tools-manifest'
 import { OPERATIONS_HANDLERS } from '@/lib/agent/operations-tools'
+import { DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_TOOL_MANIFEST } from '@/lib/agent/destructive-tools-manifest'
+import { DESTRUCTIVE_HANDLERS } from '@/lib/agent/destructive-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -270,19 +271,6 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     return result
   },
 
-  // The Periods page's Reopen: the same reopenThrough, reason and audit event (lib/accounting/reopen.ts).
-  // Admin-only (ADMIN_ONLY_TOOLS), so from chat it is always staged for an admin to approve.
-  reopen_period: async ({ admin, fundId, portfolioGroup, userId }, input) => {
-    const periodId = typeof input?.periodId === 'string' && input.periodId ? input.periodId : null
-    const fromDate = typeof input?.fromDate === 'string' && input.fromDate ? input.fromDate : null
-    if (!periodId && !fromDate) throw new Error('periodId or fromDate is required')
-    if (periodId && fromDate) throw new Error('Give periodId or fromDate, not both')
-    const target = periodId ? { periodId } : { fromDate: fromDate! }
-    const result = await reopenWithAudit(admin, fundId, portfolioGroup, userId ?? null, target, input?.reason)
-    if ('error' in result) throw new Error(result.error)
-    return result
-  },
-
   // Pages instead of truncating: `truncated` + `cursor` when the text would be too large to return.
   export_ledger_text: async ({ admin, fundId, portfolioGroup }, input) => {
     return exportLedgerTextPage(admin, fundId, portfolioGroup, {
@@ -476,6 +464,9 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
   ...bind(OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
   ...bind(LP_PORTAL_TOOL_MANIFEST, LP_PORTAL_HANDLERS),
+
+  // Offered only with AGENT_DESTRUCTIVE_ACTIONS=true, and always staged for an admin (lib/agent/destructive.ts).
+  ...bindLedger(DESTRUCTIVE_LEDGER_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS), ...bind(DESTRUCTIVE_TOOL_MANIFEST, DESTRUCTIVE_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

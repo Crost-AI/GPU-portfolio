@@ -55,6 +55,12 @@ export interface AgentToolMeta {
    * own chat, never a script's key.
    */
   stagesAs?: string
+  /**
+   * Deletes, merges or undoes posted books. Offered only when the deployment sets
+   * AGENT_DESTRUCTIVE_ACTIONS=true, and then ALWAYS staged for an admin's approval, from any
+   * credential (lib/agent/destructive.ts). Every such tool is also in ADMIN_ONLY_TOOLS.
+   */
+  destructive?: true
   inputSchema: Record<string, any>
 }
 
@@ -222,20 +228,6 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         periodEnd: { type: 'string', description: 'YYYY-MM-DD to close through.' },
         periodStart: { type: 'string', description: 'Ignored: closing runs through periodEnd from the first open period. Accepted for older callers.' },
         label: { type: 'string', description: 'Ignored. Accepted for older callers.' },
-      },
-    },
-  },
-  {
-    name: 'reopen_period',
-    description: 'Reopen a closed period so entries can be posted or changed in it. Reopens that period AND every closed period after it, newest first, voiding each one\'s close allocation; close again afterwards to re-allocate. Give either periodId (from list_periods) or fromDate (every closed period covering or after that date). A reason is required and goes on the audit trail. Admin only. Says which tax years already have issued K-1s, so the user knows what a change could affect.',
-    scope: 'write',
-    inputSchema: {
-      type: 'object',
-      required: ['reason'],
-      properties: {
-        periodId: { type: 'string', description: 'id of the closed period, from list_periods' },
-        fromDate: { type: 'string', description: 'ISO date; reopen every closed period covering or after it' },
-        reason: { type: 'string', description: 'why, in the user\'s words; recorded on the audit trail' },
       },
     },
   },

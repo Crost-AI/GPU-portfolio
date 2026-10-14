@@ -112,8 +112,10 @@ function effectFor(tool: McpTool, auth: ResolvedKey): Record<string, unknown> {
   if (tool.scope === 'read') return { staged: false }
   if (!auth.scopes.includes('write')) return { staged: false, refused: 'This credential is read-only.' }
   // Only the shared registry's writes stage (lib/agent/dispatch.ts); approving a pending action or
-  // saving one's own dashboard applies at once.
-  if (!getTool(tool.name) || !isAssistantCredential(auth)) return { staged: false }
+  // saving one's own dashboard applies at once. A destructive one stages from every credential.
+  const agentTool = getTool(tool.name)
+  if (agentTool?.destructive) return { staged: true, destructive: true, note: 'Always waits for an admin\'s approval, from any connection or key.' }
+  if (!agentTool || !isAssistantCredential(auth)) return { staged: false }
   return hasDraftMode(tool.name)
     ? { staged: true, note: 'Calls that only make drafts or previews run directly; the rest wait for approval.' }
     : { staged: true }

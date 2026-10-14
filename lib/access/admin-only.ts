@@ -45,6 +45,12 @@ export const ADMIN_ONLY_ROUTES: AdminOnlyRule[] = [
   { route: 'api/lps/snapshots', method: 'DELETE', label: 'delete an LP report' },
   { route: 'api/accounting/vehicle-gp-links', method: 'DELETE', label: 'remove a GP link' },
   { route: 'api/accounting/cutover', method: 'DELETE', label: 'undo a cutover' },
+  // Each handler also checks the role itself; listed here so the web, the API and MCP agree
+  // (diligence_delete_deal, remove_member and merge_vehicles in ADMIN_ONLY_TOOLS below).
+  { route: 'api/diligence/[id]', method: 'DELETE', label: 'delete a diligence deal' },
+  { route: 'api/settings/members/[id]', method: 'DELETE', label: 'remove a team member' },
+  // PATCH multiplexes: only a body with `mergeIntoId` is a merge; a rename or a logo is not.
+  { route: 'api/vehicles', method: 'PATCH', when: body => !!body?.mergeIntoId, label: 'merge entities' },
 
   // ── Undo the books ─────────────────────────────────────────────────────────
   { route: 'api/accounting/journal', method: 'PATCH', when: action('unpost', 'reverse'), label: 'unpost or reverse a posted entry' },
@@ -96,8 +102,6 @@ export const HANDLER_CHECKED = {
 /** Agent tools that are admin-only: the same operations as the routes above, reached from chat. */
 export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: any) => boolean }> = {
   add_partner: { label: 'add a partner and commitment' },
-  // As the Periods page's Reopen (ADMIN_ONLY_ROUTES above).
-  reopen_period: { label: 'reopen a closed period' },
   diligence_finalize_memo: { label: 'finalize a memo' },
   // The Investors page lets only an admin change the register's investors and entities, and the
   // commitments page only an admin add a commitment (ADMIN_ONLY_ROUTES above).
@@ -128,6 +132,23 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_proposed_call_revise: { label: 'propose, revise or discard a capital call' },
   lp_proposed_call_discard: { label: 'propose, revise or discard a capital call' },
   lp_proposed_call_approve: { label: 'approve a capital call notice' },
+
+  // The destructive tools (lib/agent/destructive-tools-manifest.ts): offered only with
+  // AGENT_DESTRUCTIVE_ACTIONS=true and always staged, so this is who may APPROVE them. The same
+  // operations, with the same labels, as the routes above.
+  delete_company: { label: 'delete a company' },
+  lp_delete_investor: { label: 'delete an LP investor' },
+  lp_delete_entity: { label: 'delete an LP entity' },
+  lp_delete_commitment: { label: 'delete a commitment' },
+  lp_merge_investors: { label: 'merge LP investors' },
+  delete_lp_positions: { label: 'delete an LP position' },
+  diligence_delete_deal: { label: 'delete a diligence deal' },
+  remove_member: { label: 'remove a team member' },
+  merge_vehicles: { label: 'merge entities' },
+  unpost_entry: { label: 'unpost or reverse a posted entry' },
+  reverse_entry: { label: 'unpost or reverse a posted entry' },
+  void_entry: { label: HANDLER_CHECKED.voidPostedEntry },
+  reopen_period: { label: 'reopen a closed period' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */
