@@ -14,6 +14,10 @@ import { accountIdByCode, duplicateRefMessage, liveEntryByRef, persistEntry } fr
 import { vehicleIdByName } from './vehicle-id'
 import { computeCapitalAccounts, totalNav } from './capital-account'
 import { trialBalance, balanceSheet, incomeStatement } from './statements'
+import { vehicleKindByName } from './vehicle-domain'
+import { closesToOwnerEquity, equityLabel } from './vocab'
+import { changesInMembersCapital } from './members-capital'
+import { isManagementCompany } from '@/lib/vehicle-kinds'
 import { reconcileCapital, type AdminCapitalAccount } from './reconcile'
 import { runWaterfall } from './waterfall'
 import { allocationSourceRef, buildAllocationEntry, type AllocationBody } from './allocation-actions'
@@ -146,11 +150,19 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   financial_statements: async ({ admin, fundId, portfolioGroup }) => {
-    const { accounts, postings } = await loadPostedLedger(admin, fundId, portfolioGroup)
+    const [{ accounts, postings, sourcedPostings }, kind] = await Promise.all([
+      loadPostedLedger(admin, fundId, portfolioGroup),
+      vehicleKindByName(admin, fundId, portfolioGroup),
+    ])
     return {
       trialBalance: trialBalance(accounts, postings),
-      balanceSheet: balanceSheet(accounts, postings),
+      balanceSheet: balanceSheet(accounts, postings, { equityLabel: equityLabel(kind), itemizeEquity: closesToOwnerEquity(kind) }),
       incomeStatement: incomeStatement(accounts, postings),
+      // A management company's members have no statements of their own; this is each member's
+      // capital roll-forward since inception (lib/accounting/members-capital.ts).
+      ...(isManagementCompany(kind)
+        ? { changesInMembersCapital: changesInMembersCapital(accounts, sourcedPostings, { start: null, end: null }) }
+        : {}),
     }
   },
 
