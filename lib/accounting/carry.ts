@@ -258,6 +258,21 @@ function grossProfit(l: LpEconomics): number {
 }
 
 /**
+ * Each LP's share of a carry `target`: pro-rata to gross profit, nothing for an LP not in
+ * profit. Largest-remainder, so the shares sum EXACTLY to the target and the same inputs always
+ * land the odd cent on the same LP. Throws if there is a target but no LP in profit to bear it
+ * (unreachable: a positive target means the fund as a whole is in profit, so some LP is).
+ */
+export function carryTargetShares(lps: LpEconomics[], target: number): Map<string, number> {
+  if (target <= 0) return new Map()
+  const inProfit = lps
+    .map(l => ({ lpEntityId: l.lpEntityId, commitment: grossProfit(l) }))
+    .filter(p => p.commitment > 0)
+  if (inProfit.length === 0) throw new Error(`Carry target of ${target} but no partner has a gain to bear it`)
+  return allocateAmount(target, inProfit)
+}
+
+/**
  * What this period's close should post.
  *
  * RECONCILES TO A TARGET per LP, it does not post a fund-level delta. The target is shared across
@@ -275,17 +290,8 @@ export function carryAccrual(
 ): CarryAccrual {
   const target = carryTarget(input, terms)
   const perLp = new Map<string, number>()
-
-  const inProfit = input.lps
-    .map(l => ({ lpEntityId: l.lpEntityId, commitment: grossProfit(l) }))
-    .filter(p => p.commitment > 0)
-  if (target > 0 && inProfit.length === 0) {
-    // Unreachable: a positive target means the fund as a whole is in profit, so some LP is.
-    throw new Error(`Carry target of ${target} but no partner has a gain to bear it`)
-  }
-  // Largest-remainder, so the shares sum EXACTLY to the target and no cent is invented — and the
-  // same inputs always land the odd cent on the same LP, so an unchanged re-close posts zero.
-  const shares = target > 0 ? allocateAmount(target, inProfit) : new Map<string, number>()
+  // Deterministic shares are what make an unchanged re-close post zero.
+  const shares = carryTargetShares(input.lps, target)
 
   let delta = 0
   for (const l of input.lps) {
