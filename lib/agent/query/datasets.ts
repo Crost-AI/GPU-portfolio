@@ -1,16 +1,21 @@
 // The query tools' loaders (catalog.ts names the datasets). Each loads its rows through the handler
 // a named tool already uses, so the same entity scope, the same carry folding and the same figures;
 // the query handler has checked that tool's access before calling it.
+//
+// INVARIANT: every loader returns the WHOLE authorized set, never a page of it. The engine filters
+// and aggregates in memory, so a capped source turns `count` and `sum` into confident wrong answers
+// with `truncated: false`. The source loaders page past PostgREST's 1000-row max_rows; a named tool
+// that caps its own list (deals_list_inbound) exposes an uncapped mode for this.
 
 import type { AgentToolContext } from '@/lib/accounting/agent-tools'
 import { visibleCompanyIds } from '@/lib/access/scope'
 import { carryRecipientIds, seesIndividualCarry } from '@/lib/access/carry-visibility'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { fetchAllRows } from '@/lib/accounting/load'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { LP_HANDLERS } from '@/lib/agent/lp-tools'
-import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
+import { listInboundDeals } from '@/lib/agent/deals-tools'
 import { DILIGENCE_HANDLERS } from '@/lib/agent/diligence-tools'
 
 export interface DatasetParams { vehicle?: string; as_of?: string }
@@ -55,12 +60,17 @@ const transactions: Loader = async (ctx, p) => {
 const kpis: Loader = async (ctx) => {
   const db = ctx.admin as any
   const visible = await visibleCompanyIds(ctx.admin, ctx.access)
-  let q = db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
-  if (visible !== null) q = q.in('id', visible.length ? visible : ['00000000-0000-0000-0000-000000000000'])
-  const { data: cos } = await q
-  const names = new Map(((cos ?? []) as any[]).map(c => [c.id, c.name]))
+  // A scope of no companies sees no KPIs.
+  if (visible !== null && visible.length === 0) return []
+  // Paged, ordered by id, throwing on error: unpaged, companies past the 1000th had no KPIs, and a
+  // failed read answered as "no companies". A scoped caller's ids are chunked under the URL limit.
+  const read = () => db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
+  const cos = visible === null
+    ? await fetchAllRows<any>((f, t) => read().range(f, t))
+    : await fetchAllRowsIn<any>(visible, (ids, f, t) => read().in('id', ids).range(f, t))
+  const names = new Map(cos.map(c => [c.id, c.name]))
   if (names.size === 0) return []
-  const metrics = await fetchAllRows<any>((f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', [...names.keys()]).range(f, t))
+  const metrics = await fetchAllRowsIn<any>([...names.keys()], (ids, f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', ids).range(f, t))
   const byId = new Map(metrics.map(m => [m.id, m]))
   if (byId.size === 0) return []
   const values: any[] = []
@@ -110,7 +120,7 @@ const capitalCallLines: Loader = async (ctx, p) => {
 // ---------------------------------------------------------------------------------------------
 
 const inboundDeals: Loader = async (ctx) => {
-  const rows = await DEALS_HANDLERS.deals_list_inbound(ctx, { limit: 500 }) as any[]
+  const rows = await listInboundDeals(ctx, {}, null)
   return rows.map(d => ({
     company: d.company, founder: d.founder, intro_source: d.intro_source, referrer: d.referrer, thesis_fit: d.thesis_fit,
     stage: d.stage, industry: d.industry, raise: d.raise, status: d.status, in_diligence: !!d.in_diligence, created_at: date(d.created_at),
@@ -139,13 +149,13 @@ const journalLines: Loader = async (ctx, p) => {
       return q.range(f, t)
     }),
     fetchAllRows<any>((f, t) => db.from('journal_postings').select('journal_entry_id, account_id, amount, lp_entity_id').eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId).range(f, t)),
-    db.from('lp_entities').select('id, entity_name').eq('fund_id', ctx.fundId),
+    fetchAllRows<any>((f, t) => db.from('lp_entities').select('id, entity_name').eq('fund_id', ctx.fundId).range(f, t)),
   ])
   // What each carry recipient earns is GP economics, as on capital_accounts.
   const hidden = seesIndividualCarry(ctx.access) ? new Set<string>() : await carryRecipientIds(ctx.admin, ctx.fundId, group)
   const acct = new Map(accounts.map(a => [a.id, a]))
   const entry = new Map(entries.map(e => [e.id, e]))
-  const entName = new Map(((ents.data ?? []) as any[]).map(e => [e.id, e.entity_name]))
+  const entName = new Map(ents.map(e => [e.id, e.entity_name]))
   const rows: Row[] = []
   for (const pst of postings) {
     const e = entry.get(pst.journal_entry_id)

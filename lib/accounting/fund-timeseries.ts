@@ -24,9 +24,9 @@ import { roundCents } from './ledger'
 import { loadCapitalPostings } from './capital-source'
 import { loadFundPreload, vehicleCapitalPreload } from './fund-preload'
 import { bucketForSourceType, computeCapitalAccounts } from './capital-account'
-import { loadEntityClasses } from './load'
+import { fetchAllRows, loadEntityClasses } from './load'
 import { txnsForVehicle } from './soi'
-import { computeSummary } from '@/lib/investments'
+import { computeSummary, investedBasis } from '@/lib/investments'
 import { xirr, type CashFlow } from '@/lib/xirr'
 import type { InvestmentTransaction, CompanyStatus } from '@/lib/types/database'
 
@@ -253,18 +253,20 @@ export async function fundTimeseries(
   const endDate = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? asOf : new Date().toISOString().slice(0, 10)
 
   const preload = await loadFundPreload(admin, fundId, endDate)
-  const [{ postings }, { data: txnRows }, { data: companyRows }] = await Promise.all([
+  // Paged in a stable order: past the 1000-row cap the unpaged reads dropped investments (and
+  // whole companies) from the gross series without an error.
+  const [{ postings }, txnRows, companyRows] = await Promise.all([
     loadCapitalPostings(admin, fundId, group, endDate, preload.idMap, vehicleCapitalPreload(preload, group)),
-    admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId),
-    admin.from('companies' as any).select('*').eq('fund_id', fundId),
+    fetchAllRows<any>((f, t) => admin.from('investment_transactions' as any).select('*').eq('fund_id', fundId).order('transaction_date', { ascending: true }).range(f, t)),
+    fetchAllRows<any>((f, t) => admin.from('companies' as any).select('*').eq('fund_id', fundId).range(f, t)),
   ])
 
   // Net IRR splits by partner class, so we need the LP/GP map — but only ledger vehicles carry a
   // meaningful net view (a tracking vehicle has no called capital), so skip the read otherwise.
   const classes = await loadEntityClasses(admin, fundId, group)
 
-  const txns = ((txnRows as InvestmentTransaction[]) ?? [])
-  const companies = ((companyRows as any[]) ?? [])
+  const txns = txnRows as InvestmentTransaction[]
+  const companies = companyRows
 
   // Companies this vehicle actually holds — same test the schedule of investments uses.
   const byCompany = new Map<string, InvestmentTransaction[]>()
@@ -286,14 +288,13 @@ export async function fundTimeseries(
   const resolvedPeriods = await Promise.all(quarters.map(q => loadCapitalPostings(admin, fundId, group, q, preload.idMap, vehicleCapitalPreload(preload, group))))
   const capital = quarters.map((q, i) => buildCapitalSeries(resolvedPeriods[i].postings, [q])[0])
 
-  // New vs follow-on: cost defined exactly as computeSummary's totalInvested (cash + any interest
-  // capitalized on a conversion row) so new + follow-on ties to invested capital at every quarter.
-  const invCost = (t: InvestmentTransaction) =>
-    (t.investment_cost ?? 0) + ((t as { converts_from_txn_id?: string | null }).converts_from_txn_id ? (t.interest_converted ?? 0) : 0)
+  // New vs follow-on: cost is `investedBasis`, the rule computeSummary's totalInvested sums (cash +
+  // capitalised fees + interest converted on a conversion row), so new + follow-on ties to invested
+  // capital at every quarter.
   const invLite: InvTxnLite[][] = held.map(c =>
     c.relevant
       .filter(t => t.transaction_type === 'investment')
-      .map(t => ({ date: t.transaction_date ?? null, cost: invCost(t) })),
+      .map(t => ({ date: t.transaction_date ?? null, cost: investedBasis(t) })),
   )
   const nfo = buildNewFollowOnSeries(invLite, quarters)
 

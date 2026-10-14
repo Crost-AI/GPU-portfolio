@@ -1,7 +1,7 @@
 // Unified capital reads. Source labels describe evidence; they never enable accounting.
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { CapitalPosting } from './capital-account'
-import { loadPostedLedger, type LedgerRows } from './load'
+import { fetchAllRows, fetchAllRowsIn, loadPostedLedger, type LedgerRows } from './load'
 import { vehicleIdByName, type VehicleIdMap } from './vehicle-id'
 import { RECEIVABLE_CODE } from './chart'
 import { roundCents } from './ledger'
@@ -75,12 +75,13 @@ export async function loadOpeningLinks(
   vehicleId: string | null,
 ): Promise<OpeningLink[]> {
   if (!vehicleId) return []
-  const { data, error } = await (admin as any)
+  // Paged (throws on error). The table has no `id`; `position_id` is unique, so it is the order.
+  const data = await fetchAllRows<any>((f, t) => (admin as any)
     .from('capital_opening_links')
     .select('lp_entity_id, position_id, journal_entry_id, observed_on, observed_nav, booked_amount')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId)
-  if (error) throw error
-  return ((data as any[]) ?? []).map(row => ({
+    .range(f, t), 1000, { order: 'position_id' })
+  return data.map(row => ({
     lpEntityId: row.lp_entity_id as string,
     positionId: row.position_id as string,
     entryId: row.journal_entry_id as string,
@@ -90,7 +91,7 @@ export async function loadOpeningLinks(
   }))
 }
 
-/** Every vehicle's opening links in one query, for the batched fund preload. */
+/** Every vehicle's opening links, batched for the fund preload. */
 export async function loadOpeningLinksBatch(
   admin: SupabaseClient,
   fundId: string,
@@ -99,12 +100,14 @@ export async function loadOpeningLinksBatch(
   const out = new Map<string, OpeningLink[]>()
   for (const id of vehicleIds) out.set(id, [])
   if (vehicleIds.length === 0) return out
-  const { data, error } = await (admin as any)
+  // Paged and chunked by vehicle id (throws on error), as loadOpeningLinks; ordered by the unique
+  // `position_id`, since the table has no `id`.
+  const data = await fetchAllRowsIn<any>(vehicleIds, (ids, f, t) => (admin as any)
     .from('capital_opening_links')
     .select('vehicle_id, lp_entity_id, position_id, journal_entry_id, observed_on, observed_nav, booked_amount')
-    .eq('fund_id', fundId).in('vehicle_id', vehicleIds)
-  if (error) throw error
-  for (const row of ((data as any[]) ?? [])) {
+    .eq('fund_id', fundId).in('vehicle_id', ids)
+    .range(f, t), { order: 'position_id' })
+  for (const row of data) {
     const list = out.get(row.vehicle_id as string) ?? []
     list.push({
       lpEntityId: row.lp_entity_id as string,

@@ -24,6 +24,7 @@ import type { CapitalPosting } from './capital-account'
 import { vehicleIdByName, type VehicleIdMap } from './vehicle-id'
 import { roundCents } from './ledger'
 import { ACTUAL_BOOK } from './books'
+import { fetchAllRows, fetchAllRowsIn } from './load'
 
 const TOLERANCE = 0.005
 
@@ -104,15 +105,18 @@ export async function loadPositions(
 ): Promise<LpPosition[]> {
   const vehicleId = await vehicleIdByName(admin, fundId, group, idMap)
   if (!vehicleId) return []
-  let q = admin
-    .from('lp_positions' as any)
-    .select('id, lp_entity_id, as_of_date, commitment, called_capital, distributions, nav, irr')
-    .eq('fund_id', fundId)
-    .eq('vehicle_id', vehicleId)
-  if (asOf) q = q.lte('as_of_date', asOf)
-  const { data, error } = await q
-  if (error) throw error
-  return ((data as any[]) ?? []).map(toLpPosition)
+  // Paged (throws on error): one row per LP per as-of date, so a vehicle passes the 1000-row cap
+  // with its oldest dates first — truncated, every LP's latest position is the one that is lost.
+  const data = await fetchAllRows<any>((f, t) => {
+    let q = admin
+      .from('lp_positions' as any)
+      .select('id, lp_entity_id, as_of_date, commitment, called_capital, distributions, nav, irr')
+      .eq('fund_id', fundId)
+      .eq('vehicle_id', vehicleId)
+    if (asOf) q = q.lte('as_of_date', asOf)
+    return q.order('as_of_date').range(f, t)
+  })
+  return data.map(toLpPosition)
 }
 
 function toLpPosition(r: any): LpPosition {
@@ -142,15 +146,18 @@ export async function loadPositionsBatch(
   const out = new Map<string, LpPosition[]>()
   if (vehicleIds.length === 0) return out
   for (const id of vehicleIds) out.set(id, [])
-  let q = admin
-    .from('lp_positions' as any)
-    .select('id, lp_entity_id, as_of_date, commitment, called_capital, distributions, nav, irr, vehicle_id')
-    .eq('fund_id', fundId)
-    .in('vehicle_id', vehicleIds)
-  if (asOf) q = q.lte('as_of_date', asOf)
-  const { data, error } = await q
-  if (error) throw error
-  for (const r of ((data as any[]) ?? [])) out.get(r.vehicle_id)?.push(toLpPosition(r))
+  // Paged, as loadPositions: across many vehicles the position count passes the cap quickly. And
+  // chunked by vehicle id, so the `in` filter stays under the URL limit on a firm of many vehicles.
+  const data = await fetchAllRowsIn<any>(vehicleIds, (ids, f, t) => {
+    let q = admin
+      .from('lp_positions' as any)
+      .select('id, lp_entity_id, as_of_date, commitment, called_capital, distributions, nav, irr, vehicle_id')
+      .eq('fund_id', fundId)
+      .in('vehicle_id', ids)
+    if (asOf) q = q.lte('as_of_date', asOf)
+    return q.order('as_of_date').range(f, t)
+  })
+  for (const r of data) out.get(r.vehicle_id)?.push(toLpPosition(r))
   return out
 }
 

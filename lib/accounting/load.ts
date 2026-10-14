@@ -19,18 +19,56 @@ export type SourcedPosting = Posting & { sourceType: string | null; entryId: str
  * than 1000 journal postings would otherwise load a TRUNCATED ledger — silently producing a false
  * trial-balance imbalance, phantom unallocated income, and a wrong NAV. `make(from, to)` must apply
  * the same filters each page and add `.range(from, to)`.
+ *
+ * Offset paging needs a STABLE UNIQUE order: over an unordered (or non-unique) sort Postgres may
+ * return rows in a different order per page, so a row repeats on one page and vanishes from the set.
+ * So this appends `.order(opts.order ?? 'id')` to every page's builder itself — the whole order when
+ * the caller gave none, the unique tie-break after the caller's own `.order(...)` (supabase-js
+ * appends each `.order()` to one ORDER BY; it is a query parameter, so its place in the chain does
+ * not matter). A table without an `id` column must pass its own unique key, or `order: null` when
+ * the caller's order is already unique.
  */
 export async function fetchAllRows<T>(
   make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
   page = 1000,
+  opts: { order?: string | null } = {},
 ): Promise<T[]> {
+  const key = opts.order === undefined ? 'id' : opts.order
   const out: T[] = []
   for (let from = 0; ; from += page) {
-    const { data, error } = await make(from, from + page - 1)
+    let q: any = make(from, from + page - 1)
+    if (key && typeof q?.order === 'function') q = q.order(key)
+    const { data, error } = await q
     if (error) throw error
     const rows = data ?? []
+    // Safe to spread: one page, so at most `page` rows (PostgREST's cap holds it to 1000 anyway).
     out.push(...rows)
     if (rows.length < page) break
+  }
+  return out
+}
+
+/** Ids per `.in()` filter. The filter rides in the GET URL, and past ~400 uuids one request
+ *  overruns Supabase's 16 KB URL limit — so a batch over every vehicle failed on a large firm. */
+export const IN_CHUNK = 200
+
+/**
+ * `fetchAllRows` for a read filtered by `.in(column, ids)`: one paged read per chunk of
+ * `IN_CHUNK` ids, concatenated. `make(chunk, from, to)` must filter on `chunk`, not on `ids`.
+ */
+export async function fetchAllRowsIn<T>(
+  ids: string[],
+  make: (chunk: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+  opts: { order?: string | null } = {},
+): Promise<T[]> {
+  const out: T[] = []
+  // Deduped, so a repeated id cannot return its rows twice.
+  const unique = Array.from(new Set(ids))
+  for (let i = 0; i < unique.length; i += IN_CHUNK) {
+    const chunk = unique.slice(i, i + IN_CHUNK)
+    // Row by row, not push(...rows): a chunk bounds the ids, not the rows, and one chunk of long
+    // histories can be hundreds of thousands of rows — past what one call's arguments can hold.
+    for (const row of await fetchAllRows<T>((f, t) => make(chunk, f, t), 1000, opts)) out.push(row)
   }
   return out
 }
@@ -68,14 +106,15 @@ export async function loadLedgerRowsBatch(
 
   // Paginated: across many vehicles the posting count easily exceeds the PostgREST 1000-row cap;
   // a truncated batch would break the trial balance for whichever vehicles fell past the cut.
+  // Chunked by vehicle id, so the `in` filter stays under the URL limit on a firm of many vehicles.
   const [acctRows, entryRows, postingRows] = await Promise.all([
-    fetchAllRows((f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
-    fetchAllRows((f, t) => {
-      let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).eq('status', 'posted')
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => admin.from('chart_of_accounts' as any).select('id, code, name, type, subtype, lp_entity_id, company_id, vehicle_id').eq('fund_id', fundId).in('vehicle_id', ids).range(f, t)),
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => {
+      let q = admin.from('journal_entries' as any).select('id, source_type, status, entry_date, memo, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', ids).eq('status', 'posted')
       if (asOf) q = q.lte('entry_date', asOf)
       return q.range(f, t)
     }),
-    fetchAllRows((f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', vehicleIds).range(f, t)),
+    fetchAllRowsIn(vehicleIds, (ids, f, t) => admin.from('journal_postings' as any).select('journal_entry_id, account_id, amount, currency, lp_entity_id, vehicle_id').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).in('vehicle_id', ids).range(f, t)),
   ])
 
   for (const r of (acctRows as any[])) out.get(r.vehicle_id)?.acctRows.push(r)
@@ -204,7 +243,7 @@ export async function loadEntityNames(
   const out = new Map<string, string>()
   if (entityIds.length === 0) return out
 
-  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, entity_name').in('id', entityIds).order('id').range(f, t))
+  const data = await fetchAllRowsIn<any>(entityIds, (chunk, f, t) => admin.from('lp_entities' as any).select('id, entity_name').in('id', chunk).range(f, t))
   for (const e of data) out.set(e.id, e.entity_name ?? e.id)
   return out
 }
@@ -219,7 +258,7 @@ export async function loadEntityClasses(
   const ids = Array.from(new Set(inv.map(r => r.entity_id)))
   const out = new Map<string, string>()
   if (ids.length === 0) return out
-  const data = await fetchAllRows<any>((f, t) => admin.from('lp_entities' as any).select('id, partner_class').in('id', ids).order('id').range(f, t))
+  const data = await fetchAllRowsIn<any>(ids, (chunk, f, t) => admin.from('lp_entities' as any).select('id, partner_class').in('id', chunk).range(f, t))
   for (const e of data) out.set(e.id, (e.partner_class as string) ?? 'lp')
   return out
 }

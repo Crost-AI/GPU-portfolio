@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { assertVehicleVisible, visibleVehicleNames } from './vehicle-visibility'
-import { resolveGroupOr400 } from './http-vehicle'
+import { resolveGroupOr400, resolveGroupWithAccess } from './http-vehicle'
 import { loadAccessContext } from '@/lib/access/effective'
 
 // The registry: two funds and a legacy name with no row.
 const VEHICLES = [
   { id: 'v1', fund_id: 'f1', name: 'Fund I', kind: 'fund', active: true, aliases: [] as string[] },
   { id: 'v2', fund_id: 'f1', name: 'Fund II', kind: 'fund', active: true, aliases: ['Fund 2'] },
+  { id: 'v3', fund_id: 'f1', name: 'Manco', kind: 'manco', active: true, aliases: [] as string[] },
 ]
 
 vi.mock('@/lib/access/effective', async (orig) => ({
@@ -14,8 +15,8 @@ vi.mock('@/lib/access/effective', async (orig) => ({
   loadAccessContext: vi.fn(),
 }))
 vi.mock('./load', () => ({
-  listVehicles: vi.fn(async () => VEHICLES.map(v => v.name)),
-  listMancoVehicles: vi.fn(async () => []),
+  listVehicles: vi.fn(async () => VEHICLES.filter(v => v.kind !== 'manco').map(v => v.name)),
+  listMancoVehicles: vi.fn(async () => VEHICLES.filter(v => v.kind === 'manco')),
 }))
 
 function admin() {
@@ -40,8 +41,8 @@ function admin() {
 }
 
 const gate = { fundId: 'f1', userId: 'u1', role: 'member', need: 'read' as const }
-const sees = (ids: string[] | 'all') => vi.mocked(loadAccessContext).mockResolvedValue({
-  fundId: 'f1', userId: 'u1', role: ids === 'all' ? 'admin' : 'member', features: {} as any, grants: {}, defaults: {},
+const sees = (ids: string[] | 'all', features: Record<string, string> = {}) => vi.mocked(loadAccessContext).mockResolvedValue({
+  fundId: 'f1', userId: 'u1', role: ids === 'all' ? 'admin' : 'member', features: features as any, grants: {}, defaults: {},
   vehicles: ids === 'all' ? { all: true, ids: [] } : { all: false, ids },
 })
 
@@ -109,6 +110,41 @@ describe('resolveGroupOr400 — the one line every accounting route has', () => 
   it('still asks an admin to pick when the fund has several', async () => {
     sees('all')
     expect((await resolveGroupOr400(admin(), { ...gate, role: 'admin' }, null) as any).status).toBe(400)
+  })
+})
+
+describe('resolveGroupOr400 — resolves the caller\'s access once per request', () => {
+  it('with no entity named', async () => {
+    sees(['v1'])
+    expect(await resolveGroupOr400(admin(), gate, null)).toBe('Fund I')
+    expect(loadAccessContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('with a fund named', async () => {
+    sees(['v1'])
+    expect(await resolveGroupOr400(admin(), gate, 'Fund I')).toBe('Fund I')
+    expect(loadAccessContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('with a management company named, which needs the domain check too', async () => {
+    sees('all', { management_company: 'everyone' })
+    expect(await resolveGroupOr400(admin(), { ...gate, role: 'admin' }, 'Manco')).toBe('Manco')
+    expect(loadAccessContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('still refuses a manco to a member without the management_company grant', async () => {
+    sees(['v3'])
+    const r = await resolveGroupOr400(admin(), gate, 'Manco') as any
+    expect(r.status).toBe(403)
+    expect((await r.json()).error).toMatch(/management company/)
+    expect(loadAccessContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the same context back from resolveGroupWithAccess', async () => {
+    sees(['v1'])
+    const r = await resolveGroupWithAccess(admin(), gate, null) as any
+    expect(r.group).toBe('Fund I')
+    expect(r.access).toBe(await vi.mocked(loadAccessContext).mock.results[0].value)
   })
 })
 

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { computeFundPositions, type FundPosition } from './fof-metrics'
 
 /**
@@ -65,12 +66,14 @@ export async function loadFofRaw(
   // A name that resolves to nothing is not "every vehicle". Refuse rather than widening.
   if (group !== undefined && !vehicleId) return null
 
-  const scopedEvents = (admin as any).from('fund_capital_events').select('*').eq('fund_id', fundId)
-  const scopedNavs = (admin as any).from('fund_nav_statements').select('*').eq('fund_id', fundId)
-  const results = await Promise.all([
-    (admin as any).from('fund_holding_terms').select('*').eq('fund_id', fundId),
-    (vehicleId ? scopedEvents.eq('vehicle_id', vehicleId) : scopedEvents).order('event_date'),
-    (vehicleId ? scopedNavs.eq('vehicle_id', vehicleId) : scopedNavs).order('as_of_date'),
+  // Paged in a stable order (fetchAllRows throws on error): NAVs and notices come oldest first, so
+  // past PostgREST's 1000-row cap the LATEST manager statement was the row that silently fell off.
+  const db = admin as any
+  const scoped = (q: any) => (vehicleId ? q.eq('vehicle_id', vehicleId) : q)
+  const [terms, events, navs, ledgerAccounts] = await Promise.all([
+    fetchAllRows<any>((f, t) => db.from('fund_holding_terms').select('*').eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => scoped(db.from('fund_capital_events').select('*').eq('fund_id', fundId)).order('event_date').range(f, t)),
+    fetchAllRows<any>((f, t) => scoped(db.from('fund_nav_statements').select('*').eq('fund_id', fundId)).order('as_of_date').range(f, t)),
     // THE LEDGER IS THE THIRD WITNESS, and usually the first one to exist. A holding imported
     // from a general ledger has its own 1100-<id>/1200-<id> accounts carrying cost and marks
     // before anybody records a single notice — so the books know which entity holds it even
@@ -78,18 +81,15 @@ export async function loadFofRaw(
     // fund-of-funds invisible on the very page you use to finish entering it.
     // Indexed by chart_of_accounts (fund_id, vehicle_id, company_id) where company_id is not null.
     vehicleId
-      ? (admin as any).from('chart_of_accounts').select('company_id')
-          .eq('fund_id', fundId).eq('vehicle_id', vehicleId).not('company_id', 'is', null)
-      : Promise.resolve({ data: [] as any[], error: null }),
-  ])
-  const failed = results.find(r => r.error)
-  if (failed) throw new Error(`The fund register could not be loaded: ${failed.error.message}`)
-  const [{ data: terms }, { data: events }, { data: navs }, { data: ledgerAccounts }] = results
+      ? fetchAllRows<any>((f, t) => db.from('chart_of_accounts').select('id, company_id')
+          .eq('fund_id', fundId).eq('vehicle_id', vehicleId).not('company_id', 'is', null).range(f, t))
+      : Promise.resolve([] as any[]),
+  ]).catch((e: any) => { throw new Error(`The fund register could not be loaded: ${e?.message ?? e}`) })
 
-  const eventRows = ((events as any[]) ?? [])
+  const eventRows = events
   // A holding with no activity for this vehicle is not this vehicle's holding. Terms alone are a
   // commitment somebody recorded against the firm's register, not a position on these books.
-  const termRows = ((terms as any[]) ?? [])
+  const termRows = terms
   // A holding is this vehicle's if this vehicle's ACTIVITY is against it, or if its terms say so —
   // a fund committed to but not yet called has no events at all, and leaving it out would hide a
   // real unfunded obligation from the schedule of investments.
@@ -100,8 +100,8 @@ export async function loadFofRaw(
     ? new Set([
         ...eventRows.map(e => e.company_id as string),
         ...termRows.filter(t => t.vehicle_id === vehicleId).map(t => t.company_id as string),
-        ...((ledgerAccounts as any[]) ?? []).map(a => a.company_id as string),
-        ...((navs as any[]) ?? []).map(n => n.company_id as string),
+        ...ledgerAccounts.map(a => a.company_id as string),
+        ...navs.map(n => n.company_id as string),
       ])
     : null
   const scopedHoldings = held ? holdingRows.filter(h => held.has(h.id as string)) : holdingRows
@@ -117,7 +117,7 @@ export async function loadFofRaw(
     holdings: scopedHoldings.map(h => ({ id: h.id, name: h.name })),
     terms: scopedTerms,
     events: eventRows,
-    navs: ((navs as any[]) ?? []),
+    navs,
   }
 }
 

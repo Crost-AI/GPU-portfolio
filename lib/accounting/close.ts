@@ -47,8 +47,8 @@ import { associateMembers, lookThroughAccount } from './look-through'
 import { loadCapitalPostings } from './capital-source'
 import { gpLinkFor, loadOwnershipBasis } from './gp-economics'
 import {
-  loadCarryTerms, carryAccrual,
-  type LpEconomics, type DatedContribution,
+  loadCarryTerms, carryAccrual, lpEconomicsFromAccounts,
+  type DatedContribution,
 } from './carry'
 import { loadNotes, noteAccruals } from './note-interest'
 import { ensureInvestmentAccounts } from './investments'
@@ -212,15 +212,23 @@ export async function previewClose(
     return { error: 'This period overlaps an already-closed period — reopen it first' }
   }
 
-  const [{ accounts, capitalPostings, sourcedPostings }, owners, names, basis, terms, commitmentEvents, kind] = await Promise.all([
-    loadPostedLedger(admin, fundId, group),
-    loadOwnership(admin, fundId, group),
-    loadEntityNames(admin, fundId, group),
-    loadAllocationBasis(admin, fundId, group),
-    loadPartnerTerms(admin, fundId, group),
-    loadCommitmentEvents(admin, fundId, group),
-    vehicleKindByName(admin, fundId, group),
-  ])
+  // A failed settings read refuses the preview: allocating on a defaulted basis or without the
+  // side letters would still balance, so nothing downstream would notice.
+  let loaded
+  try {
+    loaded = await Promise.all([
+      loadPostedLedger(admin, fundId, group),
+      loadOwnership(admin, fundId, group),
+      loadEntityNames(admin, fundId, group),
+      loadAllocationBasis(admin, fundId, group),
+      loadPartnerTerms(admin, fundId, group),
+      loadCommitmentEvents(admin, fundId, group),
+      vehicleKindByName(admin, fundId, group),
+    ])
+  } catch (error) {
+    return { error: `Could not read the books and allocation settings, so nothing was allocated: ${(error as any)?.message ?? String(error)}` }
+  }
+  const [{ accounts, capitalPostings, sourcedPostings }, owners, names, basis, terms, commitmentEvents, kind] = loaded
 
   const warnings: string[] = []
 
@@ -1517,12 +1525,13 @@ async function accrueNoteInterest(
  *
  * Everything it needs comes from the ledger as at `periodEnd`:
  *   - each LP's contributions, distributions and current capital (the roll-forward buckets)
- *   - how much carry is ALREADY accrued (the GP partner's `carriedInterest` bucket)
+ *   - the carry each LP has ALREADY borne (its `carriedInterest` bucket) — the accrual reconciles
+ *     every LP to its share of the target, so a re-close with nothing changed posts nothing
  *   - dated contributions, for the preferred-return hurdle
  *
  * The GP partner is excluded from the LP economics — it is receiving the carry, not paying it.
  */
-async function accrueCarry(
+export async function accrueCarry(
   admin: SupabaseClient,
   fundId: string,
   group: string,
@@ -1530,7 +1539,12 @@ async function accrueCarry(
   periodEnd: string,
   sourceRef: string
 ): Promise<{ entryId?: string } | { error: string }> {
-  const terms = await loadCarryTerms(admin, fundId, group)
+  let terms
+  try {
+    terms = await loadCarryTerms(admin, fundId, group)
+  } catch (error) {
+    return { error: `Could not read the carry terms: ${(error as any)?.message ?? String(error)}` }
+  }
   if (terms.kind === 'none' || terms.carryRate <= 0) return {}
   if (terms.recipients.length === 0) {
     return { error: `${group} has carry terms but no recipient set to receive the carry.` }
@@ -1541,7 +1555,8 @@ async function accrueCarry(
   const { capitalPostings } = await loadPostedLedger(admin, fundId, group, periodEnd)
   const accounts = computeCapitalAccounts(capitalPostings)
 
-  // Carry already sitting in the recipients' accounts — the accrual tops up (or reverses) to target.
+  // Carry already sitting in the recipients' accounts — reported with the accrual; the posting
+  // itself reconciles each paying LP's own borne carry to its share of the target.
   // NOTE: only the per-period DELTA is split by the current recipients/pcts. Changing the split (or
   // removing a recipient) is PROSPECTIVE — it does not rebalance carry already accrued in prior
   // periods. LP-side totals stay correct regardless; treat the recipient split as stable once carry
@@ -1550,15 +1565,7 @@ async function accrueCarry(
     terms.recipients.reduce((s, r) => s + (accounts.get(r.lpEntityId)?.carriedInterest ?? 0), 0)
   )
 
-  const lps: LpEconomics[] = Array.from(accounts.entries())
-    .filter(([id]) => !recipientIds.has(id)) // recipients receive carry; they don't pay it
-    .map(([lpEntityId, a]) => ({
-      lpEntityId,
-      contributed: roundCents(a.contributions),
-      distributed: roundCents(-a.distributions), // stored negative on the account
-      nav: roundCents(a.ending),
-    }))
-
+  const lps = lpEconomicsFromAccounts(accounts, recipientIds)
   if (lps.length === 0) return {}
 
   // Dated contributions, for the hurdle. The pref accrues from when cash actually arrived.
@@ -1567,8 +1574,15 @@ async function accrueCarry(
     .map(p => ({ date: p.entryDate ?? periodEnd, amount: roundCents(-p.amount) }))
     .filter(c => c.amount > 0)
 
-  const accrual = carryAccrual({ lps, contributions, asOf: periodEnd }, terms, alreadyAccrued)
-  if (accrual.delta === 0 || accrual.perLp.size === 0) return {}
+  let accrual
+  try {
+    accrual = carryAccrual({ lps, contributions, asOf: periodEnd }, terms, alreadyAccrued)
+  } catch (error) {
+    return { error: (error as any)?.message ?? String(error) }
+  }
+  // Not `delta === 0`: carry can move between LPs (one falls under water, another gains) with
+  // the recipients' total unchanged, and that still has to post.
+  if (accrual.perLp.size === 0) return {}
 
   const capMap = await ensureCapitalAccounts(admin, fundId, group, [
     ...Array.from(accrual.perLp.keys()),
@@ -1657,12 +1671,19 @@ async function accrueAssociateEconomics(
   const unrealizedInFundId = codes.get('1550') ?? investmentId
   const carryReceivableId = codes.get('1600') ?? investmentId
 
-  const [served, own, ownership, terms] = await Promise.all([
-    loadCapitalPostings(admin, fundId, link.servesVehicle, periodEnd),
-    loadCapitalPostings(admin, fundId, group, periodEnd),
-    loadOwnershipBasis(admin, fundId, link, periodEnd),
-    loadPartnerTerms(admin, fundId, group),
-  ])
+  let loaded
+  try {
+    loaded = await Promise.all([
+      loadCapitalPostings(admin, fundId, link.servesVehicle, periodEnd),
+      loadCapitalPostings(admin, fundId, group, periodEnd),
+      loadOwnershipBasis(admin, fundId, link, periodEnd),
+      loadPartnerTerms(admin, fundId, group),
+    ])
+  } catch (error) {
+    // Without the carry points the markup would split carry by ownership instead.
+    return { error: `Could not read the associate's books and carry points: ${(error as any)?.message ?? String(error)}` }
+  }
+  const [served, own, ownership, terms] = loaded
 
   // Target: the associate's fund-book position, split among members (capital by ownership, carry
   // by points). Booked: what its own books already carry for each line.

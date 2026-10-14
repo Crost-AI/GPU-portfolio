@@ -19,7 +19,7 @@ function admin() {
       const rows = () => (table === 'companies' ? companies : table === 'investment_transactions' ? txns : [])
         .filter(r => filters.every(f => f(r)))
       const chain: any = {
-        select: () => chain,
+        select: () => chain, order: () => chain, range: () => chain,
         eq: (k: string, v: any) => { filters.push(r => r[k] === v); return chain },
         then: (res: any) => res({ data: rows(), error: null }),
       }

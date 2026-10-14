@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchAllRows } from '@/lib/accounting/load'
 
 export async function GET(_req: NextRequest) {
   const supabase = await createClient()
@@ -17,24 +18,10 @@ export async function GET(_req: NextRequest) {
   if ((membership as any).role !== 'admin') return NextResponse.json({ error: 'Admin only' }, { status: 403 })
   const fundId = (membership as any).fund_id as string
 
-  // Pull every deal + relevant draft timing. For a fund with hundreds of deals
-  // this is fine; aggregation client-side keeps the API simple.
-  const [{ data: dealsRaw }, { data: draftsRaw }, { data: members }] = await Promise.all([
-    admin
-      .from('diligence_deals')
-      .select('id, name, sector, deal_status, current_memo_stage, lead_partner_id, created_at, updated_at')
-      .eq('fund_id', fundId),
-    admin
-      .from('diligence_memo_drafts')
-      .select('deal_id, ingestion_output, research_output, qa_answers, memo_draft_output, is_draft, finalized_at, created_at')
-      .eq('fund_id', fundId),
-    admin
-      .from('fund_members')
-      .select('user_id, display_name, role')
-      .eq('fund_id', fundId),
-  ])
-
-  const deals = (dealsRaw ?? []) as Array<{
+  // Pull every deal + per-draft presence flags. The flags come from the diligence_memo_draft_flags
+  // view, so the drafts' ingestion/research/memo JSON never leaves Postgres; both reads page past
+  // the 1000-row cap so a large fund is counted in full, not silently truncated.
+  type Deal = {
     id: string
     name: string
     sector: string | null
@@ -43,17 +30,44 @@ export async function GET(_req: NextRequest) {
     lead_partner_id: string | null
     created_at: string | null
     updated_at: string | null
-  }>
-  const drafts = (draftsRaw ?? []) as Array<{
+  }
+  type DraftFlags = {
     deal_id: string
-    ingestion_output: any
-    research_output: any
-    qa_answers: any
-    memo_draft_output: any
+    has_ingestion: boolean
+    has_research: boolean
+    qa_count: number
+    has_memo_draft: boolean
     is_draft: boolean
     finalized_at: string | null
     created_at: string | null
-  }>
+  }
+  let reads: [Deal[], DraftFlags[], { data: any[] | null }]
+  try {
+    reads = await Promise.all([
+      fetchAllRows<Deal>((f, t) => (admin as any)
+        .from('diligence_deals')
+        .select('id, name, sector, deal_status, current_memo_stage, lead_partner_id, created_at, updated_at')
+        .eq('fund_id', fundId)
+        .order('id')
+        .range(f, t)),
+      fetchAllRows<DraftFlags>((f, t) => (admin as any)
+        .from('diligence_memo_draft_flags')
+        .select('deal_id, has_ingestion, has_research, qa_count, has_memo_draft, is_draft, finalized_at, created_at')
+        .eq('fund_id', fundId)
+        .order('deal_id')
+        .order('id')
+        .range(f, t)),
+      admin
+        .from('fund_members')
+        .select('user_id, display_name, role')
+        .eq('fund_id', fundId),
+    ])
+  } catch (e) {
+    console.error('[diligence/analytics] read failed:', (e as { message?: string })?.message ?? e)
+    return NextResponse.json({ error: 'Could not load diligence analytics' }, { status: 500 })
+  }
+  const [deals, drafts, { data: members }] = reads
+
   const memberMap = new Map<string, { display_name: string | null }>()
   for (const m of (members ?? []) as any[]) {
     memberMap.set(m.user_id, { display_name: m.display_name })
@@ -111,10 +125,10 @@ export async function GET(_req: NextRequest) {
     if (d.deal_status === 'won') funnel.won++
     const dDrafts = draftsByDeal.get(d.id) ?? []
     if (dDrafts.length === 0) continue
-    if (dDrafts.some(x => !!x.ingestion_output)) funnel.has_ingestion++
-    if (dDrafts.some(x => !!x.research_output)) funnel.has_research++
-    if (dDrafts.some(x => Array.isArray(x.qa_answers) && x.qa_answers.length > 0)) funnel.has_qa++
-    if (dDrafts.some(x => !!x.memo_draft_output)) funnel.has_memo_draft++
+    if (dDrafts.some(x => x.has_ingestion)) funnel.has_ingestion++
+    if (dDrafts.some(x => x.has_research)) funnel.has_research++
+    if (dDrafts.some(x => x.qa_count > 0)) funnel.has_qa++
+    if (dDrafts.some(x => x.has_memo_draft)) funnel.has_memo_draft++
     if (dDrafts.some(x => !x.is_draft && !!x.finalized_at)) funnel.finalized++
   }
 
@@ -133,7 +147,7 @@ export async function GET(_req: NextRequest) {
     if (!d.created_at) continue
     const dDrafts = draftsByDeal.get(d.id) ?? []
     const earliestMemoDraft = dDrafts
-      .filter(x => !!x.memo_draft_output && !!x.created_at)
+      .filter(x => x.has_memo_draft && !!x.created_at)
       .map(x => new Date(x.created_at!).getTime())
       .reduce<number | null>((min, t) => min === null ? t : Math.min(min, t), null)
     if (earliestMemoDraft) {

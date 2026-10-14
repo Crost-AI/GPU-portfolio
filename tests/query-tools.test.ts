@@ -9,13 +9,16 @@ import { memoryAdmin } from './helpers/memory-admin'
  * dataset is gated by its source tool's access and scoped by its source tool's loader.
  */
 
+// A test may widen a scoped caller's visible companies past ['c1'].
+const scopedCompanies = vi.hoisted(() => ({ ids: null as string[] | null }))
+
 vi.mock('@/lib/access/entity-scope', () => ({
   entityScopeFor: async (_: unknown, a: AccessContext) =>
     a.vehicles.all ? { access: a, vehicleNames: null, companyIds: null } : { access: a, vehicleNames: ['Fund I'], companyIds: ['c1'] },
 }))
 vi.mock('@/lib/access/scope', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/access/scope')>()),
-  visibleCompanyIds: async (_: unknown, a: AccessContext) => (a.vehicles.all ? null : ['c1']),
+  visibleCompanyIds: async (_: unknown, a: AccessContext) => (a.vehicles.all ? null : scopedCompanies.ids ?? ['c1']),
 }))
 vi.mock('@/lib/access/carry-visibility', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/access/carry-visibility')>()),
@@ -24,6 +27,8 @@ vi.mock('@/lib/access/carry-visibility', async importOriginal => ({
 
 import { QUERY_HANDLERS as H } from '@/lib/agent/query-tools'
 import { getTool } from '@/lib/accounting/agent-tools'
+import { DEALS_HANDLERS } from '@/lib/agent/deals-tools'
+import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 
 const member = (grants: Partial<Record<Domain, AccessLevel>>, all = true, features: Partial<FeatureVisibilityMap> = {}): AccessContext => ({
   fundId: 'f1', userId: 'u1', vehicles: { all, ids: all ? [] : ['v1'] }, role: 'member',
@@ -107,7 +112,155 @@ describe('query tools', () => {
     expect(((await carry(member({ accounting: 'read', gp_economics: 'read' }))) as any).rows).toEqual([{ lp: 'GP Carry LLC' }])
   })
 
+  it('counts every journal line, and names every LP, past the 1000-row cap', async () => {
+    const pad = (i: number) => String(i).padStart(5, '0')
+    const entries = Array.from({ length: 700 }, (_, i) => ({ id: `je${pad(i)}`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', status: 'posted', entry_date: '2026-01-01', memo: null, source_type: 'manual' }))
+    store = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
+      chart_of_accounts: [{ id: 'a2', fund_id: 'f1', vehicle_id: 'v1', code: '1000', name: 'Cash', type: 'asset' }, { id: 'a3', fund_id: 'f1', vehicle_id: 'v1', code: '3000', name: 'Partners capital', type: 'equity' }],
+      journal_entries: entries,
+      // 1400 lines; the last capital line belongs to the 1100th LP.
+      journal_postings: entries.flatMap((e, i) => [
+        { id: `${e.id}-d`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', journal_entry_id: e.id, account_id: 'a2', amount: 10 },
+        { id: `${e.id}-c`, fund_id: 'f1', vehicle_id: 'v1', book: 'actual', journal_entry_id: e.id, account_id: 'a3', amount: -10, lp_entity_id: i === 699 ? 'lp01099' : null },
+      ]),
+      lp_entities: Array.from({ length: 1100 }, (_, i) => ({ id: `lp${pad(i)}`, fund_id: 'f1', entity_name: `Partner ${i}` })),
+    }, { maxRows: 1000 })
+    const a = member({ accounting: 'read', gp_economics: 'read' })
+    expect(((await H.query_ledger(ctx(a, 'Fund I'), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([{ count: 1400 }])
+    const named = await H.query_ledger(ctx(a, 'Fund I'), { where: [{ column: 'lp', op: 'eq', value: 'Partner 1099' }], aggregates: [{ fn: 'count' }] }) as any
+    expect(named.rows).toEqual([{ count: 1 }])
+  })
+
   it('needs a dataset when an area has several, and says which', async () => {
     await expect(H.query_portfolio(ctx(member({ portfolio: 'read' })), {})).rejects.toThrow('Pass a dataset: positions, companies, transactions, kpis')
+  })
+})
+
+describe('query datasets load the whole authorized set, past the 1000-row cap', () => {
+  const pad = (i: number) => String(i).padStart(5, '0')
+  const count = (out: any) => out.rows[0].count
+  beforeEach(() => {
+    store = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
+      // 1200 pitches, alternating between two entities; the first 200 are from 2020, so the newest
+      // 500 (deals_list_inbound's cap) never reach them.
+      inbound_deals: Array.from({ length: 1200 }, (_, i) => ({
+        id: `d${pad(i)}`, fund_id: 'f1', vehicle_id: i % 2 ? 'v2' : 'v1', company_name: `Co ${i}`, status: 'new',
+        created_at: i < 200 ? `2020-01-01T00:00:${pad(i).slice(-2)}Z` : `2026-01-01T00:00:00Z`,
+      })),
+      diligence_deals: Array.from({ length: 1100 }, (_, i) => ({
+        id: `dd${pad(i)}`, fund_id: 'f1', vehicle_id: i % 2 ? 'v2' : 'v1', name: `Deal ${i}`, deal_status: 'active', created_at: '2026-01-01T00:00:00Z',
+      })),
+      // 1100 other companies first, so Acme and Birch are past the cap of an unpaged companies read.
+      companies: [
+        ...Array.from({ length: 1100 }, (_, i) => ({ id: `a${pad(i)}`, fund_id: 'f1', name: `Filler ${i}`, holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] })),
+        { id: 'c1', fund_id: 'f1', name: 'Acme', holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] },
+        { id: 'c2', fund_id: 'f1', name: 'Birch', holding_type: 'company', status: 'active', portfolio_group: ['Fund II'] },
+      ],
+      // Acme sorts after the 1100 fillers, so its KPIs sit past an unpaged companies read's cap.
+      metrics: [{ id: 'm1', company_id: 'c1', name: 'ARR', unit: 'USD' }],
+      metric_values: [{ id: 'mv1', metric_id: 'm1', period_label: 'Q2 2026', period_year: 2026, period_quarter: 2, value_number: 150 }],
+      investment_transactions: [
+        ...Array.from({ length: 1100 }, (_, i) => ({ id: `t${pad(i)}`, fund_id: 'f1', company_id: 'c1', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
+        ...Array.from({ length: 50 }, (_, i) => ({ id: `u${pad(i)}`, fund_id: 'f1', company_id: 'c2', portfolio_group: 'Fund II', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
+      ],
+    }, { maxRows: 1000 })
+  })
+
+  it('counts every inbound deal, the oldest included', async () => {
+    const a = member({ dealflow: 'read' })
+    expect(count(await H.query_deals(ctx(a), { aggregates: [{ fn: 'count' }] }))).toBe(1200)
+    const old = await H.query_deals(ctx(a), { where: [{ column: 'created_at', op: 'lt', value: '2021-01-01' }], aggregates: [{ fn: 'count' }] })
+    expect(count(old)).toBe(200)
+  })
+
+  it("still shows a scoped caller only their entity's deals", async () => {
+    const scoped = member({ dealflow: 'read', diligence: 'read' }, false)
+    expect(count(await H.query_deals(ctx(scoped), { aggregates: [{ fn: 'count' }] }))).toBe(600)
+    expect(count(await H.query_deals(ctx(scoped), { where: [{ column: 'created_at', op: 'lt', value: '2021-01-01' }], aggregates: [{ fn: 'count' }] }))).toBe(100)
+    expect(count(await H.query_diligence(ctx(scoped), { aggregates: [{ fn: 'count' }] }))).toBe(550)
+  })
+
+  it('counts every diligence deal', async () => {
+    expect(count(await H.query_diligence(ctx(member({ diligence: 'read' })), { aggregates: [{ fn: 'count' }] }))).toBe(1100)
+  })
+
+  it("counts every transaction, through list_investments' company and entity scope", async () => {
+    const q = { dataset: 'transactions', aggregates: [{ fn: 'count' }] }
+    expect(count(await H.query_portfolio(ctx(member({ portfolio: 'read' })), q))).toBe(1150)
+    expect(count(await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), q))).toBe(1100)
+    const named = await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), { dataset: 'transactions', group_by: ['company'], aggregates: [{ fn: 'sum', column: 'invested' }] }) as any
+    expect(named.rows).toEqual([{ company: 'Acme', sum_invested: 1100 }])
+  })
+
+  it('a scoped caller with no entities sees no deals, rather than a failed query', async () => {
+    const none = { ...member({ dealflow: 'read', diligence: 'read' }, false), vehicles: { all: false, ids: [] } }
+    // PostgREST rejects `in.()`, which this client does not: so pin that no deal query is sent at all.
+    const sent: string[] = []
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => { sent.push(t); return from(t) }
+    // No rows in, no aggregate row out (the engine's answer for an empty set) — and no throw.
+    expect(((await H.query_deals(ctx(none), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([])
+    expect(((await H.query_diligence(ctx(none), { aggregates: [{ fn: 'count' }] })) as any).rows).toEqual([])
+    expect(await DEALS_HANDLERS.deals_list_inbound(ctx(none), {})).toEqual([])
+    expect(sent.filter(t => t === 'inbound_deals' || t === 'diligence_deals')).toEqual([])
+  })
+
+  it('keeps the direct tool capped: 100 by default, 500 at most', async () => {
+    const a = { ...ctx(member({ dealflow: 'read' })) }
+    expect(await DEALS_HANDLERS.deals_list_inbound(a, {})).toHaveLength(100)
+    expect(await DEALS_HANDLERS.deals_list_inbound(a, { limit: 5000 })).toHaveLength(500)
+  })
+
+  it('surfaces a read that fails on a later page instead of answering over the first', async () => {
+    let pages = 0
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => {
+      if (t === 'inbound_deals' && ++pages === 2) store.failNext('inbound_deals', 'select', 'statement timeout')
+      return from(t)
+    }
+    await expect(H.query_deals(ctx(member({ dealflow: 'read' })), { aggregates: [{ fn: 'count' }] })).rejects.toMatchObject({ message: 'statement timeout' })
+    expect(pages).toBe(2)
+  })
+
+  it('reads KPIs for companies past the 1000-row cap', async () => {
+    const out = await H.query_portfolio(ctx(member({ portfolio: 'read' })), { dataset: 'kpis', group_by: ['company'], aggregates: [{ fn: 'sum', column: 'value' }] }) as any
+    expect(out.rows).toEqual([{ company: 'Acme', sum_value: 150 }])
+  })
+
+  it('rejects when the KPI companies read fails, rather than answering "no companies"', async () => {
+    store.failNext('companies', 'select', 'statement timeout')
+    await expect(H.query_portfolio(ctx(member({ portfolio: 'read' })), { dataset: 'kpis' })).rejects.toMatchObject({ message: 'statement timeout' })
+  })
+
+  it("reads one company's whole transaction history past the cap (txnsFor)", async () => {
+    const rows = await PORTFOLIO_HANDLERS.list_investments(ctx(member({ portfolio: 'read' })), { company: 'Acme' }) as any[]
+    expect(rows).toHaveLength(1100)
+  })
+
+  it("chunks a scoped caller's visible company ids, so hundreds of them stay under the URL limit", async () => {
+    const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    const ids = Array.from({ length: 450 }, (_, i) => uuid(i))
+    store = memoryAdmin({
+      companies: ids.map((id, i) => ({ id, fund_id: 'f1', name: `Co ${i}`, holding_type: 'company' })),
+      metrics: ids.map((id, i) => ({ id: `m${i}`, company_id: id, name: 'ARR', unit: 'USD' })),
+      metric_values: ids.map((_, i) => ({ id: `v${i}`, metric_id: `m${i}`, period_label: 'Q2 2026', value_number: 1 })),
+    }, { maxRows: 1000 })
+    const sent: number[] = []
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => {
+      const q = from(t)
+      if (t === 'companies') { const inner = q.in; q.in = (k: string, vs: unknown[]) => { sent.push(vs.length); return inner(k, vs) } }
+      return q
+    }
+    scopedCompanies.ids = ids
+    try {
+      const out = await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), { dataset: 'kpis', aggregates: [{ fn: 'count' }, { fn: 'count_distinct', column: 'company' }] }) as any
+      expect(out.rows).toEqual([{ count: 450, count_distinct_company: 450 }])
+      expect(sent).toEqual([200, 200, 50])
+    } finally {
+      scopedCompanies.ids = null
+    }
   })
 })

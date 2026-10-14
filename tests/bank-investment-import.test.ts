@@ -82,7 +82,7 @@ describe('bank import against posted investment entries', () => {
   })
   it('losing the claim to another row falls back to review', async () => {
     seed([entry(E1, -1000)], {}, (table: string, op: string, payload: any, tables: any) => {
-      if (table === 'bank_transactions' && op === 'insert' && payload.journal_entry_id === E1 && !tables.bank_transactions.length) {
+      if (table === 'bank_transactions' && op === 'insert' && [payload].flat().some((r: any) => r.journal_entry_id === E1) && !tables.bank_transactions.length) {
         tables.bank_transactions.push({ id: 'racer', vehicle_id: 'v', journal_entry_id: E1, dedup_hash: 'other' })
       }
     })

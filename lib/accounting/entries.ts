@@ -25,6 +25,15 @@ function lpDebit(capMap: CapitalAccountMap, lpEntityId: string, amount: number, 
   return { accountId, amount: roundCents(amount), currency, lpEntityId }
 }
 
+/**
+ * The offset of an already-rounded leg. Every builder rounds its primary leg once and posts the
+ * exact negation of that on the other side, rather than rounding the negated raw amount again,
+ * so a balanced entry never depends on the two roundings agreeing. Never -0.
+ */
+function negate(rounded: number): number {
+  return rounded === 0 ? 0 : -rounded
+}
+
 function finalize(base: Base, sourceType: string, postings: Posting[]): JournalEntry {
   const entry: JournalEntry = { fundId: base.fundId, entryDate: base.entryDate, memo: base.memo, sourceType, postings }
   assertBalanced(entry)
@@ -64,8 +73,9 @@ export function buildCapitalCallIssuanceEntry(
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perLp.entries())) {
     if (!amt) continue
-    postings.push({ accountId: receivableAccountId, amount: roundCents(amt), currency, lpEntityId }) // Dr receivable
-    postings.push(lpDebit(capMap, lpEntityId, -amt, currency)) // Cr LP capital
+    const called = roundCents(amt)
+    postings.push({ accountId: receivableAccountId, amount: called, currency, lpEntityId }) // Dr receivable
+    postings.push(lpDebit(capMap, lpEntityId, negate(called), currency)) // Cr LP capital
   }
   return finalize(base, 'capital_call', postings)
 }
@@ -82,9 +92,10 @@ export function buildFundingEntry(
   receivableAccountId: string,
   currency = 'USD'
 ): JournalEntry {
+  const amt = roundCents(amount)
   return finalize(base, 'contribution_funding', [
-    { accountId: cashAccountId, amount: roundCents(amount), currency, lpEntityId: null },
-    { accountId: receivableAccountId, amount: roundCents(-amount), currency, lpEntityId }, // Cr receivable
+    { accountId: cashAccountId, amount: amt, currency, lpEntityId: null },
+    { accountId: receivableAccountId, amount: negate(amt), currency, lpEntityId }, // Cr receivable
   ])
 }
 
@@ -96,13 +107,16 @@ export function buildDistributionEntry(
   cashAccountId: string,
   currency = 'USD'
 ): JournalEntry {
+  // Round each partner's leg once and total the ROUNDED legs, so the cash leg is exactly what
+  // the capital legs add up to — never a total of the unrounded amounts rounded separately.
   let total = 0
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perLp.entries())) {
-    total = roundCents(total + amt)
-    postings.push(lpDebit(capMap, lpEntityId, amt, currency))
+    const leg = lpDebit(capMap, lpEntityId, amt, currency)
+    total = roundCents(total + leg.amount)
+    postings.push(leg)
   }
-  postings.push({ accountId: cashAccountId, amount: roundCents(-total), currency, lpEntityId: null })
+  postings.push({ accountId: cashAccountId, amount: negate(total), currency, lpEntityId: null })
   return finalize(base, 'distribution', postings)
 }
 
@@ -127,8 +141,9 @@ export function buildDistributionDeclarationEntry(
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perLp.entries())) {
     if (!amt) continue
-    postings.push(lpDebit(capMap, lpEntityId, amt, currency))                                  // Dr LP capital
-    postings.push({ accountId: payableAccountId, amount: roundCents(-amt), currency, lpEntityId }) // Cr payable
+    const declared = roundCents(amt)
+    postings.push(lpDebit(capMap, lpEntityId, declared, currency))                             // Dr LP capital
+    postings.push({ accountId: payableAccountId, amount: negate(declared), currency, lpEntityId }) // Cr payable
   }
   return finalize(base, 'distribution', postings)
 }
@@ -149,7 +164,7 @@ export function buildDistributionSettlementEntry(
   const amt = roundCents(Math.abs(amount))
   return finalize(base, 'distribution_settlement', [
     { accountId: payableAccountId, amount: amt, currency, lpEntityId },        // Dr payable
-    { accountId: cashAccountId, amount: roundCents(-amt), currency, lpEntityId: null }, // Cr cash
+    { accountId: cashAccountId, amount: negate(amt), currency, lpEntityId: null }, // Cr cash
   ])
 }
 
@@ -179,9 +194,10 @@ export function buildManagementFeeEntry(
   accts: PnlAccounts,
   currency = 'USD'
 ): JournalEntry {
+  const amt = roundCents(fee.total)
   return finalize(base, 'management_fee', [
-    { accountId: accts.pnlAccountId, amount: roundCents(fee.total), currency, lpEntityId: null },
-    { accountId: accts.offsetAccountId, amount: roundCents(-fee.total), currency, lpEntityId: null },
+    { accountId: accts.pnlAccountId, amount: amt, currency, lpEntityId: null },
+    { accountId: accts.offsetAccountId, amount: negate(amt), currency, lpEntityId: null },
   ])
 }
 
@@ -195,9 +211,10 @@ export function buildExpenseEntry(
   accts: PnlAccounts,
   currency = 'USD'
 ): JournalEntry {
+  const amt = roundCents(total)
   return finalize(base, 'partnership_expense', [
-    { accountId: accts.pnlAccountId, amount: roundCents(total), currency, lpEntityId: null },
-    { accountId: accts.offsetAccountId, amount: roundCents(-total), currency, lpEntityId: null },
+    { accountId: accts.pnlAccountId, amount: amt, currency, lpEntityId: null },
+    { accountId: accts.offsetAccountId, amount: negate(amt), currency, lpEntityId: null },
   ])
 }
 
@@ -211,9 +228,10 @@ export function buildGainEntry(
   accts: PnlAccounts,
   currency = 'USD'
 ): JournalEntry {
+  const amt = roundCents(total)
   return finalize(base, 'realized_gain', [
-    { accountId: accts.offsetAccountId, amount: roundCents(total), currency, lpEntityId: null }, // Dr asset
-    { accountId: accts.pnlAccountId, amount: roundCents(-total), currency, lpEntityId: null },   // Cr income
+    { accountId: accts.offsetAccountId, amount: amt, currency, lpEntityId: null }, // Dr asset
+    { accountId: accts.pnlAccountId, amount: negate(amt), currency, lpEntityId: null }, // Cr income
   ])
 }
 
@@ -234,10 +252,11 @@ export function buildPeriodCloseEntry(
   if (nonzero.length === 0) throw new Error('Nothing to close — no P&L balances')
   let sum = 0
   const postings: Posting[] = nonzero.map(b => {
-    sum = roundCents(sum + b.balance)
-    return { accountId: b.accountId, amount: roundCents(-b.balance), currency, lpEntityId: null }
+    const balance = roundCents(b.balance)
+    sum = roundCents(sum + balance)
+    return { accountId: b.accountId, amount: negate(balance), currency, lpEntityId: null }
   })
-  postings.push({ accountId: bridgeAccountId, amount: roundCents(sum), currency, lpEntityId: null })
+  postings.push({ accountId: bridgeAccountId, amount: sum, currency, lpEntityId: null })
   return finalize(base, 'period_close', postings)
 }
 
@@ -294,18 +313,19 @@ export function buildCarryEntry(
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perLpCarry.entries())) {
     if (amt === 0) continue
-    total = roundCents(total + amt)
-    postings.push(lpDebit(capMap, lpEntityId, amt, currency))
+    const leg = lpDebit(capMap, lpEntityId, amt, currency)
+    total = roundCents(total + leg.amount)
+    postings.push(leg)
   }
   if (recipients && recipients.length > 0) {
     let allocated = 0
     recipients.forEach((r, i) => {
       const amt = i === recipients.length - 1 ? roundCents(total - allocated) : roundCents((total * r.pct) / 100)
       allocated = roundCents(allocated + amt)
-      if (amt !== 0) postings.push(lpDebit(capMap, r.lpEntityId, roundCents(-amt), currency))
+      if (amt !== 0) postings.push(lpDebit(capMap, r.lpEntityId, negate(amt), currency))
     })
   } else {
-    postings.push({ accountId: gpCapitalAccountId, amount: roundCents(-total), currency, lpEntityId: null })
+    postings.push({ accountId: gpCapitalAccountId, amount: negate(total), currency, lpEntityId: null })
   }
   return finalize(base, 'carried_interest', postings)
 }
@@ -337,11 +357,12 @@ export function buildAssociateMarkupEntry(
   const postings: Posting[] = []
   for (const [lpEntityId, amt] of Array.from(perMember.entries())) {
     if (amt === 0) continue
-    total = roundCents(total + amt)
-    postings.push(lpDebit(capMap, lpEntityId, roundCents(-amt), currency))
+    const share = roundCents(amt)
+    total = roundCents(total + share)
+    postings.push(lpDebit(capMap, lpEntityId, negate(share), currency))
   }
   // Debit Investment in Fund by the same total — the associate's stake marked up by this line.
-  postings.push({ accountId: investmentAccountId, amount: roundCents(total), currency, lpEntityId: null })
+  postings.push({ accountId: investmentAccountId, amount: total, currency, lpEntityId: null })
   return finalize(base, sourceType, postings)
 }
 

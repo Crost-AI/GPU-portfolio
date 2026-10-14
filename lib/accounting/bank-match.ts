@@ -162,8 +162,8 @@ async function retireEntry(
  * Who gets how much of a distribution — the precedence rules, pulled out so they can be
  * pinned by a test.
  *
- * A named partner takes the whole amount; explicit per-LP amounts are used as given (and must
- * total the transaction). There is deliberately NO pro-rata fallback.
+ * A named partner takes the whole amount; explicit per-LP amounts are rounded to the cent and
+ * must then total the transaction exactly. There is deliberately NO pro-rata fallback.
  *
  * There used to be, and it was the bug: an unnamed outflow was split across every partner by
  * capital balance, so a $500 wire to ONE partner debited all twenty — the recipient credited
@@ -187,11 +187,15 @@ export function resolveDistributionSplit(
   }
 
   if (perLpOverride && perLpOverride.size > 0) {
-    const sum = roundCents(Array.from(perLpOverride.values()).reduce((s, v) => s + v, 0))
-    if (Math.abs(sum - total) > 0.01) {
+    // Validate what will be POSTED: each partner's leg rounded once, and their sum. The raw
+    // amounts can total the transaction while the rounded legs land a cent away from it — and
+    // the entry's cash leg is the sum of the rounded legs, not the bank amount.
+    const perLp = new Map(Array.from(perLpOverride, ([id, v]) => [id, roundCents(v)] as [string, number]))
+    const sum = roundCents(Array.from(perLp.values()).reduce((s, v) => s + v, 0))
+    if (Math.abs(sum - roundCents(total)) >= 0.005) {
       return { error: `The per-LP amounts total ${sum}, but the transaction is ${total}.` }
     }
-    return { perLp: perLpOverride }
+    return { perLp }
   }
 
   return { error: 'Name the partner this payment went to. If it really is a fund-wide distribution, declare it on the Capital accounts page first — the wire then settles that declaration.' }

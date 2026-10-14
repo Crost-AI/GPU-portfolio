@@ -1,6 +1,6 @@
 import type { OpeningLink, ReviewedPeriod } from './capital-evidence'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { currentOwnership, loadLedgerRowsBatch, type InvestmentRow, type Ownership, type LedgerRows } from './load'
+import { currentOwnership, fetchAllRows, loadLedgerRowsBatch, type InvestmentRow, type Ownership, type LedgerRows } from './load'
 import { loadPositionsBatch, type LpPosition } from './lp-positions'
 import { loadCommitmentEventsBatch, type CommitmentEvent } from './terms'
 import type { VehicleIdMap } from './vehicle-id'
@@ -41,19 +41,24 @@ export interface FundPreload {
 }
 
 export async function loadFundPreload(admin: SupabaseClient, fundId: string, asOf?: string): Promise<FundPreload> {
-  const [vehRes, entRes, invRes, periodRes] = await Promise.all([
-    (admin as any).from('fund_vehicles').select('id, name, aliases, vintage_year').eq('fund_id', fundId),
-    (admin as any).from('lp_entities').select('id, entity_name, partner_class').eq('fund_id', fundId),
-    (admin as any).from('lp_investments')
-      .select('entity_id, portfolio_group, commitment, paid_in_capital, distributions, snapshot_id, updated_at, lp_snapshots(as_of_date, created_at)')
-      .eq('fund_id', fundId),
-    (admin as any).from('fiscal_periods').select('vehicle_id, period_start, period_end').eq('fund_id', fundId).eq('status', 'closed'),
+  // Paged, in a stable order, and throwing on error: lp_investments holds one row per LP per
+  // SNAPSHOT, so a fund passes PostgREST's 1000-row cap long before it has 1000 partners — and a
+  // truncated (or failed, read as empty) set reduced through `currentOwnership` silently drops
+  // partners or keeps a superseded commitment. Same reads as the per-vehicle loaders in load.ts.
+  const db = admin as any
+  const [vehRows, entRows, invRows, periodRows] = await Promise.all([
+    fetchAllRows<any>((f, t) => db.from('fund_vehicles').select('id, name, aliases, vintage_year').eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('lp_entities').select('id, entity_name, partner_class').eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('lp_investments')
+      .select('id, entity_id, portfolio_group, commitment, paid_in_capital, distributions, snapshot_id, updated_at, lp_snapshots(as_of_date, created_at)')
+      .eq('fund_id', fundId).range(f, t)),
+    fetchAllRows<any>((f, t) => db.from('fiscal_periods').select('vehicle_id, period_start, period_end').eq('fund_id', fundId).eq('status', 'closed').range(f, t)),
   ])
 
   // fund_vehicles → idMap (name + aliases) and vintage, from the one read.
   const idMap: VehicleIdMap = new Map()
   const vintageByName = new Map<string, number | null>()
-  for (const v of ((vehRes.data as any[]) ?? [])) {
+  for (const v of vehRows) {
     if (v.name) {
       idMap.set(v.name as string, v.id as string)
       vintageByName.set(v.name as string, v.vintage_year == null ? null : Number(v.vintage_year))
@@ -63,14 +68,14 @@ export async function loadFundPreload(admin: SupabaseClient, fundId: string, asO
 
   const entityNames = new Map<string, string>()
   const entityClasses = new Map<string, string>()
-  for (const e of ((entRes.data as any[]) ?? [])) {
+  for (const e of entRows) {
     entityNames.set(e.id as string, (e.entity_name ?? e.id) as string)
     entityClasses.set(e.id as string, (e.partner_class ?? 'lp') as string)
   }
 
   // lp_investments grouped by portfolio_group, each group reduced to current ownership.
   const invByGroup = new Map<string, InvestmentRow[]>()
-  for (const r of ((invRes.data as any[]) ?? [])) {
+  for (const r of invRows) {
     const g = r.portfolio_group as string
     if (!g) continue
     const list = invByGroup.get(g) ?? []
@@ -82,8 +87,7 @@ export async function loadFundPreload(admin: SupabaseClient, fundId: string, asO
 
   const reviewedPeriodsByVehicleId = new Map<string, ReviewedPeriod[]>()
   const closedThroughByVehicleId = new Map<string, string>()
-  if (periodRes.error) throw periodRes.error
-  for (const row of periodRes.data ?? []) {
+  for (const row of periodRows) {
     const periods = reviewedPeriodsByVehicleId.get(row.vehicle_id) ?? []
     if (row.period_start && row.period_end) periods.push({ start: row.period_start, end: row.period_end })
     reviewedPeriodsByVehicleId.set(row.vehicle_id, periods)

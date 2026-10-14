@@ -8,6 +8,9 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { importBankTransactions } from '@/lib/accounting/bank-import'
 
+// A large feed drafts one entry per unmatched row; give it room to finish.
+export const maxDuration = 120
+
 // POST — import a CSV/TSV transaction feed for a vehicle.
 // Body: { csv, source?, group? }
 export async function POST(req: NextRequest) {

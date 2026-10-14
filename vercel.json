@@ -51,6 +51,9 @@
     },
     "app/api/cron/ops-reminders/route.ts": {
       "maxDuration": 120
+    },
+    "app/api/accounting/bank/import/route.ts": {
+      "maxDuration": 120
     }
   },
   "crons": [
