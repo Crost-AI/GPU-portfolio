@@ -25,12 +25,25 @@ function safeTokenCompare(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  // Rate limit inbound webhook: 60 per minute per IP
-  const limited = await rateLimit({ key: `inbound:${getClientIp(req)}`, limit: 60, windowSeconds: 60 })
+  let payload: PostmarkPayload
+  try {
+    payload = await req.json()
+    if (!payload || typeof payload !== 'object') throw new Error('payload is not an object')
+  } catch (err) {
+    console.error('[inbound-email] Malformed payload:', err)
+    return NextResponse.json({ ok: true })
+  }
+
+  // Rate limit inbound webhook: 60 per minute per recipient inbox. Not per IP: every delivery
+  // comes from Postmark's small IP pool, so an IP bucket is one budget shared by every fund on the
+  // deployment.
+  const inbox = (payload.OriginalRecipient || payload.To || '').trim().toLowerCase()
+  const key = inbox ? `inbound:to:${inbox}` : `inbound:ip:${getClientIp(req)}`
+  const limited = await rateLimit({ key, limit: 60, windowSeconds: 60 })
   if (limited) return limited
 
   try {
-    await handleInbound(req)
+    await handleInbound(req, payload)
   } catch (err) {
     console.error('[inbound-email] Unhandled error:', err)
   }
@@ -41,14 +54,13 @@ export async function POST(req: NextRequest) {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-async function handleInbound(req: NextRequest) {
+async function handleInbound(req: NextRequest, payload: PostmarkPayload) {
   const supabase = createAdminClient()
   // Accept token from Authorization header (preferred) or query string (legacy/Postmark)
   const authHeader = req.headers.get('authorization')
   const token = (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null)
     ?? req.nextUrl.searchParams.get('token')
     ?? ''
-  const payload = (await req.json()) as PostmarkPayload
 
   const toAddress = payload.OriginalRecipient || payload.To
   const fromAddress = payload.FromFull?.Email || payload.From
@@ -225,13 +237,18 @@ async function resolveFund(
   fromAddress: string,
   token: string
 ): Promise<{ fundId: string; isGlobal: boolean } | null> {
+  if (!toAddress) return null
+
+  // Case-insensitive: mail addresses are, and a sender's client may have changed the case of the
+  // inbox. ilike with LIKE's metacharacters escaped, then an exact comparison, so the address can
+  // never act as a pattern (PostgREST also reads `*` as `%`).
   const { data: fundSettings } = await supabase
     .from('fund_settings')
-    .select('fund_id, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
-    .eq('postmark_inbound_address', toAddress)
+    .select('fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
+    .ilike('postmark_inbound_address', toAddress.replace(/[\\%_]/g, '\\$&'))
     .maybeSingle()
 
-  if (fundSettings) {
+  if (fundSettings && fundSettings.postmark_inbound_address?.toLowerCase() === toAddress.toLowerCase()) {
     // Prefer encrypted token; fall back to plaintext for legacy
     let expectedToken = fundSettings.postmark_webhook_token ?? ''
     if (fundSettings.postmark_webhook_token_encrypted && fundSettings.encryption_key_encrypted) {

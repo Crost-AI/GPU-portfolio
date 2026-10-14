@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
+import { todayLocalIso } from '@/lib/local-date'
 
 // Intercompany: what the funds owe the management company and what it owes them.
 //
@@ -38,7 +39,7 @@ const KIND_LABELS: Record<string, string> = {
 /** Kinds that create a balance now and move cash later. Mirrors ACCRUING_KINDS server-side. */
 const ACCRUING = new Set(['management_fee', 'expense_reimbursement', 'allocated_cost', 'other'])
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = todayLocalIso
 
 /**
  * Whose side the words are on. The data is always the MANAGEMENT COMPANY's (its receivables, its

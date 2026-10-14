@@ -17,6 +17,7 @@ import { VEHICLE_KIND_LABELS, isVehicleKind } from '@/lib/vehicle-kinds'
 import { DOMAIN_META, domainFundLevel, domainGrantableToMembers, type Domain } from '@/lib/access/domains'
 import { FEATURE_META } from '@/lib/types/feature-meta'
 import type { FeatureVisibilityMap } from '@/lib/types/features'
+import { todayLocalIso } from '@/lib/local-date'
 
 type Level = 'none' | 'read' | 'write'
 
@@ -452,7 +453,7 @@ function PresetPicker({ presets, onApply, busy }: { presets: PresetInfo[]; onApp
  */
 function ExpiryPicker({ value, onChange, busy }: { value: string | null; onChange: (date: string) => void; busy?: boolean }) {
   const date = value ? value.slice(0, 10) : ''
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayLocalIso()
   return (
     <label className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
       <span className="whitespace-nowrap">Access ends</span>

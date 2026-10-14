@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Loader2, FileText, Check, Landmark, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react'
 import { DocumentViewer, type ViewerDoc } from '@/components/portal/document-viewer'
+import { todayLocalIso } from '@/lib/local-date'
 
 interface Notice {
   kind: 'capital_call' | 'distribution'
@@ -60,7 +61,7 @@ export default function PortalNoticesPage() {
   const [reference, setReference] = useState('')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayLocalIso()
 
   function load() {
     setLoading(true)

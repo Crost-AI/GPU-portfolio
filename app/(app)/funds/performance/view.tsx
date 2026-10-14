@@ -11,11 +11,12 @@ import {
   lastQuarterEnd, periodLabel, performanceMoney, performanceMultiple, performancePct,
   type FundPerformanceReport, type PerformanceGrouping,
 } from '@/lib/accounting/fund-performance-format'
+import { todayLocalIso } from '@/lib/local-date'
 
 /** The last `n` calendar quarter ends, newest first. */
 function recentQuarterEnds(n: number): string[] {
   const out: string[] = []
-  let d = lastQuarterEnd(new Date().toISOString().slice(0, 10))
+  let d = lastQuarterEnd(todayLocalIso())
   for (let i = 0; i < n; i++) {
     out.push(d)
     // Step back one day, then to that day's quarter end.

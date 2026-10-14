@@ -11,6 +11,7 @@ import { fmtNum } from '@/components/investment-transaction-form'
 import { useCanWrite } from '@/components/access-context'
 import { latestOnly } from '@/lib/portfolio/latest-only'
 import { quoteBasisNote } from './holding-panels'
+import { todayLocalIso } from '@/lib/local-date'
 
 interface Quote { id: string; as_of_date: string; price: number; basis: 'close' | 'intraday' | 'indicative' }
 interface Feed {
@@ -28,7 +29,7 @@ interface Mark { delta: number; price: number; quoteDate: string; shares: number
 interface EntityMark { vehicleId: string; entity: string; mark: Mark | null; problem: string | null }
 
 const EMPTY = { symbol: '', exchange: '', quoteCurrency: 'USD', quoteScale: '1', activeFrom: '', restrictionUntil: '', restrictionDiscount: '' }
-const today = () => new Date().toISOString().slice(0, 10)
+const today = todayLocalIso
 
 /**
  * The price feed a holding marks from — a listed company's ticker or a token's — with the quotes

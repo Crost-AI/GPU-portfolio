@@ -9,6 +9,7 @@ import { AccountPicker, type PickerAccount } from '@/components/accounting/accou
 import { ENTRY_SOURCE_TYPES, ENTRY_SOURCE_TYPE_LABELS, isEntrySourceType } from '@/lib/accounting/source-types'
 import { reversedEntryId } from '@/lib/accounting/reversal'
 import { EntryReceipts } from '@/components/accounting/entry-receipts'
+import { todayLocalIso } from '@/lib/local-date'
 
 interface Acct { id: string; code: string; name: string; type?: string; lp_entity_id: string | null; is_active?: boolean }
 interface PostingRow { id: string; account_id: string; amount: number; lp_entity_id: string | null }
@@ -21,7 +22,7 @@ interface Meta { status: string; postedAt: string | null; sourceRef: string | nu
 let seq = 0
 const newLine = (): Line => ({ key: `l${seq++}`, accountId: '', debit: '', credit: '', lpEntityId: null })
 const num = (s: string) => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0 }
-const today = () => new Date().toISOString().slice(0, 10)
+const today = todayLocalIso
 const short = (id: string) => id.slice(0, 8)
 const typeLabel = (t: string) => (isEntrySourceType(t) ? ENTRY_SOURCE_TYPE_LABELS[t] : String(t).replace(/_/g, ' '))
 
