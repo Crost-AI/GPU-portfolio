@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
   if (error) return dbError(error, 'default-metrics')
 
   // Apply to the caller's existing companies now (new companies get seeded at creation).
-  const { inserted, companies } = await applyDefaultsToAllCompanies(admin, gate.fundId, (await loadEntityScope(admin, gate)).companyIds)
+  const { inserted, companies, errors } = await applyDefaultsToAllCompanies(admin, gate.fundId, (await loadEntityScope(admin, gate)).companyIds)
 
-  return NextResponse.json({ metric: data, applied: { inserted, companies } }, { status: 201 })
+  return NextResponse.json({ metric: data, applied: { inserted, companies, errors } }, { status: 201 })
 }
