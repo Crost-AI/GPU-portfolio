@@ -26,7 +26,9 @@ import { intercompanyBalances, settleIntercompanyCharge } from '@/lib/accounting
 function fakeDb(tables: Record<string, Row[]>) {
   let seq = 0
   const log: { table: string; op: string; order?: string; range?: [number, number] }[] = []
-  const failNext: { table: string; when: (patch: Row) => boolean }[] = []
+  // An update that fails outright, or (commit) one that lands but whose response is lost.
+  const failNext: { table: string; when: (patch: Row) => boolean; commit?: boolean }[] = []
+  const failDeletes: { table: string }[] = []
   let insertGate: ((table: string) => Promise<void>) | null = null
   const uniqueViolation = (table: string, row: Row) => {
     const live = (r: Row) => r.status !== 'void'
@@ -53,12 +55,16 @@ function fakeDb(tables: Record<string, Row[]>) {
       }
       if (op === 'update') {
         const i = failNext.findIndex(f => f.table === table && f.when(payload))
-        if (i >= 0) { failNext.splice(i, 1); return { data: null, error: { message: 'connection reset' } } }
+        const fail = i >= 0 ? failNext.splice(i, 1)[0] : null
+        if (fail && !fail.commit) return { data: null, error: { message: 'connection reset' } }
         const rows = match()
+        if (fail) { for (const r of rows) Object.assign(r, payload); return { data: null, error: { message: 'connection reset' } } }
         for (const r of rows) Object.assign(r, payload)
         return { data: returning ? rows.map(r => ({ id: r.id })) : null, error: null }
       }
       if (op === 'delete') {
+        const d = failDeletes.findIndex(f => f.table === table)
+        if (d >= 0) { failDeletes.splice(d, 1); return { data: null, error: { message: 'Period "Q2 2026" is closed. Reopen it before creating or changing entries' } } }
         const gone = new Set(match())
         tables[table] = tables[table].filter(r => !gone.has(r))
         return { data: null, error: null }
@@ -92,6 +98,8 @@ function fakeDb(tables: Record<string, Row[]>) {
     admin: { from } as any,
     tables, log,
     failNextUpdate: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when }),
+    loseNextUpdateResponse: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when, commit: true }),
+    failNextDelete: (table: string) => failDeletes.push({ table }),
     gateInserts: (g: typeof insertGate) => { insertGate = g },
   }
 }
@@ -273,6 +281,80 @@ describe('re-issuing an invoice whose charge already exists', () => {
   })
 })
 
+describe('voiding a draft invoice while it is being issued', () => {
+  it('unwinds the fresh fund entry when the charge was voided before it could be linked', async () => {
+    const db = world()
+    // Hold A before it writes the fund entry: the charge exists, unlinked, with nothing behind it.
+    let reached!: () => void
+    const atPost = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    const persist = mocks.persist.getMockImplementation()!
+    mocks.persist.mockImplementationOnce(async (...args: any[]) => { reached(); await held; return persist(...args) })
+
+    const a = issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    await atPost
+    expect(await voidPartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
+    go()
+
+    expect(await a).toMatchObject({ error: expect.stringContaining('neither side was booked') })
+    expect(db.tables.partnership_invoices[0].status).toBe('void')
+    expect(db.tables.journal_entries.filter(e => String(e.source_ref).startsWith('intercompany:'))).toHaveLength(0)
+    expect(db.tables.intercompany_transactions.filter(c => c.status !== 'void')).toHaveLength(0)
+  })
+
+  it('unwinds the fresh fund entry when the invoice was voided before its charge existed', async () => {
+    const db = world()
+    // Hold A's charge insert: it has read the invoice as a draft, and the void finds no charge yet.
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    db.gateInserts(async table => { if (table === 'intercompany_transactions') { reached(); await held } })
+
+    const a = issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    await atInsert
+    db.gateInserts(null)
+    expect(await voidPartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
+    go()
+
+    expect(await a).toMatchObject({ status: 409, error: expect.stringContaining('Nothing is booked') })
+    expect(db.tables.partnership_invoices[0].status).toBe('void')
+    expect(db.tables.journal_entries.filter(e => String(e.source_ref).startsWith('intercompany:'))).toHaveLength(0)
+    expect(db.tables.intercompany_transactions.every(c => c.status === 'void')).toBe(true)
+  })
+})
+
+describe('a lost or refused write on the way out', () => {
+  const fundEntries = (db: ReturnType<typeof world>) => db.tables.journal_entries.filter(e => String(e.source_ref).startsWith('intercompany:'))
+
+  it('accepts a charge link that committed although its response was lost', async () => {
+    const db = world()
+    db.loseNextUpdateResponse('intercompany_transactions', patch => 'from_entry_id' in patch)
+
+    const res = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(res).toMatchObject({ ok: true })
+    expect(fundEntries(db)).toHaveLength(1)
+    expect(db.tables.intercompany_transactions[0].from_entry_id).toBe(fundEntries(db)[0].id)
+  })
+
+  it('keeps the charge, and names what is left, when the unwind is refused', async () => {
+    const db = world()
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
+    db.failNextDelete('journal_postings')
+
+    const res = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    const [left] = fundEntries(db)
+    expect(res).toMatchObject({ error: expect.stringContaining(left.id) })
+    expect((res as any).error).not.toContain('neither side was booked')
+    // The charge stays as the guard: issuing again is refused rather than booking over it.
+    expect(db.tables.intercompany_transactions).toHaveLength(1)
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ status: 409 })
+    expect(mocks.persist).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('voiding a draft invoice that carries a charge', () => {
   const orphan = (db: ReturnType<typeof world>) => db.tables.intercompany_transactions.push({
     id: 'ic-orphan', fund_id: FUND, from_vehicle_id: FUNDV, to_vehicle_id: MANCO, kind: 'expense_reimbursement',
@@ -441,6 +523,45 @@ describe('settling an intercompany charge', () => {
     expect(db.tables.intercompany_transactions[0]).toMatchObject({
       status: 'settled', settled_date: '2026-05-01', to_settlement_entry_id: 'set-payee', from_settlement_entry_id: payer.id,
     })
+  })
+
+  it('never undoes a payee entry another attempt has already paired', async () => {
+    const db = world()
+    accrued(db)
+    // A: posts and links the payee side, then is held at its payer post.
+    let reached!: () => void
+    const atPayer = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    const persist = mocks.persist.getMockImplementation()!
+    let calls = 0
+    mocks.persist.mockImplementation(async (...args: any[]) => {
+      if (++calls === 2) { reached(); await held }
+      return persist(...args)
+    })
+
+    const a = settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    await atPayer
+    // B: reads A's linked payee entry, posts and links the payer side, and settles the charge.
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')).toEqual({ ok: true })
+    go()
+
+    // A loses the payer race to the index and must not delete the payee entry B settled with.
+    expect(await a).toMatchObject({ error: expect.stringContaining('another request') })
+    const row = db.tables.intercompany_transactions[0]
+    expect(row.status).toBe('settled')
+    expect(settlements(db).map(e => e.id).sort()).toEqual([row.to_settlement_entry_id, row.from_settlement_entry_id].sort())
+    expect(settlements(db)).toHaveLength(2)
+  })
+
+  it('accepts a settlement link that committed although its response was lost', async () => {
+    const db = world()
+    accrued(db)
+    db.loseNextUpdateResponse('intercompany_transactions', patch => 'to_settlement_entry_id' in patch)
+
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')).toEqual({ ok: true })
+    expect(settlements(db)).toHaveLength(2)
+    expect(db.tables.intercompany_transactions[0].status).toBe('settled')
   })
 
   it('unwinds and unlinks the payee side when the payer side fails', async () => {

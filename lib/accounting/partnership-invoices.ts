@@ -24,7 +24,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { intercompanyChargeRef, postIntercompanyCharge } from './intercompany'
+import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry } from './intercompany'
 import { liveEntryByRef } from './persist'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
@@ -392,7 +392,7 @@ export async function issuePartnershipInvoice(
     partnershipInvoiceId: id,
   })
   if ('error' in res) return { error: res.error, status: res.duplicate ? 409 : 400 }
-  return markIssued(admin, fundId, id, res.id)
+  return markIssued(admin, fundId, id, res.id, true)
 }
 
 /**
@@ -458,6 +458,8 @@ async function markIssued(
   fundId: string,
   id: string,
   chargeId: string,
+  /** This request has just booked the charge: if the invoice is gone, so is the booking. */
+  fresh = false,
 ): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
   const now = new Date().toISOString()
   const { data: updated, error } = await admin.from('partnership_invoices' as any).update({
@@ -472,7 +474,24 @@ async function markIssued(
   if (readErr) return { error: `${booked}, but the invoice could not be re-read: ${readErr.message}`, status: 500 }
   const r = row as any
   if (r?.status === 'issued' && r.intercompany_transaction_id === chargeId) return { ok: true, intercompanyTransactionId: chargeId }
-  return { error: `${booked}, but the invoice changed while it was being issued (it is now ${r?.status ?? 'gone'}).`, status: 409 }
+  const state = r?.status ?? 'gone'
+  if (!fresh) return { error: `${booked}, but the invoice changed while it was being issued (it is now ${state}).`, status: 409 }
+
+  // The invoice was voided (its lines released) while this request booked it. A payable for an
+  // invoice that no longer exists, with its lines free to bill again, is a double booking waiting
+  // to happen: take the entry back off the fund and void the charge.
+  const { data: charge, error: chargeErr } = await admin.from('intercompany_transactions' as any)
+    .select('from_entry_id').eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if (chargeErr) return { error: `${booked}, but the invoice is now ${state} and the charge could not be read to undo it: ${chargeErr.message}`, status: 500 }
+  const entryId = (charge as any)?.from_entry_id as string | null
+  const left = entryId ? await unwindIntercompanyEntry(admin, fundId, entryId) : null
+  if (left) {
+    return { error: `The invoice became ${state} while it was being issued, and undoing the fund's entry could not be confirmed: ${left}. Charge ${chargeId} is kept; void those entries in the journal.`, status: 409 }
+  }
+  const { error: voidErr } = await admin.from('intercompany_transactions' as any)
+    .update({ status: 'void', updated_at: new Date().toISOString() }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
+  if (voidErr) return { error: `The invoice became ${state} while it was being issued; its fund entry was removed but charge ${chargeId} could not be voided: ${voidErr.message}`, status: 500 }
+  return { error: `The invoice became ${state} while it was being issued, so its fund entry was removed and the charge voided. Nothing is booked.`, status: 409 }
 }
 
 /**

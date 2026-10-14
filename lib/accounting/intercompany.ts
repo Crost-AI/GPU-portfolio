@@ -429,7 +429,8 @@ export async function postIntercompanyCharge(
   if ('error' in payerRes) {
     // Both sides or neither. A charge that exists on one ledger only is exactly the drift this
     // module was written to prevent, so unwind rather than report a partial success.
-    if (payeeEntryId) await unwindEntry(admin, args.fundId, payeeEntryId)
+    const left = payeeEntryId ? await unwindIntercompanyEntry(admin, args.fundId, payeeEntryId) : null
+    if (left) return { error: `${args.payer.name}: ${payerRes.error}. ${keptCharge(chargeId, left)}` }
     await cleanup()
     return { error: `${args.payer.name}: ${payerRes.error}` }
   }
@@ -442,7 +443,9 @@ export async function postIntercompanyCharge(
       // A cash kind moves the money as it is recorded; there is nothing left to settle.
       ...(isAccruingKind(args.kind) ? {} : { status: 'settled', settled_date: args.chargeDate }),
     })
-    .eq('id', chargeId).eq('fund_id', args.fundId).is('from_entry_id', null)
+    // Still accrued and unlinked: a charge voided meanwhile (voiding a draft invoice clears one
+    // that has no entry yet) must not be linked to what this request has just posted.
+    .eq('id', chargeId).eq('fund_id', args.fundId).eq('status', 'accrued').is('from_entry_id', null)
     .select('id')
   // THE LINK IS THE COMMIT POINT. A retry trusts a charge only through the entry ids written here,
   // which is only ever after persistEntry has returned (a posted header alone can still be rolled
@@ -451,21 +454,66 @@ export async function postIntercompanyCharge(
   let linked = await link()
   if (linked.error) linked = await link()
   if (linked.error || ((linked.data as any[]) ?? []).length === 0) {
-    await unwindEntry(admin, args.fundId, payerRes.entryId)
-    if (payeeEntryId) await unwindEntry(admin, args.fundId, payeeEntryId)
+    // A lost response looks like a failure: the link may have committed. Ours is ours.
+    const { data: now } = await admin.from('intercompany_transactions' as any)
+      .select('status, from_entry_id').eq('id', chargeId).eq('fund_id', args.fundId).maybeSingle()
+    if ((now as any)?.from_entry_id === payerRes.entryId) return { id: chargeId }
+
+    const why = linked.error?.message ?? `the charge is ${(now as any)?.status === 'void' ? 'void' : 'no longer unlinked'}`
+    const left = await unwindIntercompanyEntries(admin, args.fundId, [payerRes.entryId, payeeEntryId])
+    if (left) return { error: `The charge could not be linked to its entries (${why}). ${keptCharge(chargeId, left)}` }
     await cleanup()
-    return { error: `The charge could not be linked to its entries, so neither side was booked: ${linked.error?.message ?? 'the charge row changed'}` }
+    return { error: `The charge could not be linked to its entries (${why}), so neither side was booked.` }
   }
 
   return { id: chargeId }
 }
 
-/** Delete an entry this request just posted, with any partner allocation posting it generated. */
-async function unwindEntry(admin: SupabaseClient, fundId: string, entryId: string): Promise<void> {
-  const { rollbackGeneratedAllocations } = await import('./continuous-allocation')
-  await rollbackGeneratedAllocations(admin, fundId, entryId)
-  await admin.from('journal_postings' as any).delete().eq('journal_entry_id', entryId)
-  await admin.from('journal_entries' as any).delete().eq('id', entryId).eq('fund_id', fundId)
+/** The refusal when an unwind could not be confirmed: the charge stays, as the guard against a rebook. */
+function keptCharge(chargeId: string, left: string): string {
+  return `Unwinding it could not be confirmed: ${left}. Charge ${chargeId} is kept so the invoice is not booked again; ` +
+    'void those entries in the journal, then void the invoice.'
+}
+
+/**
+ * Delete an entry this request just posted, with every partner allocation entry it generated, and
+ * CONFIRM they are gone. rollbackGeneratedAllocations discards its own errors, and a ledger delete
+ * can be refused (the period lock), so success is read back rather than assumed. Returns null once
+ * nothing is left, or a description naming what is.
+ */
+export async function unwindIntercompanyEntry(admin: SupabaseClient, fundId: string, entryId: string): Promise<string | null> {
+  const problems: string[] = []
+  try {
+    const { rollbackGeneratedAllocations } = await import('./continuous-allocation')
+    await rollbackGeneratedAllocations(admin, fundId, entryId)
+  } catch (e) {
+    problems.push((e as Error).message)
+  }
+  const { error: postingsErr } = await admin.from('journal_postings' as any).delete().eq('journal_entry_id', entryId)
+  if (postingsErr) problems.push(postingsErr.message)
+  else {
+    const { error: entryErr } = await admin.from('journal_entries' as any).delete().eq('id', entryId).eq('fund_id', fundId)
+    if (entryErr) problems.push(entryErr.message)
+  }
+  const [source, generated] = await Promise.all([
+    admin.from('journal_entries' as any).select('id').eq('fund_id', fundId).eq('id', entryId),
+    admin.from('journal_entries' as any).select('id').eq('fund_id', fundId).eq('book', ACTUAL_BOOK).like('source_ref', `allocation:${entryId}:%`),
+  ])
+  const readErr = source.error ?? generated.error
+  if (readErr) return `entry ${entryId} may still be on the books (it could not be checked: ${readErr.message})`
+  const left = [...((source.data as any[]) ?? []), ...((generated.data as any[]) ?? [])].map(r => r.id as string)
+  if (left.length === 0) return null
+  return `entries ${left.join(', ')} are still on the books${problems.length ? ` (${problems.join('; ')})` : ''}`
+}
+
+async function unwindIntercompanyEntries(admin: SupabaseClient, fundId: string, ids: (string | null)[]): Promise<string | null> {
+  const left: string[] = []
+  for (const id of ids) {
+    if (!id) continue
+    const l = await unwindIntercompanyEntry(admin, fundId, id)
+    if (l) left.push(l)
+  }
+  return left.length ? left.join('; ') : null
 }
 
 /**
@@ -562,35 +610,46 @@ export async function settleIntercompanyCharge(
       if ('duplicateOf' in res) return unlinkedSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', payee, charge.to_vehicle_id)
       return { error: `${payee}: ${res.error}` }
     }
-    const linkErr = await linkSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', res.entryId)
+    const linkErr = await linkSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', res.entryId, charge.to_settlement_entry_id)
     if (linkErr) {
-      await unwindEntry(admin, fundId, res.entryId)
-      return { error: `${payee}: the settlement could not be linked to its charge, so it was not booked: ${linkErr}` }
+      const left = await unwindIntercompanyEntry(admin, fundId, res.entryId)
+      return { error: `${payee}: the settlement could not be linked to its charge (${linkErr}), so it was not booked${left ? `, but ${left}; void them in the journal` : ''}.` }
     }
     payeeId = postedPayee = res.entryId
   }
 
-  // Both sides or neither, for what this request posted.
-  const unwindPayee = async () => {
-    if (!postedPayee) return
-    await admin.from('intercompany_transactions' as any).update({ to_settlement_entry_id: null })
-      .eq('id', chargeId).eq('fund_id', fundId).eq('to_settlement_entry_id', postedPayee)
-    await unwindEntry(admin, fundId, postedPayee)
+  // Both sides or neither, for what this request posted, and only while nothing else relies on it:
+  // once the payee entry is linked another attempt can read it and finish the settlement with its
+  // own payer side. So it is unlinked only while the payer side is still unlinked, and deleted only
+  // if that unlink matched. Returns a note for the error when something is left behind.
+  const unwindPayee = async (): Promise<string> => {
+    if (!postedPayee) return ''
+    const { data, error } = await admin.from('intercompany_transactions' as any).update({ to_settlement_entry_id: null })
+      .eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
+      .eq('to_settlement_entry_id', postedPayee).is('from_settlement_entry_id', null)
+      .select('id')
+    if (error || ((data as any[]) ?? []).length === 0) return ''
+    const left = await unwindIntercompanyEntry(admin, fundId, postedPayee)
+    return left ? ` ${payee}'s settlement could not be removed: ${left}; void it in the journal.` : ''
   }
 
   let payerId = linked.payer?.id ?? null
   if (!payerId) {
     const res = await persistEntry(admin, fundId, payer, userId, buildPayerSettlementEntry(input, payerAccts))
     if ('error' in res) {
-      await unwindPayee()
+      // The index says a payer settlement already exists: another attempt is pairing (or has paired)
+      // this payee entry. Report it; deleting anything here could undo a settlement that succeeded.
       if ('duplicateOf' in res) return unlinkedSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', payer, charge.from_vehicle_id)
-      return { error: `${payer}: ${res.error}` }
+      return { error: `${payer}: ${res.error}.${await unwindPayee()}` }
     }
-    const linkErr = await linkSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', res.entryId)
+    const linkErr = await linkSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', res.entryId, charge.from_settlement_entry_id)
     if (linkErr) {
-      await unwindEntry(admin, fundId, res.entryId)
-      await unwindPayee()
-      return { error: `${payer}: the settlement could not be linked to its charge, so it was not booked: ${linkErr}` }
+      const left = await unwindIntercompanyEntry(admin, fundId, res.entryId)
+      const payeeNote = await unwindPayee()
+      return {
+        error: `${payer}: the settlement could not be linked to its charge (${linkErr}), so it was not booked` +
+          `${left ? `, but ${left}; void them in the journal` : ''}.${payeeNote}`,
+      }
     }
     payerId = res.entryId
   }
@@ -600,14 +659,24 @@ export async function settleIntercompanyCharge(
 
 type SettlementLink = 'to_settlement_entry_id' | 'from_settlement_entry_id'
 
-/** Write one side's settlement entry id onto the still-accrued charge. Returns the failure, if any. */
+/**
+ * Write one side's settlement entry id onto the still-accrued charge, replacing only what this
+ * request read there (nothing, or a link to an entry voided since). Returns the failure, if any. A
+ * lost response reads as no row matched, so the row is re-read: our own id there is success.
+ */
 async function linkSettlement(
-  admin: SupabaseClient, fundId: string, chargeId: string, column: SettlementLink, entryId: string,
+  admin: SupabaseClient, fundId: string, chargeId: string, column: SettlementLink, entryId: string, previous: string | null,
 ): Promise<string | null> {
-  const { data, error } = await admin.from('intercompany_transactions' as any)
-    .update({ [column]: entryId }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued').select('id')
+  let q = admin.from('intercompany_transactions' as any)
+    .update({ [column]: entryId }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
+  q = previous ? q.eq(column, previous) : q.is(column, null)
+  const { data, error } = await q.select('id')
+  if (!error && ((data as any[]) ?? []).length > 0) return null
+  const { data: now } = await admin.from('intercompany_transactions' as any)
+    .select(`status, ${column}`).eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if ((now as any)?.[column] === entryId) return null
   if (error) return error.message
-  return ((data as any[]) ?? []).length > 0 ? null : 'the charge is no longer accrued'
+  return (now as any)?.status !== 'accrued' ? `the charge is now ${(now as any)?.status ?? 'gone'}` : 'another request linked that side first'
 }
 
 /**
