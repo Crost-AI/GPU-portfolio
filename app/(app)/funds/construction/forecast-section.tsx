@@ -12,6 +12,7 @@ import { constructionBaseline, applyLpWaterfall, forecastSchedule, type Forecast
 import { simulateFund } from '@/lib/accounting/construction-simulation'
 import type { FundTimeseriesPoint } from '@/lib/accounting/fund-timeseries'
 import { JCurveChart, CashFlowChart, OutcomeHistogram, ExitOutcomesChart, type ActualCashFlow, type ActualPoint } from './forecast-charts'
+import { todayLocalIso } from '@/lib/local-date'
 
 type Fmt = (v: number | null) => string
 
@@ -60,7 +61,7 @@ export function ForecastSection({ model, actuals, a, setA, vehicle, fmt, fmtFull
     return () => { cancelled = true }
   }, [vehicle])
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), [])
+  const today = useMemo(() => todayLocalIso(), [])
   const todayYear = useMemo(() => decimalYear(today), [today])
   const accounting = actuals.capitalAvailable === true
   const carryConfigured = !!actuals.waterfall && actuals.waterfall.kind !== 'none' && actuals.waterfall.carryRate > 0

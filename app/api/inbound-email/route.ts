@@ -25,12 +25,31 @@ function safeTokenCompare(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  // Rate limit inbound webhook: 60 per minute per IP
-  const limited = await rateLimit({ key: `inbound:${getClientIp(req)}`, limit: 60, windowSeconds: 60 })
-  if (limited) return limited
+  // Rate limit inbound webhook, in two buckets. First a coarse ceiling per sending IP (600/min),
+  // before the body is even read, so malformed requests are bounded too. Not tighter: every
+  // delivery comes from Postmark's small IP pool, so an IP bucket is one budget shared by every
+  // fund on the deployment. Then 60/min per fund, counted in handleInbound only once the webhook
+  // token has resolved the fund — so a caller without the token can only ever spend the ceiling,
+  // never a fund's budget, whatever recipient it names.
+  const ceiling = await rateLimit({ key: `inbound:ip:${getClientIp(req)}`, limit: 600, windowSeconds: 60 })
+  if (ceiling) return ceiling
+
+  let payload: PostmarkPayload
+  try {
+    payload = await req.json()
+    if (!payload || typeof payload !== 'object') throw new Error('payload is not an object')
+    // The body is untyped JSON: an address field that is there but not a string is malformed too.
+    for (const field of ['OriginalRecipient', 'To', 'From'] as const) {
+      if (payload[field] != null && typeof payload[field] !== 'string') throw new Error(`${field} is not a string`)
+    }
+  } catch (err) {
+    console.error('[inbound-email] Malformed payload:', err)
+    return NextResponse.json({ ok: true })
+  }
 
   try {
-    await handleInbound(req)
+    const limited = await handleInbound(req, payload)
+    if (limited) return limited
   } catch (err) {
     console.error('[inbound-email] Unhandled error:', err)
   }
@@ -41,14 +60,14 @@ export async function POST(req: NextRequest) {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-async function handleInbound(req: NextRequest) {
+/** Returns the per-fund rate limit's 429 when it is spent; otherwise nothing, whatever happened. */
+async function handleInbound(req: NextRequest, payload: PostmarkPayload): Promise<NextResponse | void> {
   const supabase = createAdminClient()
   // Accept token from Authorization header (preferred) or query string (legacy/Postmark)
   const authHeader = req.headers.get('authorization')
   const token = (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null)
     ?? req.nextUrl.searchParams.get('token')
     ?? ''
-  const payload = (await req.json()) as PostmarkPayload
 
   const toAddress = payload.OriginalRecipient || payload.To
   const fromAddress = payload.FromFull?.Email || payload.From
@@ -60,6 +79,10 @@ async function handleInbound(req: NextRequest) {
     return
   }
   const { fundId, isGlobal } = fundInfo
+
+  // Per fund, and only now: the token has proved the caller is this fund's webhook.
+  const limited = await rateLimit({ key: `inbound:fund:${fundId}`, limit: 60, windowSeconds: 60 })
+  if (limited) return limited
 
   // Step 1b: Check if sender is a fund member (determines interaction extraction, bypasses authorized_senders)
   const fundMember = await checkFundMember(supabase, fundId, fromAddress)
@@ -225,11 +248,33 @@ async function resolveFund(
   fromAddress: string,
   token: string
 ): Promise<{ fundId: string; isGlobal: boolean } | null> {
-  const { data: fundSettings } = await supabase
+  if (!toAddress) return null
+
+  // The recipient exactly as written first: literal, so an address with `*`, `%` or `_` in it
+  // resolves as it always did, whatever else is configured.
+  const columns = 'fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted'
+  const { data: exact } = await supabase
     .from('fund_settings')
-    .select('fund_id, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
+    .select(columns)
     .eq('postmark_inbound_address', toAddress)
     .maybeSingle()
+  let fundSettings = exact
+
+  // Then case-insensitively — mail addresses are, and a sender's client may have changed the case
+  // of the inbox. An ilike pattern's escapes are not trusted (PostgREST may drop them, and reads `*`
+  // as `%`), so every character that could be a wildcard becomes `_`, which matches exactly one:
+  // the candidates are addresses of the recipient's length that agree with it elsewhere, and the
+  // fund is the one equal to it ignoring case. The bound (fund_settings is one row per fund) is a
+  // backstop only: the delivery as written was already matched literally above.
+  if (!fundSettings) {
+    const recipient = toAddress.toLowerCase()
+    const { data: candidates } = await supabase
+      .from('fund_settings')
+      .select(columns)
+      .ilike('postmark_inbound_address', toAddress.replace(/[\\%_*]/g, '_'))
+      .limit(50)
+    fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient) ?? null
+  }
 
   if (fundSettings) {
     // Prefer encrypted token; fall back to plaintext for legacy

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2, AlertTriangle, FileDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,11 +11,12 @@ import {
   lastQuarterEnd, periodLabel, performanceMoney, performanceMultiple, performancePct,
   type FundPerformanceReport, type PerformanceGrouping,
 } from '@/lib/accounting/fund-performance-format'
+import { todayLocalIso } from '@/lib/local-date'
 
-/** The last `n` calendar quarter ends, newest first. */
-function recentQuarterEnds(n: number): string[] {
+/** The last `n` calendar quarter ends on or before `today`, newest first. */
+function recentQuarterEnds(n: number, today: string): string[] {
   const out: string[] = []
-  let d = lastQuarterEnd(new Date().toISOString().slice(0, 10))
+  let d = lastQuarterEnd(today)
   for (let i = 0; i < n; i++) {
     out.push(d)
     // Step back one day, then to that day's quarter end.
@@ -30,15 +31,26 @@ export function FundPerformanceView() {
   const currency = useCurrency()
   const lf = useLedgerFetch()
   const { group } = useVehicle()
-  const quarters = useMemo(() => recentQuarterEnds(24), [])
+  // The first render has to match the server's HTML, and the server knows only the UTC day; the
+  // user's own day replaces it once mounted. The report waits for that, so it is fetched once, for
+  // the right quarter.
+  const [quarters, setQuarters] = useState(() => recentQuarterEnds(24, new Date().toISOString().slice(0, 10)))
   const [asOf, setAsOf] = useState(quarters[0])
+  const [localDay, setLocalDay] = useState(false)
   const [grouping, setGrouping] = useState<PerformanceGrouping>('month')
   const [report, setReport] = useState<FundPerformanceReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return
+    const local = recentQuarterEnds(24, todayLocalIso())
+    setQuarters(local)
+    setAsOf(local[0])
+    setLocalDay(true)
+  }, [])
+
+  useEffect(() => {
+    if (!localDay || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return
     setLoading(true)
     setError(null)
     lf(`/api/accounting/fund-performance?${new URLSearchParams({ asOf, groupBy: grouping })}`)
@@ -48,7 +60,7 @@ export function FundPerformanceView() {
         setReport(body)
       })
       .finally(() => setLoading(false))
-  }, [lf, asOf, grouping])
+  }, [lf, asOf, grouping, localDay])
 
   const m = (v: number | null | undefined, dp = 0) => performanceMoney(v, currency, dp)
   const pdfQs = new URLSearchParams({ asOf, groupBy: grouping })
