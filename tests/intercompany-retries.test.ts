@@ -630,6 +630,29 @@ describe('settling an intercompany charge', () => {
     expect(db.tables.intercompany_transactions[0].status).toBe('settled')
   })
 
+  it('undoes nothing when a settlement link committed but neither its response nor a re-read came back', async () => {
+    const db = world()
+    accrued(db)
+    // The payee link lands, its response is lost, and the re-read that would show it fails too.
+    db.loseNextUpdateResponse('intercompany_transactions', patch => {
+      if (!('to_settlement_entry_id' in patch)) return false
+      db.failNextSelect('intercompany_transactions')
+      return true
+    })
+
+    const first = await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    expect(first).toMatchObject({ error: expect.stringContaining('Nothing was undone') })
+    const [payeeEntry] = settlements(db)
+    expect(payeeEntry.vehicle_id).toBe(MANCO)
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', to_settlement_entry_id: payeeEntry.id })
+
+    // Recovery finishes from the committed link: only the payer side is posted.
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')).toEqual({ ok: true })
+    expect(mocks.persist).toHaveBeenCalledTimes(2)
+    expect(settlements(db).map(e => e.vehicle_id).sort()).toEqual([FUNDV, MANCO])
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'settled', to_settlement_entry_id: payeeEntry.id })
+  })
+
   it('unwinds and unlinks the payee side when the payer side fails', async () => {
     const db = world()
     accrued(db)

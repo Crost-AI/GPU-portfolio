@@ -621,9 +621,10 @@ export async function settleIntercompanyCharge(
       return { error: `${payee}: ${res.error}` }
     }
     const linkErr = await linkSettlement(admin, fundId, chargeId, 'to_settlement_entry_id', res.entryId, charge.to_settlement_entry_id)
+    if (linkErr && 'unknown' in linkErr) return unknownLink(payee, chargeId, res.entryId, linkErr.unknown)
     if (linkErr) {
       const left = await unwindIntercompanyEntry(admin, fundId, res.entryId)
-      return { error: `${payee}: the settlement could not be linked to its charge (${linkErr}), so it was not booked${left ? `, but ${left}; void them in the journal` : ''}.` }
+      return { error: `${payee}: the settlement could not be linked to its charge (${linkErr.failed}), so it was not booked${left ? `, but ${left}; void them in the journal` : ''}.` }
     }
     payeeId = postedPayee = res.entryId
   }
@@ -653,11 +654,13 @@ export async function settleIntercompanyCharge(
       return { error: `${payer}: ${res.error}.${await unwindPayee()}` }
     }
     const linkErr = await linkSettlement(admin, fundId, chargeId, 'from_settlement_entry_id', res.entryId, charge.from_settlement_entry_id)
+    // Unknown: the payer link may have committed and paired the payee, so neither side is touched.
+    if (linkErr && 'unknown' in linkErr) return unknownLink(payer, chargeId, res.entryId, linkErr.unknown)
     if (linkErr) {
       const left = await unwindIntercompanyEntry(admin, fundId, res.entryId)
       const payeeNote = await unwindPayee()
       return {
-        error: `${payer}: the settlement could not be linked to its charge (${linkErr}), so it was not booked` +
+        error: `${payer}: the settlement could not be linked to its charge (${linkErr.failed}), so it was not booked` +
           `${left ? `, but ${left}; void them in the journal` : ''}.${payeeNote}`,
       }
     }
@@ -676,17 +679,28 @@ type SettlementLink = 'to_settlement_entry_id' | 'from_settlement_entry_id'
  */
 async function linkSettlement(
   admin: SupabaseClient, fundId: string, chargeId: string, column: SettlementLink, entryId: string, previous: string | null,
-): Promise<string | null> {
+): Promise<null | { failed: string } | { unknown: string }> {
   let q = admin.from('intercompany_transactions' as any)
     .update({ [column]: entryId }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
   q = previous ? q.eq(column, previous) : q.is(column, null)
   const { data, error } = await q.select('id')
   if (!error && ((data as any[]) ?? []).length > 0) return null
-  const { data: now } = await admin.from('intercompany_transactions' as any)
+  const { data: now, error: readErr } = await admin.from('intercompany_transactions' as any)
     .select(`status, ${column}`).eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  // Unreadable: the link may have committed, and another request may already be using it. That is
+  // not a failure to unwind on; the caller keeps the entry until the outcome is known.
+  if (readErr) return { unknown: `${error?.message ?? 'the link matched no row'}, and the charge could not be re-read (${readErr.message})` }
   if ((now as any)?.[column] === entryId) return null
-  if (error) return error.message
-  return (now as any)?.status !== 'accrued' ? `the charge is now ${(now as any)?.status ?? 'gone'}` : 'another request linked that side first'
+  if (error) return { failed: error.message }
+  return { failed: (now as any)?.status !== 'accrued' ? `the charge is now ${(now as any)?.status ?? 'gone'}` : 'another request linked that side first' }
+}
+
+/** The error when a settlement link's outcome is unknown: nothing is undone. */
+function unknownLink(side: string, chargeId: string, entryId: string, why: string): { error: string } {
+  return {
+    error: `${side}: settlement entry ${entryId} may or may not be linked to charge ${chargeId} (${why}). Nothing was undone. ` +
+      'Settle the charge again: it finishes from whatever is linked, or names the entry to void if it is not.',
+  }
 }
 
 /**
