@@ -115,11 +115,14 @@ function ReceiptsList() {
   /** Draft an entry from a receipt. Returns the route's refusal, for the form to show beside its fields. */
   async function draft(id: string, body: object): Promise<string | null> {
     setBusy(id); setError(null)
-    const r = await lf(`/api/accounting/receipts/${id}`, json('PATCH', { action: 'draft', ...body }))
-    const failed = r.ok ? null : await errOf(r, 'Could not draft the entry')
-    setBusy(null)
-    if (!failed) await load()
-    return failed
+    try {
+      const r = await lf(`/api/accounting/receipts/${id}`, json('PATCH', { action: 'draft', ...body }))
+      const failed = r.ok ? null : await errOf(r, 'Could not draft the entry')
+      if (!failed) await load()
+      return failed
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function remove(id: string) {
@@ -163,6 +166,7 @@ function ReceiptsList() {
           {receipts.map(r => {
             const sugg = suggestions[r.id] ?? []
             const unfiled = !r.vehicle_id
+            const rCurrency = foreignCurrency(r.currency, currency)
             return (
               <li key={r.id} className="space-y-2 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -180,7 +184,7 @@ function ReceiptsList() {
                     {unfiled && <p className="text-sm text-warning">Not filed under an entity yet.</p>}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-sm tabular-nums">{r.amount == null ? '—' : foreignCurrency(r.currency, currency) ? `${foreignCurrency(r.currency, currency)} ${Number(r.amount).toFixed(2)}` : fmt(Number(r.amount))}</span>
+                    <span className="text-sm tabular-nums">{r.amount == null ? '—' : rCurrency ? `${rCurrency} ${Number(r.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : fmt(Number(r.amount))}</span>
                     {busy === r.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                   </div>
                 </div>
@@ -273,14 +277,42 @@ export function foreignCurrency(receiptCurrency: string | null, booksCurrency: s
 }
 
 /**
- * The typed total in the books' currency as a number, or null until it is at least a cent. The
- * route and draftEntryFromReceipt refuse anything else; this only keeps the button honest.
+ * The typed total in the books' currency as a number, or null until it is a whole amount of at
+ * least a cent. A comma is read only as a thousands separator in its grouping positions, and at
+ * most two decimals are accepted: "108,50" or "1.234,50" (a decimal comma) is refused rather than
+ * read as 10850 or 1.2345, and "108.505" rather than left for the server to round. The route and
+ * draftEntryFromReceipt refuse a bad amount too; this keeps the button from offering one.
  */
 export function parseReportingAmount(text: string): number | null {
-  const t = text.trim().replace(/,/g, '')
-  if (!/^\d+(\.\d+)?$/.test(t)) return null
-  const n = Number(t)
+  const t = text.trim()
+  if (!/^(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$/.test(t)) return null
+  const n = Number(t.replace(/,/g, ''))
   return Math.round(n * 100) >= 1 ? n : null
+}
+
+export const DRAFT_CONNECTION_ERROR = 'Could not draft the entry. Check your connection and try again.'
+
+/**
+ * Submit a draft and return the refusal to show, or null. A dropped connection REJECTS rather than
+ * returning a response; caught here, so the form always gets a message and its controls back.
+ */
+export async function runDraft(onDraft: (b: object) => Promise<string | null>, body: object): Promise<string | null> {
+  try {
+    return await onDraft(body)
+  } catch {
+    return DRAFT_CONNECTION_ERROR
+  }
+}
+
+/** Whether the draft form has everything the route needs. */
+export function canDraft(f: { debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null }): boolean {
+  return !!(f.debit || f.billTo) && !!f.credit && (!f.foreign || f.reportingAmount != null)
+}
+
+/** The draft request body: billed to a fund or debited to an account, with the books-currency total for a foreign receipt. */
+export function draftBody(f: { debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null }): object {
+  const base = f.billTo ? { creditAccountId: f.credit, billToVehicleId: f.billTo } : { debitAccountId: f.debit, creditAccountId: f.credit }
+  return f.foreign ? { ...base, reportingAmount: f.reportingAmount } : base
 }
 
 export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: object) => Promise<string | null>; onCancel: () => void }) {
@@ -334,17 +366,22 @@ export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b
               placeholder={`${foreign} ${Number(r.amount ?? 0).toFixed(2)}`}
               className="mt-0.5 block w-full rounded-md border border-input bg-transparent px-2 py-1 text-right text-sm tabular-nums"
             />
+            {/* The amount as it will be booked, so a misread entry is visible before it is drafted. */}
+            {reportingAmount != null && <span className="mt-0.5 block text-right tabular-nums">= {books} {reportingAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
           </label>
         )}
         <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
         <Button
           size="sm"
-          disabled={submitting || !(debit || billTo) || !credit || (!!foreign && reportingAmount == null)}
+          disabled={submitting || !canDraft({ debit, credit, billTo, foreign, reportingAmount })}
           onClick={async () => {
             setSubmitting(true); setFailed(null)
-            const base = billTo ? { creditAccountId: credit, billToVehicleId: billTo } : { debitAccountId: debit, creditAccountId: credit }
-            setFailed(await onDraft(foreign ? { ...base, reportingAmount } : base))
-            setSubmitting(false)
+            // The form's fields, the typed total included, are left as they are on a failure.
+            try {
+              setFailed(await runDraft(onDraft, draftBody({ debit, credit, billTo, foreign, reportingAmount })))
+            } finally {
+              setSubmitting(false)
+            }
           }}
         >Draft entry</Button>
       </div>
