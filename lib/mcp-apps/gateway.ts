@@ -114,6 +114,7 @@ function effectFor(tool: McpTool, auth: ResolvedKey): Record<string, unknown> {
   // Only the shared registry's writes stage (lib/agent/dispatch.ts); approving a pending action or
   // saving one's own dashboard applies at once.
   if (!getTool(tool.name) || !isAssistantCredential(auth)) return { staged: false }
+  if (getTool(tool.name)?.runsDirectly) return { staged: false, note: 'Changes no record; the tool that takes its result in waits for approval.' }
   return hasDraftMode(tool.name)
     ? { staged: true, note: 'Calls that only make drafts or previews run directly; the rest wait for approval.' }
     : { staged: true }

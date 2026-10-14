@@ -63,7 +63,7 @@ describe('agent tool registry', () => {
   it('LP writes are the register and letter tools, and issuing a call and publishing notices, which are always staged', () => {
     const writable = AGENT_TOOLS.filter(t => t.domain === 'lp' && t.scope === 'write')
     expect(writable.map(t => t.name).sort()).toEqual([
-      'issue_capital_call', 'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_draft_letter', 'lp_record_commitment',
+      'issue_capital_call', 'lp_add_document', 'lp_correct_commitment', 'lp_create_entity', 'lp_create_investor', 'lp_create_letter', 'lp_document_upload_url', 'lp_draft_letter', 'lp_record_commitment',
       'lp_share_letter', 'lp_update_entity', 'lp_update_investor', 'lp_update_profile', 'lp_write_letter',
       'publish_call_notices',
     ])
@@ -77,6 +77,10 @@ describe('agent tool registry', () => {
     // Letters are the LP Letters pages': LP relations, under their switch.
     for (const t of writable.filter(t => t.name.endsWith('_letter'))) {
       expect(t, t.name).toMatchObject({ accessDomain: 'lp_relations', accessFeature: 'lp_letters' })
+    }
+    // LP portal documents are the LP documents settings': LP relations, under the portal switch, admin only.
+    for (const name of ['lp_document_upload_url', 'lp_add_document']) {
+      expect(getTool(name), name).toMatchObject({ accessDomain: 'lp_relations', accessFeature: 'lp_portal' })
     }
   })
 
@@ -99,7 +103,8 @@ describe('agent tool registry', () => {
     for (const t of writes) {
       expect(t.name, t.name).toMatch(t.domain === 'deals' ? /^deals_/ : /^diligence_/)
       // Each takes the deal it changes by name or id, except the two that create one.
-      if (!['deals_create_inbound', 'diligence_create_deal'].includes(t.name)) {
+      // (and the deck upload URL, which is for a deal not created yet).
+      if (!['deals_create_inbound', 'diligence_create_deal', 'deals_deck_upload_url'].includes(t.name)) {
         expect(t.inputSchema.required, t.name).toContain('deal')
       }
     }

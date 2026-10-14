@@ -63,6 +63,10 @@ import { QUERY_TOOL_MANIFEST } from '@/lib/agent/query-tools-manifest'
 import { QUERY_HANDLERS } from '@/lib/agent/query-tools'
 import { ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_TOOL_MANIFEST } from '@/lib/agent/operations-tools-manifest'
 import { OPERATIONS_HANDLERS } from '@/lib/agent/operations-tools'
+import { UPLOAD_TOOL_MANIFEST } from '@/lib/agent/upload-tools-manifest'
+import { UPLOAD_HANDLERS } from '@/lib/agent/upload-tools'
+import { SERVER_AI_TOOL_MANIFEST } from '@/lib/agent/server-ai-tools-manifest'
+import { SERVER_AI_HANDLERS } from '@/lib/agent/server-ai-tools'
 import { resolveVehicle } from './vehicle-resolver'
 import { resolveVehicleWithAccess } from './http-vehicle'
 import { ACTUAL_BOOK } from './books'
@@ -450,6 +454,8 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
   ...bind(OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
+  ...bind(UPLOAD_TOOL_MANIFEST, UPLOAD_HANDLERS),
+  ...bind(SERVER_AI_TOOL_MANIFEST, SERVER_AI_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {

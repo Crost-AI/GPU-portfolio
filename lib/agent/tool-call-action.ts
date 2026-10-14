@@ -26,6 +26,7 @@ import {
 import { resolveVehicleWithAccess } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import type { ActionDeps, PreviewResult } from '@/lib/pending-actions/types'
+import { serverAIRefusal } from '@/lib/ai/server-ai'
 
 export const AGENT_TOOL_CALL = 'agent_tool_call'
 
@@ -87,6 +88,20 @@ async function resolveEntity(deps: ActionDeps, tool: AgentTool, input: Record<st
     await resolveCompany(deps.admin, deps.fundId, input.company, deps.access)
     return null
   }
+  // A file for an email (add_email_attachment): the stager's when the email is an inbound deal they
+  // can see, or about a company they can see.
+  if (tool.name === 'add_email_attachment') {
+    if (typeof input.deal === 'string' && input.deal.trim()) {
+      await resolveInboundDeal(deps.admin, deps.fundId, input.deal, deps.access)
+      return null
+    }
+    const { data: email } = await (deps.admin as any)
+      .from('inbound_emails').select('company_id').eq('id', String(input.email ?? '')).eq('fund_id', deps.fundId).maybeSingle()
+    if (email?.company_id) {
+      await resolveCompany(deps.admin, deps.fundId, email.company_id, deps.access)
+      return null
+    }
+  }
   // A new company names the entities that will hold it; each must be the stager's.
   if (tool.name === 'create_company' && Array.isArray(input.vehicles) && input.vehicles.length > 0) {
     for (const v of input.vehicles) await resolveVehicleWithAccess(deps.admin, deps.access, String(v), 'read')
@@ -111,6 +126,9 @@ export function summarizeToolCall(tool: string, input: Record<string, unknown>, 
 export async function stageToolCall(deps: ActionDeps, toolName: string, input: Record<string, unknown>) {
   const { tool } = requireTool({ tool: toolName, input })
   const vehicle = await resolveEntity(deps, tool, input)
+  // A call the server's model has to make could never run on a fund with no key: say so now.
+  const noKey = await serverAIRefusal(deps.admin, deps.fundId, tool.name)
+  if (noKey) throw new Error(noKey)
   const pinned = vehicle ? { ...input, vehicle } : input
   const vehicleId = vehicle ? await vehicleIdByName(deps.admin, deps.fundId, vehicle) : null
   const args: ToolCallArgs = { tool: toolName, input: pinned }

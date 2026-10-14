@@ -115,6 +115,7 @@ export function hasDraftMode(name: string): boolean {
 export function shouldStage(tool: AgentTool, input: Record<string, unknown>, auth: Pick<ResolvedKey, 'keyId'>): boolean {
   if (tool.scope !== 'write') return false
   if (tool.stagesAs) return true
+  if (tool.runsDirectly) return false
   return isAssistantCredential(auth) && !isDraftOnlyCall(tool, input)
 }
 
