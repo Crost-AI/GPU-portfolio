@@ -17,6 +17,7 @@ import { validateBaseUrlResolved } from '@/lib/validate-url'
 import type { FeatureKey, FeatureVisibility, FeatureVisibilityMap } from '@/lib/types/features'
 import { AUTH_TITLE_MAX } from '@/lib/auth-brand-shared'
 import { isAIMode } from '@/lib/ai/capabilities'
+import { portalSwitchUpdates } from '@/lib/lps/portal-access'
 
 // GET — returns fund settings (safe fields only)
 export async function GET() {
@@ -587,9 +588,11 @@ export async function PATCH(req: NextRequest) {
     }
     settingsUpdates.deals_default_vehicle_id = dealsDefaultVehicleId === null ? null : String(dealsDefaultVehicleId)
   }
-  if (lpPortalEnabled !== undefined) {
-    settingsUpdates.lp_portal_enabled = !!lpPortalEnabled
-  }
+  // The LP portal and investor-connector switches (lib/lps/portal-access.ts, shared with
+  // lp_portal_settings). The connector lets investors connect an assistant to their own portal
+  // (app/api/portal/mcp): separate from the agent API below, which is the fund's own; off by
+  // default, inert unless the LP portal is on too, and checked live on every call.
+  Object.assign(settingsUpdates, portalSwitchUpdates({ lpPortalEnabled, lpAgentEnabled }))
   // Which Affinity transport the diligence assistant uses: Affinity's hosted MCP server
   // (richer, live) or this app's three REST tools. Fund-wide, because it changes what
   // every member's assistant can reach — but each member still authenticates with their
@@ -609,12 +612,6 @@ export async function PATCH(req: NextRequest) {
   // back exactly as it was if the admin changes their mind.
   if (agentApiEnabled !== undefined) {
     settingsUpdates.agent_api_enabled = !!agentApiEnabled
-  }
-  // The investor connector (app/api/portal/mcp): whether investors may connect an assistant to
-  // their own portal. Separate from the agent API above, which is the fund's own. Off by default,
-  // and inert unless the LP portal is on too; checked live on every call, like the switch above.
-  if (lpAgentEnabled !== undefined) {
-    settingsUpdates.lp_agent_enabled = !!lpAgentEnabled
   }
 
   // Update feature visibility

@@ -173,7 +173,7 @@ export async function executeToolCall(deps: ActionDeps, raw: unknown): Promise<R
   const requested = typeof args.input.vehicle === 'string' ? args.input.vehicle : undefined
   const portfolioGroup = await resolveVehicleForTool(tool, deps.admin, deps.fundId, requested, deps.access)
   const result = await tool.handler(
-    { admin: deps.admin, fundId: deps.fundId, portfolioGroup, userId: deps.userId, access: deps.access },
+    { admin: deps.admin, fundId: deps.fundId, portfolioGroup, userId: deps.userId, access: deps.access, origin: deps.origin },
     args.input,
   )
   return { tool: tool.name, result: result ?? null }

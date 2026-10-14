@@ -450,6 +450,20 @@ describe('the same access rules as the web', () => {
     ['forecast_update_plan', 'api/accounting/forecast/[id]'],
     ['forecast_publish', 'api/accounting/forecast/[id]/publish'],
     ['portfolio_construction_update', 'api/accounting/construction'],
+    ['lp_portal_invite', 'api/lps/invites'],
+    ['lp_portal_account_status', 'api/lps/invites'],
+    ['lp_portal_unlink', 'api/lps/invites'],
+    ['lp_portal_resend_invite', 'api/lps/invites/resend'],
+    ['lp_portal_invite_bulk', 'api/lps/invites/bulk'],
+    ['lp_authorized_user_add', 'api/lps/authorized-users'],
+    ['lp_authorized_user_remove', 'api/lps/authorized-users'],
+    ['lp_announce', 'api/lps/announce'],
+    ['lp_send_item', 'api/lps/send'],
+    ['lp_portal_settings', 'api/settings'],
+    ['lp_proposed_call_propose', 'api/accounting/proposed-calls'],
+    ['lp_proposed_call_revise', 'api/accounting/proposed-calls'],
+    ['lp_proposed_call_discard', 'api/accounting/proposed-calls'],
+    ['lp_proposed_call_approve', 'api/accounting/proposed-calls'],
   ]
 
   it.each(PAIRS)('%s is gated like %s', async (toolName, route) => {

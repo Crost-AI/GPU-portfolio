@@ -229,7 +229,9 @@ export const LP_TOOL_MANIFEST: AgentToolMeta[] = [
     description:
       "Ask for an issued capital call's notices to be published to the partners' LP portals. Call preview_call_notices first, " +
       'show the user what it returns, and call this only after they confirm, with its previewToken. Always staged, from any ' +
-      'connection: an admin approves it in the app, opening the notices and confirming twice. It emails no one.',
+      'connection. An admin approves it: from their chat with approve_action, only on their explicit yes to the staged change, ' +
+      'or in the app, opening the notices and confirming twice. Approving returns published, reused and errors. A script\'s ' +
+      'key cannot approve it. It emails no one.',
     scope: 'write',
     domain: 'lp',
     accessDomain: 'lp_relations',

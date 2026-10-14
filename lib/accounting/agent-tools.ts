@@ -56,6 +56,8 @@ import { FORECAST_TOOL_MANIFEST } from '@/lib/agent/forecast-tools-manifest'
 import { FORECAST_HANDLERS } from '@/lib/agent/forecast-tools'
 import { SETUP_TOOL_MANIFEST } from '@/lib/agent/setup-tools-manifest'
 import { SETUP_HANDLERS } from '@/lib/agent/setup-tools'
+import { LP_PORTAL_TOOL_MANIFEST } from '@/lib/agent/lp-portal-tools-manifest'
+import { LP_PORTAL_HANDLERS } from '@/lib/agent/lp-portal-tools'
 import { REPORT_TOOL_MANIFEST } from '@/lib/agent/report-tools-manifest'
 import { REPORT_HANDLERS } from '@/lib/agent/report-tools'
 import { LETTER_TOOL_MANIFEST } from '@/lib/agent/letter-tools-manifest'
@@ -473,6 +475,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bind(LETTER_TOOL_MANIFEST, LETTER_HANDLERS),
   ...bind(QUERY_TOOL_MANIFEST, QUERY_HANDLERS),
   ...bind(OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
+  ...bind(LP_PORTAL_TOOL_MANIFEST, LP_PORTAL_HANDLERS),
 ]
 
 export function getTool(name: string): AgentTool | undefined {
