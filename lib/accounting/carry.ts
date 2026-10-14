@@ -85,8 +85,15 @@ export interface LpEconomics {
 }
 
 /**
- * The paying LPs' economics from their capital accounts. Recipients are left out — they receive
- * carry, they don't pay it. The roll-forward stores distributions and borne carry negative.
+ * The paying LPs' economics from their capital accounts. Current recipients are left out — they
+ * receive carry, they don't pay it. The roll-forward stores distributions and borne carry negative.
+ *
+ * Only a DEBIT balance on the carry line is carry borne. A FORMER recipient (the recipient set
+ * changed) holds a credit there — carry it earned — which is neither borne nor part of its own
+ * pre-carry value: it is stripped from `nav`, so the partner is measured on its own gross position
+ * and its historical carry is left where it was booked rather than clawed back to the new
+ * recipient. An entity that has both borne and received carry is netted in that one bucket and
+ * cannot be split here.
  */
 export function lpEconomicsFromAccounts(
   accounts: Map<string, CapitalAccount>,
@@ -98,8 +105,8 @@ export function lpEconomicsFromAccounts(
       lpEntityId,
       contributed: roundCents(a.contributions),
       distributed: roundCents(-a.distributions),
-      nav: roundCents(a.ending),
-      carryBorne: roundCents(-a.carriedInterest),
+      nav: roundCents(a.ending - Math.max(0, a.carriedInterest)),
+      carryBorne: roundCents(Math.max(0, -a.carriedInterest)),
     }))
 }
 
@@ -259,8 +266,8 @@ function grossProfit(l: LpEconomics): number {
 
 /**
  * Each LP's share of a carry `target`: pro-rata to gross profit, nothing for an LP not in
- * profit. Largest-remainder, so the shares sum EXACTLY to the target and the same inputs always
- * land the odd cent on the same LP. Throws if there is a target but no LP in profit to bear it
+ * profit. Largest-remainder, so the shares sum EXACTLY to the target; LPs are ordered by id
+ * first, so the odd cent lands on the same LP however the ledger read happened to order them. Throws if there is a target but no LP in profit to bear it
  * (unreachable: a positive target means the fund as a whole is in profit, so some LP is).
  */
 export function carryTargetShares(lps: LpEconomics[], target: number): Map<string, number> {
@@ -268,6 +275,7 @@ export function carryTargetShares(lps: LpEconomics[], target: number): Map<strin
   const inProfit = lps
     .map(l => ({ lpEntityId: l.lpEntityId, commitment: grossProfit(l) }))
     .filter(p => p.commitment > 0)
+    .sort((a, b) => (a.lpEntityId < b.lpEntityId ? -1 : a.lpEntityId > b.lpEntityId ? 1 : 0))
   if (inProfit.length === 0) throw new Error(`Carry target of ${target} but no partner has a gain to bear it`)
   return allocateAmount(target, inProfit)
 }

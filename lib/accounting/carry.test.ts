@@ -233,6 +233,11 @@ describe('carryAccrual', () => {
     const second = carryAccrual({ lps: after }, straight(0.2), first.delta)
     expect(second.delta).toBe(0)
     expect(second.perLp.size).toBe(0)
+    // The ledger read has no fixed row order: the odd cent must not follow it.
+    for (const order of [[2, 0, 1], [1, 2, 0], [2, 1, 0]]) {
+      const again = carryAccrual({ lps: order.map(i => after[i]) }, straight(0.2), first.delta)
+      expect(again.perLp.size).toBe(0)
+    }
   })
 })
 
@@ -242,16 +247,17 @@ describe('the carry accrual across consecutive closes, from the ledger', () => {
   const at = (lpEntityId: string, capitalDelta: number, sourceType: string, entryDate: string): CapitalPosting =>
     ({ lpEntityId, amount: -capitalDelta, sourceType, entryDate })
   const recipients = new Set(['gp'])
-  const terms: VehicleCarryTerms = { ...straight(0.2), recipients: [{ lpEntityId: 'gp', pct: 100 }] }
 
-  /** Accrue as the close does, and return the accrual plus the postings it would book. */
-  function close(postings: CapitalPosting[], date: string) {
+  /** Accrue as the close does (to the sole recipient `gp`), and return the accrual plus the
+   *  postings it would book. */
+  function close(postings: CapitalPosting[], date: string, gp = 'gp') {
+    const terms: VehicleCarryTerms = { ...straight(0.2), recipients: [{ lpEntityId: gp, pct: 100 }] }
     const accounts = computeCapitalAccounts(postings)
-    const alreadyAccrued = Math.round((accounts.get('gp')?.carriedInterest ?? 0) * 100) / 100
-    const accrual = carryAccrual({ lps: lpEconomicsFromAccounts(accounts, recipients) }, terms, alreadyAccrued)
+    const alreadyAccrued = Math.round((accounts.get(gp)?.carriedInterest ?? 0) * 100) / 100
+    const accrual = carryAccrual({ lps: lpEconomicsFromAccounts(accounts, new Set([gp])) }, terms, alreadyAccrued)
     const booked = [
       ...Array.from(accrual.perLp, ([id, amt]) => at(id, -amt, 'carried_interest', date)),
-      ...(accrual.delta !== 0 ? [at('gp', accrual.delta, 'carried_interest', date)] : []),
+      ...(accrual.delta !== 0 ? [at(gp, accrual.delta, 'carried_interest', date)] : []),
     ]
     return { accrual, booked }
   }
@@ -266,6 +272,38 @@ describe('the carry accrual across consecutive closes, from the ledger', () => {
     expect(lpEconomicsFromAccounts(accounts, recipients)).toEqual([
       { lpEntityId: 'a', contributed: 1_000_000, distributed: 250_000, nav: 650_000, carryBorne: 100_000 },
     ])
+  })
+
+  it('a former recipient is measured on its own position, its earned carry left out', () => {
+    const accounts = computeCapitalAccounts([
+      at('gp', 50_000, 'capital_call', '2026-01-01'),
+      at('gp', 200_000, 'carried_interest', '2026-03-31'),
+    ])
+    expect(lpEconomicsFromAccounts(accounts, new Set(['gp2']))).toEqual([
+      { lpEntityId: 'gp', contributed: 50_000, distributed: 0, nav: 50_000, carryBorne: 0 },
+    ])
+  })
+
+  it('replacing the recipient leaves the old one its carry, and only the new one takes the rise', () => {
+    // Close 1 accrues 200k to gp. The recipient then changes to gp2 with nothing else changed:
+    // nothing posts — the old recipient's 200k is not clawed back to the new one.
+    const ledger = [at('a', 1_000_000, 'capital_call', '2026-01-15'), at('a', 1_000_000, 'valuation', '2026-03-31')]
+    const first = close(ledger, '2026-03-31')
+    expect(first.accrual.delta).toBe(200_000)
+
+    const switched = close([...ledger, ...first.booked], '2026-06-30', 'gp2')
+    expect(switched.accrual.perLp.size).toBe(0)
+    expect(switched.accrual.delta).toBe(0)
+
+    // Then a 500k rise: target 300k, the LP tops up 100k, and only gp2 is credited.
+    const risen = [...ledger, ...first.booked, at('a', 500_000, 'valuation', '2026-09-30')]
+    const third = close(risen, '2026-09-30', 'gp2')
+    expect(third.accrual.target).toBe(300_000)
+    expect(Array.from(third.accrual.perLp)).toEqual([['a', 100_000]])
+    const after = computeCapitalAccounts([...risen, ...third.booked])
+    expect(after.get('gp')!.carriedInterest).toBe(200_000)
+    expect(after.get('gp2')!.carriedInterest).toBe(100_000)
+    expect(after.get('a')!.carriedInterest).toBe(-300_000)
   })
 
   it('a second close with nothing changed posts nothing', () => {
