@@ -41,6 +41,7 @@ export async function fetchAllRows<T>(
     const { data, error } = await q
     if (error) throw error
     const rows = data ?? []
+    // Safe to spread: one page, so at most `page` rows (PostgREST's cap holds it to 1000 anyway).
     out.push(...rows)
     if (rows.length < page) break
   }
