@@ -9,13 +9,16 @@ import { memoryAdmin } from './helpers/memory-admin'
  * dataset is gated by its source tool's access and scoped by its source tool's loader.
  */
 
+// A test may widen a scoped caller's visible companies past ['c1'].
+const scopedCompanies = vi.hoisted(() => ({ ids: null as string[] | null }))
+
 vi.mock('@/lib/access/entity-scope', () => ({
   entityScopeFor: async (_: unknown, a: AccessContext) =>
     a.vehicles.all ? { access: a, vehicleNames: null, companyIds: null } : { access: a, vehicleNames: ['Fund I'], companyIds: ['c1'] },
 }))
 vi.mock('@/lib/access/scope', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/access/scope')>()),
-  visibleCompanyIds: async (_: unknown, a: AccessContext) => (a.vehicles.all ? null : ['c1']),
+  visibleCompanyIds: async (_: unknown, a: AccessContext) => (a.vehicles.all ? null : scopedCompanies.ids ?? ['c1']),
 }))
 vi.mock('@/lib/access/carry-visibility', async importOriginal => ({
   ...(await importOriginal<typeof import('@/lib/access/carry-visibility')>()),
@@ -234,5 +237,30 @@ describe('query datasets load the whole authorized set, past the 1000-row cap', 
   it("reads one company's whole transaction history past the cap (txnsFor)", async () => {
     const rows = await PORTFOLIO_HANDLERS.list_investments(ctx(member({ portfolio: 'read' })), { company: 'Acme' }) as any[]
     expect(rows).toHaveLength(1100)
+  })
+
+  it("chunks a scoped caller's visible company ids, so hundreds of them stay under the URL limit", async () => {
+    const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    const ids = Array.from({ length: 450 }, (_, i) => uuid(i))
+    store = memoryAdmin({
+      companies: ids.map((id, i) => ({ id, fund_id: 'f1', name: `Co ${i}`, holding_type: 'company' })),
+      metrics: ids.map((id, i) => ({ id: `m${i}`, company_id: id, name: 'ARR', unit: 'USD' })),
+      metric_values: ids.map((_, i) => ({ id: `v${i}`, metric_id: `m${i}`, period_label: 'Q2 2026', value_number: 1 })),
+    }, { maxRows: 1000 })
+    const sent: number[] = []
+    const from = store.admin.from.bind(store.admin)
+    ;(store.admin as any).from = (t: string) => {
+      const q = from(t)
+      if (t === 'companies') { const inner = q.in; q.in = (k: string, vs: unknown[]) => { sent.push(vs.length); return inner(k, vs) } }
+      return q
+    }
+    scopedCompanies.ids = ids
+    try {
+      const out = await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), { dataset: 'kpis', aggregates: [{ fn: 'count' }, { fn: 'count_distinct', column: 'company' }] }) as any
+      expect(out.rows).toEqual([{ count: 450, count_distinct_company: 450 }])
+      expect(sent).toEqual([200, 200, 50])
+    } finally {
+      scopedCompanies.ids = null
+    }
   })
 })

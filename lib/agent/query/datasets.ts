@@ -60,13 +60,14 @@ const transactions: Loader = async (ctx, p) => {
 const kpis: Loader = async (ctx) => {
   const db = ctx.admin as any
   const visible = await visibleCompanyIds(ctx.admin, ctx.access)
-  // Paged (throws on error): unpaged, companies past the 1000th had no KPIs, and a failed read
-  // answered as "no companies". Chunking the visible-id list and metrics' company ids follows #10.
-  const cos = await fetchAllRows<any>((f, t) => {
-    let q = db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
-    if (visible !== null) q = q.in('id', visible.length ? visible : ['00000000-0000-0000-0000-000000000000'])
-    return q.order('id').range(f, t)
-  })
+  // A scope of no companies sees no KPIs.
+  if (visible !== null && visible.length === 0) return []
+  // Paged, ordered by id, throwing on error: unpaged, companies past the 1000th had no KPIs, and a
+  // failed read answered as "no companies". A scoped caller's ids are chunked under the URL limit.
+  const read = () => db.from('companies').select('id, name').eq('fund_id', ctx.fundId).eq('holding_type', 'company')
+  const cos = visible === null
+    ? await fetchAllRows<any>((f, t) => read().range(f, t))
+    : await fetchAllRowsIn<any>(visible, (ids, f, t) => read().in('id', ids).range(f, t))
   const names = new Map(cos.map(c => [c.id, c.name]))
   if (names.size === 0) return []
   const metrics = await fetchAllRowsIn<any>([...names.keys()], (ids, f, t) => db.from('metrics').select('id, name, unit, company_id').in('company_id', ids).range(f, t))
