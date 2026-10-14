@@ -51,7 +51,8 @@ export async function runCategorization(
     // would silently undo a correct attribution.
     .not('suggested_account_code', 'in', `(${RECEIVABLE_CODE},${DISTRIBUTION_PAYABLE_CODE})`)
   if (ids && ids.length) q = q.in('id', ids)
-  const { data: rows } = await q
+  const { data: rows, error: rowsErr } = await q
+  if (rowsErr) return { error: `The bank transactions could not be read: ${rowsErr.message}` }
   // A person's choice is never second-guessed. An account learned from this entity's own history
   // is kept too, unless someone asked for these rows by name: that answer came from a person
   // once already, and the model has never seen it.
@@ -116,36 +117,34 @@ export async function runCategorization(
       continue
     }
 
-    // Re-read the entry and confirm it is STILL a draft. The categorization ran against a
-    // snapshot taken before the (slow) model call — in the meantime a user may have posted
-    // this transaction, and re-pointing a POSTED entry's account behind their back is exactly
-    // the kind of thing that makes books untrustworthy.
-    const { data: entry } = await admin
-      .from('journal_entries' as any)
-      .select('status')
-      .eq('book', ACTUAL_BOOK)
-      .eq('id', t.journal_entry_id)
-      .eq('fund_id', fundId)
-      .maybeSingle()
-    if ((entry as any)?.status !== 'draft') {
-      errors.push(`${t.id}: skipped — its entry is no longer a draft`)
-      continue
-    }
-
     // Only re-point simple two-line drafts (see counterPosting).
-    const { data: postings } = await admin
+    const { data: postings, error: postingsErr } = await admin
       .from('journal_postings' as any)
       .select('id, account_id, amount')
       .eq('book', ACTUAL_BOOK)
       .eq('journal_entry_id', t.journal_entry_id)
+    if (postingsErr) { errors.push(`${t.id}: ${postingsErr.message}`); continue }
     const counter = counterPosting((postings as any[]) ?? [], cashId, Number(t.amount))
     if (!counter) continue
 
-    await admin.from('journal_postings' as any).update({ account_id: newAccountId }).eq('id', counter.id)
-    await admin.from('journal_entries' as any).update({ source_type: cat.sourceType }).eq('id', t.journal_entry_id).eq('fund_id', fundId)
-    await admin.from('bank_transactions' as any)
-      .update({ suggested_account_code: cat.accountCode, raw: { ...(t.raw ?? {}), categorization: categorizationRecord({ by: 'ai', confidence: 'high', reason: 'Suggested by the AI pass' }) } })
-      .eq('id', t.id).eq('fund_id', fundId)
+    // ONE TRANSACTION, AND ONLY WHILE IT IS STILL A DRAFT. The categorization ran against a
+    // snapshot taken before the (slow) model call — in the meantime a user may have posted this
+    // transaction, and re-pointing a POSTED entry's account behind their back is exactly the kind
+    // of thing that makes books untrustworthy. The function locks the entry, checks it is a draft,
+    // and makes all three writes under that lock, so a post cannot land between the check and the
+    // writes and a failure cannot leave the posting, the entry and the bank row disagreeing.
+    const { data: applied, error: applyErr } = await admin.rpc('apply_bank_categorization' as any, {
+      p_fund_id: fundId,
+      p_entry_id: t.journal_entry_id,
+      p_posting_id: counter.id,
+      p_account_id: newAccountId,
+      p_source_type: cat.sourceType,
+      p_bank_txn_id: t.id,
+      p_account_code: cat.accountCode,
+      p_raw: { ...(t.raw ?? {}), categorization: categorizationRecord({ by: 'ai', confidence: 'high', reason: 'Suggested by the AI pass' }) },
+    })
+    if (applyErr) { errors.push(`${t.id}: ${applyErr.message}`); continue }
+    if (applied !== true) { errors.push(`${t.id}: skipped — its entry is no longer a draft`); continue }
     updated++
   }
 
