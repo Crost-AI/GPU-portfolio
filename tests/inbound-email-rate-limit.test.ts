@@ -1,16 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 
 /**
  * The inbound-email webhook is called by Postmark, from Postmark's small IP pool — so a rate limit
  * keyed on the client IP is one 60/min budget shared by every fund on the deployment. It is keyed
- * on the recipient inbox instead, falling back to the IP only when the payload names none.
+ * on the recipient inbox instead, falling back to the IP only when the payload names none — with a
+ * looser per-IP ceiling still over the whole webhook, so rotating the recipient is not unlimited.
  *
  * And the per-fund inbound address matches case-insensitively, without the address ever acting as
  * a LIKE pattern.
  */
 
-const rateLimit = vi.fn(async (_config: { key: string; limit: number; windowSeconds: number }) => null)
+const rateLimit = vi.fn(async (_config: { key: string; limit: number; windowSeconds: number }): Promise<Response | null> => null)
 const runPipeline = vi.fn(async () => {})
 let filters: { table: string; op: string; column: string; value: unknown }[] = []
 let storedAddress = 'Fund-ABC@Inbound.Test'
@@ -64,26 +65,54 @@ const post = (body: string) => POST(new NextRequest('https://fund.test/api/inbou
 const email = (fields: Record<string, unknown>) => JSON.stringify({ From: 'ceo@startup.test', Subject: 'Q3 update', ...fields })
 
 beforeEach(() => {
-  rateLimit.mockClear()
+  rateLimit.mockReset()
+  rateLimit.mockImplementation(async () => null)
   runPipeline.mockClear()
   filters = []
   storedAddress = 'Fund-ABC@Inbound.Test'
 })
 
 describe('the inbound-email rate limit', () => {
-  it('is keyed on the original recipient, normalised', async () => {
+  const keys = () => rateLimit.mock.calls.map(([c]) => c)
+
+  it('is keyed on the original recipient, normalised, under a looser per-IP ceiling', async () => {
     await post(email({ OriginalRecipient: '  Fund-ABC@Inbound.Test ', To: 'someone-else@x.test' }))
-    expect(rateLimit).toHaveBeenCalledWith({ key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 })
+    expect(keys()).toEqual([
+      { key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 },
+      { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
+    ])
   })
 
   it('falls back to To when there is no original recipient', async () => {
     await post(email({ To: 'Fund-ABC@inbound.test' }))
-    expect(rateLimit).toHaveBeenCalledWith({ key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 })
+    expect(keys()).toEqual([
+      { key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 },
+      { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
+    ])
   })
 
-  it("falls back to the caller's IP when the payload names no inbox", async () => {
+  it("falls back to the caller's IP, at the tight limit, when the payload names no inbox", async () => {
     await post(email({}))
-    expect(rateLimit).toHaveBeenCalledWith({ key: 'inbound:ip:203.0.113.9', limit: 60, windowSeconds: 60 })
+    expect(keys()).toEqual([{ key: 'inbound:ip:203.0.113.9', limit: 60, windowSeconds: 60 }])
+  })
+
+  it('returns the first 429: a full inbox stops before the IP ceiling is counted', async () => {
+    rateLimit.mockImplementationOnce(async () => NextResponse.json({ error: 'inbox' }, { status: 429 }))
+    const res = await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
+    expect(res.status).toBe(429)
+    expect(await res.json()).toEqual({ error: 'inbox' })
+    expect(keys()).toHaveLength(1)
+    expect(runPipeline).not.toHaveBeenCalled()
+  })
+
+  it('refuses when the IP ceiling is full even though the inbox has room', async () => {
+    rateLimit
+      .mockImplementationOnce(async () => null)
+      .mockImplementationOnce(async () => NextResponse.json({ error: 'ip' }, { status: 429 }))
+    const res = await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
+    expect(res.status).toBe(429)
+    expect(await res.json()).toEqual({ error: 'ip' })
+    expect(runPipeline).not.toHaveBeenCalled()
   })
 
   it('answers 200 to a malformed body and runs nothing', async () => {

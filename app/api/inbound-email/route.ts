@@ -36,10 +36,15 @@ export async function POST(req: NextRequest) {
 
   // Rate limit inbound webhook: 60 per minute per recipient inbox. Not per IP: every delivery
   // comes from Postmark's small IP pool, so an IP bucket is one budget shared by every fund on the
-  // deployment.
+  // deployment. The IP still gets a looser ceiling (600/min), so a sender rotating the recipient
+  // cannot make the webhook as a whole unlimited. A payload naming no inbox routes nowhere, so it
+  // gets the IP bucket at the tight limit and needs no second check.
+  const ip = getClientIp(req)
   const inbox = (payload.OriginalRecipient || payload.To || '').trim().toLowerCase()
-  const key = inbox ? `inbound:to:${inbox}` : `inbound:ip:${getClientIp(req)}`
-  const limited = await rateLimit({ key, limit: 60, windowSeconds: 60 })
+  const limited = inbox
+    ? (await rateLimit({ key: `inbound:to:${inbox}`, limit: 60, windowSeconds: 60 }))
+      ?? (await rateLimit({ key: `inbound:ip:${ip}`, limit: 600, windowSeconds: 60 }))
+    : await rateLimit({ key: `inbound:ip:${ip}`, limit: 60, windowSeconds: 60 })
   if (limited) return limited
 
   try {
