@@ -35,6 +35,7 @@ import { MAX_PAGE_IMAGE_BYTES, renderPdfPage } from '@/lib/pdf-page-image'
 import { jobHandle, jobRecordId } from './jobs'
 import { unwrap, type Outcome } from '@/lib/service-outcome'
 import { contentTypeFor } from '@/lib/uploads/signed-upload'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { requireUser } from './deals-tools'
 import { fundMemberId, visibleVehicleId } from './refs'
 
@@ -93,18 +94,20 @@ async function latestDraft(admin: SupabaseClient, fundId: string, dealId: string
 
 export const DILIGENCE_HANDLERS: Record<string, AgentToolHandler> = {
   diligence_list_deals: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    let q = (admin as any)
-      .from('diligence_deals')
-      .select('id, name, sector, stage_at_consideration, deal_status, current_memo_stage, created_at')
-      .eq('fund_id', fundId)
-      .order('created_at', { ascending: false })
-    // The caller's entities only (filtered for scoped callers; see deals-tools).
+    // The caller's entities only (filtered for scoped callers; see deals-tools). No entities, no deals.
     const vehicleIds = visibleVehicleIds(access)
-    if (vehicleIds !== null) q = q.in('vehicle_id', vehicleIds)
-    if (input?.status) q = q.eq('deal_status', String(input.status))
-
-    const { data } = await q
-    let rows = ((data as any[]) ?? [])
+    if (vehicleIds !== null && vehicleIds.length === 0) return []
+    // Paged, newest first with id as the tie-break: unpaged, a pipeline past 1000 deals lost its oldest.
+    let rows = await fetchAllRows<any>((f, t) => {
+      let q = (admin as any)
+        .from('diligence_deals')
+        .select('id, name, sector, stage_at_consideration, deal_status, current_memo_stage, created_at')
+        .eq('fund_id', fundId)
+        .order('created_at', { ascending: false })
+      if (vehicleIds !== null) q = q.in('vehicle_id', vehicleIds)
+      if (input?.status) q = q.eq('deal_status', String(input.status))
+      return q.order('id').range(f, t)
+    })
     if (input?.q) {
       const needle = String(input.q).toLowerCase()
       rows = rows.filter(d =>

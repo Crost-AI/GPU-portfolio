@@ -15,6 +15,7 @@ import { parseUpdateFiles } from '@/lib/company-updates/submit'
 import { createManualDeal, MAX_DEAL_FILE_BYTES, MAX_DEAL_FILES, promoteInboundDeal, queueDealResearch, updateInboundDeal } from '@/lib/deals/service'
 import { readStagedUploads, removeStaged } from '@/lib/uploads/signed-upload'
 import { unwrap } from '@/lib/service-outcome'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { fundMemberId, visibleVehicleId } from './refs'
 import { jobHandle, jobRecordId } from './jobs'
 
@@ -55,51 +56,66 @@ export async function resolveInboundDeal(admin: SupabaseClient, fundId: string, 
   )
 }
 
-export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
-  deals_list_inbound: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    const limit = Math.min(Number(input?.limit ?? 100), 500)
+/**
+ * The inbound deals this caller may see, newest first, with deals_list_inbound's filters applied.
+ * `limit` caps the read (the tool's default 100, max 500); `null` loads the WHOLE authorized set,
+ * paged, for a caller that aggregates over it (the query_deals dataset).
+ */
+export async function listInboundDeals({ admin, fundId, access }: AgentToolContext, input: any, limit: number | null): Promise<any[]> {
+  // The caller's entities only. Filtered only for a scoped caller: vehicle_id exists once the
+  // entity migration has run, and before it every caller is unscoped. A scope of no entities sees
+  // nothing — and `in.()` is not a filter PostgREST accepts, so it is never sent.
+  const vehicleIds = visibleVehicleIds(access)
+  if (vehicleIds !== null && vehicleIds.length === 0) return []
+  const build = () => {
     let q = (admin as any)
       .from('inbound_deals')
       .select(LIST_COLUMNS)
       .eq('fund_id', fundId)
       .order('created_at', { ascending: false })
-      .limit(limit)
-
-    // The caller's entities only. Filtered only for a scoped caller: vehicle_id exists once the
-    // entity migration has run, and before it every caller is unscoped.
-    const vehicleIds = visibleVehicleIds(access)
     if (vehicleIds !== null) q = q.in('vehicle_id', vehicleIds)
     if (input?.status) q = q.eq('status', String(input.status))
     if (input?.fit_score) q = q.eq('thesis_fit_score', String(input.fit_score))
     if (input?.intro_source) q = q.eq('intro_source', String(input.intro_source))
+    return q
+  }
+  // Newest first; the tie-break on id keeps the pages stable. Both paths throw on a failed read.
+  let rows: any[]
+  if (limit === null) rows = await fetchAllRows<any>((f, t) => build().order('id').range(f, t))
+  else {
+    const { data, error } = await build().limit(limit)
+    if (error) throw error
+    rows = (data as any[]) ?? []
+  }
+  if (input?.q) {
+    const needle = String(input.q).toLowerCase()
+    rows = rows.filter(d =>
+      String(d.company_name ?? '').toLowerCase().includes(needle) ||
+      String(d.founder_name ?? '').toLowerCase().includes(needle)
+    )
+  }
 
-    const { data } = await q
-    let rows = ((data as any[]) ?? [])
-    if (input?.q) {
-      const needle = String(input.q).toLowerCase()
-      rows = rows.filter(d =>
-        String(d.company_name ?? '').toLowerCase().includes(needle) ||
-        String(d.founder_name ?? '').toLowerCase().includes(needle)
-      )
-    }
+  return rows.map(d => ({
+    id: d.id,
+    company: d.company_name,
+    url: d.company_url,
+    founder: d.founder_name,
+    intro_source: d.intro_source,
+    referrer: d.referrer_name,
+    thesis_fit: d.thesis_fit_score,
+    stage: d.stage,          // the COMPANY's funding stage, not a pipeline position
+    industry: d.industry,
+    raise: d.raise_amount,
+    status: d.status,
+    in_diligence: !!d.promoted_diligence_id,
+    diligence_deal_id: d.promoted_diligence_id ?? null,
+    created_at: d.created_at,
+  }))
+}
 
-    return rows.map(d => ({
-      id: d.id,
-      company: d.company_name,
-      url: d.company_url,
-      founder: d.founder_name,
-      intro_source: d.intro_source,
-      referrer: d.referrer_name,
-      thesis_fit: d.thesis_fit_score,
-      stage: d.stage,          // the COMPANY's funding stage, not a pipeline position
-      industry: d.industry,
-      raise: d.raise_amount,
-      status: d.status,
-      in_diligence: !!d.promoted_diligence_id,
-      diligence_deal_id: d.promoted_diligence_id ?? null,
-      created_at: d.created_at,
-    }))
-  },
+export const DEALS_HANDLERS: Record<string, AgentToolHandler> = {
+  deals_list_inbound: async (ctx: AgentToolContext, input: any) =>
+    listInboundDeals(ctx, input, Math.min(Number(input?.limit ?? 100), 500)),
 
   deals_inbound_detail: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
     const deal = await resolveInboundDeal(admin, fundId, String(input?.deal ?? ''), access)

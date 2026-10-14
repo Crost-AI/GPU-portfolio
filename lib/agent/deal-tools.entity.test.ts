@@ -16,7 +16,7 @@ function admin() {
       const filters: Array<(r: any) => boolean> = []
       let single = false
       const chain: any = {
-        select: () => chain, order: () => chain, limit: () => chain,
+        select: () => chain, order: () => chain, range: () => chain, limit: () => chain,
         eq: (k: string, v: any) => { if (k !== 'fund_id') filters.push(r => r[k] === v); return chain },
         in: (k: string, v: any[]) => { filters.push(r => v.includes(r[k])); return chain },
         ilike: (k: string, p: string) => { const re = new RegExp('^' + p.replace(/%/g, '.*') + '$', 'i'); filters.push(r => re.test(r[k])); return chain },
