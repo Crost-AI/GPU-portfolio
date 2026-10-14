@@ -79,16 +79,15 @@ export async function loadCompanyPage({ supabase, admin, user, page }: PageConte
   let latestMrr: { value: number; period: string; metric: Metric } | null = null
   let latestCash: { value: number; period: string; metric: Metric } | null = null
 
+  // The latest reporting period's value, not the latest import (the view's header says how).
   async function getLatestValue(metricId: string) {
-    const { data } = await supabase
-      .from('metric_values')
+    const { data, error } = await supabase
+      .from('metric_values_latest' as any)
       .select('value_number, period_label')
       .eq('metric_id', metricId)
-      .not('value_number', 'is', null)
-      .order('period_year', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(1) as { data: { value_number: number; period_label: string }[] | null }
-    return data?.[0] ?? null
+      .maybeSingle() as { data: { value_number: number; period_label: string } | null; error: { message: string } | null }
+    if (error) throw new Error(`latest metric value: ${error.message}`)
+    return data
   }
 
   const [mrrRow, cashRow, capturedUpdates] = await Promise.all([
