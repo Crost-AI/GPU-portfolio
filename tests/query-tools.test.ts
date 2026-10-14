@@ -111,3 +111,56 @@ describe('query tools', () => {
     await expect(H.query_portfolio(ctx(member({ portfolio: 'read' })), {})).rejects.toThrow('Pass a dataset: positions, companies, transactions, kpis')
   })
 })
+
+describe('query datasets load the whole authorized set, past the 1000-row cap', () => {
+  const pad = (i: number) => String(i).padStart(5, '0')
+  const count = (out: any) => out.rows[0].count
+  beforeEach(() => {
+    store = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
+      // 1200 pitches, alternating between two entities; the first 200 are from 2020, so the newest
+      // 500 (deals_list_inbound's cap) never reach them.
+      inbound_deals: Array.from({ length: 1200 }, (_, i) => ({
+        id: `d${pad(i)}`, fund_id: 'f1', vehicle_id: i % 2 ? 'v2' : 'v1', company_name: `Co ${i}`, status: 'new',
+        created_at: i < 200 ? `2020-01-01T00:00:${pad(i).slice(-2)}Z` : `2026-01-01T00:00:00Z`,
+      })),
+      diligence_deals: Array.from({ length: 1100 }, (_, i) => ({
+        id: `dd${pad(i)}`, fund_id: 'f1', vehicle_id: i % 2 ? 'v2' : 'v1', name: `Deal ${i}`, deal_status: 'active', created_at: '2026-01-01T00:00:00Z',
+      })),
+      companies: [
+        { id: 'c1', fund_id: 'f1', name: 'Acme', holding_type: 'company', status: 'active', portfolio_group: ['Fund I'] },
+        { id: 'c2', fund_id: 'f1', name: 'Birch', holding_type: 'company', status: 'active', portfolio_group: ['Fund II'] },
+      ],
+      investment_transactions: [
+        ...Array.from({ length: 1100 }, (_, i) => ({ id: `t${pad(i)}`, fund_id: 'f1', company_id: 'c1', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
+        ...Array.from({ length: 50 }, (_, i) => ({ id: `u${pad(i)}`, fund_id: 'f1', company_id: 'c2', portfolio_group: 'Fund II', transaction_type: 'investment', transaction_date: '2025-01-01', investment_cost: 1 })),
+      ],
+    }, { maxRows: 1000 })
+  })
+
+  it('counts every inbound deal, the oldest included', async () => {
+    const a = member({ dealflow: 'read' })
+    expect(count(await H.query_deals(ctx(a), { aggregates: [{ fn: 'count' }] }))).toBe(1200)
+    const old = await H.query_deals(ctx(a), { where: [{ column: 'created_at', op: 'lt', value: '2021-01-01' }], aggregates: [{ fn: 'count' }] })
+    expect(count(old)).toBe(200)
+  })
+
+  it("still shows a scoped caller only their entity's deals", async () => {
+    const scoped = member({ dealflow: 'read', diligence: 'read' }, false)
+    expect(count(await H.query_deals(ctx(scoped), { aggregates: [{ fn: 'count' }] }))).toBe(600)
+    expect(count(await H.query_deals(ctx(scoped), { where: [{ column: 'created_at', op: 'lt', value: '2021-01-01' }], aggregates: [{ fn: 'count' }] }))).toBe(100)
+    expect(count(await H.query_diligence(ctx(scoped), { aggregates: [{ fn: 'count' }] }))).toBe(550)
+  })
+
+  it('counts every diligence deal', async () => {
+    expect(count(await H.query_diligence(ctx(member({ diligence: 'read' })), { aggregates: [{ fn: 'count' }] }))).toBe(1100)
+  })
+
+  it("counts every transaction, through list_investments' company and entity scope", async () => {
+    const q = { dataset: 'transactions', aggregates: [{ fn: 'count' }] }
+    expect(count(await H.query_portfolio(ctx(member({ portfolio: 'read' })), q))).toBe(1150)
+    expect(count(await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), q))).toBe(1100)
+    const named = await H.query_portfolio(ctx(member({ portfolio: 'read' }, false)), { dataset: 'transactions', group_by: ['company'], aggregates: [{ fn: 'sum', column: 'invested' }] }) as any
+    expect(named.rows).toEqual([{ company: 'Acme', sum_invested: 1100 }])
+  })
+})
