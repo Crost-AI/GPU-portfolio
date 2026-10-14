@@ -1,4 +1,4 @@
-import { loadOwnership } from './load'
+import { loadOwnership, fetchAllRows } from './load'
 import { loadPositions, type LpPosition } from './lp-positions'
 // Allocation configuration: what the close splits P&L on, how each partner's
 // commitment has changed over time, and which partners bear which categories.
@@ -282,7 +282,7 @@ function toCommitmentEvent(e: any): CommitmentEvent {
 }
 
 /** Every commitment event for the vehicle, oldest first. Pass `events` (a preloaded slice) to
- *  skip the query. */
+ *  skip the query. THROWS if the read fails. */
 export async function loadCommitmentEvents(
   admin: SupabaseClient,
   fundId: string,
@@ -292,18 +292,35 @@ export async function loadCommitmentEvents(
 ): Promise<CommitmentEvent[]> {
   if (events) return events
   const vehicleId = await vehicleIdByName(admin, fundId, group, idMap)
-  const { data } = await admin
+  const rows = await readCommitmentEvents((from, to) => admin
     .from('commitment_events' as any)
     .select('lp_entity_id, effective_date, amount, kind')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .order('effective_date', { ascending: true })
-  return ((data as any[]) ?? []).map(toCommitmentEvent)
+    .order('id', { ascending: true })
+    .range(from, to))
+  return rows.map(toCommitmentEvent)
+}
+
+/**
+ * Every page of a commitment_events read. Paged past PostgREST's 1000-row cap, with `id` as the
+ * tiebreak so pages never skip or repeat a row; THROWS on a failed read, which is not "no events".
+ */
+async function readCommitmentEvents(
+  make: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: unknown }>
+): Promise<any[]> {
+  try {
+    return await fetchAllRows<any>(make)
+  } catch (error) {
+    throw new Error(`commitment_events read failed: ${(error as any)?.message ?? String(error)}`)
+  }
 }
 
 /**
  * Batch-load commitment events for MANY vehicles: one `vehicle_id IN (...)` query, grouped by
  * vehicle_id, each group oldest-first (the global order-by preserves per-vehicle order on push).
+ * THROWS if the read fails.
  */
 export async function loadCommitmentEventsBatch(
   admin: SupabaseClient,
@@ -313,13 +330,15 @@ export async function loadCommitmentEventsBatch(
   const out = new Map<string, CommitmentEvent[]>()
   if (vehicleIds.length === 0) return out
   for (const id of vehicleIds) out.set(id, [])
-  const { data } = await admin
+  const rows = await readCommitmentEvents((from, to) => admin
     .from('commitment_events' as any)
     .select('lp_entity_id, effective_date, amount, kind, vehicle_id')
     .eq('fund_id', fundId)
     .in('vehicle_id', vehicleIds)
     .order('effective_date', { ascending: true })
-  for (const e of ((data as any[]) ?? [])) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
+    .order('id', { ascending: true })
+    .range(from, to))
+  for (const e of rows) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
   return out
 }
 

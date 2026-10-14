@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { commitmentsAsOf, allocationWeights, resolveCommitmentMap, loadAllocationBasis, loadPartnerTerms, type PartnerTerms } from './terms'
+import {
+  commitmentsAsOf, allocationWeights, resolveCommitmentMap, loadAllocationBasis, loadPartnerTerms,
+  loadCommitmentEvents, loadCommitmentEventsBatch, type PartnerTerms,
+} from './terms'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import { allocateAmount } from './allocation'
 
@@ -178,5 +181,46 @@ describe('the settings loaders on a failed read', () => {
 
   it('loadPartnerTerms still returns [] when there are no terms', async () => {
     expect(await loadPartnerTerms(memoryAdmin(vehicles).admin, 'f', 'Fund I')).toEqual([])
+  })
+})
+
+describe('the commitment event loaders', () => {
+  // 1,300 events across two vehicles, stored newest first, many sharing a date — more than one
+  // PostgREST page. The unpaged read stopped at the first 1,000 and allocated on a truncated
+  // commitment history.
+  const days = ['2024-01-01', '2024-06-30', '2025-01-01', '2025-06-30']
+  const commitment_events = Array.from({ length: 1300 }, (_, i) => ({
+    id: `e${String(i).padStart(4, '0')}`, fund_id: 'f', vehicle_id: i % 2 ? 'v2' : 'v1',
+    lp_entity_id: `lp${i}`, effective_date: days[i % 4], amount: 1000 + i, kind: 'initial',
+  })).reverse()
+  const seed = () => ({
+    fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'Fund I' }, { id: 'v2', fund_id: 'f', name: 'Fund II' }],
+    commitment_events,
+  })
+  const oldestFirst = (events: { effectiveDate: string }[]) =>
+    events.every((e, i) => i === 0 || events[i - 1].effectiveDate <= e.effectiveDate)
+
+  it('loadCommitmentEventsBatch returns every row past the row cap, grouped per vehicle, oldest first', async () => {
+    const m = memoryAdmin(seed(), { maxRows: 1000 })
+    const out = await loadCommitmentEventsBatch(m.admin, 'f', ['v1', 'v2'])
+    expect(out.get('v1')).toHaveLength(650)
+    expect(out.get('v2')).toHaveLength(650)
+    expect(new Set([...out.get('v1')!, ...out.get('v2')!].map(e => e.lpEntityId)).size).toBe(1300)
+    expect(oldestFirst(out.get('v1')!) && oldestFirst(out.get('v2')!)).toBe(true)
+  })
+
+  it('loadCommitmentEvents returns every row past the row cap, oldest first', async () => {
+    const m = memoryAdmin({ ...seed(), commitment_events: commitment_events.map(e => ({ ...e, vehicle_id: 'v1' })) }, { maxRows: 1000 })
+    const out = await loadCommitmentEvents(m.admin, 'f', 'Fund I')
+    expect(new Set(out.map(e => e.lpEntityId)).size).toBe(1300)
+    expect(oldestFirst(out)).toBe(true)
+  })
+
+  it('both reject on a failed read instead of reading as no events', async () => {
+    const m = memoryAdmin(seed())
+    m.failNext('commitment_events', 'select', 'boom')
+    await expect(loadCommitmentEventsBatch(m.admin, 'f', ['v1', 'v2'])).rejects.toThrow(/boom/)
+    m.failNext('commitment_events', 'select', 'boom')
+    await expect(loadCommitmentEvents(m.admin, 'f', 'Fund I')).rejects.toThrow(/boom/)
   })
 })
