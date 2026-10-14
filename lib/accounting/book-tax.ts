@@ -36,7 +36,7 @@
 
 import { roundCents } from './ledger'
 import { bucketForSourceType, computeCapitalAccounts, type CapitalPosting } from './capital-account'
-import { carryAccrual, carryTarget, type DatedContribution, type LpEconomics, type VehicleCarryTerms } from './carry'
+import { carryAccrual, carryTarget, carryTargetShares, type DatedContribution, type LpEconomics, type VehicleCarryTerms } from './carry'
 
 export type TaxDifferenceKind =
   | 'unrealized'
@@ -279,7 +279,9 @@ export function netAdjustment(proposals: ProposedAdjustment[]): number {
  * too) taken out — and the difference is the carry that exists only because of the marks. Both
  * measurements use NAV before any carry, so a fund with nothing unrealized gets exactly nothing
  * back, whatever cadence its closes accrued on. The year's figure is that difference at year end
- * less the same at the prior year end, split by `carryAccrual` the way the close splits it.
+ * less the same at the prior year end, split by `carryAccrual` the way the close splits it: each
+ * partner's share of the year-end target less its share of the prior year-end target, so a partner
+ * that has fallen under water gets its prior carry back even while another is still in profit.
  *
  * Signed as the capital accounts hold carry: positive debits a paying partner, negative credits a
  * recipient. Realized carry is never in it, which is what keeps the GP's §1061 and box 20 figures.
@@ -294,17 +296,24 @@ export function carryOnUnrealizedForYear(
   if (terms.kind === 'none' || terms.carryRate <= 0 || terms.recipients.length === 0) return out
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
 
-  const economicsAt = (asOf: string, taxBasis: boolean) => {
+  // `borne` is each partner's share of the prior year-end target: the carry it already bears on
+  // this measurement, so the year's figure reconciles per partner exactly as the close does.
+  const economicsAt = (asOf: string, taxBasis: boolean, borne: Map<string, number> = new Map()) => {
     const upTo = capitalPostings.filter(p => (p.entryDate ?? '') <= asOf)
     const accounts = computeCapitalAccounts(upTo)
     const lps: LpEconomics[] = Array.from(accounts.entries())
       .filter(([id]) => !recipientIds.has(id))
-      .map(([lpEntityId, a]) => ({
-        lpEntityId,
-        contributed: roundCents(a.contributions),
-        distributed: roundCents(-a.distributions),
-        nav: roundCents(a.ending - a.carriedInterest - (taxBasis ? a.unrealizedGains + a.fxTranslation : 0)),
-      }))
+      .map(([lpEntityId, a]) => {
+        const gross = a.ending - a.carriedInterest - (taxBasis ? a.unrealizedGains + a.fxTranslation : 0)
+        const carryBorne = borne.get(lpEntityId) ?? 0
+        return {
+          lpEntityId,
+          contributed: roundCents(a.contributions),
+          distributed: roundCents(-a.distributions),
+          nav: roundCents(gross - carryBorne), // LpEconomics.nav is net of carryBorne
+          carryBorne,
+        }
+      })
     const contributions: DatedContribution[] = upTo
       .filter(p => !recipientIds.has(p.lpEntityId) && bucketForSourceType(p.sourceType) === 'contributions')
       .map(p => ({ date: p.entryDate ?? asOf, amount: roundCents(-p.amount) }))
@@ -313,8 +322,8 @@ export function carryOnUnrealizedForYear(
   }
   const yearCarry = (taxBasis: boolean) => {
     const prior = economicsAt(priorYearEnd, taxBasis)
-    const current = economicsAt(yearEnd, taxBasis)
     const priorTarget = prior.lps.length ? carryTarget(prior, terms) : 0
+    const current = economicsAt(yearEnd, taxBasis, carryTargetShares(prior.lps, priorTarget))
     return current.lps.length ? carryAccrual(current, terms, priorTarget).perLp : new Map<string, number>()
   }
 

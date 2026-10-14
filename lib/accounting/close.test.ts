@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { balanceSheet } from './statements'
 import { computeCapitalAccounts, rollForwardTies } from './capital-account'
 import { allocateAmount } from './allocation'
-import { monthWindows, loadWalletCloseInputs, checkReadiness, snapshotRefusal } from './close'
+import { monthWindows, loadWalletCloseInputs, checkReadiness, snapshotRefusal, previewClose, accrueCarry } from './close'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import type { Account, Posting } from './types'
 
@@ -324,5 +324,42 @@ describe('the bank reconciliation check', () => {
   it('is not applicable only when there is no bank feed at all', async () => {
     const m = memoryAdmin(seed([]))
     expect((await checkReadiness(m.admin as any, 'f', 'Fund I', '2026-09-01', '2026-09-30')).bank).toBeNull()
+  })
+})
+
+describe('the close on a failed settings read', () => {
+  // The ledger reads succeed; one settings read fails. Each used to come back as its default
+  // (commitment basis, no side letters, no carry) and the close balanced on the wrong terms.
+  const seed = () => ({
+    fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'Fund I', kind: 'fund' }],
+    fund_settings: [{ fund_id: 'f', currency: 'USD' }],
+    chart_of_accounts: accounts.map(a => ({ id: a.id, fund_id: 'f', vehicle_id: 'v1', code: a.code, name: a.name, type: a.type, subtype: a.subtype, lp_entity_id: a.lpEntityId ?? null })),
+    vehicle_waterfall_terms: [{ fund_id: 'f', vehicle_id: 'v1', kind: 'straight', carry_rate: 0.2, gp_entity_id: 'gp' }],
+    lp_investments: [
+      { id: 'i1', fund_id: 'f', portfolio_group: 'Fund I', entity_id: 'a', commitment: 600_000 },
+      { id: 'i2', fund_id: 'f', portfolio_group: 'Fund I', entity_id: 'b', commitment: 400_000 },
+    ],
+  })
+
+  it('previews cleanly when every read succeeds', async () => {
+    const m = memoryAdmin(seed())
+    const out = await previewClose(m.admin, 'f', 'Fund I', '2026-01-01', '2026-03-31')
+    expect(out).toMatchObject({ basis: 'commitment', mode: 'partners' })
+  })
+
+  for (const table of ['vehicle_accounting_settings', 'partner_allocation_terms']) {
+    it(`a failed ${table} read refuses the preview`, async () => {
+      const m = memoryAdmin(seed())
+      m.failNext(table, 'select', 'boom')
+      const out = await previewClose(m.admin, 'f', 'Fund I', '2026-01-01', '2026-03-31')
+      expect(out).toEqual({ error: expect.stringMatching(new RegExp(`${table} read failed: boom`)) })
+    })
+  }
+
+  it('a failed vehicle_waterfall_terms read fails the carry accrual instead of skipping it', async () => {
+    const m = memoryAdmin(seed())
+    m.failNext('vehicle_waterfall_terms', 'select', 'boom')
+    const out = await accrueCarry(m.admin, 'f', 'Fund I', null, '2026-03-31', 'close:p1')
+    expect(out).toEqual({ error: expect.stringMatching(/vehicle_waterfall_terms read failed: boom/) })
   })
 })

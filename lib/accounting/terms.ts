@@ -1,4 +1,4 @@
-import { loadOwnership } from './load'
+import { loadOwnership, fetchAllRows } from './load'
 import { loadPositions, type LpPosition } from './lp-positions'
 // Allocation configuration: what the close splits P&L on, how each partner's
 // commitment has changed over time, and which partners bear which categories.
@@ -191,19 +191,21 @@ export function allocationWeights(
 // Loaders
 // ---------------------------------------------------------------------------
 
-/** The vehicle's allocation basis. Defaults to commitment when unset. */
+/** The vehicle's allocation basis. Defaults to commitment when unset; THROWS if the read fails. */
 export async function loadAllocationBasis(
   admin: SupabaseClient,
   fundId: string,
   group: string
 ): Promise<AllocationBasis> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
-  const { data } = await admin
+  const { data, error } = await admin
     .from('vehicle_accounting_settings' as any)
     .select('allocation_basis')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .maybeSingle()
+  // A failed read is not "unset": allocating on the default basis would still balance.
+  if (error) throw new Error(`vehicle_accounting_settings read failed: ${error.message}`)
   const basis = (data as any)?.allocation_basis
   return basis === 'capital_balance' ? 'capital_balance' : 'commitment'
 }
@@ -232,11 +234,13 @@ export async function loadPartnerTerms(
   idMap?: VehicleIdMap
 ): Promise<PartnerTerms[]> {
   const vehicleId = await vehicleIdByName(admin, fundId, group, idMap)
-  const { data } = await admin
+  const { data, error } = await admin
     .from('partner_allocation_terms' as any)
     .select('lp_entity_id, category, participates, weight_override, rate_override')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
+  // A failed read is not "no side letters": it would charge an exempt partner.
+  if (error) throw new Error(`partner_allocation_terms read failed: ${error.message}`)
   return ((data as any[]) ?? []).map(t => ({
     lpEntityId: t.lp_entity_id,
     category: t.category,
@@ -278,7 +282,7 @@ function toCommitmentEvent(e: any): CommitmentEvent {
 }
 
 /** Every commitment event for the vehicle, oldest first. Pass `events` (a preloaded slice) to
- *  skip the query. */
+ *  skip the query. THROWS if the read fails. */
 export async function loadCommitmentEvents(
   admin: SupabaseClient,
   fundId: string,
@@ -288,18 +292,37 @@ export async function loadCommitmentEvents(
 ): Promise<CommitmentEvent[]> {
   if (events) return events
   const vehicleId = await vehicleIdByName(admin, fundId, group, idMap)
-  const { data } = await admin
+  const rows = await readCommitmentEvents((from, to) => admin
     .from('commitment_events' as any)
     .select('lp_entity_id, effective_date, amount, kind')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .order('effective_date', { ascending: true })
-  return ((data as any[]) ?? []).map(toCommitmentEvent)
+    .order('id', { ascending: true })
+    .range(from, to))
+  return rows.map(toCommitmentEvent)
 }
 
 /**
- * Batch-load commitment events for MANY vehicles: one `vehicle_id IN (...)` query, grouped by
+ * Every page of a commitment_events read. Paged past PostgREST's 1000-row cap, with `id` as the
+ * tiebreak so pages never skip or repeat a row; THROWS on a failed read, which is not "no events".
+ */
+async function readCommitmentEvents(
+  make: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: unknown }>
+): Promise<any[]> {
+  try {
+    return await fetchAllRows<any>(make)
+  } catch (error) {
+    throw new Error(`commitment_events read failed: ${(error as any)?.message ?? String(error)}`)
+  }
+}
+
+const VEHICLE_ID_CHUNK = 200
+
+/**
+ * Batch-load commitment events for MANY vehicles: a `vehicle_id IN (...)` query per 200 ids, grouped by
  * vehicle_id, each group oldest-first (the global order-by preserves per-vehicle order on push).
+ * THROWS if the read fails.
  */
 export async function loadCommitmentEventsBatch(
   admin: SupabaseClient,
@@ -309,13 +332,20 @@ export async function loadCommitmentEventsBatch(
   const out = new Map<string, CommitmentEvent[]>()
   if (vehicleIds.length === 0) return out
   for (const id of vehicleIds) out.set(id, [])
-  const { data } = await admin
-    .from('commitment_events' as any)
-    .select('lp_entity_id, effective_date, amount, kind, vehicle_id')
-    .eq('fund_id', fundId)
-    .in('vehicle_id', vehicleIds)
-    .order('effective_date', { ascending: true })
-  for (const e of ((data as any[]) ?? [])) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
+  // 200 ids per request keeps the `in.(...)` filter inside the request-URL limit. A vehicle's
+  // events all come back in the same chunk, so each group is still oldest-first.
+  for (let i = 0; i < vehicleIds.length; i += VEHICLE_ID_CHUNK) {
+    const chunk = vehicleIds.slice(i, i + VEHICLE_ID_CHUNK)
+    const rows = await readCommitmentEvents((from, to) => admin
+      .from('commitment_events' as any)
+      .select('lp_entity_id, effective_date, amount, kind, vehicle_id')
+      .eq('fund_id', fundId)
+      .in('vehicle_id', chunk)
+      .order('effective_date', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to))
+    for (const e of rows) out.get(e.vehicle_id)?.push(toCommitmentEvent(e))
+  }
   return out
 }
 

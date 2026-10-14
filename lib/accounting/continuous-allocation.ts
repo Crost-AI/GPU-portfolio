@@ -167,11 +167,18 @@ export async function allocatePostedEntry(
   const bridgeId = codes.get(BRIDGE_CODE)
   if (!bridgeId) return { error: `Missing account ${BRIDGE_CODE} (Undistributed earnings)` }
 
-  const [owners, names, basis, terms, events] = await Promise.all([
-    loadOwnership(admin, fundId, group), loadEntityNames(admin, fundId, group),
-    loadAllocationBasis(admin, fundId, group), loadPartnerTerms(admin, fundId, group),
-    loadCommitmentEvents(admin, fundId, group),
-  ])
+  let loaded
+  try {
+    loaded = await Promise.all([
+      loadOwnership(admin, fundId, group), loadEntityNames(admin, fundId, group),
+      loadAllocationBasis(admin, fundId, group), loadPartnerTerms(admin, fundId, group),
+      loadCommitmentEvents(admin, fundId, group),
+    ])
+  } catch (error) {
+    // A defaulted basis or missing side letters would still produce a balanced allocation.
+    return { error: `Could not read the allocation settings, so the entry was not allocated: ${(error as any)?.message ?? String(error)}` }
+  }
+  const [owners, names, basis, terms, events] = loaded
   let basisAmounts: { lpEntityId: string; basisAmount: number }[] = []
   if (!ownerMode && basis === 'capital_balance') {
     const balances = computeCapitalAccounts(capitalPostings, { end: entry.entryDate })
