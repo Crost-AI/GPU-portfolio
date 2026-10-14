@@ -15,6 +15,8 @@ function makeClient(opts: {
   existingByCompany: Record<string, string[]>
   excludedByCompany?: Record<string, string[]>
   companies?: string[]
+  /** Fail the read of this table with this message (data: null). */
+  failRead?: { table: string; message: string }
   /** Return an error message to fail that insert call. */
   failInsert?: (rows: any[], call: number) => string | null
 }) {
@@ -45,6 +47,7 @@ function makeClient(opts: {
         const page = (rows: any[]) => state.range ? rows.slice(state.range[0], state.range[1] + 1) : rows
         const ids = state.filters['company_id'] as string[] | undefined
         reads.push({ table, ids, range: state.range })
+        if (opts.failRead?.table === table) return resolve({ data: null, error: { message: opts.failRead.message } })
         if (table === 'default_metrics') return resolve({ data: opts.templates, error: null })
         if (table === 'companies') return resolve({ data: (opts.companies ?? []).map(id => ({ id })), error: null })
         if (table === 'metrics') {
@@ -210,5 +213,43 @@ describe('applyDefaultsToAllCompanies — batching', () => {
     expect(reads.filter(r => r.table === 'metrics')).toHaveLength(2) // rows 0-999, then 1000-1999
     expect(res.inserted).toBe(1)
     expect(inserted.map(r => r.slug)).toEqual(['arr'])
+  })
+})
+
+describe('a failed template read', () => {
+  it('is reported by the fund-wide apply, without the database text', async () => {
+    const { client, inserted, reads } = makeClient({
+      templates: [T('cash')], existingByCompany: {}, companies: ['co-1', 'co-2'],
+      failRead: { table: 'default_metrics', message: 'canceling statement due to statement timeout' },
+    })
+
+    const res = await applyDefaultsToAllCompanies(client, 'fund-1', null)
+
+    expect(res.inserted).toBe(0)
+    expect(res.companies).toBe(2)
+    expect(res.errors).toEqual(['Reading the default metrics failed; no defaults were applied'])
+    expect(inserted).toHaveLength(0)
+    expect(reads.some(r => r.table === 'metrics')).toBe(false)
+  })
+
+  it('leaves the single-company seed logging and returning 0', async () => {
+    const { client, inserted } = makeClient({
+      templates: [T('cash')], existingByCompany: {},
+      failRead: { table: 'default_metrics', message: 'canceling statement due to statement timeout' },
+    })
+    expect(await seedCompanyFromDefaults(client, 'fund-1', 'co-1')).toBe(0)
+    expect(inserted).toHaveLength(0)
+  })
+
+  it('a failed company read is reported too', async () => {
+    const { client, inserted } = makeClient({
+      templates: [T('cash')], existingByCompany: {}, companies: ['co-1'],
+      failRead: { table: 'companies', message: 'connection reset' },
+    })
+
+    const res = await applyDefaultsToAllCompanies(client, 'fund-1', null)
+
+    expect(res).toEqual({ inserted: 0, companies: 0, errors: ['Reading the companies failed; no defaults were applied'] })
+    expect(inserted).toHaveLength(0)
   })
 })

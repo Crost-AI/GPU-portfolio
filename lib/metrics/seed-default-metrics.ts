@@ -93,13 +93,15 @@ async function readSeedState(admin: SupabaseClient, companyIds: string[]): Promi
   return { have: group(metrics, r => r.slug), excluded: group(exclusions, r => r.default_metric_id) }
 }
 
+/** The fund's active templates. Throws on a failed read: "no templates" would look like success. */
 async function readTemplates(admin: SupabaseClient, fundId: string): Promise<DefaultMetricTemplate[]> {
-  const { data: templates } = await admin
+  const { data: templates, error } = await admin
     .from('default_metrics')
     .select(`id, ${TEMPLATE_COLUMNS}`)
     .eq('fund_id', fundId)
     .eq('is_active', true)
     .order('display_order')
+  if (error) throw error
   return (templates ?? []) as DefaultMetricTemplate[]
 }
 
@@ -120,7 +122,13 @@ export async function seedCompanyFromDefaults(
   companyId: string,
   onlyIds?: string[]
 ): Promise<number> {
-  const all = await readTemplates(admin, fundId)
+  let all: DefaultMetricTemplate[]
+  try {
+    all = await readTemplates(admin, fundId)
+  } catch (e) {
+    console.error('[seedCompanyFromDefaults] template read failed:', errMessage(e))
+    return 0
+  }
   const keep = onlyIds ? new Set(onlyIds) : null
   const list = keep ? all.filter(t => keep.has(t.id)) : all
   if (list.length === 0) return 0
@@ -164,16 +172,26 @@ export async function applyDefaultsToAllCompanies(
   /** The caller's companies (null = all). Required: a scoped member syncs only theirs. */
   visibleCompanyIds: string[] | null,
 ): Promise<{ inserted: number; companies: number; errors: string[] }> {
-  const { data: companies } = await filterByCompany((admin as any)
+  const { data: companies, error: companiesError } = await filterByCompany((admin as any)
     .from('companies')
     .select('id')
     .eq('fund_id', fundId)
     .eq('holding_type', 'company'),   // fund holdings have their own surfaces
     visibleCompanyIds, { column: 'id' })
 
-  const ids = ((companies ?? []) as { id: string }[]).map(c => c.id)
   const errors: string[] = []
-  const templates = ids.length ? await readTemplates(admin, fundId) : []
+  if (companiesError) {
+    console.error('[applyDefaultsToAllCompanies] company read failed:', companiesError.message)
+    return { inserted: 0, companies: 0, errors: ['Reading the companies failed; no defaults were applied'] }
+  }
+  const ids = ((companies ?? []) as { id: string }[]).map(c => c.id)
+  let templates: DefaultMetricTemplate[] = []
+  try {
+    if (ids.length) templates = await readTemplates(admin, fundId)
+  } catch (e) {
+    console.error('[applyDefaultsToAllCompanies] template read failed:', errMessage(e))
+    return { inserted: 0, companies: ids.length, errors: ['Reading the default metrics failed; no defaults were applied'] }
+  }
   if (templates.length === 0) return { inserted: 0, companies: ids.length, errors }
 
   const rows: ReturnType<typeof plannedInserts> = []
