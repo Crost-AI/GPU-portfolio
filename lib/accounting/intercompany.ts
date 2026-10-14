@@ -455,8 +455,17 @@ export async function postIntercompanyCharge(
   if (linked.error) linked = await link()
   if (linked.error || ((linked.data as any[]) ?? []).length === 0) {
     // A lost response looks like a failure: the link may have committed. Ours is ours.
-    const { data: now } = await admin.from('intercompany_transactions' as any)
+    const { data: now, error: readErr } = await admin.from('intercompany_transactions' as any)
       .select('status, from_entry_id').eq('id', chargeId).eq('fund_id', args.fundId).maybeSingle()
+    // Not knowing whether the link committed is not knowing it failed: unwinding a committed link
+    // would leave a linked charge pointing at nothing. Leave both for the explicit void path.
+    if (readErr) {
+      const entries = [payerRes.entryId, payeeEntryId].filter(Boolean).join(', ')
+      return {
+        error: `Charge ${chargeId} may or may not be linked to its entries (${entries}): the link failed and the charge could not be re-read ` +
+          `(${readErr.message}). Nothing was undone. Check the charge; if it names no entry, void those entries in the journal, then void the invoice.`,
+      }
+    }
     if ((now as any)?.from_entry_id === payerRes.entryId) return { id: chargeId }
 
     const why = linked.error?.message ?? `the charge is ${(now as any)?.status === 'void' ? 'void' : 'no longer unlinked'}`
@@ -568,7 +577,7 @@ export async function settleIntercompanyCharge(
     return { error: (e as Error).message }
   }
   if (legacyPayee?.status === 'posted' && legacyPayer?.status === 'posted') {
-    return markSettled(admin, fundId, chargeId, legacyPayee.entryDate, legacyPayee.id, legacyPayer.id)
+    return markSettled(admin, fundId, chargeId, legacyPayee.entryDate, legacyPayee.id, legacyPayer.id, true)
   }
   const legacy = legacyPayee ? { side: payee, entry: legacyPayee } : legacyPayer ? { side: payer, entry: legacyPayer } : null
   if (legacy) {
@@ -751,13 +760,19 @@ async function markSettled(
   settledDate: string,
   payeeEntryId: string,
   payerEntryId: string,
+  /** Pre-20261014190000 entries found by ref: never linked, so there are no links to hold. */
+  legacy = false,
 ): Promise<{ ok: true } | { error: string }> {
-  const { data: updated, error } = await admin.from('intercompany_transactions' as any).update({
+  let q = admin.from('intercompany_transactions' as any).update({
     status: 'settled',
     settled_date: settledDate,
     to_settlement_entry_id: payeeEntryId,
     from_settlement_entry_id: payerEntryId,
-  }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued').select('id')
+  }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
+  // Only while both sides are still linked to these entries: a side unwound by a losing attempt
+  // after this request read it must not be settled over.
+  if (!legacy) q = q.eq('to_settlement_entry_id', payeeEntryId).eq('from_settlement_entry_id', payerEntryId)
+  const { data: updated, error } = await q.select('id')
   const booked = `The settlement entries are on both books (${payeeEntryId}, ${payerEntryId})`
   if (error) return { error: `${booked}, but the charge could not be marked settled: ${error.message}. Settle it again to finish.` }
   if (((updated as any[]) ?? []).length > 0) return { ok: true }
@@ -769,6 +784,12 @@ async function markSettled(
   const r = now as any
   if (r?.status === 'settled' && r.to_settlement_entry_id === payeeEntryId && r.from_settlement_entry_id === payerEntryId) {
     return { ok: true }
+  }
+  if (r?.status === 'accrued') {
+    return {
+      error: `The charge was not marked settled: its settlement links changed while it was being settled (payee ` +
+        `${r.to_settlement_entry_id ?? 'none'}, payer ${r.from_settlement_entry_id ?? 'none'}). Settle it again to post what is missing.`,
+    }
   }
   return { error: `${booked}, but the charge changed while it was being settled (it is now ${r?.status ?? 'gone'}). Check both entries.` }
 }

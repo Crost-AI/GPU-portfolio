@@ -29,6 +29,7 @@ function fakeDb(tables: Record<string, Row[]>) {
   // An update that fails outright, or (commit) one that lands but whose response is lost.
   const failNext: { table: string; when: (patch: Row) => boolean; commit?: boolean }[] = []
   const failDeletes: { table: string }[] = []
+  const failSelects: { table: string }[] = []
   let insertGate: ((table: string) => Promise<void>) | null = null
   const uniqueViolation = (table: string, row: Row) => {
     const live = (r: Row) => r.status !== 'void'
@@ -69,6 +70,8 @@ function fakeDb(tables: Record<string, Row[]>) {
         tables[table] = tables[table].filter(r => !gone.has(r))
         return { data: null, error: null }
       }
+      const f = failSelects.findIndex(x => x.table === table)
+      if (f >= 0) { failSelects.splice(f, 1); return { data: null, error: { message: 'connection reset' } } }
       let rows = match()
       if (order) rows = [...rows].sort((a, b) => String(a[order!]).localeCompare(String(b[order!])))
       // PostgREST's max_rows: an unranged read silently stops at 1000.
@@ -100,6 +103,7 @@ function fakeDb(tables: Record<string, Row[]>) {
     failNextUpdate: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when }),
     loseNextUpdateResponse: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when, commit: true }),
     failNextDelete: (table: string) => failDeletes.push({ table }),
+    failNextSelect: (table: string) => failSelects.push({ table }),
     gateInserts: (g: typeof insertGate) => { insertGate = g },
   }
 }
@@ -338,6 +342,26 @@ describe('a lost or refused write on the way out', () => {
     expect(db.tables.intercompany_transactions[0].from_entry_id).toBe(fundEntries(db)[0].id)
   })
 
+  it('undoes nothing when it cannot tell whether a failed link committed', async () => {
+    const db = world()
+    db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
+    // The retried link fails too, and so does the re-read that would say whether it landed.
+    db.failNextUpdate('intercompany_transactions', patch => {
+      if (!('from_entry_id' in patch)) return false
+      db.failNextSelect('intercompany_transactions')
+      return true
+    })
+
+    const res = await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    const [entry] = fundEntries(db)
+    const charge = db.tables.intercompany_transactions[0]
+    expect(res).toMatchObject({ error: expect.stringContaining('Nothing was undone') })
+    expect((res as any).error).toContain(charge.id)
+    expect((res as any).error).toContain(entry.id)
+    expect(entry.status).toBe('posted')
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+  })
+
   it('keeps the charge, and names what is left, when the unwind is refused', async () => {
     const db = world()
     db.failNextUpdate('intercompany_transactions', patch => 'from_entry_id' in patch)
@@ -552,6 +576,45 @@ describe('settling an intercompany charge', () => {
     expect(row.status).toBe('settled')
     expect(settlements(db).map(e => e.id).sort()).toEqual([row.to_settlement_entry_id, row.from_settlement_entry_id].sort())
     expect(settlements(db)).toHaveLength(2)
+  })
+
+  it('does not mark a charge settled over a side another attempt unwound meanwhile', async () => {
+    const db = world()
+    accrued(db)
+    // A posts and links the payee side, then is held at its payer post. B reads A's payee link,
+    // posts the payer side and is held before linking it. A's payer post then fails (not on the
+    // index), so A unwinds its payee: B has not linked the payer yet, so that unlink matches.
+    let aReached!: () => void, bReached!: () => void, releaseA!: () => void, releaseB!: () => void
+    const atA = new Promise<void>(r => { aReached = r }), atB = new Promise<void>(r => { bReached = r })
+    const holdA = new Promise<void>(r => { releaseA = r }), holdB = new Promise<void>(r => { releaseB = r })
+    const persist = mocks.persist.getMockImplementation()!
+    let calls = 0
+    mocks.persist.mockImplementation(async (...args: any[]) => {
+      const n = ++calls
+      if (n === 2) { aReached(); await holdA; return { error: 'connection reset' } }
+      const res = await persist(...args)
+      if (n === 3) { bReached(); await holdB }
+      return res
+    })
+
+    const a = settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    await atA
+    const b = settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')
+    await atB
+    releaseA()
+    expect(await a).toMatchObject({ error: expect.stringContaining('connection reset') })
+    releaseB()
+
+    expect(await b).toMatchObject({ error: expect.stringContaining('was not marked settled') })
+    const row = db.tables.intercompany_transactions[0]
+    expect(row.status).toBe('accrued')
+    expect(settlements(db).map(e => e.vehicle_id)).toEqual([FUNDV])
+
+    // Settling again posts only the missing payee side and finishes.
+    mocks.persist.mockImplementation(persist)
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', 'ic-1', '2026-05-01')).toEqual({ ok: true })
+    expect(settlements(db).map(e => e.vehicle_id).sort()).toEqual([FUNDV, MANCO])
+    expect(db.tables.intercompany_transactions[0].status).toBe('settled')
   })
 
   it('accepts a settlement link that committed although its response was lost', async () => {
