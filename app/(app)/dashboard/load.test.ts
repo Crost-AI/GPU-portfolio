@@ -64,6 +64,15 @@ describe('loadDashboardPage', () => {
     for (const r of reads) expect(events.indexOf(`start:${r}`), r).toBeLessThan(firstEnd)
   })
 
+  it('asks for at most 200 ids per read, so the query string stays under the gateway limit', async () => {
+    m.tables.companies = Array.from({ length: 450 }, (_, i) => ({
+      id: `k${i}`, name: `Co ${i}`, holding_type: 'company', status: 'active', tags: [], portfolio_group: [], metrics: [], parsing_reviews: [],
+    }))
+    const data = await loadDashboardPage(ctx())
+    expect(tables.filter(t => t === 'metric_values_latest_by_company')).toHaveLength(3)
+    expect(data.companies.find(c => c.id === 'k1')?.lastReportAt).toBe('Sep 2026')
+  })
+
   it('a failed latest-cash read throws rather than showing a blank cash column', async () => {
     m.failNext('metric_values_latest', 'select', 'boom')
     await expect(loadDashboardPage(ctx())).rejects.toThrow(/boom/)

@@ -15,10 +15,13 @@ export type DashboardPageData = Awaited<ReturnType<typeof loadDashboardPage>>
 export async function loadDashboardPage({ supabase, admin, user, page }: PageContext) {
   const isAdmin = page.isAdmin
 
-  // The latest-row views return one row per id asked for, so a chunk of ids stays under PostgREST's
-  // 1,000-row cap whatever the fund's size — no row can be cut off by it. A failed read throws: a
-  // blank cash column must mean "never reported", not "could not be read".
-  const LATEST_CHUNK = 500
+  // Ids go out in chunks for two reasons. Each one is a 36-character uuid in the GET query string,
+  // so a chunk of 200 (~7.5 KB, the repo's usual size) keeps the request line under the API
+  // gateway's limit — a larger fund would otherwise get a 414. And the latest-row views return one
+  // row per id asked for, so a chunk also stays under PostgREST's 1,000-row cap — no row can be cut
+  // off by it. A failed read throws: a blank cash column must mean "never reported", not "could
+  // not be read".
+  const LATEST_CHUNK = 200
   async function latestRows<T>(view: string, column: string, ids: string[], columns: string): Promise<T[]> {
     const chunks: string[][] = []
     for (let i = 0; i < ids.length; i += LATEST_CHUNK) chunks.push(ids.slice(i, i + LATEST_CHUNK))
