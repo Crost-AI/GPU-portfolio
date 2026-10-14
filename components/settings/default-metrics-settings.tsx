@@ -26,6 +26,35 @@ interface DefaultMetric {
   currency: string | null
 }
 
+/** What an apply reported: rows written, companies covered, and any batches that failed. */
+export interface ApplyResult { inserted: number; companies: number; errors?: string[] }
+
+const metricsWord = (n: number) => `${n} metric${n === 1 ? '' : 's'}`
+
+/** The notice after "Sync to all companies". A failed batch is never reported as "up to date". */
+export function syncNotice({ inserted, companies, errors }: ApplyResult): string {
+  if (errors?.length) {
+    return inserted === 0
+      ? 'Sync failed — no metrics were added. Try Sync again.'
+      : `Added ${metricsWord(inserted)}, but some companies could not be updated. Try Sync again.`
+  }
+  return inserted === 0
+    ? `All ${companies} companies are already up to date.`
+    : `Added ${metricsWord(inserted)} across ${companies} companies.`
+}
+
+/** The notice after adding a default metric: the template is saved either way; say how far it got. */
+export function addNotice({ inserted, companies, errors }: ApplyResult): string {
+  if (errors?.length) {
+    return inserted === 0
+      ? 'Added to the profile, but it could not be applied to companies yet. Use Sync to try again.'
+      : `Added to the profile and ${inserted} of ${companies} companies; some could not be updated. Use Sync to try again.`
+  }
+  return inserted === 0
+    ? `Added to the profile. All ${companies} companies already tracked it.`
+    : `Added to ${inserted} of ${companies} companies.`
+}
+
 const ENDPOINTS = {
   create: '/api/default-metrics',
   update: (id: string) => `/api/default-metrics/${id}`,
@@ -63,10 +92,7 @@ export function DefaultMetricsSettings() {
     const res = await fetch('/api/default-metrics/apply', { method: 'POST' })
     setSyncing(false)
     if (res.ok) {
-      const { inserted, companies } = await res.json()
-      flash(inserted === 0
-        ? `All ${companies} companies are already up to date.`
-        : `Added ${inserted} metric${inserted === 1 ? '' : 's'} across ${companies} companies.`)
+      flash(syncNotice(await res.json()))
     } else {
       flash('Sync failed.')
     }
@@ -142,11 +168,7 @@ export function DefaultMetricsSettings() {
               setAddOpen(false)
               load()
               const applied = data?.applied
-              if (applied) {
-                flash(applied.inserted === 0
-                  ? `Added to the profile. All ${applied.companies} companies already tracked it.`
-                  : `Added to ${applied.inserted} of ${applied.companies} companies.`)
-              }
+              if (applied) flash(addNotice(applied))
             }}
             onCancel={() => setAddOpen(false)}
           />
