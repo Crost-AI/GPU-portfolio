@@ -37,7 +37,7 @@ describe('drafting an entry from a receipt in another currency', () => {
   it('refuses a EUR receipt in a USD fund without the USD amount, and writes nothing', async () => {
     const res = await draft(receipt())
     expect(res).toEqual({
-      error: "This receipt is in EUR; the books are kept in USD. Enter the USD amount to draft it, or set the receipt's total in USD.",
+      error: 'This receipt is in EUR; the books are kept in USD. Enter the USD amount to draft it. If the currency was misread, correct it on the receipt.',
       status: 400,
     })
     expect(mocks.persist).not.toHaveBeenCalled()
@@ -46,6 +46,11 @@ describe('drafting an entry from a receipt in another currency', () => {
   it('refuses a reporting amount that rounds to zero cents rather than booking a zero entry', async () => {
     const res = await draft(receipt(), 0.004)
     expect(res).toMatchObject({ status: 400, error: expect.stringContaining('Enter the USD amount') })
+    expect(mocks.persist).not.toHaveBeenCalled()
+  })
+
+  it.each([true, '108.50'])('refuses a reporting amount of %j that is not a number', async value => {
+    expect(await draft(receipt(), value as any)).toMatchObject({ status: 400 })
     expect(mocks.persist).not.toHaveBeenCalled()
   })
 
