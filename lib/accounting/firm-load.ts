@@ -132,22 +132,34 @@ const NO_COUNTS: VehicleCounts = { closedThrough: null, lastEntryDate: null, fir
 /** Each entity's counts, by id, from one grouped query (firm_vehicle_counts, 20261014182000). A
  *  failed read throws: zero drafts and no open bank rows would read as "all clear". */
 async function vehicleCounts(admin: SupabaseClient, fundId: string, vehicleIds: string[]): Promise<Map<string, VehicleCounts>> {
+  // The RPC returns one row per id, and PostgREST caps any response at max_rows (1,000), so the
+  // ids go in chunks well under it — a firm can have more entities than that.
+  const chunks: string[][] = []
+  for (let i = 0; i < vehicleIds.length; i += COUNTS_CHUNK) chunks.push(vehicleIds.slice(i, i + COUNTS_CHUNK))
+  const results = await Promise.all(chunks.map(chunk =>
+    admin.rpc('firm_vehicle_counts' as any, { p_fund_id: fundId, p_vehicle_ids: chunk } as any)))
   const out = new Map<string, VehicleCounts>()
-  if (vehicleIds.length === 0) return out
-  const { data, error } = await admin.rpc('firm_vehicle_counts' as any, { p_fund_id: fundId, p_vehicle_ids: vehicleIds } as any)
-  if (error) throw new Error(`firm_vehicle_counts: ${error.message}`)
-  for (const r of (data as any[]) ?? []) {
-    out.set(r.vehicle_id, {
-      closedThrough: r.closed_through ?? null,
-      lastEntryDate: r.last_entry_date ?? null,
-      firstEntryDate: r.first_entry_date ?? null,
-      posted: Number(r.posted_entries ?? 0),
-      drafts: Number(r.draft_entries ?? 0),
-      openBank: Number(r.open_bank_rows ?? 0),
-    })
+  for (const { data, error } of results) {
+    if (error) throw new Error(`firm_vehicle_counts: ${error.message}`)
+    for (const r of (data as any[]) ?? []) {
+      out.set(r.vehicle_id, {
+        closedThrough: r.closed_through ?? null,
+        lastEntryDate: r.last_entry_date ?? null,
+        firstEntryDate: r.first_entry_date ?? null,
+        posted: Number(r.posted_entries ?? 0),
+        drafts: Number(r.draft_entries ?? 0),
+        openBank: Number(r.open_bank_rows ?? 0),
+      })
+    }
   }
+  // Every requested id comes back, even with nothing on its books. One that did not was cut off,
+  // and showing it as zeros would make it look clear.
+  const missing = vehicleIds.filter(id => !out.has(id))
+  if (missing.length > 0) throw new Error(`firm_vehicle_counts: no row for ${missing.length} of ${vehicleIds.length} entities`)
   return out
 }
+
+const COUNTS_CHUNK = 200
 
 // Backlog counts are a few queries per entity; a handful at a time keeps a large firm from opening
 // every one at once.

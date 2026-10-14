@@ -84,6 +84,26 @@ describe('loadFirmOverview', () => {
     await expect(loadFirmOverview(admin(), 'f', { includeManco: false })).rejects.toThrow(/permission denied/)
   })
 
+  it('reads past the 1,000-row response cap: every entity gets its own counts', async () => {
+    load.vehicles = Array.from({ length: 1050 }, (_, i) => ({ id: `v${i}`, name: `Fund ${i}`, kind: 'fund' }))
+    // PostgREST's max_rows: whatever is asked for, at most 1,000 rows come back.
+    rpc.mockImplementation(async (_name: string, args: { p_vehicle_ids: string[] }) => ({
+      data: args.p_vehicle_ids.slice(0, 1000).map(id => ({ vehicle_id: id, posted_entries: 1, draft_entries: 0, open_bank_rows: 0, first_entry_date: null, last_entry_date: null, closed_through: null })),
+      error: null,
+    }))
+    const o = await loadFirmOverview(admin(), 'f', { includeManco: false })
+    expect(rpc.mock.calls.every(([, a]) => a.p_vehicle_ids.length <= 200)).toBe(true)
+    expect(o.vehicles.filter(v => v.postedEntries !== 1)).toEqual([])
+  })
+
+  it('an entity missing from the counts rejects rather than looking clear', async () => {
+    rpc.mockImplementationOnce(async (_name: string, args: { p_vehicle_ids: string[] }) => ({
+      data: args.p_vehicle_ids.slice(1).map(id => ({ vehicle_id: id, posted_entries: 0, draft_entries: 0, open_bank_rows: 0, first_entry_date: null, last_entry_date: null, closed_through: null })),
+      error: null,
+    }))
+    await expect(loadFirmOverview(admin(), 'f', { includeManco: false })).rejects.toThrow(/no row for 1 of 3/)
+  })
+
   it('a legacy name-only vehicle still loads its ledger by name, with zero counts', async () => {
     load.vehicles = [{ id: null, name: 'Legacy', kind: 'fund' }, THREE[0]]
     const o = await loadFirmOverview(admin(), 'f', { includeManco: false })
