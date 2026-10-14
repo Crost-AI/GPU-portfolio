@@ -14,6 +14,8 @@
 //
 // It describes what is true NOW. When a feature gains a keyless path, move it in the same change.
 
+import { hasAnyAIKeyFrom } from '@/lib/credentials/env'
+
 export type KeylessSupport =
   /** Works with no server key: ask your assistant, and it uses the tools listed. */
   | 'assistant'
@@ -197,8 +199,9 @@ export function effectiveAIMode(hasKey: boolean, stored: unknown): AIMode | null
 /** The fund_settings columns that hold a provider key. */
 export const AI_KEY_COLUMNS = ['claude_api_key_encrypted', 'openai_api_key_encrypted', 'openrouter_api_key_encrypted'] as const
 
+/** Any server AI key: one saved in Settings, or one set in the deployment's environment (lib/credentials/env.ts). */
 export function hasAnyAIKey(settings: Record<string, unknown> | null | undefined): boolean {
-  return !!settings && AI_KEY_COLUMNS.some(c => !!settings[c])
+  return (!!settings && AI_KEY_COLUMNS.some(c => !!settings[c])) || hasAnyAIKeyFrom(null)
 }
 
 export interface AIStatus {

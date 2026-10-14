@@ -7,6 +7,11 @@
 - **`preview_close`.** A read-only preview of closing through a date (`previewCloseThrough`): the months covered, what each would allocate, and what blocks it.
 - **`close_period` says what it does.** Its description and schema claimed it locked an arbitrary `periodStart`–`periodEnd` range; it has closed THROUGH `periodEnd` with allocation since the legacy path was retired. `periodStart` is now optional and documented as ignored.
 
+### Keys from the environment, so a fund can be connected without opening Settings
+- **Every key can live in `.env`.** That covers `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `RESEND_API_KEY`, `POSTMARK_SERVER_TOKEN`, `MAILGUN_API_KEY`, `MAILGUN_WEBHOOK_SIGNING_KEY`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A key saved in Settings still wins; the environment fills in when Settings has none (`lib/credentials/env.ts`). Settings, the setup checklist, `/setup` and `setup_status` count a key from the environment as configured. When nobody has picked an AI provider, the first one with a key is used.
+- **`environment_status`** (admin) says which credentials are set, and whether each comes from Settings or the environment, with the variable name. It never returns a value.
+- **`update_fund_connections`** (admin) sets the non-secret half from chat: AI provider and model, outbound and inbound email providers, sender name and address, the Postmark inbound address, the Mailgun domains and the Google client id. It refuses anything that looks like a key.
+
 ### Headless parity: an audit, and four tools it found missing
 - **What the app can do that chat can't, and why.** `PARITY.md` maps all 517 actions the web app offers (every route under `app/api`) to the MCP and API tools. Each gap carries a reason, either deliberate (secrets, outbound email to LPs, browser-only uploads, destructive admin deletes) or none recorded, plus the fix and a size.
 - **Issue a capital call from chat or a script.** `issue_capital_call` stages the in-app Analyst's existing pending action: fund-wide, pro-rata by commitment, with purposes and a due date. An admin approves it in the app, from any connection. Per-LP lines and charges are still issued on the web.

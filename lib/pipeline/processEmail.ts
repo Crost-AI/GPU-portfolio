@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin'
+import { envCredential, hasCredential } from '@/lib/credentials/env'
 import {
   extractAttachmentText,
   type ExtractionResult,
@@ -545,6 +546,9 @@ export async function getClaudeApiKey(supabase: Supabase, fundId: string): Promi
     .single()
 
   if (error || !data?.claude_api_key_encrypted || !data?.encryption_key_encrypted) {
+    // None saved in Settings: the deployment's environment, if it sets one (lib/credentials/env.ts).
+    const fromEnv = envCredential('anthropic')
+    if (fromEnv) return fromEnv
     throw new Error(`Claude API key not configured for fund ${fundId}`)
   }
 
@@ -569,6 +573,9 @@ export async function getOpenAIApiKey(supabase: Supabase, fundId: string): Promi
     .single()
 
   if (error || !data?.openai_api_key_encrypted || !data?.encryption_key_encrypted) {
+    // None saved in Settings: the deployment's environment, if it sets one (lib/credentials/env.ts).
+    const fromEnv = envCredential('openai')
+    if (fromEnv) return fromEnv
     throw new Error(`OpenAI API key not configured for fund ${fundId}`)
   }
 
@@ -586,15 +593,21 @@ export async function getOpenAIModel(supabase: Supabase, fundId: string): Promis
 }
 
 export async function getDefaultAIProvider(supabase: Supabase, fundId: string): Promise<'anthropic' | 'openai' | 'openrouter'> {
-  const { data } = await supabase
+  const { data } = await (supabase as any)
     .from('fund_settings')
-    .select('default_ai_provider')
+    .select('default_ai_provider, claude_api_key_encrypted, openai_api_key_encrypted, openrouter_api_key_encrypted')
     .eq('fund_id', fundId)
     .single()
 
   const provider = data?.default_ai_provider
   // A fund still set to the removed 'gemini' provider falls through to the Claude default.
   if (provider === 'openai' || provider === 'openrouter') return provider
+  if (provider === 'anthropic') return 'anthropic'
+  // Nobody chose: the first provider with a key, saved or from the environment, so a deployment
+  // that sets only OPENAI_API_KEY in its .env works without a visit to Settings.
+  for (const p of ['anthropic', 'openai', 'openrouter'] as const) {
+    if (hasCredential(data, p)) return p
+  }
   return 'anthropic'
 }
 
@@ -606,6 +619,9 @@ export async function getOpenRouterApiKey(supabase: Supabase, fundId: string): P
     .single()
 
   if (error || !data?.openrouter_api_key_encrypted || !data?.encryption_key_encrypted) {
+    // None saved in Settings: the deployment's environment, if it sets one (lib/credentials/env.ts).
+    const fromEnv = envCredential('openrouter')
+    if (fromEnv) return fromEnv
     throw new Error(`OpenRouter API key not configured for fund ${fundId}`)
   }
 
