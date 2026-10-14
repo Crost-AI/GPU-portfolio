@@ -9,7 +9,7 @@
 // cost + cumulative value change). There are already several drifted copies of it
 // in the codebase; this is deliberately not another one.
 
-import { computeSummary } from '@/lib/investments'
+import { computeSummary, investedBasis } from '@/lib/investments'
 import { classifyNewFollowOn } from './fund-timeseries'
 import { observedByHolding, BALANCE_TOLERANCE, type Wallet, type WalletBalance } from '@/lib/portfolio/wallets'
 import type { FairValueLevel } from '@/lib/portfolio/quotes'
@@ -249,16 +249,13 @@ export function buildSoiPositions(
     // New vs follow-on, on the SAME rule the fund-timeseries chart uses — the earliest-dated
     // investment is new capital, every later one is follow-on.
     //
-    // The per-row cost must be defined exactly as computeSummary defines totalInvested —
-    // investment_cost + fee_amount, plus interest_converted on a conversion row — or the split
-    // will not tie to `invested` and the stacked bars will not sum to their own total.
+    // The per-row cost is `investedBasis`, the same rule computeSummary sums for totalInvested, or
+    // the split will not tie to `invested` and the stacked bars will not sum to their own total.
     const investRows = relevant
       .filter(t => t.transaction_type === 'investment')
       .map(t => ({
         date: t.transaction_date,
-        cost: (t.investment_cost ?? 0)
-          + Number((t as { fee_amount?: number | null }).fee_amount ?? 0)
-          + ((t as { converts_from_txn_id?: string | null }).converts_from_txn_id ? (t.interest_converted ?? 0) : 0),
+        cost: investedBasis(t),
       }))
     const classified = classifyNewFollowOn(investRows)
     const investedNew = r(classified.filter(t => t.isNew).reduce((sum, t) => sum + t.cost, 0))
