@@ -128,7 +128,6 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // entity through resolveGroupOr400, so a management company's side needs management_company too.
   'api/accounting/receipts': { domain: 'accounting' },
   'api/accounting/receipts/[id]': { domain: 'accounting' },
-  'api/accounting/partnership-expenses': { domain: 'accounting' },
   'api/accounting/partnership-invoices': { domain: 'accounting' },
   'api/accounting/partnership-invoices/[id]/pdf': { domain: 'accounting' },
   'api/accounting/vendor-payments': { domain: 'accounting' },

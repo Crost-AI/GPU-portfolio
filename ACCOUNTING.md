@@ -354,20 +354,35 @@ the entity's Receipts page or in the entry editor, or from an assistant (`add_re
 typed by hand, or a **draft** made from the receipt when the charge is not on the books. A receipt
 attached to an undrafted bank transaction follows it onto its entry.
 
-**Partnership invoices.** An entry on the payer's books tagged *partnership expense, bill to
-`<fund>`* (`journal_entries.rebill_vehicle_id`, optionally `rebill_amount`) is billed on that
-fund's quarterly invoice. Creating the invoice freezes every **posted**, tagged, unbilled entry in
-the quarter and stamps each with the invoice id, so an expense is billed once. Issuing it books one
-intercompany charge of kind `expense_reimbursement`:
+**Partnership invoices.** A cost the manco pays for a fund is booked as what it is, a receivable
+from that fund, not a manco expense:
 
 ```
-payee (the manco)  Dr 1900-<fund>               Cr 4100 Expense reimbursement income
-payer (the fund)   Dr 5100 Partnership expenses  Cr 2900-<manco>
+manco, when it pays   Dr 1900-<fund> Due from <fund>   Cr 1000 Cash (or the card)
 ```
 
-and the fund's payment is that charge's settlement on the manco's Intercompany tab. The manco's
-own books therefore carry the expense and the reimbursement income, gross. The PDF
-(`/api/accounting/partnership-invoices/<id>/pdf`) lists every expense and appends its receipts.
+from the bank feed, a typed entry, or a draft made from the receipt (choose *Paid for: <fund>*).
+The account is the tag. The quarter's invoice bills every **posted** debit to `1900-<fund>` dated
+in the quarter that no live invoice already bills, one line per posting, so a cost split across two
+funds' accounts bills each its share. Entries the intercompany module wrote (a management fee
+accrual, a settlement) are not billed. The lines are frozen in `partnership_invoice_lines`, whose
+partial unique index on the posting is the claim: an expense is billed once. (A link table, not a
+column on the posting, because the period lock refuses any update to a posting in a closed period,
+and a quarter is usually closed before it is billed.)
+
+Issuing books only the fund's side, as an `expense_reimbursement` intercompany charge whose
+receivable is already on the manco's books (`payeeAlreadyBooked`):
+
+```
+fund   Dr 5100 Partnership expenses   Cr 2900-<manco> Due to <manco>
+```
+
+The fund's payment is that charge's settlement on the Intercompany tab: manco Dr cash, Cr
+`1900-<fund>`; fund Dr `2900-<manco>`, Cr cash. Between the manco paying and the invoice being
+issued, the manco's receivable has no matching payable on the fund's books, which is the honest
+state: the fund has not been billed yet. The PDF (`/api/accounting/partnership-invoices/<id>/pdf`)
+lists every expense and appends its receipts. Voiding releases the lines; an issued invoice needs the
+fund's entry voided first, and a paid one cannot be voided.
 
 ## What a management company does NOT get
 

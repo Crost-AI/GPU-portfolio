@@ -80,37 +80,23 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'draft_entry_from_receipt',
-    description: "Create a DRAFT journal entry from a receipt (Dr debitAccountCode, Cr creditAccountCode for its total, dated the receipt date, vendor set) and attach the receipt. For a charge that is not in the bank feed. billTo tags it as a partnership expense of that fund in the same step. Post it with post_drafts.",
+    description: "Create a DRAFT journal entry from a receipt (Dr debitAccountCode, Cr creditAccountCode for its total, dated the receipt date, vendor set) and attach the receipt. For a charge that is not in the bank feed. billTo makes it a partnership expense paid for that fund: the debit is then this entity's 'Due from <fund>' account instead of debitAccountCode, which is what puts it on the fund's quarterly partnership invoice. Post it with post_drafts.",
     scope: 'write',
     inputSchema: {
       type: 'object',
-      required: ['receiptId', 'debitAccountCode', 'creditAccountCode'],
+      required: ['receiptId', 'creditAccountCode'],
       properties: {
         receiptId: RECEIPT_ID,
-        debitAccountCode: { type: 'string', description: 'the expense account, e.g. 5200' },
+        debitAccountCode: { type: 'string', description: 'the expense account, e.g. 5200; not needed with billTo' },
         creditAccountCode: { type: 'string', description: 'what paid it, e.g. 1000 cash or 2000 accounts payable' },
-        billTo: { type: 'string', description: 'the fund (entity name) to bill it to as a partnership expense' },
+        billTo: { type: 'string', description: 'the fund (entity name) this was paid for, as a partnership expense' },
         memo: { type: 'string' },
       },
     },
   },
   {
-    name: 'tag_partnership_expense',
-    description: "Tag a journal entry on this entity's books as a partnership expense to bill to another entity (usually: the management company paid a fund's expense) on the quarterly partnership invoice. billTo null clears it. amount bills part of the entry; omit to bill its expense debits. Refused for an entry already on an invoice.",
-    scope: 'write',
-    inputSchema: {
-      type: 'object',
-      required: ['entryId'],
-      properties: {
-        entryId: { type: 'string' },
-        billTo: { type: ['string', 'null'], description: 'entity name to bill, or null to clear' },
-        amount: { type: ['number', 'null'] },
-      },
-    },
-  },
-  {
     name: 'partnership_invoices',
-    description: "This entity's partnership-expense invoices (sent and received), which funds have tagged expenses not yet billed, and, given billTo + year + quarter, a preview of exactly what that quarter's invoice would bill (posted tagged entries only; drafts are listed as a warning).",
+    description: "This entity's partnership-expense invoices (sent and received), which funds have posted debits on their 'Due from <fund>' account not yet billed, and, given billTo + year + quarter, a preview of exactly what that quarter's invoice would bill (each posted debit to Due from <billTo> in the quarter that no invoice has billed; intercompany charges such as management fees are excluded; drafts are listed as a warning).",
     scope: 'read',
     inputSchema: {
       type: 'object',
@@ -123,7 +109,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'create_partnership_invoice',
-    description: "Bill a fund for the partnership expenses this entity paid in a quarter: freezes every posted, tagged, unbilled entry into a DRAFT invoice (nothing is booked yet). issue: true also books it on both ledgers as one intercompany expense reimbursement (this entity: Dr due from the fund, Cr reimbursement income; the fund: Dr partnership expenses, Cr due to this entity). The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
+    description: "Bill a fund for the partnership expenses this entity paid for it in a quarter: freezes every posted, unbilled debit to this entity's 'Due from <fund>' account in the quarter into a DRAFT invoice (nothing is booked yet). issue: true also books the fund's side (Dr partnership expenses, Cr due to this entity); this entity's receivable is already on its books from each expense. When the fund pays, settle the charge on the Intercompany tab to clear the receivable. The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -139,7 +125,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'issue_partnership_invoice',
-    description: 'Issue a draft partnership invoice: book it on both ledgers as one intercompany expense reimbursement. void: true instead voids it and releases its entries (an issued one needs its two intercompany entries voided first).',
+    description: 'Issue a draft partnership invoice: book the fund\'s side (Dr partnership expenses, Cr due to this entity) as an intercompany expense reimbursement. void: true instead voids it and releases its expenses for the next invoice (an issued one needs the fund\'s entry voided first, and a paid one cannot be voided).',
     scope: 'write',
     inputSchema: {
       type: 'object',

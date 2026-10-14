@@ -185,24 +185,39 @@ export function rankCandidates(
     .slice(0, limit)
 }
 
-// ── What an entry bills ─────────────────────────────────────────────────────────────────────
+// ── What an invoice bills ───────────────────────────────────────────────────────────────────
 
-export interface BillablePosting {
-  amount: number
-  accountType: string | null
+export interface ReceivableEntry {
+  id: string
+  sourceType: string | null
+  postings: { id: string; accountId: string; amount: number }[]
 }
 
 /**
- * How much of an entry the partnership invoice bills: an explicit `rebill_amount` when one was
- * set, else the entry's net expense (expense debits less expense credits). An entry that touched
- * no expense account (booked to prepaid, say) bills its debits, because a person tagged it as a
- * cost of the fund and the whole charge is what they meant.
+ * The postings a partnership invoice bills: each DEBIT to the payer's "Due from <fund>" account,
+ * one line per posting (an entry that splits a cost between two funds puts one posting on each
+ * fund's account, so each fund is billed its share and nothing else).
+ *
+ * Left out: entries the intercompany module wrote. A management fee accrual is its own charge with
+ * its own settlement, and a settlement is the payment, not a cost; billing either here would
+ * charge the fund twice. Credits to the account (a refund, a payment booked by hand) are left out
+ * too: an invoice bills what was spent, and the balance on the books is what remains unpaid.
  */
-export function billableAmount(override: number | null | undefined, postings: BillablePosting[]): number {
-  if (override != null && Number.isFinite(Number(override)) && Number(override) > 0) return roundCents(Number(override))
-  const expense = postings.filter(p => p.accountType === 'expense')
-  if (expense.length > 0) return roundCents(Math.max(0, expense.reduce((s, p) => s + Number(p.amount), 0)))
-  return roundCents(postings.filter(p => Number(p.amount) > 0).reduce((s, p) => s + Number(p.amount), 0))
+export function billablePostings(
+  entries: ReceivableEntry[],
+  receivableAccountId: string,
+  alreadyBilled: Set<string>,
+): { entryId: string; postingId: string; amount: number }[] {
+  const out: { entryId: string; postingId: string; amount: number }[] = []
+  for (const e of entries) {
+    if (e.sourceType === 'intercompany' || e.sourceType === 'intercompany_settlement') continue
+    for (const p of e.postings) {
+      if (p.accountId !== receivableAccountId || alreadyBilled.has(p.id)) continue
+      const amount = roundCents(Number(p.amount))
+      if (amount > 0) out.push({ entryId: e.id, postingId: p.id, amount })
+    }
+  }
+  return out
 }
 
 /** The size of an entry, for matching: its debits. */

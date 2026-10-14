@@ -1,22 +1,23 @@
 // Quarterly partnership-expense invoices: the management company (or whichever entity paid) bills
 // a fund for the fund's expenses it paid during the quarter.
 //
-// THE FLOW.
-//   1. Entries on the payer's books are tagged `rebill_vehicle_id = <fund>` (receipts.ts,
-//      tagPartnershipExpense). Usually with a receipt attached, which is the point.
-//   2. `previewPartnershipInvoice` lists every POSTED, tagged, not-yet-billed entry in the quarter.
-//      Drafts are listed separately as a warning, never billed: a draft is not yet a cost.
-//   3. `createPartnershipInvoice` freezes the lines and the total into a DRAFT invoice and stamps
-//      each entry with the invoice id, so the same expense cannot land on two invoices.
-//   4. `issuePartnershipInvoice` books it as ONE intercompany expense reimbursement through
-//      intercompany.ts, both ledgers or neither:
-//
-//        payer of the cost (manco)   Dr Due from <fund>            Cr Expense reimbursement income
-//        the fund                    Dr Partnership expenses       Cr Due to <manco>
-//
-//      and the cash, when the fund pays, is the charge's settlement on the manco's Intercompany tab.
-//   5. `voidPartnershipInvoice` releases the entries. An issued invoice's charge has to be reversed
-//      on both ledgers first (a void here never silently unposts the other side's books).
+// THE FLOW, which is how the books are kept by hand.
+//   1. When the management company pays a fund's expense it books it to the fund's receivable:
+//        Dr Due from <fund> (1900-<fund>)   Cr Cash (or the card)
+//      from the bank feed, a typed entry, or a draft made from the receipt (receipts.ts). The
+//      receipt is attached to that entry. Nothing else marks it: the account IS the tag.
+//   2. `previewPartnershipInvoice` lists every POSTED debit to that account in the quarter that no
+//      live invoice has billed yet (receipts-core.ts, billablePostings). Drafts are listed
+//      separately as a warning, never billed: a draft is not yet a cost.
+//   3. `createPartnershipInvoice` freezes those postings and the total into a DRAFT invoice
+//      (partnership_invoice_lines), so the same expense cannot land on two invoices.
+//   4. `issuePartnershipInvoice` books the FUND's side only, as an intercompany expense
+//      reimbursement whose receivable is already on the manco's books:
+//        the fund   Dr Partnership expenses   Cr Due to <manco>
+//      When the fund pays, the charge's settlement (the manco's Intercompany tab) posts the cash on
+//      both sides and clears the receivable: manco Dr Cash / Cr Due from <fund>.
+//   5. `voidPartnershipInvoice` releases the lines for the next invoice. An issued invoice's fund
+//      entry has to be voided first (a void here never silently unposts the other side's books).
 //
 // The invoice row is the document; the ledger is the fact. The amount on the row never moves after
 // creation, the same way a capital call notice keeps the number the partner was told.
@@ -26,10 +27,12 @@ import { roundCents } from './ledger'
 import { postIntercompanyCharge } from './intercompany'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
-import { billableAmount, invoiceNumber, quarterBounds, type Quarter } from './receipts-core'
+import { INTERCOMPANY_RECEIVABLE_CODE, intercompanyCode } from './chart'
+import { billablePostings, invoiceNumber, quarterBounds, type Quarter } from './receipts-core'
 
 export interface InvoiceLine {
   entryId: string
+  postingId: string
   entryDate: string
   memo: string | null
   reference: string | null
@@ -39,14 +42,21 @@ export interface InvoiceLine {
   status: string
 }
 
+/** A line of an existing invoice, with what its posting says NOW (null when the posting is gone). */
+export interface InvoiceDetailLine extends InvoiceLine {
+  currentAmount: number | null
+}
+
 export interface InvoicePreview {
   quarter: Quarter
   from: { vehicleId: string; name: string }
   to: { vehicleId: string; name: string }
   lines: InvoiceLine[]
   total: number
-  /** Tagged entries still in draft: not billed until posted. */
+  /** Debits to the Due-from account still in draft: not billed until posted. */
   drafts: InvoiceLine[]
+  /** False when the biller's chart has no "Due from <fund>" account yet, so nothing can be billed. */
+  hasReceivableAccount: boolean
   /** An invoice already covering this quarter, if one exists. */
   existing: { id: string; invoiceNumber: string; status: string; amount: number } | null
 }
@@ -57,53 +67,84 @@ async function vehiclePair(admin: SupabaseClient, fundId: string, fromId: string
   return { from: { vehicleId: fromId, name: fromName }, to: { vehicleId: toId, name: toName } }
 }
 
-/**
- * The tagged entries on `fromVehicleId`'s books billed to `toVehicleId` and dated in the window.
- * `invoiceId` narrows to the lines of one invoice; otherwise only entries not on any invoice.
- */
-async function loadLines(
-  admin: SupabaseClient,
-  fundId: string,
-  fromVehicleId: string,
-  toVehicleId: string,
-  window: { start: string; end: string } | null,
-  invoiceId: string | null,
-): Promise<InvoiceLine[]> {
-  let q = admin.from('journal_entries' as any)
-    .select('id, entry_date, memo, reference, status, rebill_amount, vendor_id, journal_postings(amount, account_id)')
-    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
-    .eq('rebill_vehicle_id', toVehicleId)
-    .in('status', ['draft', 'posted'])
-  q = invoiceId ? q.eq('partnership_invoice_id', invoiceId) : q.is('partnership_invoice_id', null)
-  if (window) q = q.gte('entry_date', window.start).lte('entry_date', window.end)
-  const { data: entries, error } = await q.order('entry_date', { ascending: true }).limit(2000)
-  if (error) throw new Error(`The tagged entries could not be read: ${error.message}`)
-  const rows = (entries as any[]) ?? []
-  if (rows.length === 0) return []
+/** The biller's "Due from <fund>" account, if its chart has one. */
+export async function receivableAccountId(admin: SupabaseClient, fundId: string, fromVehicleId: string, toVehicleId: string): Promise<string | null> {
+  const { data } = await admin.from('chart_of_accounts' as any).select('id')
+    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
+    .eq('code', intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, toVehicleId)).maybeSingle()
+  return (data as any)?.id ?? null
+}
 
-  const ids = rows.map(e => e.id as string)
-  const vendorIds = Array.from(new Set(rows.map(e => e.vendor_id).filter(Boolean)))
-  const [{ data: accounts }, { data: vendors }, { data: receipts }] = await Promise.all([
-    admin.from('chart_of_accounts' as any).select('id, type').eq('fund_id', fundId).eq('vehicle_id', fromVehicleId),
+interface EntryRow {
+  id: string; entry_date: string; memo: string | null; reference: string | null; status: string
+  vendor_id: string | null; source_type: string | null
+  journal_postings: { id: string; amount: number; account_id: string }[]
+}
+
+/** Entries on the biller's books with a posting to any of these accounts (only those postings). */
+async function entriesTouching(
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, accountIds: string[],
+  opts: { window?: { start: string; end: string } | null; statuses: string[] },
+): Promise<EntryRow[]> {
+  if (accountIds.length === 0) return []
+  let q = admin.from('journal_entries' as any)
+    .select('id, entry_date, memo, reference, status, vendor_id, source_type, journal_postings!inner(id, amount, account_id)')
+    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
+    .in('status', opts.statuses)
+    .in('journal_postings.account_id', accountIds)
+  if (opts.window) q = q.gte('entry_date', opts.window.start).lte('entry_date', opts.window.end)
+  const { data, error } = await q.order('entry_date', { ascending: true }).limit(5000)
+  if (error) throw new Error(`The Due-from entries could not be read: ${error.message}`)
+  return ((data as any[]) ?? []).map(e => ({ ...e, journal_postings: ((e.journal_postings as any[]) ?? []).map(p => ({ ...p, amount: Number(p.amount) })) }))
+}
+
+/** Of these postings, the ones a live invoice already bills. */
+async function billedPostingIds(admin: SupabaseClient, fundId: string, postingIds: string[]): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (let i = 0; i < postingIds.length; i += 150) {
+    const { data } = await admin.from('partnership_invoice_lines' as any).select('journal_posting_id')
+      .eq('fund_id', fundId).eq('active', true).in('journal_posting_id', postingIds.slice(i, i + 150))
+    for (const r of ((data as any[]) ?? [])) out.add(r.journal_posting_id as string)
+  }
+  return out
+}
+
+/** Vendor names and receipt counts for a set of entries: what a line shows beside its amount. */
+async function lineDetails(admin: SupabaseClient, fundId: string, entries: EntryRow[]) {
+  const ids = entries.map(e => e.id)
+  const vendorIds = Array.from(new Set(entries.map(e => e.vendor_id).filter(Boolean))) as string[]
+  const [{ data: vendors }, { data: receipts }] = await Promise.all([
     vendorIds.length ? admin.from('vendors' as any).select('id, name').eq('fund_id', fundId).in('id', vendorIds) : Promise.resolve({ data: [] }),
-    admin.from('receipts' as any).select('journal_entry_id').eq('fund_id', fundId).neq('status', 'dismissed').in('journal_entry_id', ids),
+    ids.length ? admin.from('receipts' as any).select('journal_entry_id').eq('fund_id', fundId).neq('status', 'dismissed').in('journal_entry_id', ids) : Promise.resolve({ data: [] }),
   ])
-  const typeOf = new Map(((accounts as any[]) ?? []).map(a => [a.id as string, a.type as string]))
   const vendorName = new Map(((vendors as any[]) ?? []).map(v => [v.id as string, v.name as string]))
   const receiptCount = new Map<string, number>()
   for (const r of ((receipts as any[]) ?? [])) receiptCount.set(r.journal_entry_id, (receiptCount.get(r.journal_entry_id) ?? 0) + 1)
-
-  return rows.map(e => ({
-    entryId: e.id,
+  return (e: EntryRow, postingId: string, amount: number): InvoiceLine => ({
+    entryId: e.id, postingId,
     entryDate: e.entry_date,
     memo: e.memo ?? null,
     reference: e.reference ?? null,
     vendorName: e.vendor_id ? vendorName.get(e.vendor_id) ?? null : null,
-    amount: billableAmount(e.rebill_amount == null ? null : Number(e.rebill_amount),
-      ((e.journal_postings as any[]) ?? []).map(p => ({ amount: Number(p.amount), accountType: typeOf.get(p.account_id) ?? null }))),
+    amount,
     receiptCount: receiptCount.get(e.id) ?? 0,
     status: e.status,
-  }))
+  })
+}
+
+/** The unbilled Due-from debits in the window, posted and draft. */
+async function openLines(
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, receivableId: string, window: { start: string; end: string } | null,
+): Promise<InvoiceLine[]> {
+  const entries = await entriesTouching(admin, fundId, fromVehicleId, [receivableId], { window, statuses: ['draft', 'posted'] })
+  const billed = await billedPostingIds(admin, fundId, entries.flatMap(e => e.journal_postings.map(p => p.id)))
+  const picked = billablePostings(
+    entries.map(e => ({ id: e.id, sourceType: e.source_type, postings: e.journal_postings.map(p => ({ id: p.id, accountId: p.account_id, amount: p.amount })) })),
+    receivableId, billed,
+  )
+  const byId = new Map(entries.map(e => [e.id, e]))
+  const line = await lineDetails(admin, fundId, entries)
+  return picked.map(p => line(byId.get(p.entryId)!, p.postingId, p.amount))
 }
 
 async function existingInvoice(admin: SupabaseClient, fundId: string, fromId: string, toId: string, q: Quarter) {
@@ -125,30 +166,46 @@ export async function previewPartnershipInvoice(
   const pair = await vehiclePair(admin, fundId, args.fromVehicleId, args.toVehicleId)
   if (!pair) return { error: 'Both entities must be in this fund.' }
   if (args.fromVehicleId === args.toVehicleId) return { error: 'An entity cannot bill itself.' }
-  const all = await loadLines(admin, fundId, args.fromVehicleId, args.toVehicleId, q, null)
-  const lines = all.filter(l => l.status === 'posted' && l.amount > 0)
+  const receivableId = await receivableAccountId(admin, fundId, args.fromVehicleId, args.toVehicleId)
+  const all = receivableId ? await openLines(admin, fundId, args.fromVehicleId, receivableId, q) : []
+  const lines = all.filter(l => l.status === 'posted')
   return {
-    quarter: q, ...pair, lines,
+    quarter: q, ...pair, lines, hasReceivableAccount: !!receivableId,
     total: roundCents(lines.reduce((s, l) => s + l.amount, 0)),
     drafts: all.filter(l => l.status === 'draft'),
     existing: await existingInvoice(admin, fundId, args.fromVehicleId, args.toVehicleId, q),
   }
 }
 
-/** Every entity that has tagged, unbilled partnership expenses on `fromVehicleId`'s books, with totals. */
-export async function unbilledByCounterparty(admin: SupabaseClient, fundId: string, fromVehicleId: string): Promise<{ vehicleId: string; name: string; entries: number }[]> {
-  const { data } = await admin.from('journal_entries' as any)
-    .select('rebill_vehicle_id')
-    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK).eq('status', 'posted')
-    .not('rebill_vehicle_id', 'is', null).is('partnership_invoice_id', null).limit(5000)
-  const counts = new Map<string, number>()
-  for (const r of ((data as any[]) ?? [])) counts.set(r.rebill_vehicle_id, (counts.get(r.rebill_vehicle_id) ?? 0) + 1)
-  const out: { vehicleId: string; name: string; entries: number }[] = []
-  for (const [vehicleId, entries] of Array.from(counts.entries())) {
-    const name = await vehicleNameById(admin, fundId, vehicleId)
-    if (name) out.push({ vehicleId, name, entries })
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
+/**
+ * Every entity with posted, unbilled debits on its "Due from" account on `fromVehicleId`'s books,
+ * across all dates (a quarter nobody invoiced still shows up here).
+ */
+export async function unbilledByCounterparty(
+  admin: SupabaseClient, fundId: string, fromVehicleId: string,
+): Promise<{ vehicleId: string; name: string; entries: number; amount: number }[]> {
+  const [{ data: vehicles }, { data: accounts }] = await Promise.all([
+    admin.from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId),
+    admin.from('chart_of_accounts' as any).select('id, code').eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
+      .like('code', `${INTERCOMPANY_RECEIVABLE_CODE}-%`),
+  ])
+  const accountByCode = new Map(((accounts as any[]) ?? []).map(a => [a.code as string, a.id as string]))
+  const pairs = ((vehicles as any[]) ?? [])
+    .filter(v => v.id !== fromVehicleId)
+    .map(v => ({ vehicleId: v.id as string, name: v.name as string, accountId: accountByCode.get(intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, v.id)) }))
+    .filter((p): p is { vehicleId: string; name: string; accountId: string } => !!p.accountId)
+  if (pairs.length === 0) return []
+
+  const entries = await entriesTouching(admin, fundId, fromVehicleId, pairs.map(p => p.accountId), { statuses: ['posted'] })
+  const billed = await billedPostingIds(admin, fundId, entries.flatMap(e => e.journal_postings.map(p => p.id)))
+  const asReceivable = entries.map(e => ({ id: e.id, sourceType: e.source_type, postings: e.journal_postings.map(p => ({ id: p.id, accountId: p.account_id, amount: p.amount })) }))
+  return pairs
+    .map(p => {
+      const lines = billablePostings(asReceivable, p.accountId, billed)
+      return { vehicleId: p.vehicleId, name: p.name, entries: lines.length, amount: roundCents(lines.reduce((s, l) => s + l.amount, 0)) }
+    })
+    .filter(p => p.entries > 0)
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /**
@@ -167,7 +224,7 @@ export async function createPartnershipInvoice(
     return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). Void it to bill the quarter again.`, status: 409 }
   }
   if (preview.lines.length === 0) {
-    return { error: `Nothing to bill: no posted partnership expenses tagged to ${preview.to.name} in ${preview.quarter.label}.`, status: 400 }
+    return { error: `Nothing to bill: no posted debits to Due from ${preview.to.name} in ${preview.quarter.label} that are not already on an invoice.`, status: 400 }
   }
 
   const { data: settings } = await admin.from('fund_settings' as any).select('currency').eq('fund_id', fundId).maybeSingle()
@@ -198,21 +255,18 @@ export async function createPartnershipInvoice(
   }
   if (!row) return { error: `The invoice could not be created: ${lastError}`, status: 409 }
 
-  // Claim the lines. `is null` in the filter makes the claim exclusive: an entry another invoice
-  // claimed a moment ago is left alone, and the totals are checked against what this one got.
-  const ids = preview.lines.map(l => l.entryId)
-  const { data: claimed, error: claimErr } = await admin.from('journal_entries' as any)
-    .update({ partnership_invoice_id: row.id })
-    .eq('fund_id', fundId).eq('book', ACTUAL_BOOK).in('id', ids).is('partnership_invoice_id', null)
-    .select('id')
-  const got = new Set(((claimed as any[]) ?? []).map(e => e.id as string))
-  if (claimErr || got.size !== ids.length) {
-    await admin.from('journal_entries' as any).update({ partnership_invoice_id: null }).eq('fund_id', fundId).eq('partnership_invoice_id', row.id)
+  // Claim the lines. The partial unique index on journal_posting_id (where active) makes the claim
+  // exclusive: a posting another invoice claimed a moment ago fails the whole insert.
+  const { error: claimErr } = await admin.from('partnership_invoice_lines' as any).insert(preview.lines.map(l => ({
+    fund_id: fundId, invoice_id: row.id, journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount,
+  })))
+  if (claimErr) {
     await admin.from('partnership_invoices' as any).delete().eq('id', row.id).eq('fund_id', fundId)
-    return { error: 'Some of these entries were billed on another invoice at the same moment. Refresh and try again.', status: 409 }
+    return { error: (claimErr as any).code === '23505'
+      ? 'Some of these expenses were billed on another invoice at the same moment. Refresh and try again.'
+      : `The invoice lines could not be saved: ${claimErr.message}`, status: 409 }
   }
-
-  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, lines: ids.length }
+  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, lines: preview.lines.length }
 }
 
 export interface InvoiceDetail {
@@ -230,7 +284,31 @@ export interface InvoiceDetail {
   intercompanyTransactionId: string | null
   from: { vehicleId: string; name: string }
   to: { vehicleId: string; name: string }
-  lines: InvoiceLine[]
+  lines: InvoiceDetailLine[]
+}
+
+/** An invoice's frozen lines, beside what the ledger says about each now. */
+async function invoiceLines(admin: SupabaseClient, fundId: string, invoiceId: string): Promise<InvoiceDetailLine[]> {
+  const { data } = await admin.from('partnership_invoice_lines' as any)
+    .select('journal_entry_id, journal_posting_id, amount').eq('fund_id', fundId).eq('invoice_id', invoiceId)
+  const rows = ((data as any[]) ?? [])
+  if (rows.length === 0) return []
+  const entryIds = Array.from(new Set(rows.map(r => r.journal_entry_id as string)))
+  const [{ data: entries }, { data: postings }] = await Promise.all([
+    admin.from('journal_entries' as any).select('id, entry_date, memo, reference, status, vendor_id, source_type')
+      .eq('fund_id', fundId).eq('book', ACTUAL_BOOK).in('id', entryIds),
+    admin.from('journal_postings' as any).select('id, amount')
+      .eq('book', ACTUAL_BOOK).in('id', rows.map(r => r.journal_posting_id as string)),
+  ])
+  const entryById = new Map(((entries as any[]) ?? []).map(e => [e.id as string, { ...e, journal_postings: [] } as EntryRow]))
+  const nowAmount = new Map(((postings as any[]) ?? []).map(p => [p.id as string, roundCents(Number(p.amount))]))
+  const line = await lineDetails(admin, fundId, Array.from(entryById.values()))
+  return rows
+    .map(r => {
+      const e = entryById.get(r.journal_entry_id) ?? { id: r.journal_entry_id, entry_date: '', memo: null, reference: null, status: 'deleted', vendor_id: null, source_type: null, journal_postings: [] }
+      return { ...line(e, r.journal_posting_id, roundCents(Number(r.amount))), currentAmount: nowAmount.get(r.journal_posting_id) ?? null }
+    })
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate))
 }
 
 export async function getPartnershipInvoice(admin: SupabaseClient, fundId: string, id: string): Promise<InvoiceDetail | null> {
@@ -239,7 +317,7 @@ export async function getPartnershipInvoice(admin: SupabaseClient, fundId: strin
   const inv = data as any
   const pair = await vehiclePair(admin, fundId, inv.from_vehicle_id, inv.to_vehicle_id)
   if (!pair) return null
-  const lines = await loadLines(admin, fundId, inv.from_vehicle_id, inv.to_vehicle_id, null, inv.id)
+  const lines = await invoiceLines(admin, fundId, inv.id)
   const [y, m] = String(inv.period_start).split('-').map(Number)
   return {
     id: inv.id, invoiceNumber: inv.invoice_number, invoiceDate: inv.invoice_date,
@@ -264,9 +342,10 @@ export async function listPartnershipInvoices(admin: SupabaseClient, fundId: str
 }
 
 /**
- * Issue a draft invoice: book it on both ledgers as an intercompany expense reimbursement, dated
- * the invoice date. If either side refuses (a closed period on the fund's books, a chart with no
- * partnership-expense account), nothing is booked and the invoice stays a draft, with the reason.
+ * Issue a draft invoice: book the fund's side, dated the invoice date, as an intercompany expense
+ * reimbursement whose receivable is already on the biller's books. If the fund's books refuse (a
+ * closed period, a chart with no partnership-expense account), nothing is booked and the invoice
+ * stays a draft, with the reason.
  */
 export async function issuePartnershipInvoice(
   admin: SupabaseClient,
@@ -278,15 +357,11 @@ export async function issuePartnershipInvoice(
   if (!inv) return { error: 'Invoice not found', status: 404 }
   if (inv.status !== 'draft') return { error: `This invoice is already ${inv.status}.`, status: 409 }
 
-  // The lines are re-read, not trusted from creation: an entry voided or unposted since cannot be
-  // billed, and the fund must not be charged for it.
-  const notPosted = inv.lines.filter(l => l.status !== 'posted')
-  if (notPosted.length > 0) {
-    return { error: `${notPosted.length} of this invoice's entries ${notPosted.length === 1 ? 'is' : 'are'} no longer posted. Void the invoice and create it again.`, status: 409 }
-  }
-  const total = roundCents(inv.lines.reduce((s, l) => s + l.amount, 0))
-  if (Math.abs(total - inv.amount) >= 0.005) {
-    return { error: `The entries on this invoice now total ${total.toFixed(2)}, not the ${inv.amount.toFixed(2)} it was created for. Void it and create it again.`, status: 409 }
+  // The lines are re-read, not trusted from creation: an entry voided or changed since cannot be
+  // billed as it was, and the fund must not be charged for what the books no longer say.
+  const stale = inv.lines.filter(l => l.status !== 'posted' || l.currentAmount == null || Math.abs(l.currentAmount - l.amount) >= 0.005)
+  if (stale.length > 0) {
+    return { error: `${stale.length} of this invoice's expenses ${stale.length === 1 ? 'has' : 'have'} been voided or changed since it was created. Void the invoice and create it again.`, status: 409 }
   }
 
   const res = await postIntercompanyCharge(admin, {
@@ -297,6 +372,7 @@ export async function issuePartnershipInvoice(
     memo: `Partnership expenses ${inv.label}, invoice ${inv.invoiceNumber}`,
     payee: inv.from,
     payer: inv.to,
+    payeeAlreadyBooked: true,
   })
   if ('error' in res) return { error: res.error, status: 400 }
 
@@ -307,34 +383,37 @@ export async function issuePartnershipInvoice(
 }
 
 /**
- * Void an invoice and release its entries for re-billing. An ISSUED invoice is refused while its
- * intercompany charge still stands: voiding the document would leave the fund holding a payable for
- * an invoice that no longer exists. Reverse (void) the two entries of the charge first.
+ * Void an invoice and release its lines for the next one. An ISSUED invoice is refused once the
+ * fund has paid it, and while the fund's entry for it still stands: voiding the document would
+ * leave the fund holding a payable for an invoice that no longer exists. Void that entry first.
  */
 export async function voidPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
   id: string,
 ): Promise<{ ok: true } | { error: string; status?: number }> {
-  const { data } = await admin.from('partnership_invoices' as any).select('id, status, intercompany_transaction_id').eq('fund_id', fundId).eq('id', id).maybeSingle()
+  const { data } = await admin.from('partnership_invoices' as any).select('id, status, intercompany_transaction_id, to_vehicle_id').eq('fund_id', fundId).eq('id', id).maybeSingle()
   if (!data) return { error: 'Invoice not found', status: 404 }
   const inv = data as any
   if (inv.status === 'void') return { ok: true }
   if (inv.status === 'issued' && inv.intercompany_transaction_id) {
     const { data: charge } = await admin.from('intercompany_transactions' as any)
-      .select('from_entry_id, to_entry_id').eq('id', inv.intercompany_transaction_id).maybeSingle()
+      .select('status, from_entry_id, to_entry_id').eq('id', inv.intercompany_transaction_id).maybeSingle()
+    if ((charge as any)?.status === 'settled') {
+      return { error: 'This invoice has been paid. Reverse the payment before voiding it.', status: 409 }
+    }
     const entryIds = [(charge as any)?.from_entry_id, (charge as any)?.to_entry_id].filter(Boolean)
     if (entryIds.length > 0) {
       const { data: live } = await admin.from('journal_entries' as any).select('id').eq('book', ACTUAL_BOOK).in('id', entryIds).neq('status', 'void')
       if (((live as any[]) ?? []).length > 0) {
-        return { error: 'This invoice is booked on both ledgers. Void its two intercompany entries first, then void the invoice.', status: 409 }
+        const fundName = await vehicleNameById(admin, fundId, inv.to_vehicle_id)
+        return { error: `This invoice is booked on ${fundName ?? 'the fund'}'s books. Void that entry first, then void the invoice.`, status: 409 }
       }
     }
-    // Both entries are gone, so the charge they booked is too.
     await admin.from('intercompany_transactions' as any).update({ status: 'void', updated_at: new Date().toISOString() })
       .eq('id', inv.intercompany_transaction_id).eq('fund_id', fundId)
   }
-  await admin.from('journal_entries' as any).update({ partnership_invoice_id: null }).eq('fund_id', fundId).eq('partnership_invoice_id', id)
+  await admin.from('partnership_invoice_lines' as any).update({ active: false }).eq('fund_id', fundId).eq('invoice_id', id)
   await admin.from('partnership_invoices' as any).update({ status: 'void', updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
   return { ok: true }
 }

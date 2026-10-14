@@ -278,16 +278,18 @@ function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: objec
     <div className="space-y-2 rounded-md bg-muted/40 p-2">
       <p className="text-xs text-muted-foreground">A draft for {r.receipt_date ?? 'today'}, {r.vendor_name ?? 'no vendor'}. Nothing posts until you post it from the journal.</p>
       <div className="flex flex-wrap items-end gap-2">
-        <label className="w-56 text-xs text-muted-foreground">Debit (the cost)<AccountPicker accounts={accounts.filter(a => a.type === 'expense' || a.type === 'asset')} value={debit} onChange={setDebit} /></label>
-        <label className="w-56 text-xs text-muted-foreground">Credit (what paid it)<AccountPicker accounts={accounts.filter(a => a.type === 'asset' || a.type === 'liability')} value={credit} onChange={setCredit} /></label>
-        <label className="text-xs text-muted-foreground">Partnership expense, bill to
-          <select value={billTo} onChange={e => setBillTo(e.target.value)} className="mt-0.5 block rounded border border-input bg-transparent px-2 py-1 text-sm">
-            <option value="">Not billed</option>
-            {entities.filter(e => e.id && e.id !== vehicleId).map(e => <option key={e.id!} value={e.id!}>{e.name}</option>)}
+        <label className="text-xs text-muted-foreground">Paid for
+          <select value={billTo} onChange={e => setBillTo(e.target.value)} className="mt-0.5 block rounded border border-input bg-transparent px-2 py-1 text-sm" title="A partnership expense: debit that fund's Due-from account so it goes on its quarterly invoice">
+            <option value="">This entity (its own expense)</option>
+            {entities.filter(e => e.id && e.id !== vehicleId).map(e => <option key={e.id!} value={e.id!}>{e.name} (partnership expense)</option>)}
           </select>
         </label>
+        {billTo
+          ? <span className="w-56 pb-1.5 text-xs text-muted-foreground">Debit: Due from {entities.find(e => e.id === billTo)?.name ?? 'the fund'}</span>
+          : <label className="w-56 text-xs text-muted-foreground">Debit (the cost)<AccountPicker accounts={accounts.filter(a => a.type === 'expense' || a.type === 'asset')} value={debit} onChange={setDebit} /></label>}
+        <label className="w-56 text-xs text-muted-foreground">Credit (what paid it)<AccountPicker accounts={accounts.filter(a => a.type === 'asset' || a.type === 'liability')} value={credit} onChange={setCredit} /></label>
         <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
-        <Button size="sm" disabled={!debit || !credit} onClick={() => onDraft({ debitAccountId: debit, creditAccountId: credit, rebillVehicleId: billTo || null })}>Draft entry</Button>
+        <Button size="sm" disabled={!(debit || billTo) || !credit} onClick={() => onDraft(billTo ? { creditAccountId: credit, billToVehicleId: billTo } : { debitAccountId: debit, creditAccountId: credit })}>Draft entry</Button>
       </div>
     </div>
   )
@@ -296,8 +298,8 @@ function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b: objec
 // ── Partnership invoices ────────────────────────────────────────────────────────────────────
 
 interface InvoiceRow { id: string; invoice_number: string; invoice_date: string; period_start: string; period_end: string; amount: number; status: string; from_vehicle_id: string; to_vehicle_id: string; from_name: string | null; to_name: string | null }
-interface Line { entryId: string; entryDate: string; memo: string | null; reference: string | null; vendorName: string | null; amount: number; receiptCount: number; status: string }
-interface Preview { quarter: { year: number; quarter: number; label: string; start: string; end: string }; to: { vehicleId: string; name: string }; lines: Line[]; total: number; drafts: Line[]; existing: { id: string; invoiceNumber: string; status: string } | null }
+interface Line { entryId: string; postingId: string; entryDate: string; memo: string | null; reference: string | null; vendorName: string | null; amount: number; receiptCount: number; status: string }
+interface Preview { quarter: { year: number; quarter: number; label: string; start: string; end: string }; to: { vehicleId: string; name: string }; lines: Line[]; total: number; drafts: Line[]; hasReceivableAccount: boolean; existing: { id: string; invoiceNumber: string; status: string } | null }
 
 function PartnershipInvoices() {
   const lf = useLedgerFetch()
@@ -306,7 +308,7 @@ function PartnershipInvoices() {
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
   const [loading, setLoading] = useState(true)
   const [invoices, setInvoices] = useState<InvoiceRow[]>([])
-  const [unbilled, setUnbilled] = useState<{ vehicleId: string; name: string; entries: number }[]>([])
+  const [unbilled, setUnbilled] = useState<{ vehicleId: string; name: string; entries: number; amount: number }[]>([])
   const [counterparties, setCounterparties] = useState<Entity[]>([])
   const [to, setTo] = useState('')
   const [year, setYear] = useState(new Date().getFullYear())
@@ -358,14 +360,18 @@ function PartnershipInvoices() {
     if (j) { setNotice(`Draft invoice ${j.invoiceNumber} created for ${fmt(j.amount)}. Review the PDF, then issue it.`); setPreview(null); await load() }
   }
   async function issue(id: string) {
-    if (!window.confirm('Issue this invoice? It books the charge on both entities’ ledgers.')) return
+    if (!window.confirm('Issue this invoice? It books the expense and the payable on the fund’s books.')) return
     const j = await post({ action: 'issue', id }, 'Could not issue the invoice')
-    if (j) { setNotice('Issued and booked on both ledgers. Settle it on the management company’s Intercompany tab when the fund pays.'); await load() }
+    if (j) { setNotice('Issued and booked on the fund’s books. When the fund pays, settle the charge on the Intercompany tab to clear the receivable.'); await load() }
   }
   async function voidIt(id: string) {
-    if (!window.confirm('Void this invoice? Its entries become billable again.')) return
+    if (!window.confirm('Void this invoice? Its expenses become billable again.')) return
     const j = await post({ action: 'void', id }, 'Could not void the invoice')
-    if (j) { setNotice('Voided. Its entries can be billed again.'); await load() }
+    if (j) { setNotice('Voided. Its expenses can be billed again.'); await load() }
+  }
+  async function addAccounts() {
+    const j = await post({ action: 'accounts', to }, 'Could not add the accounts')
+    if (j) { setNotice(`Added Due from ${preview?.to.name ?? 'the fund'} to ${group ?? 'this entity'}’s chart. Book what you paid for the fund to it.`); await runPreview() }
   }
 
   if (loading) return <div className="flex justify-center py-8"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
@@ -374,10 +380,10 @@ function PartnershipInvoices() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
-        Tag an entry on {group ?? 'this entity'}’s books as a partnership expense (in the entry, under Receipts) and it is billed to that fund on the quarter’s invoice. Issuing books one expense reimbursement on both ledgers; the PDF lists every expense with its receipt behind it.
+        When {group ?? 'this entity'} pays a fund’s expense, book it to “Due from” that fund instead of an expense. The quarter’s invoice bills every posted debit to that account not already invoiced, and the PDF lists each one with its receipt behind it. Issuing books the expense and the payable on the fund’s books; the fund’s payment, settled on the Intercompany tab, clears the receivable.
       </p>
       {unbilled.length > 0 && (
-        <p className="text-sm">Unbilled: {unbilled.map(u => `${u.name} (${u.entries} ${u.entries === 1 ? 'entry' : 'entries'})`).join(', ')}.</p>
+        <p className="text-sm">Not yet invoiced: {unbilled.map(u => `${u.name} ${fmt(u.amount)} (${u.entries} ${u.entries === 1 ? 'expense' : 'expenses'})`).join(', ')}.</p>
       )}
 
       <div className="flex flex-wrap items-end gap-2 rounded-card border p-3">
@@ -410,7 +416,13 @@ function PartnershipInvoices() {
               : <Button size="sm" disabled={busy || preview.lines.length === 0} onClick={() => void create()}>Create draft invoice</Button>}
           </div>
           {preview.drafts.length > 0 && (
-            <p className="text-sm text-warning">{preview.drafts.length} tagged {preview.drafts.length === 1 ? 'entry is' : 'entries are'} still a draft and will not be billed until posted.</p>
+            <p className="text-sm text-warning">{preview.drafts.length} {preview.drafts.length === 1 ? 'expense is' : 'expenses are'} still a draft and will not be billed until posted.</p>
+          )}
+          {!preview.hasReceivableAccount && (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm text-muted-foreground">{group ?? 'This entity'}’s chart has no Due from {preview.to.name} account yet, so there is nothing to bill.</p>
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => void addAccounts()}>Add the account</Button>
+            </div>
           )}
           <LinesTable lines={preview.lines} fmt={fmt} onOpen={setOpenEntry} />
         </div>
@@ -453,7 +465,7 @@ function PartnershipInvoices() {
 }
 
 function LinesTable({ lines, fmt, onOpen }: { lines: Line[]; fmt: (v: number) => string; onOpen: (id: string) => void }) {
-  if (lines.length === 0) return <p className="text-xs text-muted-foreground">No posted, tagged expenses in this quarter.</p>
+  if (lines.length === 0) return <p className="text-xs text-muted-foreground">No posted debits to the fund’s Due-from account in this quarter that are not already invoiced.</p>
   return (
     <table className="w-full text-xs">
       <thead><tr className="text-left text-muted-foreground">
@@ -462,7 +474,7 @@ function LinesTable({ lines, fmt, onOpen }: { lines: Line[]; fmt: (v: number) =>
       </tr></thead>
       <tbody>
         {lines.map(l => (
-          <tr key={l.entryId} className="border-t">
+          <tr key={l.postingId} className="border-t">
             <td className="py-1 tabular-nums"><button className="underline underline-offset-2" onClick={() => onOpen(l.entryId)}>{l.entryDate}</button></td>
             <td className="py-1">{l.vendorName ?? '—'}</td>
             <td className="py-1">{l.memo ?? '—'}</td>

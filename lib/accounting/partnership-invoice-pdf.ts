@@ -176,8 +176,10 @@ export async function partnershipInvoiceDocument(
   const from = await documentLetterhead(admin, fundId, fundRes.data, [inv.from.name])
 
   const backup: BackupDocument[] = []
-  for (const l of inv.lines) {
-    for (const r of await receiptsForEntry(admin, fundId, l.entryId)) {
+  // One entry can carry two lines (a cost split between funds' Due-from accounts); its receipts are
+  // appended once.
+  for (const entryId of Array.from(new Set(inv.lines.map(l => l.entryId)))) {
+    for (const r of await receiptsForEntry(admin, fundId, entryId)) {
       const content = await receiptFileBytes(admin, r)
       if (!content) continue
       // An e-receipt kept as the email's HTML or text: rendered here, where a browser ships, offline

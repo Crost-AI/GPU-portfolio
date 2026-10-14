@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { PDFDocument } from 'pdf-lib'
 import {
   parseReceiptExtraction, looksLikeReceipt, isReceiptFile, scoreCandidate, rankCandidates,
-  billableAmount, quarterBounds, quarterOf, previousQuarter, invoiceNumber, isoDateOrNull, amountOrNull,
+  billablePostings, quarterBounds, quarterOf, previousQuarter, invoiceNumber, isoDateOrNull, amountOrNull,
 } from './receipts-core'
 import { buildPartnershipInvoiceHtml, appendBackup } from './partnership-invoice-pdf'
 
@@ -84,14 +84,28 @@ describe('matching', () => {
   })
 })
 
-describe('billableAmount', () => {
-  it('bills the net expense, an override, or the debits', () => {
-    const postings = [
-      { amount: 300, accountType: 'expense' }, { amount: -50, accountType: 'expense' }, { amount: -250, accountType: 'asset' },
-    ]
-    expect(billableAmount(null, postings)).toBe(250)
-    expect(billableAmount(100, postings)).toBe(100)
-    expect(billableAmount(null, [{ amount: 500, accountType: 'asset' }, { amount: -500, accountType: 'asset' }])).toBe(500)
+describe('billablePostings', () => {
+  const due = 'acct-due-from-fund3'
+  it('bills each debit to the fund\'s Due-from account, and nothing else', () => {
+    const lines = billablePostings([
+      // Paid on the fund's behalf: Dr Due from Fund III, Cr cash.
+      { id: 'e1', sourceType: 'bank', postings: [{ id: 'p1', accountId: due, amount: 250 }, { id: 'p2', accountId: 'cash', amount: -250 }] },
+      // Split with another fund: only this fund's share.
+      { id: 'e2', sourceType: 'manual', postings: [{ id: 'p3', accountId: due, amount: 60 }, { id: 'p4', accountId: 'due-other', amount: 40 }, { id: 'p5', accountId: 'cash', amount: -100 }] },
+      // A refund back to the fund's account is not a cost.
+      { id: 'e3', sourceType: 'manual', postings: [{ id: 'p6', accountId: 'cash', amount: 20 }, { id: 'p7', accountId: due, amount: -20 }] },
+    ], due, new Set())
+    expect(lines).toEqual([
+      { entryId: 'e1', postingId: 'p1', amount: 250 },
+      { entryId: 'e2', postingId: 'p3', amount: 60 },
+    ])
+  })
+  it('leaves out intercompany charges and what an earlier invoice billed', () => {
+    const lines = billablePostings([
+      { id: 'fee', sourceType: 'intercompany', postings: [{ id: 'p1', accountId: due, amount: 5000 }] },
+      { id: 'old', sourceType: 'bank', postings: [{ id: 'p2', accountId: due, amount: 75 }] },
+    ], due, new Set(['p2']))
+    expect(lines).toEqual([])
   })
 })
 

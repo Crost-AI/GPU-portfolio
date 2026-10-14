@@ -9,6 +9,7 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName, vehicleNameById } from '@/lib/accounting/vehicle-id'
 import { listVehiclesWithId } from '@/lib/accounting/load'
 import { previousQuarter } from '@/lib/accounting/receipts-core'
+import { ensureIntercompanyAccounts } from '@/lib/accounting/intercompany'
 import {
   previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
@@ -85,8 +86,9 @@ export async function GET(req: NextRequest) {
 /**
  * POST
  *   { group, action: 'create', to, year, quarter, invoiceDate?, memo? }  freeze the quarter into a draft
- *   { group, action: 'issue', id }   book it on both ledgers (intercompany expense reimbursement)
- *   { group, action: 'void', id }    release its entries; an issued one needs its charge voided first
+ *   { group, action: 'issue', id }   book the fund's side (Dr partnership expenses, Cr due to <group>)
+ *   { group, action: 'void', id }    release its lines; an issued one needs the fund's entry voided first
+ *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -128,5 +130,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
-  return NextResponse.json({ error: 'action must be create, issue or void' }, { status: 400 })
+  if (body?.action === 'accounts') {
+    const to = await counterparty(admin, gate, body?.to)
+    if (to instanceof NextResponse) return to
+    if (to.vehicleId === vehicleId) return NextResponse.json({ error: 'An entity cannot bill itself.' }, { status: 400 })
+    try {
+      const ids = await ensureIntercompanyAccounts(admin, gate.fundId, group, to)
+      return NextResponse.json({ ok: true, receivableAccountId: ids.receivableAccountId })
+    } catch (e) {
+      return NextResponse.json({ error: (e as Error).message }, { status: 400 })
+    }
+  }
+
+  return NextResponse.json({ error: 'action must be create, issue, void or accounts' }, { status: 400 })
 }

@@ -48,8 +48,9 @@ export async function GET(req: NextRequest, props: Params) {
  *   { action: 'attach', journalEntryId? | bankTransactionId? }
  *   { action: 'detach' }
  *   { action: 'dismiss' } / { action: 'restore' }
- *   { action: 'draft', debitAccountId, creditAccountId, rebillVehicleId?, memo? }
- *       draft the entry it describes on its entity's books and attach it
+ *   { action: 'draft', creditAccountId, debitAccountId? | billToVehicleId?, memo? }
+ *       draft the entry it describes on its entity's books and attach it. billToVehicleId makes it
+ *       a partnership expense: the debit is that fund's Due-from account, not an expense
  */
 export async function PATCH(req: NextRequest, props: Params) {
   const { id } = await props.params
@@ -116,15 +117,17 @@ export async function PATCH(req: NextRequest, props: Params) {
 
   if (action === 'draft') {
     if (!r.vehicle_id || !ok.group) return NextResponse.json({ error: 'Choose the entity this receipt belongs to first.' }, { status: 400 })
-    const debitAccountId = String(body?.debitAccountId ?? '')
+    const debitAccountId = typeof body?.debitAccountId === 'string' && body.debitAccountId ? body.debitAccountId : null
     const creditAccountId = String(body?.creditAccountId ?? '')
-    if (!debitAccountId || !creditAccountId) return NextResponse.json({ error: 'debitAccountId and creditAccountId are required' }, { status: 400 })
-    const rebillVehicleId = typeof body?.rebillVehicleId === 'string' && body.rebillVehicleId ? body.rebillVehicleId : null
-    if (rebillVehicleId && !(await vehicleNameById(admin, gate.fundId, rebillVehicleId))) {
-      return NextResponse.json({ error: 'That entity is not in this fund.' }, { status: 400 })
+    const billToVehicleId = typeof body?.billToVehicleId === 'string' && body.billToVehicleId ? body.billToVehicleId : null
+    if (!creditAccountId || !(debitAccountId || billToVehicleId)) {
+      return NextResponse.json({ error: 'creditAccountId, and debitAccountId or billToVehicleId, are required' }, { status: 400 })
     }
+    const billToName = billToVehicleId ? await vehicleNameById(admin, gate.fundId, billToVehicleId) : null
+    if (billToVehicleId && !billToName) return NextResponse.json({ error: 'That entity is not in this fund.' }, { status: 400 })
     const res = await draftEntryFromReceipt(admin, gate.fundId, ok.group, r.vehicle_id, user.id, id, {
-      debitAccountId, creditAccountId, rebillVehicleId,
+      debitAccountId, creditAccountId,
+      billTo: billToVehicleId && billToName ? { vehicleId: billToVehicleId, name: billToName } : null,
       memo: typeof body?.memo === 'string' ? body.memo : null,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })

@@ -89,8 +89,6 @@ export function EntryModal({
   const [copyOf, setCopyOf] = useState<string | null>(null)
   // The Reverse control on a posted entry: a date, then a choice of draft or post.
   const [reverseDate, setReverseDate] = useState<string | null>(null)
-  // The partnership-expense tag, saved on its own by EntryReceipts.
-  const [rebill, setRebill] = useState<{ vehicleId: string | null; amount: number | null; invoiced: boolean }>({ vehicleId: null, amount: null, invoiced: false })
 
   useEffect(() => {
     Promise.all([
@@ -107,7 +105,6 @@ export function EntryModal({
         setVendorId(entry.vendor_id ?? null)
         setAdjusting(entry.adjusting === true)
         setSourceType(entry.source_type || 'manual')
-        setRebill({ vehicleId: entry.rebill_vehicle_id ?? null, amount: entry.rebill_amount != null ? Number(entry.rebill_amount) : null, invoiced: !!entry.partnership_invoice_id })
         setMeta({ status: entry.status, postedAt: entry.posted_at ?? null, sourceRef: entry.source_ref ?? null, reversedBy: entry.reversed_by ?? null, ownedBy: entry.owned_by ?? [] })
         setLines((entry.journal_postings ?? []).map((p: PostingRow) => {
           const amt = Number(p.amount)
@@ -401,10 +398,8 @@ export function EntryModal({
               </tfoot>
             </table>
 
-            {/* The evidence and the rebill tag, once the entry exists (and not on the tax book). */}
-            {id && !taxBook && (
-              <EntryReceipts key={`${id}:${rebill.vehicleId ?? ''}`} entryId={id} rebillVehicleId={rebill.vehicleId} rebillAmount={rebill.amount} invoiced={rebill.invoiced} />
-            )}
+            {/* The evidence, once the entry exists (and not on the tax book). */}
+            {id && !taxBook && <EntryReceipts key={id} entryId={id} />}
 
             {(editable || adjusting) && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground">

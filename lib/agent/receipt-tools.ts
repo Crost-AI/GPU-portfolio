@@ -10,7 +10,7 @@ import { resolveVehicleWithAccess } from '@/lib/accounting/http-vehicle'
 import {
   listReceipts, getReceipt, receiptsForEntry, matchCandidates, receiptFileUrl, receiptFileBytes, storeReceipt,
   extractReceipt, updateReceiptFields, attachReceipt, detachReceipt, setReceiptDismissed, draftEntryFromReceipt,
-  tagPartnershipExpense, type ReceiptRow,
+  type ReceiptRow,
 } from '@/lib/accounting/receipts'
 import {
   previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
@@ -149,27 +149,16 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       const res = await updateReceiptFields(ctx.admin, ctx.fundId, r.id, { vehicleId })
       if ('error' in res) fail(res)
     }
+    const billTo = input?.billTo ? await otherEntity(ctx, input.billTo, 'read') : null
     const [debitAccountId, creditAccountId] = await Promise.all([
-      accountByCode(ctx.admin, ctx.fundId, ctx.portfolioGroup, input?.debitAccountCode),
+      billTo ? Promise.resolve(null) : accountByCode(ctx.admin, ctx.fundId, ctx.portfolioGroup, input?.debitAccountCode),
       accountByCode(ctx.admin, ctx.fundId, ctx.portfolioGroup, input?.creditAccountCode),
     ])
-    const rebill = input?.billTo ? await otherEntity(ctx, input.billTo, 'read') : null
     const res = await draftEntryFromReceipt(ctx.admin, ctx.fundId, ctx.portfolioGroup, vehicleId, ctx.userId, r.id, {
-      debitAccountId, creditAccountId, rebillVehicleId: rebill?.vehicleId ?? null, memo: input?.memo ?? null,
+      debitAccountId, creditAccountId, billTo, memo: input?.memo ?? null,
     })
     if ('error' in res) fail(res)
     return { draftEntryId: res.entryId, receipt: res.receipt, note: 'Draft only. Post it with post_drafts (ids: [draftEntryId]) once it looks right.' }
-  },
-
-  tag_partnership_expense: async (ctx, input) => {
-    const vehicleId = await here(ctx)
-    const entryId = String(input?.entryId ?? '')
-    const { data: e } = await ctx.admin.from('journal_entries' as any).select('id').eq('fund_id', ctx.fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK).eq('id', entryId).maybeSingle()
-    if (!e) throw new Error(`No entry ${entryId} on ${ctx.portfolioGroup}`)
-    const billTo = input?.billTo == null || input.billTo === '' ? null : await otherEntity(ctx, input.billTo, 'read')
-    const res = await tagPartnershipExpense(ctx.admin, ctx.fundId, entryId, { rebillVehicleId: billTo?.vehicleId ?? null, rebillAmount: input?.amount ?? null })
-    if ('error' in res) fail(res)
-    return { ok: true, entryId, billTo: billTo?.name ?? null }
   },
 
   partnership_invoices: async (ctx, input) => {

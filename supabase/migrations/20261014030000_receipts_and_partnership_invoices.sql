@@ -10,18 +10,20 @@
 --      bank feed drafted, an entry someone typed, or a draft made from the receipt itself. A receipt
 --      never posts anything on its own. It is evidence, and the ledger entry is the fact.
 --
---   2. The rebill. An entry on the payer's books can now be tagged "partnership expense, bill to
---      <fund>". A quarterly invoice gathers every tagged, posted, not-yet-billed entry in the quarter
---      and, when issued, books it as ONE intercompany expense reimbursement (both ledgers, through
---      lib/accounting/intercompany.ts, so the payable and the receivable cannot drift).
+--   2. The quarterly bill. The payer books a fund's expense the way it is really booked: not as
+--      its own expense but as a receivable, Dr "Due from <fund>" (1900-<fund>), Cr cash. At
+--      quarter end an invoice gathers every posted debit to that account in the quarter that is
+--      not already on an invoice, and issuing it books the fund's side (Dr partnership expenses,
+--      Cr Due to <payer>) as an intercompany charge whose receivable is already on the payer's
+--      books. The fund's payment is that charge's settlement, and it clears the receivable.
 --
--- Both tables are read and written only by server routes holding the service role, which resolve
+-- All three tables are read and written only by server routes holding the service role, which resolve
 -- the vehicle through resolveGroupOr400 (so a manco's receipts need the management-company grant,
 -- like its ledger). So, per CLAUDE.md, granted to service_role alone with RLS on and no
 -- authenticated policies.
 
 -- ============================================================================================
--- 1. Partnership invoices. Created first: journal_entries points at it.
+-- 1. Partnership invoices.
 -- ============================================================================================
 
 create table if not exists public.partnership_invoices (
@@ -41,7 +43,8 @@ create table if not exists public.partnership_invoices (
   currency                    text not null default 'USD',
   memo                        text,
   status                      text not null default 'draft' check (status in ('draft', 'issued', 'void')),
-  -- The intercompany charge that books it on both ledgers, once issued.
+  -- The intercompany charge that books the fund's side once issued. Its payee entry is empty: the
+  -- receivable was booked line by line as the payer paid.
   intercompany_transaction_id uuid references intercompany_transactions(id) on delete set null,
   created_by                  uuid references auth.users(id) on delete set null,
   created_at                  timestamptz not null default now(),
@@ -66,28 +69,36 @@ grant select, insert, update, delete on public.partnership_invoices to service_r
 alter table public.partnership_invoices enable row level security;
 
 -- ============================================================================================
--- 2. The partnership-expense tag on an entry.
+-- 2. The lines of an invoice: which "Due from <fund>" postings it bills.
 -- ============================================================================================
 
-alter table public.journal_entries
-  add column if not exists rebill_vehicle_id uuid references public.fund_vehicles(id) on delete set null;
-alter table public.journal_entries
-  add column if not exists rebill_amount numeric(20, 2);
-alter table public.journal_entries
-  add column if not exists partnership_invoice_id uuid references public.partnership_invoices(id) on delete set null;
+-- A link table rather than a column on journal_postings, for two reasons. The period lock
+-- (assert_posting_period_open) refuses ANY update to a posting in a closed period, and a quarter
+-- is normally closed before it is billed. And a posting can be billed, voided off the invoice and
+-- billed again, which a single column cannot remember.
+create table if not exists public.partnership_invoice_lines (
+  id                  uuid primary key default gen_random_uuid(),
+  fund_id             uuid not null references funds(id) on delete cascade,
+  invoice_id          uuid not null references public.partnership_invoices(id) on delete cascade,
+  journal_entry_id    uuid not null references journal_entries(id) on delete cascade,
+  journal_posting_id  uuid not null references journal_postings(id) on delete cascade,
+  -- Frozen with the invoice; issuing checks the posting still says the same.
+  amount              numeric(20, 2) not null check (amount > 0),
+  -- False once the invoice is voided, which releases the posting for the next invoice.
+  active              boolean not null default true,
+  created_at          timestamptz not null default now()
+);
 
-create index if not exists journal_entries_rebill_idx
-  on public.journal_entries (fund_id, vehicle_id, rebill_vehicle_id, entry_date)
-  where rebill_vehicle_id is not null;
+-- A posting is on at most one live invoice. The claim is this index, so two people creating the
+-- same quarter's invoice at once cannot both bill it.
+create unique index if not exists partnership_invoice_lines_posting_idx
+  on public.partnership_invoice_lines (journal_posting_id) where active;
+create index if not exists partnership_invoice_lines_invoice_idx
+  on public.partnership_invoice_lines (invoice_id);
 
-comment on column public.journal_entries.rebill_vehicle_id is
-  'Partnership expense: the fund this cost belongs to and will be billed to on the quarterly '
-  'partnership invoice. Null for an ordinary entry.';
-comment on column public.journal_entries.rebill_amount is
-  'How much of the entry to bill, when not the whole expense. Null = the entry''s expense debits.';
-comment on column public.journal_entries.partnership_invoice_id is
-  'The partnership invoice this entry was billed on. Set when the invoice is created, cleared when '
-  'it is voided, so an entry is billed at most once.';
+revoke all on public.partnership_invoice_lines from anon, authenticated;
+grant select, insert, update, delete on public.partnership_invoice_lines to service_role;
+alter table public.partnership_invoice_lines enable row level security;
 
 -- ============================================================================================
 -- 3. Receipts.

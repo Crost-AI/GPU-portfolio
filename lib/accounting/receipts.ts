@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
 import { persistEntry } from './persist'
 import { ensureVendor } from './vendors'
+import { ensureIntercompanyAccounts } from './intercompany'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
 import {
@@ -405,12 +406,15 @@ export async function deleteReceipt(admin: SupabaseClient, fundId: string, recei
 // ── A draft from a receipt ──────────────────────────────────────────────────────────────────
 
 export interface DraftFromReceiptInput {
-  /** The expense (or prepaid, or whatever the cost is) account to debit. */
-  debitAccountId: string
+  /** The expense (or prepaid, or whatever the cost is) account to debit. Ignored with billTo. */
+  debitAccountId?: string | null
   /** What paid it: cash, a card liability, accounts payable. */
   creditAccountId: string
-  /** Tag it as a partnership expense billed to this fund, in the same step. */
-  rebillVehicleId?: string | null
+  /**
+   * A partnership expense: this entity paid it for that fund. The debit is then "Due from <fund>"
+   * rather than an expense, which is what puts it on the fund's quarterly partnership invoice.
+   */
+  billTo?: { vehicleId: string; name: string } | null
   memo?: string | null
 }
 
@@ -434,7 +438,18 @@ export async function draftEntryFromReceipt(
   if (r.vehicle_id && r.vehicle_id !== vehicleId) return { error: 'This receipt is filed under another entity.', status: 400 }
   if (r.journal_entry_id) return { error: 'This receipt is already attached to an entry.', status: 409 }
   if (r.amount == null) return { error: 'Fill in the receipt\'s total first.', status: 400 }
-  if (input.debitAccountId === input.creditAccountId) return { error: 'Debit and credit must be different accounts.', status: 400 }
+
+  let debitAccountId = input.debitAccountId ?? null
+  if (input.billTo) {
+    if (input.billTo.vehicleId === vehicleId) return { error: 'An entity cannot bill its own expense to itself.', status: 400 }
+    try {
+      debitAccountId = (await ensureIntercompanyAccounts(admin, fundId, group, input.billTo)).receivableAccountId
+    } catch (e) {
+      return { error: (e as Error).message, status: 400 }
+    }
+  }
+  if (!debitAccountId) return { error: 'Choose the account to debit, or the fund to bill.', status: 400 }
+  if (debitAccountId === input.creditAccountId) return { error: 'Debit and credit must be different accounts.', status: 400 }
 
   const amount = roundCents(r.amount)
   const vendor = r.vendor_name ? await ensureVendor(admin, fundId, r.vendor_name) : null
@@ -447,52 +462,13 @@ export async function draftEntryFromReceipt(
     sourceRef: `receipt:${r.id}`,
     vendorId: vendor?.id ?? null,
     postings: [
-      { accountId: input.debitAccountId, amount, currency: 'USD', lpEntityId: null },
+      { accountId: debitAccountId, amount, currency: 'USD', lpEntityId: null },
       { accountId: input.creditAccountId, amount: -amount, currency: 'USD', lpEntityId: null },
     ],
   }, 'draft')
   if ('error' in res) return { error: res.error, status: 400 }
 
-  if (input.rebillVehicleId) {
-    const tagged = await tagPartnershipExpense(admin, fundId, res.entryId, { rebillVehicleId: input.rebillVehicleId })
-    if ('error' in tagged) return { error: `The draft was created, but it could not be tagged: ${tagged.error}`, status: 400 }
-  }
   const attached = await attachReceipt(admin, fundId, receiptId, { journalEntryId: res.entryId }, userId)
   if ('error' in attached) return { error: attached.error, status: attached.status }
   return { entryId: res.entryId, receipt: attached }
-}
-
-// ── The partnership-expense tag ─────────────────────────────────────────────────────────────
-
-/**
- * Tag (or untag) an entry as a partnership expense billed to another entity. Refuses an entry
- * already on an issued invoice: changing what it bills would make the invoice the fund was sent
- * disagree with the books it came from. Void the invoice first.
- */
-export async function tagPartnershipExpense(
-  admin: SupabaseClient,
-  fundId: string,
-  entryId: string,
-  tag: { rebillVehicleId: string | null; rebillAmount?: number | null },
-): Promise<{ ok: true } | { error: string; status?: number }> {
-  const { data: e } = await admin.from('journal_entries' as any)
-    .select('id, vehicle_id, status, partnership_invoice_id')
-    .eq('fund_id', fundId).eq('book', ACTUAL_BOOK).eq('id', entryId).maybeSingle()
-  if (!e) return { error: 'Entry not found', status: 404 }
-  const entry = e as any
-  if (entry.partnership_invoice_id) {
-    return { error: 'This entry is already billed on a partnership invoice. Void that invoice to change it.', status: 409 }
-  }
-  if (tag.rebillVehicleId) {
-    if (tag.rebillVehicleId === entry.vehicle_id) return { error: 'An entity cannot bill its own expense to itself.', status: 400 }
-    const name = await vehicleNameById(admin, fundId, tag.rebillVehicleId)
-    if (!name) return { error: 'That entity is not in this fund.', status: 400 }
-  }
-  const amount = tag.rebillAmount == null ? null : amountOrNull(tag.rebillAmount)
-  const { error } = await admin.from('journal_entries' as any).update({
-    rebill_vehicle_id: tag.rebillVehicleId,
-    rebill_amount: tag.rebillVehicleId ? amount : null,
-  }).eq('fund_id', fundId).eq('book', ACTUAL_BOOK).eq('id', entryId)
-  if (error) return { error: error.message }
-  return { ok: true }
 }
