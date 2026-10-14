@@ -105,7 +105,7 @@ export function FundDetailView({ vehicle, vehicleId }: { vehicle: string; vehicl
   const load = useCallback(() => {
     setLoading(true)
     Promise.all([
-      fetch('/api/accounting/fund-economics').then(r => (r.ok ? r.json() : { vehicles: [] })),
+      fetch(`/api/accounting/fund-economics?${g}`).then(r => (r.ok ? r.json() : { vehicles: [] })),
       fetch(`/api/accounting/statements?${g}&preset=itd`).then(r => (r.ok ? r.json() : null)),
       fetch(`/api/accounting/fund-timeseries?${g}`).then(r => (r.ok ? r.json() : null)),
     ]).then(([e, s, t]) => {

@@ -150,14 +150,17 @@ export function CapitalAccountsView() {
       qs.set('preset', preset)
       if (asOf) qs.set('asOf', asOf)
     }
-    lf(`/api/accounting/capital-accounts?${qs}`)
-      .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error ?? 'Could not load capital accounts'); return data })
-      .then(d => {
+    // Independent reads, so they are fetched together rather than one after the other.
+    Promise.all([
+      lf(`/api/accounting/capital-accounts?${qs}`)
+        .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error ?? 'Could not load capital accounts'); return data }),
+      lf('/api/accounting/distributions')
+        .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error ?? 'Could not load distributions'); return data }),
+    ])
+      .then(([d, ds]) => {
         setRows(d.rows ?? []); setPeriod(d.period ?? null)
         setCalls(d.calls ?? []); setStranded(d.stranded ?? null)
-      })
-      .then(() => lf('/api/accounting/distributions').then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error ?? 'Could not load distributions'); return data }))
-      .then(d => { setDists(Array.isArray(d) ? d : [])
+        setDists(Array.isArray(ds) ? ds : [])
       })
       .catch(e => setErr(e instanceof Error ? e.message : 'Could not load capital records'))
       .finally(() => setLoading(false))
