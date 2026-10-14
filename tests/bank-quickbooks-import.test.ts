@@ -42,6 +42,13 @@ beforeEach(() => {
       if (mode === 'read' && readError) return { data: null, error: { message: 'Read failed' } }
       const selected = (tables[table] ?? []).filter(row => filters.every(f => f(row)))
       if (mode === 'delete') { tables[table] = tables[table].filter(row => !selected.includes(row)); return { data: [], error: null } }
+      if (mode === 'insert' && Array.isArray(mutation)) {
+        // A batched insert is one statement: any conflicting row fails all of them.
+        const rows = mutation.map((m: any) => ({ id: `bank-${++serial}`, ...m }))
+        if (table === 'bank_transactions' && rows.some((row: any, i: number) => [...tables[table], ...rows.slice(0, i)].some(r => r.fund_id === row.fund_id && r.vehicle_id === row.vehicle_id && r.dedup_hash === row.dedup_hash))) return { data: null, error: { message: 'duplicate claim' } }
+        tables[table].push(...rows)
+        return { data: rows, error: null }
+      }
       if (mode === 'insert' || mode === 'update') {
         if (mode === 'update' && !selected.length) return { data: [], error: null }
         const row = mode === 'insert' ? { id: `bank-${++serial}`, ...mutation } : { ...selected[0], ...mutation }
