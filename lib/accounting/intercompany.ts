@@ -389,9 +389,10 @@ export async function postIntercompanyCharge(
   }
   const chargeId = (row as any).id as string
 
-  // Only while nothing is linked: a linked charge names posted entries and is never deleted here.
+  // Only an accrued charge nothing is linked to: a linked one names posted entries, and a voided one
+  // is the record that it was voided. Neither is deleted here.
   const cleanup = async () => {
-    await admin.from('intercompany_transactions' as any).delete().eq('id', chargeId).is('from_entry_id', null)
+    await admin.from('intercompany_transactions' as any).delete().eq('id', chargeId).eq('status', 'accrued').is('from_entry_id', null)
   }
 
   // Each side's own intercompany sub-account for the OTHER side.
@@ -763,14 +764,14 @@ async function markSettled(
   /** Pre-20261014190000 entries found by ref: never linked, so there are no links to hold. */
   legacy = false,
 ): Promise<{ ok: true } | { error: string }> {
+  // Linked entries are only MATCHED, never written: both sides must still be linked to these
+  // entries, so a side a losing attempt unwound after this request read it is neither settled over
+  // nor restored. Legacy entries were never linked, so for them the links are written here.
   let q = admin.from('intercompany_transactions' as any).update({
     status: 'settled',
     settled_date: settledDate,
-    to_settlement_entry_id: payeeEntryId,
-    from_settlement_entry_id: payerEntryId,
+    ...(legacy ? { to_settlement_entry_id: payeeEntryId, from_settlement_entry_id: payerEntryId } : {}),
   }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
-  // Only while both sides are still linked to these entries: a side unwound by a losing attempt
-  // after this request read it must not be settled over.
   if (!legacy) q = q.eq('to_settlement_entry_id', payeeEntryId).eq('from_settlement_entry_id', payerEntryId)
   const { data: updated, error } = await q.select('id')
   const booked = `The settlement entries are on both books (${payeeEntryId}, ${payerEntryId})`

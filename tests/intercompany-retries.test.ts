@@ -304,7 +304,10 @@ describe('voiding a draft invoice while it is being issued', () => {
     expect(await a).toMatchObject({ error: expect.stringContaining('neither side was booked') })
     expect(db.tables.partnership_invoices[0].status).toBe('void')
     expect(db.tables.journal_entries.filter(e => String(e.source_ref).startsWith('intercompany:'))).toHaveLength(0)
-    expect(db.tables.intercompany_transactions.filter(c => c.status !== 'void')).toHaveLength(0)
+    // The voided charge is kept as the record of what happened, not deleted by the unwind.
+    expect(db.tables.intercompany_transactions).toHaveLength(1)
+    expect(db.tables.intercompany_transactions[0].status).toBe('void')
+    expect(db.tables.intercompany_transactions[0].from_entry_id ?? null).toBeNull()
   })
 
   it('unwinds the fresh fund entry when the invoice was voided before its charge existed', async () => {
