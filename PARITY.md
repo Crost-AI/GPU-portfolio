@@ -8,15 +8,15 @@ Audited 2026-10-14 against `main` at a162894. This compares every action a membe
 
 | Area | Actions | Covered | Partial | Gap | n/a |
 |---|---:|---:|---:|---:|---:|
-| Accounting: ledger, bank, close, statements | 97 | 31 | 20 | 41 | 5 |
-| LP capital, carry, tax, LP relations, management company | 116 | 30 | 17 | 60 | 9 |
-| Portfolio: companies, updates, metrics, emails, compliance | 128 | 24 | 24 | 66 | 14 |
-| Deal flow and diligence | 66 | 20 | 12 | 34 | 0 |
-| Settings, team, approvals, AI usage | 90 | 16 | 10 | 39 | 25 |
+| Accounting: ledger, bank, close, statements | 97 | 36 | 20 | 36 | 5 |
+| LP capital, carry, tax, LP relations, management company | 116 | 34 | 17 | 56 | 9 |
+| Portfolio: companies, updates, metrics, emails, compliance | 128 | 26 | 24 | 64 | 14 |
+| Deal flow and diligence | 66 | 21 | 12 | 33 | 0 |
+| Settings, team, approvals, AI usage | 90 | 17 | 10 | 38 | 25 |
 | Investor portal (separate portal MCP) | 20 | 8 | 1 | 6 | 5 |
-| **Total** | **517** | **129** | **84** | **246** | **58** |
+| **Total** | **517** | **142** | **84** | **233** | **58** |
 
-Of the 330 gaps and partials, **43 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, browser-only uploads, destructive admin deletes, and cosmetic settings. The other **287 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
+Of the 317 gaps and partials, **31 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, browser-only uploads, deleting all fund data, and cosmetic settings. The other **286 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
 
 ## What would most help running the fund headless
 
@@ -28,7 +28,7 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 4. **Intercompany and vendors.** `/api/manco/intercompany` and the vendor list have no tools, and `post_entry` cannot set a vendor. These underpin partnership-expense invoicing, which the receipts work picks up.
 5. **Tax season.** None of these have tools: the tax-year close, book-to-tax adjustments, generating K-1 packages, the received-K-1 chase list, and tax forms.
 6. **Company and metric upkeep.** There is no tool to edit a company (status, aliases, contact emails), create or delete a metric, or manage default metrics. The `record_investment` schema lacks several types and fields.
-7. **Team and access.** Per-area access grants, approving join requests, removing a member, feature visibility and removing an authorized sender are all app-only. `setup_fund` only adds.
+7. **Team and access.** Per-area access grants, approving join requests, feature visibility and removing an authorized sender are all app-only. `setup_fund` only adds; removing a member (`remove_member`) needs `AGENT_DESTRUCTIVE_ACTIONS=true`.
 8. **Diligence finishing.** No tool exports the memo, runs the partner Q&A interview, deletes or reclassifies a data-room document, or replaces the checklist.
 
 ## Closed in this PR
@@ -42,36 +42,27 @@ These are ranked by how often they block a chat- or script-driven workflow, not 
 
 Each of these is a choice, with its reason. Revisit one only if the reason no longer holds.
 
+**Update (destructive admin changes):** deleting a company, an LP investor, entity or commitment event, a diligence deal or a dated set of LP positions, removing a team member, unposting, reversing or voiding a posted entry, reopening periods, and merging investors or vehicles are now tools, offered only when the deployment sets `AGENT_DESTRUCTIVE_ACTIONS=true` and always staged for an admin's approval (DOCS, "Deletes, merges and undoing the books"). Deleting all fund data stays out.
+
 **Update:** secrets no longer need the web app either. Every key can be set in the deployment's environment (`.env`), `environment_status` says which are set, and `update_fund_connections` sets the non-secret provider choices from chat. See DOCS, "Keys in the environment".
 
 | Area | Action | Reason |
 |---|---|---|
-| acct-capital-tax | Delete a wrongly-entered commitment event (both legs of a transfer) | deliberate-ish: admin-only and destructive; lp_correct_commitment covers most fixes. No explicit reason recorded. |
 | acct-capital-tax | Approve a proposed call (issues it + publishes notices) | deliberate: admin-only approval of money movement; should remain a human click in the app |
-| acct-capital-tax | Merge one investor into another | deliberate: tool error text says 'Merging investors is done on the Investors page' |
-| acct-capital-tax | Delete an investor | deliberate: admin-only and destructive |
 | acct-capital-tax | Send an announcement email to chosen LPs (preview + send) | deliberate: admin-only outbound email to LPs |
 | acct-capital-tax | Invite an LP to the portal / disable or re-enable / unlink / resend invite / bulk invite | deliberate: admin-only access grants to an external portal (security setting) and outbound email |
 | acct-capital-tax | View/grant/revoke LP authorized users (advisors) | deliberate: admin-only portal access grant (security) |
-| acct-capital-tax | Delete an LP entity | deliberate: admin-only and destructive |
 | acct-capital-tax | Sort a batch of uploaded onboarding docs and confirm filing | deliberate: browser-only file upload batch (signed upload to lp-documents) |
 | acct-capital-tax | Email an LP portal item (snapshot/letter/document) to selected LPs | deliberate: admin-only outbound email to LPs |
-| acct-core | Unpost a posted entry back to draft (reason required) | deliberate-ish: admin-only (lib/access/admin-only.ts); no staged/pending path either |
-| acct-core | Reverse a posted entry with a dated contra-entry (reason, admin-only) | deliberate: admin-only correction |
-| acct-core | Reopen closed period(s) (reason, admin-only) | deliberate: admin-only and dangerous |
 | acct-core | Preview / apply / revert LP-snapshot cutover to capital events (fund-wide) | deliberate-ish: one-off fund-wide migration, admin-only (DELETE in admin-only list) |
 | acct-core | LP closings: list/add/rename/redate/set members/delete | deliberate: add_partner comment 'admission to a closing stays a decision for the UI'; POST/DELETE admin-only |
-| acct-core | LP positions: delete a dated set | deliberate: admin-only |
 | deals-diligence | Add an inbound deal by hand (with deck files) | deliberate: browser-only for big files (tool takes max 5 files x 3 MB base64) |
-| deals-diligence | Delete a diligence deal (admin; cascades docs, drafts, notes) | deliberate-ish: admin-only and destructive (cascade delete, storage left dangling); not documented in admin-only.ts |
 | deals-diligence | Upload documents to data room (multipart, or signed URL then record) | deliberate: tool payload limit (5 files x 3 MB); large files/recordings browser-only |
-| portfolio | Delete a company (admin-only) | deliberate-ish: admin-only and dangerous (lib/access/admin-only.ts), but staged admin approval already exists for other deletes |
 | portfolio | Generate an AI summary server-side | deliberate: headless agent writes the summary itself (keyless design) and saves it via company_save_summary; server-AI generation not exposed |
 | portfolio | Upload a document to a company (text extracted, virus-scanned) | deliberate-ish: browser uploads direct to storage then registers path; agent can only push small files as an update |
 | portfolio | Attach a document to an inbound email | deliberate-ish: browser file upload |
 | portfolio | Save email attachments to Google Drive | deliberate-ish: depends on fund's Google OAuth credential; low value for an agent with its own Drive connector |
 | portfolio | AI import of portfolio (companies + investments) from pasted spreadsheet text | deliberate: agent parses the sheet itself and calls the write tools row by row (or stage_run); server AI import not exposed |
-| portfolio | Merge one vehicle into another | deliberate-ish: destructive structural change |
 | settings-admin | Upload/remove fund logo | deliberate-ish: image payload (data:image URL up to 200KB) not a natural tool arg; UI cosmetic |
 | settings-admin | Set/replace AI provider API keys (Claude, OpenAI, OpenRouter) | deliberate: credential/secret should not pass through a chat (setup-tools.ts WEB_ONLY ai_key note; setup_fund says never pass keys) |
 | settings-admin | Configure outbound email provider and its keys (Resend key, Postmark server token, Mailgun API key) | deliberate: credentials + third-party account setup |
@@ -80,8 +71,7 @@ Each of these is a choice, with its reason. Revisit one only if the reason no lo
 | settings-admin | Choose file storage provider | deliberate-ish: infra choice coupled to Drive OAuth connection, which is browser-only |
 | settings-admin | Set analytics IDs (Fathom, GA) and custom head script | deliberate: custom head script is arbitrary script injection into every page; agent must not set it. IDs are UI-only |
 | settings-admin | Turn LP portal on/off; turn investor connector (LP MCP) on/off | deliberate-ish: exposes data to LPs ('tell LPs something' class in admin-only.ts); no explicit rationale for omission |
-| settings-admin | Delete all fund data | deliberate: admin-only, irreversible, destructive |
-| settings-admin | Remove a team member | deliberate-ish: admin-only, removes access (not self, not other admins); no explicit rationale |
+| settings-admin | Delete all fund data | deliberate: admin-only, irreversible, destructive. Not offered even with `AGENT_DESTRUCTIVE_ACTIONS=true`, which brings the other destructive admin changes to chat (see below) |
 | settings-admin | Generate/revoke public deal submission link | deliberate-ish: mints a bearer-style public URL (shown once); reasonable to keep in browser |
 | settings-admin | Upload a style-anchor memo | deliberate-ish: file upload (signed URL) - but entity_document_upload_url shows a headless upload pattern exists |
 | settings-admin | Configure inbound email / Postmark during onboarding | deliberate: third-party credentials + webhook (same as settings inbound row) |
@@ -135,7 +125,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Vendors: update (1099 eligible, TIN on file, notes) | `vendors(PATCH)` | gap | - | no reason found | update_vendor tool | S easy-win |
 | View account register (balance in, lines with counter-accounts, running balance) | `ledger(GET)` | partial | query_ledger | query_ledger filters lines but has no carried-in/running balance | account_register tool wrapping accountRegister+loadPostedLedger | S easy-win |
 | View allocation entries a closed period posted | `periods(GET ?entriesFor)` | partial | list_journal (filter by date) | no direct lookup | add periodId to list_periods/loadCloseEntries | S easy-win |
-| Void a draft (discard) or void a posted entry (reason, admin-only) | `journal(PATCH action=void)` | gap | - | draft discard: no reason found - oversight; posted void: admin-only and dangerous | void_draft tool (wrap runBulkDraftAction action:'void'); posted void as staged action | S easy-win (draft) / M |
+| Void a draft (discard) or void a posted entry (reason, admin-only) | `journal(PATCH action=void)` | covered | discard_drafts (drafts); void_entry (posted) | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Approve (sign off) prepared close review | `periods(POST action=approve)` | partial | approve_close | tool takes a through date; route also accepts a single period id + attestation | add id/attestation params | S |
 | Book per-LP opening capital balances (cutover entry) | `opening-balances(POST)` | partial | post_entry (manual equivalent) | no dedicated tool; logic inline in route (capital accounts ensured, offset 1000) | move to lib/accounting/opening-balances.ts + tool | M |
 | Download chart of accounts CSV | `chart/export(GET)` | partial | list_accounts | data available, no file | none needed (agent gets JSON) | - |
@@ -154,11 +144,11 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View tracked positions vs what the ledger carries (gap to book) | `investments(GET)` | partial | portfolio_summary | no ledger-vs-tracker comparison | wrap ledgerByCompany/buildSoiPositions | S |
 | Wire instructions / call-notice period for an entity | `vehicle-settings(GET/PATCH)` | gap | - | no stated reason; wire details are a payment-fraud vector and notice period is admin-only - reasonable to keep human or stage | read tool + staged write | S/M |
 | LP closings: list/add/rename/redate/set members/delete | `closings(GET/POST/PATCH/DELETE)` | gap | add_partner (no closing) | deliberate: add_partner comment 'admission to a closing stays a decision for the UI'; POST/DELETE admin-only | staged closing actions if wanted | M |
-| LP positions: delete a dated set | `positions(DELETE)` | gap | - | deliberate: admin-only | - | - |
+| LP positions: delete a dated set | `positions(DELETE)` | covered | delete_lp_positions | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Preview / apply / revert LP-snapshot cutover to capital events (fund-wide) | `cutover(GET/POST/DELETE)` | gap | - | deliberate-ish: one-off fund-wide migration, admin-only (DELETE in admin-only list) | preview tool is a safe easy-win (previewCutover); apply via staged action | S/M |
-| Reopen closed period(s) (reason, admin-only) | `periods(POST action=reopen)` | gap | - | deliberate: admin-only and dangerous | staged pending action only | M |
-| Reverse a posted entry with a dated contra-entry (reason, admin-only) | `journal(PATCH action=reverse)` | gap | - | deliberate: admin-only correction | staged reverse_entry via pending-actions using reversalOf | M |
-| Unpost a posted entry back to draft (reason required) | `journal(PATCH action=unpost)` | gap | - | deliberate-ish: admin-only (lib/access/admin-only.ts); no staged/pending path either | stage via pending action for admin approval | M |
+| Reopen closed period(s) (reason, admin-only) | `periods(POST action=reopen)` | covered | reopen_period | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
+| Reverse a posted entry with a dated contra-entry (reason, admin-only) | `journal(PATCH action=reverse)` | covered | reverse_entry | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
+| Unpost a posted entry back to draft (reason required) | `journal(PATCH action=unpost)` | covered | unpost_entry | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 
 ### LP capital, carry, tax, LP relations, management company
 
@@ -232,12 +222,12 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View/create/edit/delete legacy LP snapshots (reports) | `/api/lps/snapshots (GET/POST/PUT/DELETE)` | partial | lp_list_snapshots; lp_snapshot (read) | Reads covered; writes have no UI caller (legacy), DELETE admin-only | n/a for writes | - |
 | View/set live LP report card header and footer | `/api/lps/live-settings (GET/PUT)` | gap | - | UI-only cosmetic | Optional | S |
 | Approve a proposed call (issues it + publishes notices) | `/api/accounting/proposed-calls (POST action=approve)` | gap | approve_action (only for staged actions) | deliberate: admin-only approval of money movement; should remain a human click in the app | Keep in app (n/a by design) | - |
-| Delete a wrongly-entered commitment event (both legs of a transfer) | `/api/accounting/commitments (DELETE)` | gap | - | deliberate-ish: admin-only and destructive; lp_correct_commitment covers most fixes. No explicit reason recorded. | Optional lp_delete_commitment tool, always staged (admin approval) | S |
-| Delete an LP entity | `/api/lps/entities (DELETE)` | gap | - | deliberate: admin-only and destructive | Keep in app or staged | S |
-| Delete an investor | `/api/lps/investors (DELETE)` | gap | - | deliberate: admin-only and destructive | Keep in app or staged delete | S |
+| Delete a wrongly-entered commitment event (both legs of a transfer) | `/api/accounting/commitments (DELETE)` | covered | lp_delete_commitment | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
+| Delete an LP entity | `/api/lps/entities (DELETE)` | covered | lp_delete_entity | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
+| Delete an investor | `/api/lps/investors (DELETE)` | covered | lp_delete_investor | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Email an LP portal item (snapshot/letter/document) to selected LPs | `/api/lps/send (GET recipients, POST send)` | gap | - | deliberate: admin-only outbound email to LPs | staged send_to_lps (preview recipients) | M |
 | Invite an LP to the portal / disable or re-enable / unlink / resend invite / bulk invite | `/api/lps/invites (POST/PATCH/DELETE); /invites/resend (POST); /invites/bulk (POST)` | gap | - | deliberate: admin-only access grants to an external portal (security setting) and outbound email | Keep in app; at most a staged invite | M |
-| Merge one investor into another | `/api/lps/investors (PATCH)` | gap | - | deliberate: tool error text says 'Merging investors is done on the Investors page' | Keep in app, or staged lp_merge_investors | M |
+| Merge one investor into another | `/api/lps/investors (PATCH)` | covered | lp_merge_investors | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Send an announcement email to chosen LPs (preview + send) | `/api/lps/announce (POST)` | gap | - | deliberate: admin-only outbound email to LPs | Optional staged announce_to_lps (preview returned for approval) | M |
 | Sort a batch of uploaded onboarding docs and confirm filing | `/api/lps/onboarding/sort (POST); /sort/confirm (POST)` | gap | - | deliberate: browser-only file upload batch (signed upload to lp-documents) | Possible with an LP-doc upload-url tool; low priority | L |
 | View/grant/revoke LP authorized users (advisors) | `/api/lps/authorized-users (GET/POST/DELETE)` | gap | - | deliberate: admin-only portal access grant (security) | Keep in app; read tool optional | S |
@@ -331,9 +321,9 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View/download an update attachment (original file) | `company-updates/[id]/artifacts/[artifactId] (GET)` | partial | get_updates(artifact) | agent gets extracted text only, never the original file/download link | add a short-lived signed download URL (report-links pattern) | S |
 | AI import of portfolio (companies + investments) from pasted spreadsheet text | `import (POST)` | partial | create_company, record_investment, record_metric_value | deliberate: agent parses the sheet itself and calls the write tools row by row (or stage_run); server AI import not exposed | none needed; document the pattern | - |
 | Attach a document to an inbound email | `emails/[id]/attachments (POST)` | gap | - | deliberate-ish: browser file upload | upload-url + register pattern | M |
-| Delete a company (admin-only) | `companies/[id] (DELETE)` | gap | - | deliberate-ish: admin-only and dangerous (lib/access/admin-only.ts), but staged admin approval already exists for other deletes | delete_company write tool, admin-only, staged; reuse companyDeleteDenial + route delete logic moved to lib | M |
+| Delete a company (admin-only) | `companies/[id] (DELETE)` | covered | delete_company | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Generate an AI summary server-side | `companies/[id]/summary (POST)` | partial | company_save_summary | deliberate: headless agent writes the summary itself (keyless design) and saves it via company_save_summary; server-AI generation not exposed | none needed; optionally summarise_company that calls same generator when fund has AI key | S |
-| Merge one vehicle into another | `vehicles (PATCH mergeIntoId)` | gap | - | deliberate-ish: destructive structural change | keep browser-only or admin-staged | M |
+| Merge one vehicle into another | `vehicles (PATCH mergeIntoId)` | covered | merge_vehicles | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Save email attachments to Google Drive | `emails/save-to-drive (POST)` | gap | - | deliberate-ish: depends on fund's Google OAuth credential; low value for an agent with its own Drive connector | - | M |
 | Upload a document to a company (text extracted, virus-scanned) | `companies/[id]/documents (POST)` | partial | submit_company_update (files as an update) | deliberate-ish: browser uploads direct to storage then registers path; agent can only push small files as an update | mirror entity_document_upload_url pattern: company_document_upload_url + add_company_document | M |
 
@@ -385,7 +375,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View diligence analytics (admin: pipeline by partner, cycle times) | `/api/diligence/analytics (GET)` | partial | query_diligence (raw rows only) | No aggregate analytics tool; agent can compute from query_diligence rows | diligence_analytics read tool (admin) reusing route aggregation moved to lib | S |
 | View per-deal AI usage and cost | `/api/diligence/[id]/usage (GET)` | gap | - | no reason found | diligence_usage read tool (move pricing calc to lib) | S |
 | Add an inbound deal by hand (with deck files) | `/api/deals/manual (POST)` | partial | deals_create_inbound | deliberate: browser-only for big files (tool takes max 5 files x 3 MB base64) | Accept a signed upload URL flow for decks (same pattern as entity_document_upload_url) | S |
-| Delete a diligence deal (admin; cascades docs, drafts, notes) | `/api/diligence/[id] (DELETE)` | gap | - | deliberate-ish: admin-only and destructive (cascade delete, storage left dangling); not documented in admin-only.ts | If wanted: diligence_delete_deal, write scope, staged for admin approval, add to admin-only.ts | S |
+| Delete a diligence deal (admin; cascades docs, drafts, notes) | `/api/diligence/[id] (DELETE)` | covered | diligence_delete_deal | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Upload documents to data room (multipart, or signed URL then record) | `/api/diligence/[id]/documents (POST); /api/diligence/[id]/documents/upload-url (POST)` | partial | diligence_add_documents | deliberate: tool payload limit (5 files x 3 MB); large files/recordings browser-only | diligence_document_upload_url returning signed URL + record step via recordDiligenceDocument() (pattern of entity_document_upload_url) | S |
 
 ### Settings, team, approvals, AI usage
@@ -434,7 +424,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Configure outbound email provider and its keys (Resend key, Postmark server token, Mailgun API key) | `/api/settings (PATCH outboundEmailProvider, resendApiKey, postmarkServerToken, mailgunApiKey, mailgunSendingDomain)` | gap | - | deliberate: credentials + third-party account setup | Keep web-only | - |
 | Delete all fund data | `/api/settings (DELETE confirm='DELETE ALL DATA')` | gap | - | deliberate: admin-only, irreversible, destructive | Keep web-only | - |
 | Generate/revoke public deal submission link | `/api/settings/deal-submission-token (POST/DELETE)` | gap | - | deliberate-ish: mints a bearer-style public URL (shown once); reasonable to keep in browser | Optional admin tool returning URL once | S |
-| Remove a team member | `/api/settings/members/[id] (DELETE)` | gap | - | deliberate-ish: admin-only, removes access (not self, not other admins); no explicit rationale | Admin-only staged tool remove_member | S |
+| Remove a team member | `/api/settings/members/[id] (DELETE)` | covered | remove_member | Closed in feat/agent-destructive-actions: behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve | - | - |
 | Set Google Drive OAuth client id/secret | `/api/settings (PATCH googleClientId, googleClientSecret)` | gap | - | deliberate: credential | Keep web-only | - |
 | Set analytics IDs (Fathom, GA) and custom head script | `/api/settings (PATCH analyticsFathomSiteId, analyticsGaMeasurementId, analyticsCustomHeadScript)` | gap | - | deliberate: custom head script is arbitrary script injection into every page; agent must not set it. IDs are UI-only | Keep web-only | - |
 | Set/replace AI provider API keys (Claude, OpenAI, OpenRouter) | `/api/settings (PATCH claudeApiKey, openaiApiKey, openrouterApiKey)` | gap | - | deliberate: credential/secret should not pass through a chat (setup-tools.ts WEB_ONLY ai_key note; setup_fund says never pass keys) | Keep web-only; bootstrap script is the headless path | - |
@@ -464,6 +454,19 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | acct-capital-tax | View capital-call register and per-LP called/funded/outstanding | lp_capital_summary; lp_capital_calls; show_capital_calls; query_lps(capital_call_lines) |
 | acct-capital-tax | View commitment history / commitments as of a date | lp_commitments |
 | acct-capital-tax | Record a commitment change (increase, decrease, transfer) | lp_record_commitment |
+| acct-capital-tax | Delete a wrongly-entered commitment event (both legs of a transfer) | lp_delete_commitment (flag; staged for an admin) |
+| acct-capital-tax | Merge one investor into another | lp_merge_investors (flag; staged for an admin) |
+| acct-capital-tax | Delete an investor | lp_delete_investor (flag; staged for an admin) |
+| acct-capital-tax | Delete an LP entity | lp_delete_entity (flag; staged for an admin) |
+| acct-core | Unpost a posted entry back to draft (reason required) | unpost_entry (flag; staged for an admin) |
+| acct-core | Reverse a posted entry with a dated contra-entry (reason) | reverse_entry (flag; staged for an admin) |
+| acct-core | Void a posted entry (reason) | void_entry (flag; staged for an admin) |
+| acct-core | Reopen closed period(s) (reason) | reopen_period (flag; staged for an admin) |
+| acct-core | LP positions: delete a dated set | delete_lp_positions (flag; staged for an admin) |
+| deals-diligence | Delete a diligence deal (cascades docs, drafts, notes) | diligence_delete_deal (flag; staged for an admin) |
+| portfolio | Delete a company | delete_company (flag; staged for an admin) |
+| portfolio | Merge one vehicle into another | merge_vehicles (flag; staged for an admin) |
+| settings-admin | Remove a team member | remove_member (flag; staged for an admin) |
 | acct-capital-tax | Correct a commitment event's date/amount/memo | lp_correct_commitment |
 | acct-capital-tax | View/print one partner's K-1 PDF | schedule_k_pdf |
 | acct-capital-tax | View one LP's capital account statement | lp_statement |

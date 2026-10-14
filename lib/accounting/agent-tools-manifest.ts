@@ -54,6 +54,12 @@ export interface AgentToolMeta {
    * For what goes out to LPs, where a person confirms in the app (publish_call_notices).
    */
   stagesAs?: string
+  /**
+   * Deletes, merges or undoes posted books. Offered only when the deployment sets
+   * AGENT_DESTRUCTIVE_ACTIONS=true, and then ALWAYS staged for an admin's approval, from any
+   * credential (lib/agent/destructive.ts). Every such tool is also in ADMIN_ONLY_TOOLS.
+   */
+  destructive?: true
   inputSchema: Record<string, any>
 }
 

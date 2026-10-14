@@ -449,6 +449,20 @@ describe('the same access rules as the web', () => {
     ['forecast_update_plan', 'api/accounting/forecast/[id]'],
     ['forecast_publish', 'api/accounting/forecast/[id]/publish'],
     ['portfolio_construction_update', 'api/accounting/construction'],
+    // The destructive tools (AGENT_DESTRUCTIVE_ACTIONS), each the route whose lib function it calls.
+    ['unpost_entry', 'api/accounting/journal'],
+    ['reverse_entry', 'api/accounting/journal'],
+    ['void_entry', 'api/accounting/journal'],
+    ['reopen_period', 'api/accounting/periods'],
+    ['delete_lp_positions', 'api/accounting/positions'],
+    ['delete_company', 'api/companies/[id]'],
+    ['lp_delete_investor', 'api/lps/investors'],
+    ['lp_merge_investors', 'api/lps/investors'],
+    ['lp_delete_entity', 'api/lps/entities'],
+    ['lp_delete_commitment', 'api/accounting/commitments'],
+    ['diligence_delete_deal', 'api/diligence/[id]'],
+    ['remove_member', 'api/settings/members/[id]'],
+    ['merge_vehicles', 'api/vehicles'],
   ]
 
   it.each(PAIRS)('%s is gated like %s', async (toolName, route) => {

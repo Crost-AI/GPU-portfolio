@@ -104,6 +104,23 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   lp_record_commitment: { label: 'add a commitment' },
   // As the letter's share route (ADMIN_ONLY_ROUTES above): what an LP sees in their portal.
   lp_share_letter: { label: 'share an LP letter' },
+  // The destructive tools (lib/agent/destructive-tools-manifest.ts): offered only with
+  // AGENT_DESTRUCTIVE_ACTIONS=true and always staged, so this is who may APPROVE them. The same
+  // operations as the routes above; merging vehicles, deleting a deal room and removing a member
+  // are admin-only in their own routes' handlers.
+  delete_company: { label: 'delete a company' },
+  lp_delete_investor: { label: 'delete an LP investor' },
+  lp_delete_entity: { label: 'delete an LP entity' },
+  lp_delete_commitment: { label: 'delete a commitment' },
+  lp_merge_investors: { label: 'merge LP investors' },
+  delete_lp_positions: { label: 'delete an LP position' },
+  diligence_delete_deal: { label: 'delete a diligence deal' },
+  remove_member: { label: 'remove a team member' },
+  merge_vehicles: { label: 'merge entities' },
+  unpost_entry: { label: 'unpost or reverse a posted entry' },
+  reverse_entry: { label: 'unpost or reverse a posted entry' },
+  void_entry: { label: HANDLER_CHECKED.voidPostedEntry },
+  reopen_period: { label: 'reopen a closed period' },
 }
 
 /** Analyst write actions that are admin-only to approve (lib/pending-actions/registry.ts). */

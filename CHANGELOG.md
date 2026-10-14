@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Deletes, merges and undoing the books from chat, behind a flag and an admin's approval
+- **Off unless the deployment turns them on.** With `AGENT_DESTRUCTIVE_ACTIONS=true` in the environment, thirteen admin-only tools join MCP and `/api/agent`: `delete_company`, `lp_delete_investor`, `lp_delete_entity`, `lp_delete_commitment`, `lp_merge_investors`, `diligence_delete_deal`, `remove_member`, `delete_lp_positions`, `unpost_entry`, `reverse_entry`, `void_entry`, `reopen_period` and `merge_vehicles`. Without it they are not listed, and every call (direct, `call_tool`, a `stage_run` step, or approving one staged earlier) is refused naming the flag.
+- **Always staged, always an admin.** Every call waits as a pending action, from any credential, an admin's API key included, and only an admin approves it, in Approvals or from their own chat on an explicit yes. The preview says what would go (an investor's entities and their ledger activity, a deal room's documents and drafts, the periods a reopen reopens, the books a vehicle merge deletes with the source) and pins the ids it resolved.
+- **Same code as the app.** Each tool calls the function its route now calls: the company delete, LP investor/entity delete and merge, commitment delete, deal-room delete, member removal, LP positions delete, the journal's unpost/reverse/void, the period reopen and the vehicle merge moved out of their routes into `lib/` unchanged.
+- **Not offered:** deleting all fund data (irreversible), LP closings and the snapshot cutover.
+
 ### Keys from the environment, so a fund can be connected without opening Settings
 - **Every key can live in `.env`.** That covers `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `RESEND_API_KEY`, `POSTMARK_SERVER_TOKEN`, `MAILGUN_API_KEY`, `MAILGUN_WEBHOOK_SIGNING_KEY`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A key saved in Settings still wins; the environment fills in when Settings has none (`lib/credentials/env.ts`). Settings, the setup checklist, `/setup` and `setup_status` count a key from the environment as configured. When nobody has picked an AI provider, the first one with a key is used.
 - **`environment_status`** (admin) says which credentials are set, and whether each comes from Settings or the environment, with the variable name. It never returns a value.

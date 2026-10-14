@@ -16,6 +16,8 @@ import { describeSetupPlan, parseSetupPlan } from '@/lib/onboarding/setup-plan'
 import { resolveCompany } from './portfolio-tools'
 import { resolveInboundDeal } from './deals-tools'
 import { resolveDeal } from './diligence-tools'
+import { DESTRUCTIVE_PREVIEWS } from './destructive-tools'
+import { destructiveRefusal } from './destructive'
 import type { Domain } from '@/lib/access/domains'
 import { hasAccess } from '@/lib/access/effective'
 import type { FeatureKey } from '@/lib/types/features'
@@ -111,7 +113,10 @@ export function summarizeToolCall(tool: string, input: Record<string, unknown>, 
 export async function stageToolCall(deps: ActionDeps, toolName: string, input: Record<string, unknown>) {
   const { tool } = requireTool({ tool: toolName, input })
   const vehicle = await resolveEntity(deps, tool, input)
-  const pinned = vehicle ? { ...input, vehicle } : input
+  let pinned = vehicle ? { ...input, vehicle } : input
+  // A destructive change acts on the record its preview names: the ids it resolved to are pinned.
+  const destructive = DESTRUCTIVE_PREVIEWS[toolName]
+  if (destructive) pinned = { ...pinned, ...(await destructive(deps, pinned)).pin }
   const vehicleId = vehicle ? await vehicleIdByName(deps.admin, deps.fundId, vehicle) : null
   const args: ToolCallArgs = { tool: toolName, input: pinned }
   return { args, vehicleId, preview: await previewToolCall(deps, args) }
@@ -144,6 +149,15 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
       },
     }
   }
+  // A destructive change: what it would remove, read now, and that it waits for an admin.
+  const destructive = DESTRUCTIVE_PREVIEWS[tool.name]
+  if (destructive) {
+    const p = await destructive(deps, args.input)
+    return {
+      summary: `${p.summary} Cannot be undone; needs an admin's approval.`,
+      details: { tool: tool.name, vehicle, input: args.input, destructive: true, impact: p.impact },
+    }
+  }
   const input = described ? { ...args.input, files: described } : args.input
   const summary = summarizeToolCall(tool.name, input, vehicle)
   return {
@@ -167,6 +181,9 @@ function describeFiles(files: unknown): { filename: string; kb: number }[] | nul
  */
 export async function executeToolCall(deps: ActionDeps, raw: unknown): Promise<Record<string, unknown>> {
   const { tool, args } = requireTool(raw)
+  // Staged while destructive tools were on, approved after they were turned off: refused.
+  const disabled = destructiveRefusal(tool)
+  if (disabled) throw new Error(disabled)
   if (!hasAccess(deps.access, accessDomainForCall(tool, args.input), 'write', accessFeatureFor(tool))) {
     throw new Error('You do not have current write access for this change.')
   }

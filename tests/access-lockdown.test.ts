@@ -142,8 +142,9 @@ describe('the admin-only list', () => {
   })
 
   it('checks voiding a posted entry in the journal handler, where the database can say it is posted', () => {
-    const src = read('app/api/accounting/journal/route.ts')
-    expect(src).toContain('HANDLER_CHECKED.voidPostedEntry')
+    // The handler's state change lives in lib/accounting/journal-state.ts, shared with the void_entry tool.
+    expect(read('app/api/accounting/journal/route.ts')).toContain('changeEntryState')
+    expect(read('lib/accounting/journal-state.ts')).toContain('HANDLER_CHECKED.voidPostedEntry')
     expect(adminOnlyDenial('member', HANDLER_CHECKED.voidPostedEntry)).toBe('Only an admin can void a posted entry.')
     expect(adminOnlyDenial('admin', HANDLER_CHECKED.voidPostedEntry)).toBeNull()
   })
