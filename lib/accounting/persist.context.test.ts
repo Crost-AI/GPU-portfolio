@@ -26,7 +26,7 @@ const entry = (entryDate: string, debit = 'expense') => ({
   postings: [{ accountId: debit, amount: 55, currency: 'USD', lpEntityId: null }, { accountId: 'cash', amount: -55, currency: 'USD', lpEntityId: null }],
 })
 const ctx: PersistContext = {
-  currency: 'GBP', vehicleId: 'v', accountIds: new Set(['cash', 'expense']),
+  fundId: 'f', group: 'Fund I', currency: 'GBP', vehicleId: 'v', accountIds: new Set(['cash', 'expense']),
   closedRanges: [{ period_start: '2026-01-01', period_end: '2026-03-31' }],
 }
 const draft = (m: any, e: any, c?: PersistContext) => persistEntry(m.admin, 'f', 'Fund I', 'u', e, 'draft', 'actual', true, {}, c)
@@ -54,6 +54,14 @@ describe('persistEntry with a context', () => {
     expect(m.tables.journal_entries ?? []).toEqual([])
   })
 
+  it('refuses a context read for another fund or vehicle', async () => {
+    const { m } = seed()
+    for (const other of [{ ...ctx, group: 'Fund II' }, { ...ctx, fundId: 'g' }]) {
+      expect(await draft(m, entry('2026-05-01'), other)).toEqual({ error: expect.stringMatching(/not Fund I — nothing was saved/) })
+    }
+    expect(m.tables.journal_entries ?? []).toEqual([])
+  })
+
   it('without a context reads them as before', async () => {
     const { m, reads } = seed()
     expect(await draft(m, entry('2026-05-01'))).toEqual({ entryId: expect.any(String) })
@@ -66,7 +74,7 @@ describe('buildPersistContext', () => {
     const { m } = seed()
     const c = await buildPersistContext(m.admin, 'f', 'Fund I')
     expect(c).toEqual({
-      currency: expect.any(String), vehicleId: 'v', accountIds: new Set(['cash', 'expense']),
+      fundId: 'f', group: 'Fund I', currency: expect.any(String), vehicleId: 'v', accountIds: new Set(['cash', 'expense']),
       closedRanges: [{ period_start: '2026-01-01', period_end: '2026-03-31' }],
     })
   })

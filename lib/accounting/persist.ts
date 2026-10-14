@@ -109,7 +109,15 @@ export function duplicateRefMessage(sourceRef: string, existing: LiveEntryRef | 
  * vehicle (a bank import drafts one per row) reads them once with buildPersistContext and passes
  * them in, instead of persistEntry re-reading all four per entry.
  */
-export type PersistContext = { currency: string; closedRanges: PeriodRange[]; vehicleId: string; accountIds: Set<string> }
+export type PersistContext = {
+  /** The fund and vehicle the lookups were read for: persistEntry refuses a context for another. */
+  fundId: string
+  group: string
+  currency: string
+  closedRanges: PeriodRange[]
+  vehicleId: string
+  accountIds: Set<string>
+}
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -149,6 +157,8 @@ export async function buildPersistContext(
   if (periods.error) return { error: `The closed periods could not be read: ${periods.error.message}` }
   if (chart.error) return { error: `The chart of accounts could not be read: ${chart.error.message}` }
   return {
+    fundId,
+    group,
     currency,
     closedRanges: ((periods.data as any[]) ?? []).map(p => ({ period_start: p.period_start, period_end: p.period_end })),
     vehicleId,
@@ -190,6 +200,10 @@ export async function persistEntry(
   //
   // The ledger is single-currency by design: a foreign position is translated on the way in, and
   // the rate movement lives in 1250/4300. See currency.ts.
+  // A context read for another fund or vehicle would check the wrong chart and periods.
+  if (ctx && (ctx.fundId !== fundId || ctx.group !== group)) {
+    return { error: `The lookups passed in are for ${ctx.group}, not ${group} — nothing was saved.` }
+  }
   let currency: string
   if (ctx) currency = ctx.currency
   else {
