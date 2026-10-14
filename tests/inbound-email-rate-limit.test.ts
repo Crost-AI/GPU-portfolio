@@ -3,9 +3,11 @@ import { NextRequest, NextResponse } from 'next/server'
 
 /**
  * The inbound-email webhook is called by Postmark, from Postmark's small IP pool — so a rate limit
- * keyed on the client IP is one 60/min budget shared by every fund on the deployment. It is keyed
- * on the recipient inbox instead, falling back to the IP only when the payload names none — with a
- * looser per-IP ceiling still over the whole webhook, so rotating the recipient is not unlimited.
+ * keyed on the client IP alone is one 60/min budget shared by every fund on the deployment. It is
+ * keyed on the recipient inbox and the IP together — the inbox alone would let anyone who knows a
+ * fund's address spend Postmark's budget for it before the token is checked — falling back to the
+ * IP when the payload names no inbox, with a looser per-IP ceiling over the whole webhook so
+ * rotating the recipient is not unlimited.
  *
  * And the per-fund inbound address matches case-insensitively, without the address ever acting as
  * a LIKE pattern.
@@ -15,10 +17,11 @@ const rateLimit = vi.fn(async (_config: { key: string; limit: number; windowSeco
 const runPipeline = vi.fn(async () => {})
 let filters: { table: string; op: string; column: string; value: unknown }[] = []
 let storedAddress = 'Fund-ABC@Inbound.Test'
+let clientIp = '203.0.113.9'
 
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: (config: { key: string; limit: number; windowSeconds: number }) => rateLimit(config),
-  getClientIp: () => '203.0.113.9',
+  getClientIp: () => clientIp,
 }))
 vi.mock('@/lib/pipeline/processEmail', () => ({ runPipeline: (...args: unknown[]) => runPipeline(...(args as [])) }))
 vi.mock('@/lib/pipeline/checkFundMember', () => ({ checkFundMember: async () => ({ user_id: 'user-1', member_role: 'admin' }) }))
@@ -70,6 +73,7 @@ beforeEach(() => {
   runPipeline.mockClear()
   filters = []
   storedAddress = 'Fund-ABC@Inbound.Test'
+  clientIp = '203.0.113.9'
 })
 
 describe('the inbound-email rate limit', () => {
@@ -78,7 +82,7 @@ describe('the inbound-email rate limit', () => {
   it('is keyed on the original recipient, normalised, under a looser per-IP ceiling', async () => {
     await post(email({ OriginalRecipient: '  Fund-ABC@Inbound.Test ', To: 'someone-else@x.test' }))
     expect(keys()).toEqual([
-      { key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 },
+      { key: 'inbound:to:fund-abc@inbound.test:ip:203.0.113.9', limit: 60, windowSeconds: 60 },
       { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
     ])
   })
@@ -86,7 +90,7 @@ describe('the inbound-email rate limit', () => {
   it('falls back to To when there is no original recipient', async () => {
     await post(email({ To: 'Fund-ABC@inbound.test' }))
     expect(keys()).toEqual([
-      { key: 'inbound:to:fund-abc@inbound.test', limit: 60, windowSeconds: 60 },
+      { key: 'inbound:to:fund-abc@inbound.test:ip:203.0.113.9', limit: 60, windowSeconds: 60 },
       { key: 'inbound:ip:203.0.113.9', limit: 600, windowSeconds: 60 },
     ])
   })
@@ -94,6 +98,18 @@ describe('the inbound-email rate limit', () => {
   it("falls back to the caller's IP, at the tight limit, when the payload names no inbox", async () => {
     await post(email({}))
     expect(keys()).toEqual([{ key: 'inbound:ip:203.0.113.9', limit: 60, windowSeconds: 60 }])
+  })
+
+  it("gives a caller elsewhere its own bucket for an inbox, not Postmark's", async () => {
+    // Before the token is checked, anyone can name a fund's inbox; they must not spend the budget
+    // Postmark's real deliveries to it draw on.
+    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
+    clientIp = '198.51.100.7'
+    await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }))
+    expect(keys().filter(c => c.limit === 60).map(c => c.key)).toEqual([
+      'inbound:to:fund-abc@inbound.test:ip:203.0.113.9',
+      'inbound:to:fund-abc@inbound.test:ip:198.51.100.7',
+    ])
   })
 
   it('returns the first 429: a full inbox stops before the IP ceiling is counted', async () => {
