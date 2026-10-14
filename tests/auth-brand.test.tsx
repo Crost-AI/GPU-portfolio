@@ -9,7 +9,7 @@ import { MARK_PATHS } from '@/lib/brand-mark'
  * show Hemrock's mark and no words at all: not "Portfolio", not "Hemrock".
  */
 const render = (brand?: { logo: string | null; title: string | null }) =>
-  renderToStaticMarkup(brand ? createElement(AuthBrandProvider, { brand, children: createElement(AuthWordmark) }) : createElement(AuthWordmark))
+  renderToStaticMarkup(brand ? <AuthBrandProvider brand={brand}><AuthWordmark /></AuthBrandProvider> : createElement(AuthWordmark))
 
 describe('the sign-in mark', () => {
   it("is Hemrock's mark with no text by default", () => {
