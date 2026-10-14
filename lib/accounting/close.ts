@@ -47,8 +47,8 @@ import { associateMembers, lookThroughAccount } from './look-through'
 import { loadCapitalPostings } from './capital-source'
 import { gpLinkFor, loadOwnershipBasis } from './gp-economics'
 import {
-  loadCarryTerms, carryAccrual,
-  type LpEconomics, type DatedContribution,
+  loadCarryTerms, carryAccrual, lpEconomicsFromAccounts,
+  type DatedContribution,
 } from './carry'
 import { loadNotes, noteAccruals } from './note-interest'
 import { ensureInvestmentAccounts } from './investments'
@@ -1525,7 +1525,8 @@ async function accrueNoteInterest(
  *
  * Everything it needs comes from the ledger as at `periodEnd`:
  *   - each LP's contributions, distributions and current capital (the roll-forward buckets)
- *   - how much carry is ALREADY accrued (the GP partner's `carriedInterest` bucket)
+ *   - the carry each LP has ALREADY borne (its `carriedInterest` bucket) — the accrual reconciles
+ *     every LP to its share of the target, so a re-close with nothing changed posts nothing
  *   - dated contributions, for the preferred-return hurdle
  *
  * The GP partner is excluded from the LP economics — it is receiving the carry, not paying it.
@@ -1554,7 +1555,8 @@ export async function accrueCarry(
   const { capitalPostings } = await loadPostedLedger(admin, fundId, group, periodEnd)
   const accounts = computeCapitalAccounts(capitalPostings)
 
-  // Carry already sitting in the recipients' accounts — the accrual tops up (or reverses) to target.
+  // Carry already sitting in the recipients' accounts — reported with the accrual; the posting
+  // itself reconciles each paying LP's own borne carry to its share of the target.
   // NOTE: only the per-period DELTA is split by the current recipients/pcts. Changing the split (or
   // removing a recipient) is PROSPECTIVE — it does not rebalance carry already accrued in prior
   // periods. LP-side totals stay correct regardless; treat the recipient split as stable once carry
@@ -1563,15 +1565,7 @@ export async function accrueCarry(
     terms.recipients.reduce((s, r) => s + (accounts.get(r.lpEntityId)?.carriedInterest ?? 0), 0)
   )
 
-  const lps: LpEconomics[] = Array.from(accounts.entries())
-    .filter(([id]) => !recipientIds.has(id)) // recipients receive carry; they don't pay it
-    .map(([lpEntityId, a]) => ({
-      lpEntityId,
-      contributed: roundCents(a.contributions),
-      distributed: roundCents(-a.distributions), // stored negative on the account
-      nav: roundCents(a.ending),
-    }))
-
+  const lps = lpEconomicsFromAccounts(accounts, recipientIds)
   if (lps.length === 0) return {}
 
   // Dated contributions, for the hurdle. The pref accrues from when cash actually arrived.
@@ -1580,8 +1574,15 @@ export async function accrueCarry(
     .map(p => ({ date: p.entryDate ?? periodEnd, amount: roundCents(-p.amount) }))
     .filter(c => c.amount > 0)
 
-  const accrual = carryAccrual({ lps, contributions, asOf: periodEnd }, terms, alreadyAccrued)
-  if (accrual.delta === 0 || accrual.perLp.size === 0) return {}
+  let accrual
+  try {
+    accrual = carryAccrual({ lps, contributions, asOf: periodEnd }, terms, alreadyAccrued)
+  } catch (error) {
+    return { error: (error as any)?.message ?? String(error) }
+  }
+  // Not `delta === 0`: carry can move between LPs (one falls under water, another gains) with
+  // the recipients' total unchanged, and that still has to post.
+  if (accrual.perLp.size === 0) return {}
 
   const capMap = await ensureCapitalAccounts(admin, fundId, group, [
     ...Array.from(accrual.perLp.keys()),
