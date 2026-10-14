@@ -3,16 +3,26 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const s = vi.hoisted(() => ({ receipts: [] as any[], calls: 0, inFlight: 0, maxInFlight: 0, failOn: null as string | null }))
+const s = vi.hoisted(() => ({ receipts: [] as any[], calls: 0, inFlight: 0, maxInFlight: 0, failOn: null as string | null, drafts: [] as any[], filed: 0 }))
 
 vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: async () => 'v1' }))
-vi.mock('@/lib/accounting/persist', () => ({ accountIdByCode: async () => new Map() }))
+vi.mock('@/lib/accounting/persist', () => ({ accountIdByCode: async () => new Map([['5200', 'exp'], ['1000', 'cash']]) }))
 vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveVehicleWithAccess: async () => { throw new Error('unused') } }))
 vi.mock('@/lib/accounting/partnership-invoices', () => ({}))
 vi.mock('@/lib/accounting/receipts', () => ({
   listReceipts: async () => s.receipts,
   getReceipt: async (_a: unknown, _f: unknown, id: string) => s.receipts.find(r => r.id === id) ?? null,
   receiptFileUrl: async () => 'https://files/r',
+  updateReceiptFields: async () => { s.filed++; return {} },
+  // Stands in for draftEntryFromReceipt's own rule: a receipt in another currency needs reportingAmount.
+  draftEntryFromReceipt: async (_a: unknown, _f: unknown, _g: unknown, _v: unknown, _u: unknown, id: string, input: any) => {
+    s.drafts.push(input)
+    const r = s.receipts.find(x => x.id === id)
+    if (r.currency && r.currency !== 'USD' && input.reportingAmount == null) {
+      return { error: `This receipt is in ${r.currency}; the books are kept in USD. Enter the USD amount to draft it, or set the receipt's total in USD.`, status: 400 }
+    }
+    return { entryId: 'je-1', receipt: r }
+  },
   matchCandidates: async (_a: unknown, _f: unknown, r: any) => {
     s.calls++
     s.inFlight++
@@ -37,6 +47,8 @@ beforeEach(() => {
   s.inFlight = 0
   s.maxInFlight = 0
   s.failOn = null
+  s.drafts = []
+  s.filed = 0
 })
 
 describe('list_receipts suggestions', () => {
@@ -114,5 +126,42 @@ describe('get_receipt', () => {
 
     expect(s.calls).toBe(1)
     expect(res.suggestions).toEqual([{ kind: 'entry', id: 'je-r7' }])
+  })
+})
+
+describe('draft_entry_from_receipt', () => {
+  const draft = (input: Record<string, unknown>) =>
+    RECEIPT_HANDLERS.draft_entry_from_receipt(ctx, { receiptId: 'r1', debitAccountCode: '5200', creditAccountCode: '1000', ...input })
+
+  it('forwards reportingAmount to draftEntryFromReceipt', async () => {
+    s.receipts = [receipt(1, { currency: 'EUR' })]
+
+    const res = await draft({ reportingAmount: 108.42 })
+
+    expect(res.draftEntryId).toBe('je-1')
+    expect(s.drafts).toEqual([expect.objectContaining({ debitAccountId: 'exp', creditAccountId: 'cash', reportingAmount: 108.42 })])
+  })
+
+  it('passes null when it is omitted', async () => {
+    s.receipts = [receipt(1)]
+    await draft({})
+    expect(s.drafts[0].reportingAmount).toBeNull()
+  })
+
+  it('refuses an invalid reportingAmount before writing anything', async () => {
+    s.receipts = [receipt(1, { vehicle_id: null, currency: 'EUR' })]
+    const all = { ...ctx, access: { vehicles: { all: true, ids: [] } } as any }
+
+    for (const v of ['108.42', 0, 0.004, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(RECEIPT_HANDLERS.draft_entry_from_receipt(all, { receiptId: 'r1', debitAccountCode: '5200', creditAccountCode: '1000', reportingAmount: v }))
+        .rejects.toThrow(/reportingAmount must be a positive amount of at least 0.01/)
+    }
+    expect(s.drafts).toEqual([])
+    expect(s.filed).toBe(0) // the unfiled receipt was not filed under the entity either
+  })
+
+  it('surfaces the refusal for a foreign-currency receipt without it', async () => {
+    s.receipts = [receipt(1, { currency: 'EUR' })]
+    await expect(draft({})).rejects.toThrow(/This receipt is in EUR; the books are kept in USD/)
   })
 })

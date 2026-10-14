@@ -17,6 +17,7 @@ import {
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
 } from '@/lib/accounting/partnership-invoices'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
+import { roundCents } from '@/lib/accounting/ledger'
 
 const INLINE_MAX = 3 * 1024 * 1024
 const SUGGEST_CAP = 40
@@ -187,6 +188,12 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
 
   draft_entry_from_receipt: async (ctx, input) => {
     const { r, vehicleId } = await reachable(ctx, input?.receiptId)
+    // The total in the fund's currency, for a receipt in another one — checked as the web route
+    // does, and before anything is written. draftEntryFromReceipt refuses a foreign receipt without it.
+    const reportingAmount = input?.reportingAmount ?? null
+    if (reportingAmount !== null && !(typeof reportingAmount === 'number' && Number.isFinite(reportingAmount) && roundCents(reportingAmount) >= 0.01)) {
+      throw new Error('reportingAmount must be a positive amount of at least 0.01, in the fund\'s currency')
+    }
     if (!r.vehicle_id) {
       const res = await updateReceiptFields(ctx.admin, ctx.fundId, r.id, { vehicleId })
       if ('error' in res) fail(res)
@@ -197,7 +204,7 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       accountByCode(ctx.admin, ctx.fundId, ctx.portfolioGroup, input?.creditAccountCode),
     ])
     const res = await draftEntryFromReceipt(ctx.admin, ctx.fundId, ctx.portfolioGroup, vehicleId, ctx.userId, r.id, {
-      debitAccountId, creditAccountId, billTo, memo: input?.memo ?? null,
+      debitAccountId, creditAccountId, billTo, memo: input?.memo ?? null, reportingAmount,
     })
     if ('error' in res) fail(res)
     return { draftEntryId: res.entryId, receipt: res.receipt, note: 'Draft only. Post it with post_drafts (ids: [draftEntryId]) once it looks right.' }

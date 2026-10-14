@@ -458,11 +458,14 @@ export async function draftEntryFromReceipt(
   const receiptCurrency = r.currency?.trim().toUpperCase() || null
   const foreign = receiptCurrency != null && receiptCurrency !== books.toUpperCase()
   if (foreign) {
-    const reporting = Number(input.reportingAmount)
-    // At least a cent once rounded: 0.004 is "positive" and books as a zero entry.
-    if (input.reportingAmount == null || !Number.isFinite(reporting) || !(roundCents(reporting) >= 0.01)) {
+    const reporting = input.reportingAmount
+    // A number, and at least a cent once rounded: 0.004 is "positive" and books as a zero entry,
+    // and a coerced true or "108.50" is not an amount anyone entered.
+    if (typeof reporting !== 'number' || !Number.isFinite(reporting) || !(roundCents(reporting) >= 0.01)) {
       return {
-        error: `This receipt is in ${receiptCurrency}; the books are kept in ${books}. Enter the ${books} amount to draft it, or set the receipt's total in ${books}.`,
+        // Not "or change the receipt's currency": relabelling EUR as USD without converting is the
+        // original bug by another route, and it loses the figure on the receipt.
+        error: `This receipt is in ${receiptCurrency}; the books are kept in ${books}. Enter the ${books} amount to draft it. If the currency was misread, correct it on the receipt.`,
         status: 400,
       }
     }
@@ -480,7 +483,7 @@ export async function draftEntryFromReceipt(
   if (!debitAccountId) return { error: 'Choose the account to debit, or the fund to bill.', status: 400 }
   if (debitAccountId === input.creditAccountId) return { error: 'Debit and credit must be different accounts.', status: 400 }
 
-  const amount = roundCents(foreign ? Number(input.reportingAmount) : r.amount)
+  const amount = roundCents(foreign ? input.reportingAmount as number : r.amount)
   const vendor = r.vendor_name ? await ensureVendor(admin, fundId, r.vendor_name) : null
   const baseMemo = input.memo?.trim() || [r.vendor_name, r.description].filter(Boolean).join(' — ') || 'Receipt'
   // The receipt's own figure stays on the entry: it is the evidence the converted amount came from.
