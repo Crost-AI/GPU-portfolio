@@ -73,6 +73,25 @@ describe('loadDashboardPage', () => {
     expect(data.companies.find(c => c.id === 'k1')?.lastReportAt).toBe('Sep 2026')
   })
 
+  it('reads every transaction past the 1,000-row cap', async () => {
+    m = memoryAdmin({
+      companies: [{ id: 'k1', name: 'Acme', holding_type: 'company', status: 'written-off', tags: [], portfolio_group: [], metrics: [], parsing_reviews: [] }],
+      metric_values_latest: [], metric_values_latest_by_company: [],
+      investment_transactions: Array.from({ length: 1100 }, (_, i) => ({
+        id: `t${String(i).padStart(4, '0')}`, company_id: 'k1', transaction_type: 'investment', investment_cost: 1,
+        transaction_date: new Date(Date.UTC(2020, 0, 1) + i * 86_400_000).toISOString().slice(0, 10),
+      })),
+    }, { maxRows: 1000 })
+    const data = await loadDashboardPage(ctx())
+    expect(data.companies[0].totalInvested).toBe(1100)
+    expect(data.companies[0].firstInvestmentDate).toBe('2020-01-01')
+  })
+
+  it('a failed transactions read throws rather than showing no investments', async () => {
+    m.failNext('investment_transactions', 'select', 'boom')
+    await expect(loadDashboardPage(ctx())).rejects.toMatchObject({ message: 'boom' })
+  })
+
   it('a failed latest-cash read throws rather than showing a blank cash column', async () => {
     m.failNext('metric_values_latest', 'select', 'boom')
     await expect(loadDashboardPage(ctx())).rejects.toThrow(/boom/)

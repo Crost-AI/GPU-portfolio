@@ -5,6 +5,7 @@ import { scopeTransactions } from '@/lib/access/scope'
 import type { InvestmentTransaction, CompanyStatus } from '@/lib/types/database'
 import { resolveExcluded } from '@/lib/dashboard/entity-selection'
 import { loadActiveEntityOptions, loadFundDefaultExcluded, loadSavedExcluded } from '@/lib/dashboard/entity-selection-load'
+import { fetchAllRows } from '@/lib/accounting/load'
 
 export type DashboardPageData = Awaited<ReturnType<typeof loadDashboardPage>>
 
@@ -21,11 +22,14 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
   // row per id asked for, so a chunk also stays under PostgREST's 1,000-row cap — no row can be cut
   // off by it. A failed read throws: a blank cash column must mean "never reported", not "could
   // not be read".
-  const LATEST_CHUNK = 200
+  const ID_CHUNK = 200
+  const chunked = (ids: string[]) => {
+    const out: string[][] = []
+    for (let i = 0; i < ids.length; i += ID_CHUNK) out.push(ids.slice(i, i + ID_CHUNK))
+    return out
+  }
   async function latestRows<T>(view: string, column: string, ids: string[], columns: string): Promise<T[]> {
-    const chunks: string[][] = []
-    for (let i = 0; i < ids.length; i += LATEST_CHUNK) chunks.push(ids.slice(i, i + LATEST_CHUNK))
-    const results = await Promise.all(chunks.map(chunk =>
+    const results = await Promise.all(chunked(ids).map(chunk =>
       supabase.from(view as any).select(columns).in(column, chunk) as unknown as Promise<{ data: T[] | null; error: { message: string } | null }>))
     return results.flatMap(({ data, error }) => {
       if (error) throw new Error(`${view}: ${error.message}`)
@@ -72,16 +76,22 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
   // picker's three reads.
   const companyIds = (companiesRaw ?? []).map(c => c.id)
   const cashMetricIds = Array.from(cashMetricMap.values())
-  const [cashRows, latestPeriodRows, { data: allTxns }, [entityOptions, savedExcluded, fundDefaultExcluded]] = await Promise.all([
+  const [cashRows, latestPeriodRows, allTxns, [entityOptions, savedExcluded, fundDefaultExcluded]] = await Promise.all([
     latestRows<{ metric_id: string; value_number: number }>('metric_values_latest', 'metric_id', cashMetricIds, 'metric_id, value_number'),
     latestRows<{ company_id: string; period_year: number; period_quarter: number | null; period_month: number | null }>(
       'metric_values_latest_by_company', 'company_id', companyIds, 'company_id, period_year, period_quarter, period_month'),
-    // Investment transactions for ALL companies (first investment date + summaries for exited)
-    admin
-      .from('investment_transactions' as any)
-      .select('*')
-      .in('company_id', companyIds)
-      .order('transaction_date', { ascending: true }) as unknown as Promise<{ data: InvestmentTransaction[] | null }>,
+    // Investment transactions for ALL companies (first investment date + summaries for exited) —
+    // the same id chunks, each paged past the row cap: a dropped transaction would move a first
+    // investment date or skew an exited company's summary. Date order holds within each company,
+    // which is all the grouping below needs, since a company's rows all sit in one chunk.
+    Promise.all(chunked(companyIds).map(chunk => fetchAllRows<InvestmentTransaction>((from, to) =>
+      admin
+        .from('investment_transactions' as any)
+        .select('*')
+        .in('company_id', chunk)
+        .order('transaction_date', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to) as any))).then(pages => pages.flat()),
     // The entity picker: the viewer's entities holding an active position (companies, fund holdings,
     // digital assets), and the selection in force — their saved one, else the fund default, else all.
     Promise.all([
@@ -140,7 +150,7 @@ export async function loadDashboardPage({ supabase, admin, user, page }: PageCon
   // Group transactions by company — only the viewer's entities' rows (plus company-wide price
   // signals), so a shared company's figures are the viewer's position, not every fund's.
   const txnsByCompany = new Map<string, InvestmentTransaction[]>()
-  for (const txn of scopeTransactions(allTxns ?? [], scope.vehicleNames)) {
+  for (const txn of scopeTransactions(allTxns, scope.vehicleNames)) {
     if (!txnsByCompany.has(txn.company_id)) txnsByCompany.set(txn.company_id, [])
     txnsByCompany.get(txn.company_id)!.push(txn)
   }
