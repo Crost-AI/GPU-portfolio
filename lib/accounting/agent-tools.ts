@@ -12,6 +12,7 @@ import type { FeatureKey } from '@/lib/types/features'
 import { loadPostedLedger, loadEntityNames, loadOwnership, fetchAllRows } from './load'
 import { accountIdByCode, duplicateRefMessage, liveEntryByRef, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
+import { loadChart } from './chart-load'
 import { computeCapitalAccounts, totalNav } from './capital-account'
 import { trialBalance, balanceSheet, incomeStatement } from './statements'
 import { vehicleKindByName } from './vehicle-domain'
@@ -138,7 +139,7 @@ function pageResult<T>(rows: T[], offset: number, limit: number, total: number |
 
 const HANDLERS: Record<string, AgentToolHandler> = {
   list_accounts: async ({ admin, fundId, portfolioGroup }) => {
-    const { accounts } = await loadPostedLedger(admin, fundId, portfolioGroup)
+    const accounts = await loadChart(admin, fundId, portfolioGroup)
     return accounts.map(a => ({ code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null }))
   },
 

@@ -6,6 +6,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { loadPostedLedger } from '@/lib/accounting/load'
+import { loadChart } from '@/lib/accounting/chart-load'
+import type { Account } from '@/lib/accounting/types'
 import { accountRegister, findAccount } from '@/lib/accounting/register'
 import { resolvePeriod, customPeriod, type PeriodPreset } from '@/lib/accounting/statement-period'
 import { booksForBasis, basisFromParam } from '@/lib/accounting/statement-package'
@@ -37,21 +39,25 @@ export async function GET(req: NextRequest) {
     ? resolvePeriod(preset, asOfDate)
     : customPeriod(sp.get('start'), sp.get('end') ?? asOf)
 
+  // The picker needs only the chart; the ledger behind it is read only for a register.
+  const ref = sp.get('account')
+  if (!ref) return NextResponse.json({ period, accounts: chartRows(await loadChart(admin, gate.fundId, group)), register: null })
+
   // ?basis=tax reads the ledger plus the book-to-tax overlay, as the statements do.
   const { accounts, sourcedPostings } = await loadPostedLedger(
     admin, gate.fundId, group, undefined, undefined, undefined, booksForBasis(basisFromParam(sp.get('basis'))),
   )
-  const chart = accounts
-    .map(a => ({ id: a.id, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, lpEntityId: a.lpEntityId ?? null, companyId: a.companyId ?? null }))
-    .sort((a, b) => a.code.localeCompare(b.code))
-
-  const ref = sp.get('account')
-  if (!ref) return NextResponse.json({ period, accounts: chart, register: null })
 
   const account = findAccount(accounts, ref)
   if (!account) return NextResponse.json({ error: `No account "${ref}" in this vehicle's chart` }, { status: 404 })
 
   const byId = new Map(accounts.map(a => [a.id, a]))
   const register = accountRegister(account, sourcedPostings, byId, period)
-  return NextResponse.json({ period, accounts: chart, register })
+  return NextResponse.json({ period, accounts: chartRows(accounts), register })
+}
+
+function chartRows(accounts: Account[]) {
+  return accounts
+    .map(a => ({ id: a.id, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, lpEntityId: a.lpEntityId ?? null, companyId: a.companyId ?? null }))
+    .sort((a, b) => a.code.localeCompare(b.code))
 }
