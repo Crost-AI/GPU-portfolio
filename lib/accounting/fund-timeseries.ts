@@ -26,7 +26,7 @@ import { loadFundPreload, vehicleCapitalPreload } from './fund-preload'
 import { bucketForSourceType, computeCapitalAccounts } from './capital-account'
 import { fetchAllRows, loadEntityClasses } from './load'
 import { txnsForVehicle } from './soi'
-import { computeSummary } from '@/lib/investments'
+import { computeSummary, investedBasis } from '@/lib/investments'
 import { xirr, type CashFlow } from '@/lib/xirr'
 import type { InvestmentTransaction, CompanyStatus } from '@/lib/types/database'
 
@@ -288,14 +288,13 @@ export async function fundTimeseries(
   const resolvedPeriods = await Promise.all(quarters.map(q => loadCapitalPostings(admin, fundId, group, q, preload.idMap, vehicleCapitalPreload(preload, group))))
   const capital = quarters.map((q, i) => buildCapitalSeries(resolvedPeriods[i].postings, [q])[0])
 
-  // New vs follow-on: cost defined exactly as computeSummary's totalInvested (cash + any interest
-  // capitalized on a conversion row) so new + follow-on ties to invested capital at every quarter.
-  const invCost = (t: InvestmentTransaction) =>
-    (t.investment_cost ?? 0) + ((t as { converts_from_txn_id?: string | null }).converts_from_txn_id ? (t.interest_converted ?? 0) : 0)
+  // New vs follow-on: cost is `investedBasis`, the rule computeSummary's totalInvested sums (cash +
+  // capitalised fees + interest converted on a conversion row), so new + follow-on ties to invested
+  // capital at every quarter.
   const invLite: InvTxnLite[][] = held.map(c =>
     c.relevant
       .filter(t => t.transaction_type === 'investment')
-      .map(t => ({ date: t.transaction_date ?? null, cost: invCost(t) })),
+      .map(t => ({ date: t.transaction_date ?? null, cost: investedBasis(t) })),
   )
   const nfo = buildNewFollowOnSeries(invLite, quarters)
 

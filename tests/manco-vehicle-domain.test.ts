@@ -121,11 +121,14 @@ describe('a manco cannot be resolved without an explicit, checked opt-in', () =>
 
   it('checks the grant in the same function that opted in', () => {
     const http = read('lib/accounting/http-vehicle.ts')
-    const fn = http.slice(http.indexOf('export async function resolveGroupOr400'))
+    // resolveGroupOr400 is a wrapper over resolveGroupWithAccess, which does the work.
+    const wrapper = http.slice(http.indexOf('export async function resolveGroupOr400'), http.indexOf('export async function resolveGroupWithAccess'))
+    expect(wrapper).toContain('await resolveGroupWithAccess(admin, gate, requested)')
+    const fn = http.slice(http.indexOf('export async function resolveGroupWithAccess'))
     expect(fn).toContain('includeManagementCompanies: true')
-    expect(fn).toContain('assertVehicleDomain(admin, gate, group)')
+    expect(fn).toContain('assertVehicleDomain(admin, gate, group, access)')
     // The opt-in must not be able to return a group WITHOUT the check having run.
-    expect(fn.indexOf('assertVehicleDomain')).toBeLessThan(fn.indexOf('return group'))
+    expect(fn.indexOf('assertVehicleDomain')).toBeLessThan(fn.indexOf('return { group, access }'))
   })
 
   it('checks the grant in the service-layer resolver too, before returning', () => {

@@ -34,7 +34,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!fund) redirect('/onboarding')
 
   // All cached queries in parallel
-  const [fundData, membership, fundSettings, reviewBadge, notesBadge, domainGrants, fofActive] = await Promise.all([
+  const [fundData, membership, fundSettings, reviewBadge, notesBadge, domainGrants, fofActive, { count: approvalsBadge }] = await Promise.all([
     getFundData(fund.id),
     getMembership(user.id, fund.id),
     getFundSettings(fund.id),
@@ -42,6 +42,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     getNotesBadge(user.id),
     getDomainGrants(user.id, fund.id),
     getFofActive(fund.id),
+    // Staged changes waiting for approval, counted with the user's own client: RLS limits it to rows
+    // in domains (and entities) they can read — the same filter /api/pending-actions applies — so the
+    // Approvals nav entry appears only when there is something this user can actually see.
+    supabase
+      .from('pending_actions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending')
+      .eq('fund_id', fund.id),
   ])
 
   const isAdmin = membership?.role === 'admin'
@@ -49,9 +57,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // A member scoped to some entities: badges count only what they can open, read with their own
   // client so RLS applies both the domain and the entity rule (the cached counts above are
   // fund-wide, right only for unscoped users). '*': all_entities exists once the migration ran.
-  const { data: ownMembership } = isAdmin
-    ? { data: null }
-    : await supabase.from('fund_members').select('*').eq('user_id', user.id).maybeSingle()
+  const [{ data: ownMembership }, pendingRequestCount, updateAvailable] = await Promise.all([
+    isAdmin
+      ? Promise.resolve({ data: null })
+      : supabase.from('fund_members').select('*').eq('user_id', user.id).maybeSingle(),
+    isAdmin ? getPendingRequests(fund.id) : Promise.resolve(0),
+    isAdmin ? getUpdateAvailable() : Promise.resolve(false),
+  ])
   const scoped = !isAdmin && !!ownMembership && 'all_entities' in (ownMembership as object)
     && (ownMembership as { all_entities: boolean }).all_entities !== true
   const scopedCounts = scoped
@@ -61,19 +73,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         supabase.from('inbound_emails').select('id', { count: 'exact', head: true }).eq('processing_status', 'needs_review').eq('fund_id', fund.id),
       ])
     : null
-  // Staged changes waiting for approval, counted with the user's own client: RLS limits it to rows
-  // in domains (and entities) they can read — the same filter /api/pending-actions applies — so the
-  // Approvals nav entry appears only when there is something this user can actually see.
-  const { count: approvalsBadge } = await supabase
-    .from('pending_actions')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'pending')
-    .eq('fund_id', fund.id)
   const noEntities = !!scopedCounts && (scopedCounts[0].count ?? 0) === 0
-  const [pendingRequestCount, updateAvailable] = await Promise.all([
-    isAdmin ? getPendingRequests(fund.id) : Promise.resolve(0),
-    isAdmin ? getUpdateAvailable() : Promise.resolve(false),
-  ])
 
   const featureVisibility = { ...DEFAULT_FEATURE_VISIBILITY, ...(fundSettings?.feature_visibility as Partial<FeatureVisibilityMap> | null) }
   // The LP portal is a master switch: when off, the LP Portal management page and
