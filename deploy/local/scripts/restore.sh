@@ -30,8 +30,10 @@ running=()
 while read -r svc; do
   [[ "$svc" =~ ^(scheduler|app|rest|storage|auth)$ ]] && running+=("$svc")
 done < <(dc ps --services --status running)
-committed=0 restored=0
+committed=0 restored=0 staged=0
 on_exit() {
+  # The dump holds every credential and personal record: never leave it in the db container.
+  dc exec -T db rm -f /tmp/restore.dump /tmp/restore.list >/dev/null 2>&1 || true
   ((restored)) && return
   if ((committed)); then
     echo "RESTORE INCOMPLETE: the database now holds the backup, but its files were not all swapped in." >&2
@@ -41,6 +43,8 @@ on_exit() {
     echo "  $0 --force $src" >&2
     exit 1
   fi
+  # Before the commit the staged copy is only a copy: drop it. (After, it is the backup's files.)
+  if ((staged)); then in_storage 'rm -rf /var/lib/storage/.restore-staging' </dev/null >/dev/null 2>&1 || true; fi
   if ((${#running[@]})); then dc start "${running[@]}"; fi
 }
 trap on_exit EXIT
@@ -50,7 +54,7 @@ in_storage() { dc run --rm --no-deps -T --entrypoint sh storage -c "$1"; }
 dc up -d --wait db auth storage
 
 # 1. Both halves readable to the end, before anything changes.
-dc exec -T db sh -c 'cat > /tmp/restore.dump' < "$src/db.dump"
+dc exec -T db sh -c 'umask 077 && cat > /tmp/restore.dump' < "$src/db.dump"
 dc exec -T db pg_restore -f /dev/null /tmp/restore.dump
 # Reading the archive to the end also totals its files: staging holds them beside the live ones
 # until the swap, so the volume needs that much free (busybox tar -tv: size is column 3).
@@ -75,6 +79,7 @@ fi
 dc stop -t 30 scheduler app rest storage auth
 
 # 2. Stage the files beside the live ones.
+staged=1
 in_storage 'rm -rf /var/lib/storage/.restore-staging && mkdir /var/lib/storage/.restore-staging &&
   tar -xzf - -C /var/lib/storage/.restore-staging' < "$src/storage.tgz"
 

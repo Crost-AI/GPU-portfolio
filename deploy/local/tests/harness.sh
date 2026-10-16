@@ -100,22 +100,32 @@ log_has '^(stop|start) ' && bad "backup: touched services that were not running"
 
 touch "$tmp/bk/db.dump" "$tmp/bk/storage.tgz"
 export DUMP_TOC="1; 1259 1 TABLE public funds postgres" DB_RELS="funds"
+dump_gone() { log_has 'exec -T db rm -f /tmp/restore.dump'; }
+staging_dropped() { log_has "rm -rf /var/lib/storage/.restore-staging'?$"; }
 expect "restore: succeeds" "$(restore "$all" "")" 0
+dump_gone && ok "restore: removes /tmp/restore.dump from the db container after success" || bad "restore: left the dump behind"
 log_has '^up -d$' && ok "restore: brings the stack up after success" || bad "restore: no final up -d"
 for step in "-f /dev/null" "tar -tzvf" "tar -xzf" "--clean"; do
   expect "restore: fails when '$step' fails" "$(restore "$all" "$step")" 1
   if log_has '^start auth rest storage app scheduler$' && ! log_has '^up -d$'; then
     ok "restore: before the commit, '$step' failing restarts what was running"
   else bad "restore: '$step' failing did not restart the writers"; fi
+  dump_gone || bad "restore: left the dump behind after '$step' failed"
+  case "$step" in
+    "tar -xzf"|--clean) staging_dropped && ok "restore: drops the partial staging copy after '$step' fails" || bad "restore: kept staging after '$step'" ;;
+    *) staging_dropped && bad "restore: touched staging before staging began ('$step')" || true ;;
+  esac
 done
 expect "restore: fails when the swap fails" "$(restore "$all" "-s -- /var/lib/storage")" 1
 if ! log_has '^(start|up -d$)' && grep -q "RESTORE INCOMPLETE" "$tmp/restore.out" && grep -q ".restore-old" "$tmp/restore.out"; then
   ok "restore: after the commit, a failed swap leaves the writers stopped and says how to finish"
 else bad "restore: a failed swap restarted writers or printed no recovery message"; fi
+if dump_gone && ! staging_dropped; then ok "restore: after a failed swap, removes the dump but keeps staging (the backup's files)"
+else bad "restore: wrong cleanup after a failed swap"; fi
 
 export DB_RELS="funds newer_table"
 expect "restore: refuses a stack ahead of the backup" "$(restore "$all" "")" 1
-if grep -q newer_table "$tmp/restore.out" && ! log_has '^stop '; then ok "restore: names the extra relation and stops nothing"
+if grep -q newer_table "$tmp/restore.out" && ! log_has '^stop ' && dump_gone; then ok "restore: names the extra relation, stops nothing, removes the dump"
 else bad "restore: did not refuse cleanly"; fi
 expect "restore: --force restores anyway" "$(restore "$all" "" --force)" 0
 export DB_RELS="funds"

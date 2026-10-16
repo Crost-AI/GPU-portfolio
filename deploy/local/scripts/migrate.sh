@@ -122,7 +122,7 @@ check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets
 
 service_key="$(env_get SERVICE_ROLE_KEY)"; kong_port="$(env_get KONG_HTTP_PORT)"
 code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${kong_port:-8000}/rest/v1/funds?select=id&limit=1" \
-  -H "apikey: $service_key" -H "Authorization: Bearer $service_key")"
+  -H "apikey: $service_key" -H "Authorization: Bearer $service_key" || true)"   # unreachable: 000, a FAIL below
 check "GET /rest/v1/funds with the service key" "$code" 200
 
 exit "$fail"
