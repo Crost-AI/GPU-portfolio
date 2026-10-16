@@ -14,21 +14,21 @@ function txn(p: Partial<InvestmentTransaction>): InvestmentTransaction {
   } as InvestmentTransaction
 }
 const ACTIVE = 'active' as CompanyStatus
-const mark = (round: string, change: number, date = '2022-05-02') =>
+const mark = (round: string, change: number, date = '2022-06-01') =>
   txn({ transaction_type: 'unrealized_gain_change', round_name: round, unrealized_value_change: change, transaction_date: date })
 
 describe('rounds with shares but no price anywhere are valued from their marks', () => {
-  // Acme Mobility, as recorded: share counts on every round, no share price on any investment or mark, a
+  // A holding with share counts on every round, no share price on any investment or mark, a
   // partial secondary in the seed, and warrants received for nothing. It read as $0.
   const history = [
-    txn({ round_name: 'Series Seed Preferred', investment_cost: 187500, shares_acquired: 390000, transaction_date: '2015-11-04' }),
-    txn({ round_name: 'Series Seed-1 Preferred', investment_cost: 64000, shares_acquired: 220000, transaction_date: '2016-05-12' }),
-    txn({ round_name: 'Common Stock', investment_cost: 300001, shares_acquired: 710000, transaction_date: '2016-10-07' }),
-    txn({ round_name: 'Warrants-1', investment_cost: 0, shares_acquired: 118775, transaction_date: '2019-04-01' }),
-    txn({ transaction_type: 'proceeds', round_name: 'Series Seed Preferred', cost_basis_exited: 120000, proceeds_received: 3400000, transaction_date: '2022-05-02' }),
+    txn({ round_name: 'Series Seed Preferred', investment_cost: 180000, shares_acquired: 360000, transaction_date: '2015-10-01' }),
+    txn({ round_name: 'Series Seed-1 Preferred', investment_cost: 60000, shares_acquired: 200000, transaction_date: '2016-04-01' }),
+    txn({ round_name: 'Common Stock', investment_cost: 280000, shares_acquired: 700000, transaction_date: '2016-09-01' }),
+    txn({ round_name: 'Warrants-1', investment_cost: 0, shares_acquired: 120000, transaction_date: '2019-03-01' }),
+    txn({ transaction_type: 'proceeds', round_name: 'Series Seed Preferred', cost_basis_exited: 110000, proceeds_received: 3200000, transaction_date: '2022-06-01' }),
     mark('Series Seed-1 Preferred', 1000000),
-    mark('Warrants-1', 610000),
-    mark('Common Stock', 3300000),
+    mark('Warrants-1', 600000),
+    mark('Common Stock', 3250000),
     mark('Series Seed Preferred', 1900000, '2026-03-31'),
   ]
 
@@ -37,11 +37,11 @@ describe('rounds with shares but no price anywhere are valued from their marks',
     const by = Object.fromEntries(s.rounds.map(r => [r.roundName, Math.round(r.currentValue)]))
     expect(by).toEqual({
       'Series Seed Preferred': 70000 + 1900000,
-      'Series Seed-1 Preferred': 64000 + 1000000,
-      'Common Stock': 300001 + 3300000,
-      'Warrants-1': 610000,
+      'Series Seed-1 Preferred': 60000 + 1000000,
+      'Common Stock': 280000 + 3250000,
+      'Warrants-1': 600000,
     })
-    expect(Math.round(s.unrealizedValue)).toBe(7300000)
+    expect(Math.round(s.unrealizedValue)).toBe(7160000)
   })
 
   it('still values by shares when a price is known, and a fully exited round at nothing', () => {

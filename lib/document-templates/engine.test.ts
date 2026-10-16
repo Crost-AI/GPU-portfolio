@@ -24,9 +24,9 @@ describe('document template engine', () => {
   })
 
   it('formats money, numbers, percentages, multiples and dates', () => {
-    expect(r('{{usd 6600000}} {{usd -2288}} {{usd 1.5 2}}')).toBe('$6,600,000 ($2,300) $1.50')
-    expect(r('{{num 0}} {{num -100000}} {{num 35000}}')).toBe('- -100,000 35,000')
-    expect(r('{{pct 0.873}} {{pct (div 270000 4800000)}} {{mult (div 6600000 7000000)}}')).toBe('87.3% 5.6% 0.95x')
+    expect(r('{{usd 6420000}} {{usd -2250}} {{usd 1.5 2}}')).toBe('$6,420,000 ($2,250) $1.50')
+    expect(r('{{num 0}} {{num -104500}} {{num 35000}}')).toBe('- -104,500 35,000')
+    expect(r('{{pct 0.873}} {{pct (div 280000 5000000)}} {{mult (div 6420000 6750000)}}')).toBe('87.3% 5.6% 0.95x')
     expect(r('{{date d}} {{date d "short"}} {{quarter d}}', { d: '2026-03-31' })).toBe('March 31, 2026 3/31 Q1 2026')
   })
 
@@ -55,7 +55,7 @@ describe('document template engine', () => {
   })
 
   it('returns failed checks as warnings, rendering nothing', () => {
-    const out = renderTemplate('x{{check (near a b 1) "Totals do not tie"}}y', { a: 600000, b: 600000 })
+    const out = renderTemplate('x{{check (near a b 1) "Totals do not tie"}}y', { a: 640001, b: 640000 })
     expect(out).toEqual({ html: 'xy', warnings: [] })
     expect(renderTemplate('{{check (eq 1 2) "Totals do not tie"}}', {}).warnings).toEqual(['Totals do not tie'])
   })
