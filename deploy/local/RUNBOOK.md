@@ -99,6 +99,9 @@ deploy/local/scripts/backup.sh                    # -> deploy/local/backups/<UTC
 deploy/local/scripts/restore.sh deploy/local/backups/<UTC time>
 ```
 
+The backup stops the app, the scheduler, PostgREST and Storage while it runs, so the database and
+the files describe the same moment, then starts them again. Schedule it for a quiet time.
+
 A backup holds:
 
 - `db.dump`: `pg_dump -Fc` of `public`, `auth`, `storage` and `supabase_migrations`.

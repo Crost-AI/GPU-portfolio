@@ -17,7 +17,29 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 dc() { docker compose -f "$here/docker-compose.yml" --env-file "$here/.env" "$@"; }
-set -a; . "$here/.env"; set +a
+# One value from .env, read the way Compose reads it: split on the first '=', strip matching
+# quotes, or on an unquoted value a ' #' comment. Never sourced: a valid Compose value such as
+# SMTP_SENDER_NAME=My Fund is not valid shell. The last assignment wins, as in Compose.
+env_get() {
+  awk -v want="$1" '
+    { line = $0; sub(/^[ \t]*(export[ \t]+)?/, "", line) }
+    line ~ /^#/ || (p = index(line, "=")) == 0 { next }
+    { key = substr(line, 1, p - 1); sub(/[ \t]+$/, "", key); if (key != want) next
+      v = substr(line, p + 1); sub(/^[ \t]+/, "", v); q = substr(v, 1, 1)
+      if ((q == "\"" || q == "\047") && (e = index(substr(v, 2), q)) > 0) v = substr(v, 2, e - 1)
+      else { sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v) }
+      val = v; found = 1 }
+    END { if (found) print val }
+  ' "$here/.env"
+}
+urlencode() {
+  local LC_ALL=C s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [a-zA-Z0-9.~_-]) out+="$c" ;; *) printf -v c '%%%02X' "'$c"; out+="$c" ;; esac
+  done
+  printf '%s' "$out"
+}
 psql_db() { dc exec -T db psql -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q "$@"; }
 
 # 1. db, auth and storage healthy: auth.* and storage.* exist only once GoTrue and storage-api
@@ -36,8 +58,9 @@ done
 # 2. Apply.
 if [[ "${1:-}" == "--cli" ]]; then
   command -v supabase >/dev/null || { echo "supabase CLI not found; drop --cli to use psql" >&2; exit 1; }
+  pg_port="$(env_get POSTGRES_HOST_PORT)"
   (cd "$repo" && supabase db push --yes \
-    --db-url "postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-54322}/postgres")
+    --db-url "postgresql://postgres:$(urlencode "$(env_get POSTGRES_PASSWORD)")@127.0.0.1:${pg_port:-54322}/postgres")
 else
   # The history table as the CLI creates it.
   psql_db <<'SQL'
@@ -85,8 +108,9 @@ check "the 8 private buckets" \
   "$(psql_db -tA -c "select string_agg(id, ' ' order by id) from storage.buckets where not public")" "$expected"
 check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets where public")" 0
 
-code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${KONG_HTTP_PORT:-8000}/rest/v1/funds?select=id&limit=1" \
-  -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY")"
+service_key="$(env_get SERVICE_ROLE_KEY)"; kong_port="$(env_get KONG_HTTP_PORT)"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${kong_port:-8000}/rest/v1/funds?select=id&limit=1" \
+  -H "apikey: $service_key" -H "Authorization: Bearer $service_key")"
 check "GET /rest/v1/funds with the service key" "$code" 200
 
 exit "$fail"
