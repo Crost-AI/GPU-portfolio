@@ -33,7 +33,7 @@ describe('activeEntityOptions', () => {
         { companyId: 'x1', vehicleId: 'v4' }, // only an exited company: not offered
       ],
     })
-    expect(opts.map(o => o.name)).toEqual(['Northwind Holdings LP', 'Fund I', 'SPV A'])
+    expect(opts.map(o => o.name)).toEqual(['Fund I', 'Northwind Holdings LP', 'SPV A'])
     expect(opts.find(o => o.id === 'v1')!.names).toEqual(['Fund I', 'Fund 1'])
   })
 

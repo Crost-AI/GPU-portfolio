@@ -89,7 +89,7 @@ describe('QuickBooks import review routes', () => {
   })
 
   it('honors Exchange Co as a fund and a different holding as a company', async () => {
-    const res = await discover(req({ holdings: ['Exchange Co', 'Direct Co'], holdingTypes: { Exchange Co: 'fund', 'Direct Co': 'company' } }))
+    const res = await discover(req({ holdings: ['Exchange Co', 'Direct Co'], holdingTypes: { 'Exchange Co': 'fund', 'Direct Co': 'company' } }))
     expect(res.status).toBe(200)
     expect(writes.filter(w => w.table === 'companies').map(w => [w.row.name, w.row.holding_type])).toEqual([['Exchange Co', 'fund'], ['Direct Co', 'company']])
     expect(writes.filter(w => w.table === 'fund_holding_terms')).toHaveLength(1)
@@ -99,7 +99,7 @@ describe('QuickBooks import review routes', () => {
 
   it('reuses an existing holding without changing its type and repairs its accounts', async () => {
     tables.companies = [{ id: 'exchange', name: 'Exchange Co', holding_type: 'fund', fund_id: 'tenant', portfolio_group: ['Fund II'] }]
-    const res = await discover(req({ holdings: ['Exchange Co'], holdingTypes: { Exchange Co: 'company' } }))
+    const res = await discover(req({ holdings: ['Exchange Co'], holdingTypes: { 'Exchange Co': 'company' } }))
     expect(writes).toEqual([])
     expect((await res.json()).mappings).toEqual([{ name: 'Exchange Co', code: '1100-exchange' }])
   })

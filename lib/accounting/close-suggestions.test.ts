@@ -46,7 +46,7 @@ function fakeAdmin(entries: any[]) {
 }
 
 const interest = (id: string, date: string, amount: number, status = 'posted', source_ref: string | null = null) => ({
-  id, entry_date: date, status, memo: `MORGAN STANLEY BANK N.A. (Period ${date.slice(5, 7)})`, source_type: 'income', source_ref,
+  id, entry_date: date, status, memo: `ACME BANK N.A. (Period ${date.slice(5, 7)})`, source_type: 'income', source_ref,
   journal_postings: [{ account_id: 'cash', amount, currency: 'USD' }, { account_id: 'interest', amount: -amount, currency: 'USD' }],
 })
 
@@ -79,8 +79,8 @@ describe('shiftMemoMonth', () => {
   it('moves the period a copied memo names to the new month', () => {
     expect(shiftMemoMonth('Monthly amortization of 10-year prepaid management fee — 2026-08', '2026-08-31', '2026-09-30'))
       .toBe('Monthly amortization of 10-year prepaid management fee — 2026-09')
-    expect(shiftMemoMonth('MORGAN STANLEY BANK N.A. (Period 08/01-08/31)', '2026-08-31', '2026-09-30'))
-      .toBe('MORGAN STANLEY BANK N.A. (Period 09/01-09/30)')
+    expect(shiftMemoMonth('ACME BANK N.A. (Period 08/01-08/31)', '2026-08-31', '2026-09-30'))
+      .toBe('ACME BANK N.A. (Period 09/01-09/30)')
     expect(shiftMemoMonth('Accrued as of 2026-08-31, August 2026', '2026-08-31', '2026-09-30')).toBe('Accrued as of 2026-09-30, September 2026')
     expect(shiftMemoMonth('Rent — 2026-12', '2026-12-31', '2027-01-31')).toBe('Rent — 2027-01')
     expect(shiftMemoMonth('Software subscription', '2026-08-31', '2026-09-30')).toBe('Software subscription')

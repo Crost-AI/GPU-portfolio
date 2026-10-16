@@ -24,7 +24,7 @@ describe('descriptionNamesPartner', () => {
   })
 
   it('does not match an unrelated description', () => {
-    expect(descriptionNamesPartner('FEDERATED HERMES GOVT OBL PRM', 'Dana Whitfield')).toBe(false)
+    expect(descriptionNamesPartner('ACME TREASURY GOVT OBL PRM', 'Dana Whitfield')).toBe(false)
   })
 })
 
