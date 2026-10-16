@@ -6,6 +6,7 @@
 #   storage.tgz  the storage volume (file contents; storage.objects in db.dump indexes them)
 # Copy the directory, and deploy/local/.env, off the machine: ENCRYPTION_KEY is not in the dump.
 set -euo pipefail
+umask 077   # the dump holds every credential and personal record
 here="$(cd "$(dirname "$0")/.." && pwd)"
 dc() { docker compose -f "$here/docker-compose.yml" --env-file "$here/.env" "$@"; }
 out="${1:-$here/backups/$(date -u +%Y%m%dT%H%M%SZ)}"

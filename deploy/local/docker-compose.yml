@@ -186,6 +186,9 @@ services:
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      # No Admin API (it would listen on 127.0.0.1:8001, which the app shares, and could replace
+      # this config). The config is declarative; nothing here needs it.
+      KONG_ADMIN_LISTEN: "off"
       KONG_DNS_ORDER: LAST,A,CNAME
       KONG_PLUGINS: request-transformer,cors,key-auth,acl
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
