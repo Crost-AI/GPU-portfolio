@@ -9,7 +9,8 @@
 #
 # Every writer (app, scheduler, PostgREST, storage API, and GoTrue, whose tables are replaced too)
 # is stopped throughout. The steps run so that a failure leaves something usable:
-#   1. both halves are read to the end (pg_restore, tar -t): nothing is touched yet
+#   1. both halves are read to the end (pg_restore, tar -t), and the storage volume must have room
+#      for a second copy of the files: nothing is touched yet
 #   2. the files are extracted beside the live ones, into a staging directory on the same volume
 #   3. the database is restored in one transaction: a failure leaves it as it was
 #   4. the staged files are swapped in, every move checked; a failed move keeps both directories
@@ -51,7 +52,12 @@ dc up -d --wait db auth storage
 # 1. Both halves readable to the end, before anything changes.
 dc exec -T db sh -c 'cat > /tmp/restore.dump' < "$src/db.dump"
 dc exec -T db pg_restore -f /dev/null /tmp/restore.dump
-in_storage 'tar -tzf - > /dev/null' < "$src/storage.tgz"
+# Reading the archive to the end also totals its files: staging holds them beside the live ones
+# until the swap, so the volume needs that much free (busybox tar -tv: size is column 3).
+in_storage 'set -o pipefail
+  need=$(tar -tzvf - | awk "{ s += \$3 } END { print s + 0 }") || exit 1
+  free=$(df -Pk /var/lib/storage | awk "NR == 2 { print \$4 * 1024 }")
+  [ "$need" -lt "$free" ] || { echo "restore: the backup files need $need bytes on the storage volume; $free are free" >&2; exit 1; }' < "$src/storage.tgz"
 
 # Relations in `public` that the dump would not replace (a stack ahead of the backup). Each list is
 # captured first so that a failing query aborts the restore (set -e); inside <( ) it would just

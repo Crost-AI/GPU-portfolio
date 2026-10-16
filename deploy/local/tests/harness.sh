@@ -102,7 +102,7 @@ touch "$tmp/bk/db.dump" "$tmp/bk/storage.tgz"
 export DUMP_TOC="1; 1259 1 TABLE public funds postgres" DB_RELS="funds"
 expect "restore: succeeds" "$(restore "$all" "")" 0
 log_has '^up -d$' && ok "restore: brings the stack up after success" || bad "restore: no final up -d"
-for step in "-f /dev/null" "tar -tzf" "tar -xzf" "--clean"; do
+for step in "-f /dev/null" "tar -tzvf" "tar -xzf" "--clean"; do
   expect "restore: fails when '$step' fails" "$(restore "$all" "$step")" 1
   if log_has '^start auth rest storage app scheduler$' && ! log_has '^up -d$'; then
     ok "restore: before the commit, '$step' failing restarts what was running"

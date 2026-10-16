@@ -135,7 +135,7 @@ history, and the next `migrate.sh` would trip over them. So `restore.sh` refuses
 has relations the dump lacks, unless you pass `--force`. Steps 1–3 below change nothing that a
 failure leaves broken; step 4 is where the old files are replaced:
 
-1. It reads both halves to the end before touching anything.
+1. It reads both halves to the end, and checks that the storage volume has room for a second copy of the files, before touching anything.
 2. It extracts the files beside the live ones.
 3. It restores the database in one transaction.
 4. It swaps the files in.
