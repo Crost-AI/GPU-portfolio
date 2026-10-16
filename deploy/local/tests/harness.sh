@@ -8,6 +8,8 @@
 #    a second run applies nothing.
 # 2. backup.sh and restore.sh against a fake `docker` that records what they ask for and fails on
 #    demand: which services stop and start, on success and on a failure at every step.
+# 3. swap-staged-files.sh in the pinned storage image (busybox, as in production) with a real
+#    failing `mv`: a move that fails keeps both directories and exits 1.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 real_docker="$(command -v docker)"
@@ -106,8 +108,8 @@ for step in "-f /dev/null" "tar -tzf" "tar -xzf" "--clean"; do
     ok "restore: before the commit, '$step' failing restarts what was running"
   else bad "restore: '$step' failing did not restart the writers"; fi
 done
-expect "restore: fails when the swap fails" "$(restore "$all" "find .restore-staging")" 1
-if ! log_has '^(start|up -d$)' && grep -q "RESTORE INCOMPLETE" "$tmp/restore.out"; then
+expect "restore: fails when the swap fails" "$(restore "$all" "-s -- /var/lib/storage")" 1
+if ! log_has '^(start|up -d$)' && grep -q "RESTORE INCOMPLETE" "$tmp/restore.out" && grep -q ".restore-old" "$tmp/restore.out"; then
   ok "restore: after the commit, a failed swap leaves the writers stopped and says how to finish"
 else bad "restore: a failed swap restarted writers or printed no recovery message"; fi
 
@@ -116,6 +118,44 @@ expect "restore: refuses a stack ahead of the backup" "$(restore "$all" "")" 1
 if grep -q newer_table "$tmp/restore.out" && ! log_has '^stop '; then ok "restore: names the extra relation and stops nothing"
 else bad "restore: did not refuse cleanly"; fi
 expect "restore: --force restores anyway" "$(restore "$all" "" --force)" 0
+export DB_RELS="funds"
+for step in "select c.relname" "pg_restore -l /tmp/restore.dump"; do
+  expect "restore: aborts when listing relations fails ($step)" "$(restore "$all" "$step")" 1
+  log_has '^stop ' && bad "restore: went on to stop writers after '$step' failed (fails open)" || ok "restore: stops nothing after '$step' fails"
+done
+
+# ── 3. The swap itself, with real moves ─────────────────────────────────────────────────────────
+mkdir -p "$tmp/fake"
+cat > "$tmp/fake/mv" <<'EOF2'
+#!/bin/sh
+# Fails any move of an entry named fail-*; every other move is the real one.
+for a in "$@"; do case "${a##*/}" in fail-*) echo "mv: refusing $a (harness)" >&2; exit 1 ;; esac; done
+exec /bin/mv "$@"
+EOF2
+chmod +x "$tmp/fake/mv"
+swap() {   # swap <case>: run the real script on $tmp/vol/<case> inside the storage image
+  "$real_docker" run --rm -i --label "ao.session=${AO_SESSION:-}" -v "$tmp/vol/$1:/vol" -v "$tmp/fake:/fake:ro" \
+    -e PATH=/fake:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --entrypoint sh \
+    supabase/storage-api:v1.74.0 -s -- /vol < "$here/scripts/swap-staged-files.sh" >/dev/null 2>&1 && echo 0 || echo 1
+}
+layout() {  # layout <case> <live entry> <staged entry>
+  mkdir -p "$tmp/vol/$1/stub/$2" "$tmp/vol/$1/.restore-staging/stub/$3" "$tmp/vol/$1/.restore-staging/.dotdir"
+  echo old > "$tmp/vol/$1/stub/$2/f"; echo new > "$tmp/vol/$1/.restore-staging/stub/$3/f"
+  mkdir -p "$tmp/vol/$1/$2-top" "$tmp/vol/$1/.restore-staging/$3-top"
+}
+layout ok live new
+expect "swap: succeeds" "$(swap ok)" 0
+[[ -f "$tmp/vol/ok/stub/new/f" && -d "$tmp/vol/ok/new-top" && -d "$tmp/vol/ok/.dotdir" && ! -e "$tmp/vol/ok/live-top" \
+   && ! -e "$tmp/vol/ok/.restore-old" && ! -e "$tmp/vol/ok/.restore-staging" ]] \
+  && ok "swap: the backup's files (dotfiles included) replace the live ones, staging cleaned up" || bad "swap: wrong result on success"
+layout live fail-live new
+expect "swap: a live file that will not move fails it" "$(swap live)" 1
+[[ -d "$tmp/vol/live/.restore-old" && -f "$tmp/vol/live/.restore-staging/stub/new/f" && -d "$tmp/vol/live/fail-live-top" ]] \
+  && ok "swap: ...and keeps .restore-old, .restore-staging and the unmoved file" || bad "swap: deleted something after a failed live move"
+layout staged live fail-new
+expect "swap: a staged file that will not move fails it" "$(swap staged)" 1
+[[ -f "$tmp/vol/staged/.restore-old/stub/live/f" && -d "$tmp/vol/staged/.restore-staging/fail-new-top" ]] \
+  && ok "swap: ...and keeps the previous files in .restore-old and the unmoved backup file in staging" || bad "swap: deleted something after a failed staged move"
 
 echo "$pass passed, $failed failed"
 ((failed == 0))

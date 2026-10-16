@@ -12,7 +12,7 @@
 #   1. both halves are read to the end (pg_restore, tar -t): nothing is touched yet
 #   2. the files are extracted beside the live ones, into a staging directory on the same volume
 #   3. the database is restored in one transaction: a failure leaves it as it was
-#   4. the staged files are swapped in
+#   4. the staged files are swapped in, every move checked; a failed move keeps both directories
 # A failure in 1-3 restarts the writers that were running. Step 3 committing is the point of no
 # return: if step 4 then fails, the writers stay stopped, and re-running the restore (safe to
 # repeat) finishes the job.
@@ -33,8 +33,10 @@ committed=0 restored=0
 on_exit() {
   ((restored)) && return
   if ((committed)); then
-    echo "RESTORE INCOMPLETE: the database now holds the backup, but its files were not swapped in." >&2
-    echo "The app, scheduler, PostgREST, storage and auth are left stopped. Fix the cause, then re-run:" >&2
+    echo "RESTORE INCOMPLETE: the database now holds the backup, but its files were not all swapped in." >&2
+    echo "Nothing was deleted: on the storage volume, the previous files are in .restore-old and the" >&2
+    echo "backup's in .restore-staging. The app, scheduler, PostgREST, storage and auth are left stopped." >&2
+    echo "Fix the cause (see the swap: lines above), then re-run, which redoes the swap:" >&2
     echo "  $0 --force $src" >&2
     exit 1
   fi
@@ -51,10 +53,12 @@ dc exec -T db sh -c 'cat > /tmp/restore.dump' < "$src/db.dump"
 dc exec -T db pg_restore -f /dev/null /tmp/restore.dump
 in_storage 'tar -tzf - > /dev/null' < "$src/storage.tgz"
 
-# Relations in `public` that the dump would not replace (a stack ahead of the backup).
-extra="$(comm -23 \
-  <(dc exec -T db psql -U supabase_admin -d postgres -tA -c "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'S')" | sort -u) \
-  <(dc exec -T db pg_restore -l /tmp/restore.dump | awk '$5 == "public" && ($4 == "TABLE" || $4 == "VIEW" || $4 == "SEQUENCE") { print $6 } $4 == "MATERIALIZED" && $6 == "public" { print $7 }' | sort -u))"
+# Relations in `public` that the dump would not replace (a stack ahead of the backup). Each list is
+# captured first so that a failing query aborts the restore (set -e); inside <( ) it would just
+# come back empty, and the check would pass as if the stack were fresh.
+live_rels="$(dc exec -T db psql -U supabase_admin -d postgres -tA -c "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'S')")"
+dump_rels="$(dc exec -T db pg_restore -l /tmp/restore.dump | awk '$5 == "public" && ($4 == "TABLE" || $4 == "VIEW" || $4 == "SEQUENCE") { print $6 } $4 == "MATERIALIZED" && $6 == "public" { print $7 }')"
+extra="$(comm -23 <(sort -u <<<"$live_rels") <(sort -u <<<"$dump_rels"))"
 if [[ -n "$extra" ]] && ((!force)); then
   echo "Refusing: public has relations the backup does not, so this stack is ahead of it:" >&2
   head -10 <<<"$extra" | sed 's/^/  /' >&2
@@ -79,11 +83,8 @@ dc exec -T db sh -c 'pg_restore -l /tmp/restore.dump | grep -v " SCHEMA - public
     -L /tmp/restore.list /tmp/restore.dump; s=$?; rm -f /tmp/restore.dump /tmp/restore.list; exit $s'
 committed=1
 
-# 4. Swap the staged files in.
-in_storage 'set -e; cd /var/lib/storage; rm -rf .restore-old; mkdir .restore-old
-  find . -mindepth 1 -maxdepth 1 ! -name .restore-old ! -name .restore-staging -exec mv {} .restore-old/ \;
-  find .restore-staging -mindepth 1 -maxdepth 1 -exec mv {} . \;
-  rm -rf .restore-old .restore-staging' < /dev/null
+# 4. Swap the staged files in, every move checked (scripts/swap-staged-files.sh).
+dc run --rm --no-deps -T --entrypoint sh storage -s -- /var/lib/storage < "$here/scripts/swap-staged-files.sh"
 
 restored=1
 dc up -d

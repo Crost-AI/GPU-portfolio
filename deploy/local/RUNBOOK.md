@@ -203,12 +203,13 @@ The PDF routes render with puppeteer-core. The app image installs Debian's `chro
 uses before probing fixed paths. `@sparticuz/chromium` is only used on Vercel or Lambda. The app
 runs as the image's unprivileged `node` user.
 
-To check, signed in as an admin with accounting on and at least one vehicle, use the browser's
-`sb-localhost-auth-token` cookie:
+To check, sign in as an admin with accounting on and at least one vehicle. Then copy the browser's
+whole `Cookie` header for localhost:3000. The session is often split across
+`sb-localhost-auth-token.0`, `.1` and so on, and all of the parts are needed:
 
 ```sh
 curl -s "http://localhost:3000/api/accounting/statements/pdf?group=<vehicle name>" \
-  -H "Cookie: sb-localhost-auth-token=..." | head -c5     # -> %PDF-
+  -H "Cookie: <the browser's Cookie header>" | head -c5     # -> %PDF-
 ```
 
 ## What does nothing off Vercel
