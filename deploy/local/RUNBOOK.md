@@ -21,28 +21,40 @@ dc() { docker compose -f deploy/local/docker-compose.yml --env-file deploy/local
 
 ```sh
 deploy/local/scripts/gen-keys.sh             # writes deploy/local/.env with fresh secrets
-dc up -d --build                             # builds the app image (several minutes), starts everything
+dc --profile mail up -d --build              # builds the app image (several minutes), starts everything
 deploy/local/scripts/migrate.sh              # applies supabase/migrations, then checks the result
 deploy/local/scripts/bootstrap-admin.sh --email you@firm.com --fund "Your Fund"
 ```
 
 Open http://localhost:3000 and sign in with that email and the password `bootstrap-admin.sh`
-asked for. Back up `deploy/local/.env` now. Its `ENCRYPTION_KEY` encrypts every stored credential
-and cannot be recovered.
+asked for. After "Sign in" the page can stay on `/auth?next=/`: you are signed in, and a reload or
+any link shows it (an app-side quirk, #53). Back up `deploy/local/.env` now. Its `ENCRYPTION_KEY`
+encrypts every stored credential and cannot be recovered.
+
+- `--profile mail` starts Mailpit, which the default `SMTP_*` settings deliver to. Without it, or
+  real SMTP, every email GoTrue sends fails: a teammate's signup gets `500 Error sending confirmation
+  email`. For production, set real SMTP (see "Email and the no-SMTP path") and drop the profile.
+- A new fund starts with accounting, LPs, deals, compliance and some other areas switched **off**
+  (`feature_visibility`), so `/api/accounting/*` answers 403 until the admin switches them on in
+  Settings. That is the product's default, not a fault in the stack.
 
 What each step does:
 
 - **gen-keys.sh** generates `POSTGRES_PASSWORD`, `JWT_SECRET`, `ENCRYPTION_KEY`, `CRON_SECRET` and
   `PG_META_CRYPTO_KEY`. It also mints the `ANON_KEY` and `SERVICE_ROLE_KEY` JWTs from `JWT_SECRET`.
   It never overwrites an existing `.env` unless you pass `--force`.
-- **up** starts in order: db healthy → auth, rest and storage, with GoTrue and storage-api creating
-  `auth.*` and `storage.*` on first boot → Kong → app → scheduler. The app answers before migrations
-  run, but every page errors until they are applied.
+- **up** starts db, then auth, rest and storage once db is healthy (GoTrue and storage-api create
+  `auth.*` and `storage.*` on first boot). Kong starts at once; it resolves those services per
+  request. The app waits for Kong, auth and storage, and the scheduler for the app. The app answers
+  before migrations run, but every page errors until they are applied.
 - **migrate.sh** waits for db, auth and storage to be healthy, because the migrations reference
   `auth.users` and `storage.buckets`. It then applies `supabase/migrations/*.sql` in filename order,
   each file in one transaction with its history row in `supabase_migrations.schema_migrations`.
-  Last it checks `btree_gist`, the signup hook, the Data API grants, the 8 private storage buckets
-  (printing each one's size limit) and `GET /rest/v1/funds` with the service key.
+  One file carries its own `begin`/`commit` (`20260714000001_commitment_events_snapshot_dedup.sql`),
+  so its history row commits separately, as with the CLI. Interrupted between the two, the next run
+  applies that file again. Last it checks `btree_gist`, the signup hook, the Data API grants, the 8
+  private storage buckets the app uses (printing every bucket's size limit) and
+  `GET /rest/v1/funds` with the service key.
   - It uses psql inside the db container by default. `supabase db push` cannot install this repo
     from empty: four versions are shared by two files each, and the CLI applies only the first of
     each pair. Once the database is current, `migrate.sh --cli` runs `supabase db push` instead;
@@ -59,7 +71,9 @@ What each step does:
 
 Signups stay gated. GoTrue calls `public.hook_before_user_created` on every signup, so only
 addresses in `allowed_signups` (exact, or `*@domain`) or invited LPs can create an account; everyone
-else gets 403. Add teammates in the app, or `insert into allowed_signups (email_pattern) values (...)`.
+else gets 403. Allow a teammate with `insert into allowed_signups (email_pattern) values (...)`.
+They sign up, which needs email (Mailpit or real SMTP), ask to join the fund, and the admin
+approves them in Settings → Members. Without email, see below.
 
 ## Email and the no-SMTP path
 
@@ -69,10 +83,15 @@ defaults point at Mailpit:
 - `dc --profile mail up -d` starts it, and http://127.0.0.1:54324 shows every message.
 - For real delivery, set your provider's `SMTP_HOST`/`PORT`/`USER`/`PASS`, then `dc up -d auth`.
 
-With no SMTP at all, use passwords. `bootstrap-admin.sh` sets the first one; set or reset any user's
-the same way (needs `SERVICE_ROLE_KEY`, user id from `auth.users`):
+With no SMTP at all, use passwords. `bootstrap-admin.sh` sets the first one. For a teammate,
+allow-list the email (above), then create a confirmed account with a password. They sign in, ask to
+join, and the admin approves them in Settings → Members. To set or reset any user's password, use
+the user id from `auth.users`. Both need `SERVICE_ROLE_KEY`:
 
 ```sh
+curl -X POST http://localhost:8000/auth/v1/admin/users \
+  -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" -d @- <<< '{"email":"teammate@firm.com","password":"...","email_confirm":true}'
 curl -X PUT http://localhost:8000/auth/v1/admin/users/<user-id> \
   -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" \
   -H "Content-Type: application/json" -d @- <<< '{"password":"..."}'
@@ -96,6 +115,7 @@ has every `crons` entry from `vercel.json` at the same schedule, in UTC as on Ve
 
 ```sh
 deploy/local/scripts/backup.sh                    # -> deploy/local/backups/<UTC time>/
+dc down -v && dc --profile mail up -d             # restore into a FRESH stack
 deploy/local/scripts/restore.sh deploy/local/backups/<UTC time>
 ```
 
@@ -108,9 +128,21 @@ A backup holds:
 - `extensions.sql`: the extensions to recreate first.
 - `storage.tgz`: the files.
 
-Restore replaces the data schemas and every file, and restarts the stack. It works on a fresh
-`dc up -d` with no migrate needed. Keep the matching `.env`, or at least its `ENCRYPTION_KEY`,
-with each backup. Copy backups off the machine.
+Restore replaces the data schemas and every file, and restarts the stack; no migrate is needed.
+Restore into fresh volumes, as above. Over a stack with newer migrations, `pg_restore` would
+replace only what the dump has: the newer tables would stay behind next to the older migration
+history, and the next `migrate.sh` would trip over them. So `restore.sh` refuses when `public`
+has relations the dump lacks, unless you pass `--force`. Steps 1–3 below change nothing that a
+failure leaves broken; step 4 is where the old files are replaced:
+
+1. It reads both halves to the end before touching anything.
+2. It extracts the files beside the live ones.
+3. It restores the database in one transaction.
+4. It swaps the files in.
+
+A failure up to the database commit restarts the stack as it was. A failure after it leaves the
+writers stopped and prints the command to re-run, which is safe to repeat. Keep the matching
+`.env`, or at least its `ENCRYPTION_KEY`, with each backup. Copy backups off the machine.
 
 ## Upgrading
 
@@ -130,8 +162,7 @@ Take a backup first. To change a Supabase image version, edit `docker-compose.ym
 PostgREST returns at most this many rows from any read that doesn't page. `supabase/config.toml`
 (and the hosted default) says 1000; this stack uses **10000**. The app pages some reads at 1000
 itself, but not every read. Under a 1000 cap, an unpaged read silently truncates on a large fund
-instead of failing. Lower it in `.env` if you need the tighter
-limit, then run `dc up -d rest`.
+instead of failing. Lower it in `.env` if you need the tighter limit, then run `dc up -d rest`.
 
 ## URLs, and why the app shares Kong's network
 
@@ -155,6 +186,10 @@ To serve other machines:
    the container. Add them to `ADDITIONAL_REDIRECT_URLS` if you sign in on more than one hostname.
 3. `dc build app && dc up -d`.
 
+The app container receives only the variables listed under `app.environment` in
+`docker-compose.yml`, never the whole `.env`. It does not get `JWT_SECRET`, `POSTGRES_PASSWORD` or
+`PG_META_CRYPTO_KEY`. To pass another app setting, add its name there.
+
 If you add a proxy, give it a read timeout of **at least 300 s**. Vercel's per-route
 `maxDuration` (up to 300 s for the cron and agent routes, 120 s for bank import) does not exist
 under `next start`, and a shorter proxy timeout would cut those requests off. Nothing in this stack
@@ -165,7 +200,16 @@ recordings.
 
 The PDF routes render with puppeteer-core. The app image installs Debian's `chromium` and sets
 `CHROME_EXECUTABLE_PATH=/usr/bin/chromium`, which `getChromeConfig()` in `lib/lp-report-pdf.ts`
-uses before probing fixed paths. `@sparticuz/chromium` is only used on Vercel or Lambda.
+uses before probing fixed paths. `@sparticuz/chromium` is only used on Vercel or Lambda. The app
+runs as the image's unprivileged `node` user.
+
+To check, signed in as an admin with accounting on and at least one vehicle, use the browser's
+`sb-localhost-auth-token` cookie:
+
+```sh
+curl -s "http://localhost:3000/api/accounting/statements/pdf?group=<vehicle name>" \
+  -H "Cookie: sb-localhost-auth-token=..." | head -c5     # -> %PDF-
+```
 
 ## What does nothing off Vercel
 
@@ -182,7 +226,10 @@ uses before probing fixed paths. `@sparticuz/chromium` is only used on Vercel or
 ## Optional services
 
 - `dc --profile studio up -d`: Supabase Studio at http://127.0.0.1:54323. It has no login of its
-  own, so it is bound to loopback only; don't expose it.
+  own, so it is bound to loopback only; don't expose it. **Its pg-meta (`meta:8080`) runs any SQL
+  as `postgres` with no authentication, and every container on the stack's network can reach it**,
+  the app included. Only the host is kept out (loopback). Run the profile when you need it and
+  `dc stop studio meta` afterwards.
 - `dc --profile mail up -d`: Mailpit, as above.
 - `AO_SESSION=<id>` in the environment labels every container `ao.session=<id>`, for supervisors
   that reap by label. It is unset otherwise.

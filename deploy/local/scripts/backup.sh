@@ -30,5 +30,7 @@ dc exec -T db pg_dump -U supabase_admin -d postgres -Fc \
   -n public -n auth -n storage -n supabase_migrations > "$out/db.dump"
 dc exec -T db psql -U supabase_admin -d postgres -tA -c "select format('create extension if not exists %I with schema %I;', e.extname, n.nspname)
   from pg_extension e join pg_namespace n on n.oid = e.extnamespace" > "$out/extensions.sql"
-dc run --rm --no-deps -T -v "$out:/backup" --entrypoint tar storage -czf /backup/storage.tgz -C /var/lib/storage .
+# Streamed out, so the file is written here, under the umask above and owned by you, like db.dump.
+dc run --rm --no-deps -T --entrypoint tar storage \
+  --exclude=./.restore-staging --exclude=./.restore-old -czf - -C /var/lib/storage . > "$out/storage.tgz"
 ls -lh "$out"

@@ -77,14 +77,25 @@ SQL
     # first of its version, which is the one the CLI applies.
     first="$(basename "$(ls "$repo/supabase/migrations/${version}"_*.sql | head -1)" .sql)"
     grep -qxF "$version" <<<"$versions" && [[ "$base" == "$first" ]] && continue
+    [[ "$version" =~ ^[0-9]+$ && "$name" =~ ^[A-Za-z0-9_]+$ ]] || { echo "unexpected migration file name: $base" >&2; exit 1; }
     echo "applying $base"
-    # One transaction per file, history row included, as the CLI does. The file is stored as one
-    # statement where the CLI splits it; nothing compares statements.
+    # One transaction per file, history row included, as the CLI does. Exception: a file with its
+    # own begin/commit (20260714000001_commitment_events_snapshot_dedup.sql) ends that transaction
+    # early, so its history row commits separately; the CLI behaves the same. Interrupted between
+    # the two, the next run applies that file again.
+    #
+    # The file is recorded as one statement where the CLI splits it (nothing compares
+    # statements), as a dollar-quoted literal whose tag the file does not contain, not even without
+    # its closing "$" (a file ending in "$mig" would close the literal early). Everything travels
+    # on stdin: Linux caps a single argument at 128 KiB, and migrations here pass 100 KiB.
+    tag=mig; while grep -qF "\$$tag" "$f"; do tag="mig_$RANDOM"; done
     { cat "$f"
       printf '\n;\ninsert into supabase_migrations.schema_migrations (version, name, statements)\n'
-      printf "values (:'mig_version', :'mig_name', array[:'mig_sql']) on conflict (version) do update\n"
+      printf "values ('%s', '%s', array[\$%s\$" "$version" "$name" "$tag"
+      cat "$f"
+      printf '$%s$]) on conflict (version) do update\n' "$tag"
       printf "set name = schema_migrations.name || ',' || excluded.name, statements = schema_migrations.statements || excluded.statements;\n"
-    } | psql_db --single-transaction -v mig_version="$version" -v mig_name="$name" -v mig_sql="$(cat "$f")"
+    } | psql_db --single-transaction
   done
 fi
 
@@ -104,8 +115,9 @@ check "Data API grants to authenticated" \
 echo "storage buckets:"
 psql_db -c "select id, public, file_size_limit from storage.buckets order by id"
 expected="company-documents diligence-documents diligence-recordings email-attachments entity-documents lp-documents receipts style-anchor-memos"
-check "the 8 private buckets" \
-  "$(psql_db -tA -c "select string_agg(id, ' ' order by id) from storage.buckets where not public")" "$expected"
+# At least these: a later migration may add more.
+check "the 8 private buckets the app uses" \
+  "$(psql_db -tA -c "select count(*) from storage.buckets where not public and id = any(string_to_array('$expected', ' '))")" 8
 check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets where public")" 0
 
 service_key="$(env_get SERVICE_ROLE_KEY)"; kong_port="$(env_get KONG_HTTP_PORT)"
