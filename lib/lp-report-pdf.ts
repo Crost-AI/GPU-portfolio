@@ -22,6 +22,11 @@ export async function getChromeConfig(): Promise<{ executablePath: string; args:
     return { executablePath: await chromium.executablePath(), args: chromium.args }
   }
   const fs = await import('fs')
+  const args = ['--no-sandbox', '--disable-setuid-sandbox']
+  // An explicit path wins (a container ships Chromium wherever its distro puts it); the probe
+  // below is only the fallback when it is unset or points at nothing.
+  const explicit = process.env.CHROME_EXECUTABLE_PATH
+  if (explicit && fs.existsSync(explicit)) return { executablePath: explicit, args }
   const candidates = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -33,10 +38,7 @@ export async function getChromeConfig(): Promise<{ executablePath: string; args:
   ]
   const found = candidates.find(p => fs.existsSync(p))
   if (!found) throw new Error('Chrome not found locally.')
-  return {
-    executablePath: process.env.CHROME_EXECUTABLE_PATH || found,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  }
+  return { executablePath: found, args }
 }
 
 // ---------------------------------------------------------------------------
