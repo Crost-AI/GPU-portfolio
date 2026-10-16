@@ -1,0 +1,11 @@
+# Every vercel.json cron, same schedule (UTC); tests/local-deploy-cron.test.ts keeps them in step.
+# run-cron sends GET with "Authorization: Bearer $CRON_SECRET" (lib/security/cron-auth.ts), as Vercel does; unset CRON_SECRET = 500.
+0 13 * * 1 run-cron /api/cron/deals-digest
+*/3 * * * * run-cron /api/cron/memo-agent-worker
+0 * * * * run-cron /api/cron/affinity-sync
+*/10 * * * * run-cron /api/cron/deal-research
+*/5 * * * * run-cron /api/cron/company-updates-ocr
+*/5 * * * * run-cron /api/cron/entity-documents-ocr
+*/2 * * * * run-cron /api/cron/company-updates-backfill
+0 13 * * * run-cron /api/cron/ops-reminders
+15 * * * * run-cron /api/cron/access-expiry

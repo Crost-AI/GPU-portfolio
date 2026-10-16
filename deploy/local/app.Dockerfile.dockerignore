@@ -1,0 +1,15 @@
+# BuildKit reads this (named after the Dockerfile) instead of a repo-root .dockerignore.
+**/node_modules
+.next
+.git
+.vercel
+.env
+.env*
+!.env.example
+**/.DS_Store
+deploy/local/.env
+deploy/local/backups
+supabase/.temp
+supabase/.branches
+plans
+docs

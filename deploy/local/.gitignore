@@ -1,0 +1,3 @@
+# Secrets made by scripts/gen-keys.sh, and scripts/backup.sh output.
+.env
+backups/
