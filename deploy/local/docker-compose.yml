@@ -191,6 +191,14 @@ services:
       # this config). The config is declarative; nothing here needs it.
       KONG_ADMIN_LISTEN: "off"
       KONG_DNS_ORDER: LAST,A,CNAME
+      # Containers get a new IP whenever they are recreated or restarted (backup.sh and restore.sh
+      # stop and start rest, auth and storage), and each Kong worker caches DNS on its own. With
+      # Kong 2.8's defaults a worker kept the dead IP for up to 10 minutes: intermittent 502s, and
+      # once a 200 with an empty result. Re-resolve within 5 s, never serve a stale answer, and
+      # forget "not found" (a stopped service) after 1 s.
+      KONG_DNS_VALID_TTL: 5
+      KONG_DNS_STALE_TTL: 0
+      KONG_DNS_NOT_FOUND_TTL: 1
       KONG_PLUGINS: request-transformer,cors,key-auth,acl
       KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
       KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k

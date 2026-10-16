@@ -122,6 +122,18 @@ deploy/local/scripts/restore.sh deploy/local/backups/<UTC time>
 The backup stops the app, the scheduler, PostgREST and Storage while it runs, so the database and
 the files describe the same moment, then starts them again. Schedule it for a quiet time.
 
+Restarted services come back on new container IPs. Kong re-resolves them within 5 s
+(`KONG_DNS_VALID_TTL=5`, `KONG_DNS_STALE_TTL=0`, `KONG_DNS_NOT_FOUND_TTL=1` on the `kong` service).
+Without those settings, Kong's default DNS caching sent part of `/rest/v1` to the old IP for
+minutes. That showed up as intermittent 502s, and once as a 200 with an empty result. To check,
+after a backup, a restore or `dc restart rest`, wait 5 s and run a few hundred requests. None
+should fail:
+
+```sh
+for i in $(seq 300); do curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:8000/rest/v1/funds?select=id" \
+  -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY"; done | sort | uniq -c   # all 200
+```
+
 A backup holds:
 
 - `db.dump`: `pg_dump -Fc` of `public`, `auth`, `storage` and `supabase_migrations`.

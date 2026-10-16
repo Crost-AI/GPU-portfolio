@@ -10,6 +10,7 @@
 #    demand: which services stop and start, on success and on a failure at every step.
 # 3. swap-staged-files.sh in the pinned storage image (busybox, as in production) with a real
 #    failing `mv`: a move that fails keeps both directories and exits 1.
+# 4. Kong's DNS TTLs, so services restarted by backup/restore (new IPs) are re-resolved in 5 s.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 real_docker="$(command -v docker)"
@@ -166,6 +167,12 @@ layout staged live fail-new
 expect "swap: a staged file that will not move fails it" "$(swap staged)" 1
 [[ -f "$tmp/vol/staged/.restore-old/stub/live/f" && -d "$tmp/vol/staged/.restore-staging/fail-new-top" ]] \
   && ok "swap: ...and keeps the previous files in .restore-old and the unmoved backup file in staging" || bad "swap: deleted something after a failed staged move"
+
+# ── 4. Kong re-resolves restarted services quickly (static: the resolved compose config) ─────────
+kong_env="$(POSTGRES_PASSWORD=x JWT_SECRET=x ANON_KEY=x SERVICE_ROLE_KEY=x ENCRYPTION_KEY=x CRON_SECRET=x \
+  "$real_docker" compose -f "$here/docker-compose.yml" --env-file /dev/null config --format json \
+  | python3 -c 'import json, sys; e = json.load(sys.stdin)["services"]["kong"]["environment"]; print(e.get("KONG_DNS_VALID_TTL"), e.get("KONG_DNS_STALE_TTL"), e.get("KONG_DNS_NOT_FOUND_TTL"))')"
+expect "kong: DNS valid/stale/not-found TTLs keep restarted services reachable (5 0 1)" "$kong_env" "5 0 1"
 
 echo "$pass passed, $failed failed"
 ((failed == 0))
