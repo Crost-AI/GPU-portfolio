@@ -9,6 +9,7 @@ import {
   bankEntryPostings,
   counterPosting,
   summarizeBankRec,
+  cashTransferEntryIds,
   openingCashBefore,
 } from './bank'
 import { isBalanced } from './ledger'
@@ -270,6 +271,31 @@ describe('summarizeBankRec', () => {
     const s = summarizeBankRec([{ amount: 120_000, matched: true }], 280_000.00, opening)
     expect(s.bankEndingBalance).toBe(280_000.00)
     expect(s.tiesOut).toBe(true)
+  })
+
+  it('leaves a transfer in from the old bank out of the bank side', () => {
+    // the old bank held 45,000.00 on 1000 before the feed; the feed opens with that money arriving, posted 1000 to 1000.
+    const transfers = cashTransferEntryIds([
+      { entryId: 'move', accountId: 'cash', amount: 45_000.00 },
+      { entryId: 'move', accountId: 'cash', amount: -45_000.00 },
+      { entryId: 'fee', accountId: 'cash', amount: -500 },
+      { entryId: 'fee', accountId: 'expense', amount: 500 },
+    ], 'cash')
+    expect([...transfers]).toEqual(['move'])
+    const s = summarizeBankRec([
+      { amount: 45_000.00, matched: true, cashTransfer: transfers.has('move') },
+      { amount: -500, matched: true, cashTransfer: transfers.has('fee') },
+    ], 44_000.00, 45_000.00)
+    expect(s.bankEndingBalance).toBe(44_000.00)
+    expect(s.transferCount).toBe(1)
+    expect(s.transferTotal).toBe(45_000.00)
+    expect(s.tiesOut).toBe(true)
+  })
+
+  it('counts an unmatched row in full even if flagged as a transfer', () => {
+    const s = summarizeBankRec([{ amount: 100, matched: false, cashTransfer: true }], 0)
+    expect(s.bankEndingBalance).toBe(100)
+    expect(s.transferCount).toBe(0)
   })
 
   it('opens at zero with no feed or no cash account', () => {
