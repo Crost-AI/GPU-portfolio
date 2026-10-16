@@ -92,7 +92,8 @@ services:
       GOTRUE_HOOK_BEFORE_USER_CREATED_URI: pg-functions://postgres/public/hook_before_user_created
       GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
       GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
-      GOTRUE_SMTP_PORT: ${SMTP_PORT:-}
+      # GoTrue parses this as an int whenever it is set, so a blank SMTP_PORT must not reach it.
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-1025}
       GOTRUE_SMTP_USER: ${SMTP_USER:-}
       GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
       GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-}
@@ -206,6 +207,8 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_PUBLIC_URL:-http://localhost:8000}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SITE_URL: ${SITE_URL:-http://localhost:3000}
+        # The older name, still read first by the Google OAuth routes (app/api/auth/google/*).
+        NEXT_PUBLIC_APP_URL: ${SITE_URL:-http://localhost:3000}
         NEXT_PUBLIC_TERMS_URL: ${NEXT_PUBLIC_TERMS_URL:-}
         NEXT_PUBLIC_PRIVACY_URL: ${NEXT_PUBLIC_PRIVACY_URL:-}
         NEXT_PUBLIC_DISABLE_SW: ${NEXT_PUBLIC_DISABLE_SW:-}
@@ -231,18 +234,36 @@ services:
       timeout: 5s
       retries: 30
       start_period: 30s
-    env_file:
-      - path: .env
-        required: false
+    # An allow-list, not the whole .env: the app never sees JWT_SECRET (mints any token,
+    # service_role included), POSTGRES_PASSWORD (shared by the service roles) or
+    # PG_META_CRYPTO_KEY. A bare name passes the .env value when set and nothing when unset; to
+    # give the app another variable, add its name here.
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_PUBLIC_URL:-http://localhost:8000}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
       NEXT_PUBLIC_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      NEXT_PUBLIC_APP_URL: ${SITE_URL:-http://localhost:3000}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?run scripts/gen-keys.sh}
       CRON_SECRET: ${CRON_SECRET:?run scripts/gen-keys.sh}
       CHROME_EXECUTABLE_PATH: /usr/bin/chromium
+      ANTHROPIC_API_KEY:
+      OPENAI_API_KEY:
+      OPENROUTER_API_KEY:
+      RESEND_API_KEY:
+      POSTMARK_SERVER_TOKEN:
+      MAILGUN_API_KEY:
+      MAILGUN_WEBHOOK_SIGNING_KEY:
+      GOOGLE_CLIENT_ID:
+      GOOGLE_CLIENT_SECRET:
+      DEEPGRAM_API_KEY:
+      DEEPGRAM_MODEL:
+      TRANSCRIPTION_WEBHOOK_URL:
+      EMAIL_FROM:
+      AGENT_DESTRUCTIVE_ACTIONS:
+      ENABLE_SETUP_PAGE:
+      CUTOVER_SKIP_VEHICLES:
 
   scheduler:
     build:

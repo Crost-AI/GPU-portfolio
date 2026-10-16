@@ -25,18 +25,26 @@ COPY . .
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_SITE_URL
+ARG NEXT_PUBLIC_APP_URL
 ARG NEXT_PUBLIC_TERMS_URL
 ARG NEXT_PUBLIC_PRIVACY_URL
 ARG NEXT_PUBLIC_DISABLE_SW
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
+    NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
     NEXT_PUBLIC_TERMS_URL=$NEXT_PUBLIC_TERMS_URL \
     NEXT_PUBLIC_PRIVACY_URL=$NEXT_PUBLIC_PRIVACY_URL \
     NEXT_PUBLIC_DISABLE_SW=$NEXT_PUBLIC_DISABLE_SW \
     NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build
+
+# Run as the image's unprivileged `node` user, not root: Chromium renders fund data with
+# --no-sandbox, and this container shares Kong's network namespace. `next start` writes only under
+# .next (its cache); everything else it reads.
+RUN chown -R node:node /app/.next
+USER node
 
 ENV NODE_ENV=production \
     CHROME_EXECUTABLE_PATH=/usr/bin/chromium
