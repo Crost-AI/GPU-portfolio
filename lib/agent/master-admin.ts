@@ -10,6 +10,12 @@
  *
  *   MASTER_ADMIN_EMAILS=taylor@ashgrove.example,taylor@northwind.example
  *
+ * Separate pools are separated by `|`, one per set of people, so each set keeps its own addresses
+ * and so its own roles and grants in each fund. A connection joins the pool that lists its own
+ * address, and never reaches a fund through another pool's addresses:
+ *
+ *   MASTER_ADMIN_EMAILS=jane@fund-a.example,jane@fund-b.example | sam@fund-a.example,sam@fund-b.example
+ *
  * Unset (the default) is a deployment with no pooling at all: every function here returns the
  * credential unchanged.
  *
@@ -36,9 +42,20 @@ export interface MasterAdminPool {
   activeFundId: string
 }
 
+function parseEmails(raw: string): string[] {
+  return [...new Set(raw.split(/[\s,;]+/).map(e => e.trim().toLowerCase()).filter(e => e.includes('@')))]
+}
+
+/** Every listed address, across all pools. */
 export function masterAdminEmails(raw: string | undefined = process.env.MASTER_ADMIN_EMAILS): string[] {
   if (!raw) return []
-  return [...new Set(raw.split(/[\s,;]+/).map(e => e.trim().toLowerCase()).filter(e => e.includes('@')))]
+  return parseEmails(raw)
+}
+
+/** The pools, split on `|`; a list with no `|` is one pool. Pools of fewer than two are dropped. */
+export function masterAdminGroups(raw: string | undefined = process.env.MASTER_ADMIN_EMAILS): string[][] {
+  if (!raw) return []
+  return raw.split('|').map(parseEmails).filter(g => g.length >= 2)
 }
 
 /**
@@ -62,15 +79,20 @@ export async function loadPool(
   admin: SupabaseClient,
   owner: { userId: string; fundId: string; clientId: string },
 ): Promise<MasterAdminPool | null> {
-  const emails = masterAdminEmails()
-  if (emails.length < 2) return null
+  const groups = masterAdminGroups()
+  if (!groups.length) return null
 
-  const { data, error } = await (admin as any).rpc('master_admin_pool', { p_emails: emails })
+  const { data, error } = await (admin as any).rpc('master_admin_pool', { p_emails: groups.flat() })
   if (error) {
     console.error('[master-admin] pool lookup failed:', error.message)
     return null
   }
-  const listed = poolFunds((data ?? []) as any[])
+  const rows = (data ?? []) as { user_id: string; email: string; fund_id: string; fund_name: string; role?: string }[]
+  // The owner's pool is the first that lists their own address; only that pool's addresses count.
+  const ownerEmail = rows.find(r => r.user_id === owner.userId)?.email
+  const group = ownerEmail ? groups.find(g => g.includes(ownerEmail)) : undefined
+  if (!group) return null
+  const listed = poolFunds(rows.filter(r => group.includes(r.email)))
   if (!listed.some(f => f.userId === owner.userId && f.fundId === owner.fundId)) return null
   // A fund whose admin has agent access switched off stays out of reach, as it would for its own
   // connection. Filtering here (not refusing later) keeps a connection from switching into a fund
