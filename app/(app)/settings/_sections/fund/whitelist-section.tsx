@@ -61,7 +61,7 @@ export function WhitelistSection() {
   return (
     <Section title="Signup whitelist">
       <p className="text-xs text-muted-foreground mb-3">
-        Only these emails or domains can create accounts. Use <code className="text-[11px] bg-muted px-1 rounded">*@domain.com</code> to allow an entire domain.
+        Only emails or domains on a fund's list can create accounts. This is your fund's list; other funds keep their own. Use <code className="text-[11px] bg-muted px-1 rounded">*@domain.com</code> to allow an entire domain.
       </p>
 
       {loading ? (
