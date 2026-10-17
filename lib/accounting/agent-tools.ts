@@ -28,10 +28,16 @@ import { importQbJournal, proposeQbAccounts, saveQbMappings } from './quickbooks
 import { journalSource } from './quickbooks/sources'
 import { addChartAccount } from './chart-add'
 import { addPartner, parseAddPartnerInput } from './add-partner'
-import { ignoreBankTransaction, postBankTransaction, setBankTransactionAccount } from './bank-actions'
+import { ignoreBankTransaction, postBankTransaction, restoreBankTransaction, setBankTransactionAccount } from './bank-actions'
 import { mayTouchInvestments } from './investment-access'
 import { runCategorization } from './categorize-run'
-import { bookCapitalCallFromInflow } from './bank-match'
+import { bookCapitalCallFromInflow, bookDistributionFromOutflow, capitalCallCandidates, linkInflowToEntry } from './bank-match'
+import { autoMatchOpenCapital } from './bank-auto-match-run'
+import { loadSettlements } from './capital-calls'
+import { loadSettlementReviews, reviewCapitalSettlement } from './settlement-reviews'
+import { loadK1Dependencies } from '@/lib/tax/year-close'
+import { markReceivedK1 } from '@/lib/tax/mark-received-k1'
+import { unwrap } from '@/lib/service-outcome'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
 import { closeThrough, previewCloseThrough } from './close'
@@ -349,9 +355,78 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   book_capital_call: async ({ admin, fundId, portfolioGroup, userId }, input) => {
-    const result = await bookCapitalCallFromInflow(admin, fundId, portfolioGroup, userId, String(input.bankTransactionId))
+    const result = await bookCapitalCallFromInflow(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), input?.lpEntityId ? String(input.lpEntityId) : null)
     if ('error' in result) throw new Error(result.error)
     return result
+  },
+
+  // The exception work automation leaves behind: matching wires to what was declared, linking a
+  // row to an entry already on the books, restoring a row set aside by mistake, settling a line
+  // paid in pieces, and chasing the K-1s the holdings owe. Each is the bank, settlements or tax
+  // page's own function, so a rule added there reaches chat too.
+  book_distribution_from_bank: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const perLp = input?.perLp && typeof input.perLp === 'object'
+      ? new Map<string, number>(Object.entries(input.perLp).map(([k, v]) => [k, Number(v)]))
+      : null
+    const result = await bookDistributionFromOutflow(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), perLp, input?.lpEntityId ? String(input.lpEntityId) : null)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  auto_match_bank_capital: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const ids = Array.isArray(input?.bankTransactionIds) ? input.bankTransactionIds.map(String) : undefined
+    const result = await autoMatchOpenCapital(admin, fundId, portfolioGroup, userId, ids)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  bank_call_candidates: async ({ admin, fundId, portfolioGroup }) =>
+    capitalCallCandidates(admin, fundId, portfolioGroup),
+
+  link_bank_transaction: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const result = await linkInflowToEntry(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), String(input?.entryId ?? ''), userId)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  restore_bank_transaction: async ({ admin, fundId, portfolioGroup }, input) => {
+    const result = await restoreBankTransaction(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''))
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  capital_settlements: async ({ admin, fundId, portfolioGroup }, input) => {
+    const kind = input?.kind
+    if (kind !== 'call' && kind !== 'distribution') throw new Error('kind must be call or distribution')
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const [payments, reviews] = await Promise.all([
+      loadSettlements(admin, fundId, portfolioGroup, kind === 'call' ? 'receivable' : 'payable'),
+      loadSettlementReviews(admin, fundId, vehicleId, kind),
+    ])
+    return { payments, reviews }
+  },
+
+  review_capital_settlement: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`"${portfolioGroup}" is not in this fund's vehicle registry`)
+    const result = await reviewCapitalSettlement(admin, fundId, vehicleId, userId, input)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  holding_k_ones: async ({ admin, fundId, portfolioGroup }, input) => {
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
+    return loadK1Dependencies(admin, fundId, vehicleId, taxYear)
+  },
+
+  mark_holding_k_one: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    if (!userId) throw new Error('Recording a K-1 needs a signed-in member.')
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
+    return unwrap(await markReceivedK1(admin, fundId, userId, vehicleId, input))
   },
 
   set_bank_transaction_account: async ({ admin, fundId, portfolioGroup }, input) => {

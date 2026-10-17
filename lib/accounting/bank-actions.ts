@@ -1,4 +1,5 @@
-// Acting on one staged bank transaction: re-point its draft to an account, or post it.
+// Acting on one staged bank transaction: re-point its draft to an account, post it, set it aside
+// or restore it.
 // Shared by the bank page (app/api/accounting/bank, actions 'setAccount' and 'post') and the
 // agent's set_bank_transaction_account / post_bank_transaction tools, so both go through one path
 // with the same guards.
@@ -252,6 +253,63 @@ export async function ignoreBankTransaction(
   }
   await admin.from('bank_transactions' as any).update({ status: 'ignored' }).eq('id', id).eq('fund_id', fundId)
   return { ok: true, status: 'ignored' }
+}
+
+/**
+ * Bring an ignored transaction back to draft, un-voiding its entry, so it can be edited and
+ * posted again: the bank page's Restore, shared with the agent's restore_bank_transaction tool.
+ * Refused for an entry in a closed period (reopen it first) and for an investment's entry. A row
+ * set aside while awaiting a match with an existing entry goes back to unmatched.
+ */
+export async function restoreBankTransaction(
+  admin: SupabaseClient, fundId: string, group: string, id: string,
+): Promise<{ ok: true; status: 'drafted' | 'unmatched' } | BankActionError> {
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  const { data: txn } = await admin
+    .from('bank_transactions' as any)
+    .select('id, journal_entry_id, status, raw')
+    .eq('id', id)
+    .eq('fund_id', fundId)
+    .eq('vehicle_id', vehicleId)
+    .maybeSingle()
+  if (!txn) return { error: 'Transaction not found', status: 404 }
+  const entryId = (txn as any).journal_entry_id ?? null
+  if (entryId && underReview((txn as any).raw)) {
+    return { error: 'This bank row is linked to an existing journal entry. Manage that entry from the Journal.', status: 400 }
+  }
+
+  if (entryId) {
+    let investment = false
+    try {
+      const { data: e, error: eErr } = await admin.from('journal_entries' as any).select('id, status, reversed_by, source_ref')
+        .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('id', entryId).maybeSingle()
+      if (eErr) throw new Error(eErr.message)
+      investment = !!e && !!vehicleId && await entryCarriesInvestments(admin, fundId, vehicleId, e as any)
+    } catch (e) {
+      console.error('[bank-entry-ownership]', e instanceof Error ? e.message : e)
+      return { error: 'Could not check whether this row is an investment payment, so nothing was changed. Try again.', status: 500 }
+    }
+    if (investment) return { error: BANK_ROW_IS_AN_INVESTMENT, status: 400 }
+  }
+
+  if (underReview((txn as any).raw) && !entryId) {
+    const { error } = await admin.from('bank_transactions' as any).update({ status: 'unmatched' }).eq('id', id).eq('fund_id', fundId)
+    if (error) return { error: `The bank row could not be restored: ${error.message}`, status: 500 }
+    return { ok: true, status: 'unmatched' }
+  }
+  if ((txn as any).status !== 'ignored') return { error: 'Only an ignored transaction can be restored', status: 400 }
+  if (entryId) {
+    const { data: entry } = await admin.from('journal_entries' as any).select('entry_date').eq('book', ACTUAL_BOOK).eq('id', entryId).eq('fund_id', fundId).maybeSingle()
+    const date = (entry as any)?.entry_date
+    if (date) {
+      const closed = await closedPeriodRanges(admin, fundId, group)
+      if (dateInAnyClosedPeriod(closed, date)) return { error: 'That entry is in a closed period — reopen it to edit.', status: 400 }
+    }
+    const { error } = await admin.from('journal_entries' as any).update({ status: 'draft', posted_at: null }).eq('id', entryId).eq('fund_id', fundId)
+    if (error) return { error: `The entry could not be restored: ${error.message}`, status: 500 }
+  }
+  await admin.from('bank_transactions' as any).update({ status: 'drafted' }).eq('id', id).eq('fund_id', fundId)
+  return { ok: true, status: 'drafted' }
 }
 
 /** Post one drafted transaction's entry and mark the row reconciled. */
