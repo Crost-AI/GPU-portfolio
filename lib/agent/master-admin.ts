@@ -3,9 +3,10 @@
  *
  * One email is one fund, and that does not change. MASTER_ADMIN_EMAILS lists addresses whose
  * funds are pooled for the CONNECTOR ONLY: a connection authorized by any listed address can
- * switch (`use_fund`) into the fund of any other listed address that is an admin there, and then
- * acts in that fund as that address — its role, its grants, its audit trail. The web app never
- * sees any of this.
+ * switch (`use_fund`) into the fund of any other listed address that is a member there, and then
+ * acts in that fund as that address — its role, its grants, its audit trail. Any role counts: the
+ * list itself is the gate, and in each fund the connection can do only what that member can. The
+ * web app never sees any of this.
  *
  *   MASTER_ADMIN_EMAILS=taylor@ashgrove.example,taylor@northwind.example
  *
@@ -21,7 +22,7 @@ import { agentApiEnabled } from '@/lib/oauth/enabled'
 export interface PoolFund {
   fundId: string
   fundName: string
-  /** The listed address that is this fund's admin, and so who the connection acts as there. */
+  /** The listed address that is this fund's member, and so who the connection acts as there. */
   userId: string
   email: string
 }
@@ -41,12 +42,13 @@ export function masterAdminEmails(raw: string | undefined = process.env.MASTER_A
 }
 
 /**
- * Pool funds, one per fund. If two listed addresses both administer one fund, the first by email
- * acts there, so the choice is stable.
+ * Pool funds, one per fund. If two listed addresses are both members of one fund, an admin acts
+ * there ahead of a non-admin, then the first by email, so the choice is stable.
  */
-export function poolFunds(rows: { user_id: string; email: string; fund_id: string; fund_name: string }[]): PoolFund[] {
+export function poolFunds(rows: { user_id: string; email: string; fund_id: string; fund_name: string; role?: string }[]): PoolFund[] {
   const byFund = new Map<string, PoolFund>()
-  for (const r of [...rows].sort((a, b) => a.email.localeCompare(b.email))) {
+  const rank = (r: { role?: string }) => (r.role === undefined || r.role === 'admin' ? 0 : 1)
+  for (const r of [...rows].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email))) {
     if (!byFund.has(r.fund_id)) byFund.set(r.fund_id, { fundId: r.fund_id, fundName: r.fund_name, userId: r.user_id, email: r.email })
   }
   return [...byFund.values()].sort((a, b) => a.fundName.localeCompare(b.fundName))
@@ -54,8 +56,7 @@ export function poolFunds(rows: { user_id: string; email: string; fund_id: strin
 
 /**
  * The pool this credential belongs to, or null when it isn't in one. A credential is in the pool
- * when its owner is a listed address administering its own fund, so a listed address that is only
- * a member somewhere reaches nothing extra.
+ * when its owner is a listed address acting for its own fund.
  */
 export async function loadPool(
   admin: SupabaseClient,

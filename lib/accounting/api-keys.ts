@@ -140,7 +140,7 @@ export async function resolveAgentAuth(admin: SupabaseClient, req: Request): Pro
     }
 
     // Master admin: the connection may be working in another pooled fund. There it acts as that
-    // fund's listed admin, with that membership's role re-read live like any other.
+    // fund's listed member, with that membership's role re-read live like any other.
     const { loadPool } = await import('@/lib/agent/master-admin')
     const pool = await loadPool(admin, { userId: resolved.userId, fundId: resolved.fundId, clientId: resolved.clientId })
     if (!pool) return home

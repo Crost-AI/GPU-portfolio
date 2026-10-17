@@ -35,6 +35,14 @@ describe('poolFunds', () => {
       ['Ashgrove Capital', 't@ashgrove.example'],
     ])
   })
+
+  it('prefers an admin over a plain member when two listed addresses share a fund', () => {
+    const funds = poolFunds([
+      { ...ROWS[0], role: 'member' },
+      { user_id: 'u-z', email: 'z@northwind.example', fund_id: 'f-nw', fund_name: 'Northwind Holdings', role: 'admin' },
+    ])
+    expect(funds.map(f => f.email)).toEqual(['z@northwind.example'])
+  })
 })
 
 describe('loadPool', () => {
@@ -59,6 +67,13 @@ describe('loadPool', () => {
   it('ignores a stored fund that has left the pool', async () => {
     process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example,t@northwind.example'
     expect((await loadPool(fakeAdmin(ROWS, 'f-gone'), owner))?.activeFundId).toBe('f-lac')
+  })
+
+  it('pools a listed address that is a member but not an admin', async () => {
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example,t@northwind.example'
+    const rows = [{ ...ROWS[0], role: 'admin' }, { ...ROWS[1], role: 'member' }]
+    const pool = await loadPool(fakeAdmin(rows), owner)
+    expect(pool?.funds.map(f => f.fundId)).toEqual(['f-nw', 'f-rb'])
   })
 
   it('leaves out a fund with agent access switched off', async () => {
