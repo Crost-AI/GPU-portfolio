@@ -158,7 +158,7 @@ function OnboardingContent() {
       }
     }
 
-    // No existing fund — check for domain-matching fund to join
+    // No existing fund — check for a fund that listed this address or claims its domain
     const res = await fetch('/api/onboarding/check-domain')
     if (res.ok) {
       const data = await res.json()
@@ -311,7 +311,7 @@ function JoinFundScreen({
         <div className="text-center">
           <h1 className="text-2xl font-semibold tracking-tight">Welcome</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            We found a fund matching your email domain.
+            We found a fund you can ask to join.
           </p>
         </div>
 

@@ -1,17 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { claimableEmailDomain } from '@/lib/onboarding/wizard'
+import { joinableFunds } from '@/lib/onboarding/joinable-funds'
 
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  // A consumer mailbox domain (gmail.com, outlook.com …) identifies no organisation: never offer to
-  // join a fund on it, even one created before funds stopped claiming such domains.
-  const domain = claimableEmailDomain(user.email)
-  if (!domain) return NextResponse.json({ fund: null })
 
   const admin = createAdminClient()
 
@@ -24,12 +19,8 @@ export async function GET() {
 
   if (existing) return NextResponse.json({ fund: null })
 
-  const { data: fund } = await admin
-    .from('funds')
-    .select('id, name')
-    .eq('email_domain', domain)
-    .limit(1)
-    .maybeSingle()
-
+  // The fund that listed this address, or its domain, or claims its domain. A consumer mailbox
+  // domain (gmail.com …) only matches through an exact address — see joinableFunds.
+  const [fund] = await joinableFunds(admin, user.email)
   return NextResponse.json({ fund: fund ?? null })
 }
