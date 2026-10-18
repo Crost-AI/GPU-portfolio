@@ -177,26 +177,53 @@ describe('declareDistribution: distributable_cash', () => {
     expect(s.entries).toHaveLength(3)
   })
 
+  /** A Y3 declaration body straight from the preview: the only carry lines the guard accepts. */
+  async function y3Input(m: any, requestKey: string) {
+    const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, F8.distributionDates[2], 'waterfall', { available: F1.distributableCents[2], reserve: 0 })
+    if ('error' in p) throw new Error(p.error)
+    return {
+      requestKey, distributionDate: F8.distributionDates[2], lines: p.lines, carryLines: p.carryLines,
+      splitMethod: 'waterfall' as const, tiers: p.tiers, available: p.available, reserve: p.reserve, cash: p.cash,
+    }
+  }
+
   it('splits the realised profit share across two investors by contributed capital, tied to the cent', async () => {
-    s.postings = [at('a', -1_000_000, 'capital_call', '2027-01-01'), at('b', -435_500, 'capital_call', '2027-01-01')]
+    // F6's two investors on the Base books through Y2: Y3 pays 156,052.87 of carry.
+    const engine = engineF1()
+    s.postings = postingsBefore(2, engine).flatMap(p => p.lpEntityId !== 'lp' ? [p] : [
+      { ...p, lpEntityId: 'a', amount: roundTo(p.amount * 1_000_000 / CAPITAL) },
+      { ...p, lpEntityId: 'b', amount: roundTo(p.amount - roundTo(p.amount * 1_000_000 / CAPITAL)) },
+    ])
     const { m } = admin()
-    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
-      requestKey: 'two', distributionDate: '2030-01-01', lines: [{ lpEntityId: 'a', amount: 10 }, { lpEntityId: 'b', amount: 5 }],
-      carryLines: [{ lpEntityId: 'mgr', amount: 156_052.87 }], splitMethod: 'waterfall',
-    })
-    expect(out).not.toHaveProperty('error')
+    const input = await y3Input(m, 'two')
+    expect(input.carryLines).toEqual([{ lpEntityId: 'mgr', amount: F1.y3Cents.carry }])
+    expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', input)).not.toHaveProperty('error')
     const legs = s.entries[2].postings.map((p: any) => [p.lpEntityId, p.amount])
-    expect(legs).toEqual([['a', 108_709.77], ['b', 47_343.1], ['mgr', -156_052.87]])
+    // apportionCents(15_605_287, [100_000_000, 43_550_000]): A 10_870_976.66 → .77 takes the cent.
+    expect(legs).toEqual([['a', 108_709.77], ['b', 47_343.1], ['mgr', -F1.y3Cents.carry]])
+  })
+
+  it.each<[string, (i: any) => any]>([
+    ['carry lines to someone who is not a recipient', i => ({ ...i, carryLines: [{ lpEntityId: 'lp2', amount: i.carryLines[0].amount }] })],
+    ['carry lines that do not total the waterfall', i => ({ ...i, carryLines: [{ lpEntityId: 'mgr', amount: roundTo(i.carryLines[0].amount + 0.01) }] })],
+    ['carry lines on a distribution the waterfall gives no carry', i => ({ ...i, distributionDate: F8.distributionDates[0], available: 1_000, reserve: 0, lines: [{ lpEntityId: 'lp', amount: 990 }], carryLines: [{ lpEntityId: 'mgr', amount: 10 }] })],
+  ])('refuses %s before writing anything', async (_, edit) => {
+    s.postings = postingsBefore(2, engineF1())
+    const { m, rpc } = admin()
+    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', edit(await y3Input(m, 'bad')))
+    expect(out).toHaveProperty('error')
+    expect((out as any).error).toMatch(/recipients|do not match the waterfall/)
+    expect(s.entries).toEqual([])
+    expect(m.tables.distributions).toEqual([])
+    expect(rpc).not.toHaveBeenCalled()
   })
 
   it('a failed register insert discards all three drafts', async () => {
     s.postings = postingsBefore(2, engineF1())
     const { m, rpc } = admin()
+    const input = await y3Input(m, 'fail')
     m.failNext('distributions', 'insert', 'boom')
-    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
-      requestKey: 'fail', distributionDate: '2030-01-01', lines: [{ lpEntityId: 'lp', amount: 10 }], carryLines: [{ lpEntityId: 'mgr', amount: 3 }], splitMethod: 'waterfall',
-    })
-    expect(out).toHaveProperty('error')
+    expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', input)).toHaveProperty('error')
     const discard = rpc.mock.calls.find(c => c[0] === 'discard_unregistered_capital_drafts')![1]
     expect(discard.p_entry_ids).toEqual(['entry-1', 'entry-2', 'entry-3'])
   })
@@ -204,11 +231,9 @@ describe('declareDistribution: distributable_cash', () => {
   it('a failed realised entry discards the two drafts before it', async () => {
     s.postings = postingsBefore(2, engineF1())
     const { m, rpc } = admin()
+    const input = await y3Input(m, 'fail3')
     s.failOnCall = 3
-    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
-      requestKey: 'fail3', distributionDate: '2030-01-01', lines: [{ lpEntityId: 'lp', amount: 10 }], carryLines: [{ lpEntityId: 'mgr', amount: 3 }], splitMethod: 'waterfall',
-    })
-    expect(out).toEqual({ error: 'persist failed' })
+    expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', input)).toEqual({ error: 'persist failed' })
     expect(rpc.mock.calls.find(c => c[0] === 'discard_unregistered_capital_drafts')![1].p_entry_ids).toEqual(['entry-1', 'entry-2'])
     expect(m.tables.distributions).toEqual([])
   })

@@ -4,13 +4,20 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 
 // The routes PR B adds or widens for a GPU SPV's distributable-cash waterfall.
 
-const s = vi.hoisted(() => ({ m: null as any, postings: [] as any[] }))
+const s = vi.hoisted(() => ({ m: null as any, postings: [] as any[], mancoWrite: true, sees: ['v1', 'mc', 'v2'] as string[] }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
 vi.mock('@/lib/api-helpers', async orig => ({ ...(await orig<any>()), assertWriteAccess: async () => ({ fundId: 'f', userId: 'u', role: 'admin' }), assertReadAccess: async () => ({ fundId: 'f', userId: 'u', role: 'admin' }) }))
 vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: async () => 'GPU I' }))
 vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: async () => 'v1' }))
 vi.mock('@/lib/accounting/capital-source', () => ({ loadCapitalPostings: async () => ({ postings: s.postings }) }))
+// The caller's grants: accounting write always (the route's gate); management_company write and the
+// vehicles it can see vary per test.
+vi.mock('@/lib/access/effective', async orig => ({
+  ...(await orig<any>()),
+  loadAccessContext: async () => ({ vehicles: { all: false, ids: s.sees } }),
+  hasAccess: (_ctx: unknown, domain: string, need: string) => domain !== 'management_company' || need !== 'write' || s.mancoWrite,
+}))
 vi.mock('@/lib/accounting/load', async orig => ({ ...(await orig<any>()), loadEntityNames: async () => new Map([['a', 'Alpha LP'], ['b', 'Beta LP']]) }))
 
 import { PUT as putTerms } from '@/app/api/accounting/waterfall-terms/route'
@@ -24,6 +31,8 @@ const cashRow = { fund_id: 'f', vehicle_id: 'v1', kind: 'distributable_cash', ca
 
 beforeEach(() => {
   s.postings = []
+  s.mancoWrite = true
+  s.sees = ['v1', 'mc', 'v2']
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v1', fund_id: 'f', name: 'GPU I', kind: 'gpu_spv' },
@@ -87,9 +96,29 @@ describe('/api/accounting/fee-terms', () => {
     })
   })
 
+  it('naming a payee needs management_company write and sight of it: 403 otherwise, nothing written', async () => {
+    s.mancoWrite = false
+    const denied = await put({ payeeVehicleId: 'mc' })
+    expect(denied.status).toBe(403)
+    expect((await denied.json()).error).toMatch(/management company/)
+    s.mancoWrite = true
+    s.sees = ['v1']
+    expect((await put({ payeeVehicleId: 'mc' })).status).toBe(403)
+    expect(s.m.tables.vehicle_fee_terms).toEqual([])
+    // Another fund's vehicle is not one the caller can see: refused before its kind is even read.
+    expect((await put({ payeeVehicleId: 'other' })).status).toBe(403)
+    s.sees = ['v1', 'mc']
+    expect((await put({ payeeVehicleId: 'mc' })).status).toBe(200)
+  })
+
+  it('without a payee, accounting write alone is enough', async () => {
+    s.mancoWrite = false
+    expect((await put({})).status).toBe(200)
+    expect(s.m.tables.vehicle_fee_terms[0]).toMatchObject({ payee_vehicle_id: null, annual_rate: 0.05 })
+  })
+
   it.each<[string, object, RegExp]>([
     ['a payee that is not a management company', { payeeVehicleId: 'v2' }, /management company/],
-    ['a payee in another fund', { payeeVehicleId: 'other' }, /management company/],
     ['the vehicle itself as payee', { payeeVehicleId: 'v1' }, /itself/],
     ['an unknown basis', { basis: 'profit' }, /basis/],
     ['a rate of 1', { annualRate: 1 }, /rate/],

@@ -23,6 +23,7 @@ import { loadResolvedCommitments } from './terms'
 // Reopening voids exactly those entries — nothing else — so a mistake is reversible
 // without hand-unwinding fifteen capital postings.
 
+import { accrueGrossRevenueFee, loadFeeTerms } from '@/lib/gpu/fee'
 import { recordAudit } from '@/lib/audit/events'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadPostedLedger, loadOwnership, loadEntityNames, fetchAllRows } from './load'
@@ -1292,6 +1293,34 @@ export async function closePeriodWithAllocation(
     return { error: `Note interest accrual failed: ${interestResult.error}` }
   }
   entryIds.push(...interestResult.entryIds)
+
+  // 2b'. ── GPU fleet (P2) ── TRUE UP THE GROSS-REVENUE FEE for each month in the period, for a
+  // vehicle whose fee terms say so (a GPU SPV). Before carry, because it is an expense; each month
+  // posts only the difference from what is booked under its ref, so re-closing posts nothing.
+  // The fee entry allocates to partners as it posts.
+  if (preview.mode !== 'owner') {
+    let feeTerms
+    try {
+      feeTerms = await loadFeeTerms(admin, fundId, group)
+    } catch (e) {
+      feeTerms = { error: e instanceof Error ? e.message : String(e) }
+    }
+    if (feeTerms && 'error' in feeTerms) {
+      await reopenPeriodWithReversal(admin, fundId, group, periodId)
+      await admin.from('fiscal_periods' as any).delete().eq('id', periodId).eq('fund_id', fundId)
+      return { error: `Management fee accrual failed: ${feeTerms.error}` }
+    }
+    if (feeTerms?.basis === 'gross_revenue') {
+      for (const w of monthWindows(periodStart, periodEnd)) {
+        const fee = await accrueGrossRevenueFee(admin, fundId, group, userId, w.end.slice(0, 7))
+        if ('error' in fee) {
+          await reopenPeriodWithReversal(admin, fundId, group, periodId)
+          await admin.from('fiscal_periods' as any).delete().eq('id', periodId).eq('fund_id', fundId)
+          return { error: `Management fee accrual failed (${w.label}): ${fee.error}` }
+        }
+      }
+    }
+  }
 
   // 2c. ACCRUE CARRIED INTEREST — last, and only after every other category has landed.
   //

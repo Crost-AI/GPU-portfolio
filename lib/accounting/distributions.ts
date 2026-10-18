@@ -285,6 +285,35 @@ export async function previewDistribution(
 }
 
 /**
+ * Why a distributable-cash declaration's carry lines cannot be booked, or null. Plain input
+ * validation, like validateCharacter: the lines must go to the vehicle's recipients and total what
+ * the waterfall gives the manager (carry + its return-of-capital share) for the same cash, reserve
+ * and contingency, recomputed here from the books. The realised entry moves investor capital by
+ * that total, so it is not taken on the caller's word.
+ */
+function cashCarryMismatch(
+  postings: CapitalPosting[],
+  terms: VehicleCarryTerms,
+  input: DeclareDistributionInput,
+  perRecipient: Map<string, number>,
+  declaredTotal: number,
+  carryTotal: number,
+): string | null {
+  const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
+  for (const id of Array.from(perRecipient.keys())) {
+    if (!recipientIds.has(id)) return 'Carry lines can only go to the vehicle\'s profit-share recipients'
+  }
+  const total = input.available != null && input.reserve != null
+    ? roundCents(Number(input.available) - Number(input.reserve))
+    : declaredTotal
+  const h = loadWaterfallHistory(postings, recipientIds, input.distributionDate)
+  const split = splitDistribution({
+    total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,
+  })
+  return roundCents(split.tiers.toGP) === carryTotal ? null : 'The carry lines do not match the waterfall'
+}
+
+/**
  * The profit share REALISED by a distributable-cash declaration: Dr each investor's capital,
  * Cr each recipient's, so the carry_distribution that pays the recipient nets its account to zero
  * and each investor's statement shows the profit share it bore. A GPU SPV accrues no carry at the
@@ -293,16 +322,13 @@ export async function previewDistribution(
  * The investors bear it on the same basis as the profit split: contributed capital, cents placed
  * with apportionCents over investors sorted by id. It ties to the carry lines to the cent.
  */
-async function realisedCarryPlan(
-  admin: SupabaseClient,
-  fundId: string,
-  group: string,
+function realisedCarryPlan(
+  postings: CapitalPosting[],
   terms: VehicleCarryTerms,
   perRecipient: Map<string, number>,
   asOf: string,
-): Promise<{ perLp: Map<string, number> } | { error: string }> {
+): { perLp: Map<string, number> } | { error: string } {
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
-  const { postings } = await loadCapitalPostings(admin, fundId, group)
   const contributed = new Map<string, number>()
   for (const c of loadWaterfallHistory(postings, recipientIds, asOf).contributions) {
     if (c.date > asOf) continue
@@ -386,7 +412,7 @@ export async function declareDistribution(
     // share must realise it here, or the recipient's capital goes negative by what it was paid
     // and the investors' stays overstated. Worked out before anything is written.
     let realised: Map<string, number> | null = null
-    if (perRecipient.size > 0) {
+    if (perRecipient.size > 0 || cash) {
       let terms: VehicleCarryTerms
       try {
         terms = await loadCarryTerms(admin, fundId, group)
@@ -394,9 +420,14 @@ export async function declareDistribution(
         return { error: e instanceof Error ? e.message : String(e) }
       }
       if (terms.kind === 'distributable_cash') {
-        const plan = await realisedCarryPlan(admin, fundId, group, terms, perRecipient, input.distributionDate)
-        if ('error' in plan) return plan
-        realised = plan.perLp
+        const { postings } = await loadCapitalPostings(admin, fundId, group)
+        const mismatch = cashCarryMismatch(postings, terms, input, perRecipient, declaredTotal, carryTotal)
+        if (mismatch) return { error: mismatch }
+        if (perRecipient.size > 0) {
+          const plan = realisedCarryPlan(postings, terms, perRecipient, input.distributionDate)
+          if ('error' in plan) return plan
+          realised = plan.perLp
+        }
       }
     }
 

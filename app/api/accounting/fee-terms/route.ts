@@ -15,6 +15,8 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { DEFAULT_FEE_REVENUE_SUBTYPES, FEE_BASES, FEE_FREQUENCIES, loadFeeTerms } from '@/lib/gpu/fee'
 import { MANCO_KIND } from '@/lib/vehicle-kinds'
+import { hasAccess, loadAccessContext } from '@/lib/access/effective'
+import { canSeeVehicle } from '@/lib/access/scope'
 import { dbError } from '@/lib/api-error'
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -75,9 +77,16 @@ export async function PUT(req: NextRequest) {
   }
 
   // The payee is the management company the fee is booked to, intercompany: one of this fund's.
+  // Naming one makes the close post on the management company's books, so this payload straddles
+  // domains: the route's gate is `accounting`, and the payee needs management_company write and
+  // sight of that entity as well (CLAUDE.md, "the registry maps ONE domain per route").
   const payeeVehicleId = body?.payeeVehicleId || null
   if (payeeVehicleId) {
     if (payeeVehicleId === vehicleId) return NextResponse.json({ error: 'A vehicle cannot pay its fee to itself.' }, { status: 400 })
+    const access = await loadAccessContext(admin, gate.fundId, user.id, gate.role)
+    if (!hasAccess(access, 'management_company', 'write') || !canSeeVehicle(access, payeeVehicleId)) {
+      return NextResponse.json({ error: 'Booking the fee to a management company needs write access to that management company.' }, { status: 403 })
+    }
     const { data: payee, error: payeeErr } = await admin.from('fund_vehicles' as any)
       .select('id, kind').eq('fund_id', gate.fundId).eq('id', payeeVehicleId).maybeSingle()
     if (payeeErr) return dbError(payeeErr, 'fee-terms-payee')
