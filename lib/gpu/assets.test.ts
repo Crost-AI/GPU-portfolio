@@ -296,6 +296,13 @@ describe('the asset lifecycle on the ledger', () => {
     expect(stored().status).toBe('disposed')
   })
 
+  it('an entry under the asset\'s ref that the fleet did not book (another source type) is not adopted (#82)', async () => {
+    created({ status: 'in_service' })
+    s.m.tables.journal_entries.push({ id: 'je-forged', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2027-01-05', source_type: 'adjusting', source_ref: `gpu-asset:${ASSET_ID}:purchase` })
+    expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: expect.stringContaining('was not booked by the fleet') })
+    expect(stored().purchase_entry_id).toBeNull()
+  })
+
   it('a reversed purchase or disposal is not adopted', async () => {
     created({ status: 'in_service' })
     s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
@@ -305,7 +312,7 @@ describe('the asset lifecycle on the ledger', () => {
       postings: s.m.tables.journal_postings.filter((p: any) => p.journal_entry_id === id).map((p: any) => ({ accountId: p.account_id, amount: -p.amount, currency: 'USD' })),
     })
     await reverse('je-1', '2027-01-06')
-    expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: expect.stringContaining('was booked and then reversed') })
+    expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: expect.stringContaining('Void both the entry and its reversal') })
     expect(stored().purchase_entry_id).toBeNull()
   })
 

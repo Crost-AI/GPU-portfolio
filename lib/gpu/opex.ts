@@ -84,6 +84,63 @@ export function insurancePeriods(premium: number, startDate: string, months: num
   return out
 }
 
+/** The contract terms a caller may set. Fee, escalator and dates are fixed once a schedule exists. */
+export type ContractInput = Partial<Pick<DatacenterContractRow,
+  'facility' | 'vendor_id' | 'start_date' | 'end_date' | 'monthly_fee' | 'escalator_pct' | 'escalates_on' | 'first_escalation_date'
+  | 'power_kw' | 'includes_connectivity' | 'deposit' | 'allocation' | 'status'>>
+
+export const CONTRACT_TERMS = ['start_date', 'monthly_fee', 'escalator_pct', 'escalates_on', 'first_escalation_date'] as const
+
+/** Validate a contract create (`partial: false`: facility, start_date and monthly_fee required) or update. */
+export function parseContractInput(body: any, partial: boolean): { value: ContractInput } | { error: string } {
+  const b = body ?? {}
+  const out: ContractInput = {}
+  const has = (k: string) => b[k] !== undefined
+  const date = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+  const nonNeg = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0
+  if (has('facility') || !partial) {
+    if (typeof b.facility !== 'string' || !b.facility.trim()) return { error: 'facility is required' }
+    out.facility = b.facility.trim()
+  }
+  for (const k of ['start_date', 'end_date', 'first_escalation_date'] as const) {
+    if (!has(k) && !(k === 'start_date' && !partial)) continue
+    if (k !== 'start_date' && b[k] === null) { out[k] = null; continue }
+    if (!date(b[k])) return { error: `${k} must be YYYY-MM-DD` }
+    out[k] = b[k]
+  }
+  for (const k of ['monthly_fee', 'escalator_pct', 'deposit', 'power_kw'] as const) {
+    if (!has(k) && !(k === 'monthly_fee' && !partial)) continue
+    if ((k === 'deposit' || k === 'power_kw') && b[k] === null) { out[k] = null; continue }
+    if (!nonNeg(b[k])) return { error: `${k} must be a number, zero or more` }
+    out[k] = b[k]
+  }
+  if (has('escalates_on')) {
+    if (!['anniversary', 'calendar_year'].includes(b.escalates_on)) return { error: 'escalates_on must be anniversary or calendar_year' }
+    out.escalates_on = b.escalates_on
+  }
+  if (has('allocation')) {
+    if (!['none', 'gpu_count'].includes(b.allocation)) return { error: 'allocation must be none or gpu_count' }
+    out.allocation = b.allocation
+  }
+  if (has('status')) {
+    if (!['active', 'ended'].includes(b.status)) return { error: 'status must be active or ended' }
+    out.status = b.status
+  }
+  if (has('includes_connectivity')) {
+    if (typeof b.includes_connectivity !== 'boolean') return { error: 'includes_connectivity must be true or false' }
+    out.includes_connectivity = b.includes_connectivity
+  }
+  if (has('vendor_id')) {
+    if (b.vendor_id !== null && typeof b.vendor_id !== 'string') return { error: 'vendor_id must be a string' }
+    out.vendor_id = b.vendor_id
+  }
+  if (out.start_date && out.end_date && out.end_date < out.start_date) return { error: 'end_date must be on or after start_date' }
+  return { value: out }
+}
+
+/** The vehicle's accrual accounts for a datacenter schedule: Dr 5100 / Cr 2000. */
+export const DATACENTER_CODES = { expense: '5100', offset: '2000' } as const
+
 // ── Writing the schedules ──
 
 interface ScheduleTarget {
@@ -235,8 +292,18 @@ export async function createInsuranceSchedules(
   t: ScheduleTarget,
   p: { key: string; name: string; premium: number; startDate: string; months: number },
 ): Promise<string[] | ScheduleRefusal> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(p.key ?? '')) return { error: 'key must be 1\u201364 letters, digits, hyphens or underscores' }
+  const periods = insurancePeriods(p.premium, p.startDate, p.months)
+  // A policy key names ONE policy: reusing it with a different start is refused, not a second policy.
+  const prefix = `fleet:insurance:${p.key}:`
+  const { data: used, error } = await (admin as any).from('accounting_schedules').select('id, source_ref, start_date')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).like('source_ref', `${prefix}%`).order('start_date').order('id')
+  if (error) throw error
+  const starts = new Set(periods.map(x => x.start))
+  const other = ((used as any[]) ?? []).find(r => String(r.source_ref).startsWith(prefix) && !starts.has(r.start_date))
+  if (other) return { error: `Policy key ${p.key} is already used for a schedule starting ${other.start_date} (schedule ${other.id}). Use a new key for a new policy.` }
   const ids: string[] = []
-  for (const period of insurancePeriods(p.premium, p.startDate, p.months)) {
+  for (const period of periods) {
     const row = await insertSchedule(admin, t, p.name, period, fleetScheduleRef.insurance(p.key, period.start), true)
     if ('error' in row) return row
     ids.push(row.id)

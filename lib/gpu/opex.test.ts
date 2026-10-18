@@ -180,6 +180,15 @@ describe('schedules the close proposes', () => {
     expect(m.tables.accounting_schedules).toHaveLength(1)
   })
 
+  it('a policy key reused with a different start date is refused', async () => {
+    const insurance = { key: 'POL-7', name: 'Fleet insurance', premium: 12_000, startDate: '2027-01-01', months: 12 }
+    await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { ...insurance, startDate: '2027-02-01' }))
+      .toEqual({ error: expect.stringContaining('already used for a schedule starting 2027-01-01') })
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { ...insurance, key: 'bad key' })).toHaveProperty('error')
+    expect(m.tables.accounting_schedules).toHaveLength(1)
+  })
+
   it('two policies starting the same month get two schedules', async () => {
     const a = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { key: 'POL-A', name: 'Fleet insurance', premium: 12_000, startDate: '2027-01-01', months: 12 })
     const b = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { key: 'POL-B', name: 'Fleet insurance', premium: 12_000, startDate: '2027-01-01', months: 12 })

@@ -54,7 +54,7 @@ export async function disposeAsset(
   // accounts), one still in flight (refuse; nothing changes), or one reversed since (refuse).
   const existing = await liveEntryByRef(admin, ctx, gpuSourceRef.disposal(asset.id))
   if (existing) {
-    const ok = await adoptable(admin, ctx, gpuSourceRef.disposal(asset.id), existing)
+    const ok = await adoptable(admin, ctx, gpuSourceRef.disposal(asset.id), existing, 'realized_gain')
     return 'ok' in ok ? recordFrom(existing) : ok
   }
 

@@ -1,0 +1,196 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextRequest } from 'next/server'
+import { memoryAdmin } from '@/tests/helpers/memory-admin'
+import { GPU_SPV_CHART, DEFAULT_CHART } from '@/lib/accounting/chart'
+import { DEFAULT_FEATURE_VISIBILITY } from '@/lib/types/features'
+import type { JournalEntry } from '@/lib/accounting/types'
+
+/**
+ * ── GPU fleet (P1) ── The /api/fleet handlers. The middleware's `fleet` gate is covered in
+ * gpu-fleet-gate.test.ts; here the handler's own checks: the entity resolves to a GPU SPV (a VC
+ * entity is 404), anything that posts needs `accounting` write (403 otherwise, nothing booked), and
+ * request payloads are validated. The entity-scope resolver is stubbed to the named group; the
+ * kind check, the register and the lifecycle run for real over the memory admin.
+ */
+
+const s = vi.hoisted(() => ({ m: null as any, access: null as any }))
+vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
+vi.mock('@/lib/api-helpers', () => ({
+  assertReadAccess: async () => ({ fundId: 'f', userId: 'u', role: 'member', need: 'read' }),
+  assertWriteAccess: async () => ({ fundId: 'f', userId: 'u', role: 'member', need: 'write' }),
+}))
+vi.mock('@/lib/accounting/http-vehicle', () => ({
+  resolveGroupWithAccess: async (_a: any, _g: any, raw: string | null) => ({ group: raw ?? 'H200 SPV I', access: s.access }),
+}))
+vi.mock('@/lib/accounting/persist', () => ({
+  persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: string, entry: JournalEntry) => {
+    const t = s.m.tables
+    const dup = t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
+    if (dup) return { error: 'already in the books', duplicateOf: dup.id }
+    const id = `je-${t.journal_entries.length + 1}`
+    t.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef })
+    for (const p of entry.postings) t.journal_postings.push({ journal_entry_id: id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', account_id: p.accountId, amount: p.amount })
+    return { entryId: id }
+  }),
+}))
+
+import * as assetTypes from '@/app/api/fleet/asset-types/route'
+import * as assets from '@/app/api/fleet/assets/route'
+import * as asset from '@/app/api/fleet/assets/[id]/route'
+import * as purchase from '@/app/api/fleet/assets/[id]/purchase/route'
+import * as capex from '@/app/api/fleet/assets/[id]/capex/route'
+import * as dispose from '@/app/api/fleet/assets/[id]/dispose/route'
+import * as events from '@/app/api/fleet/assets/[id]/events/route'
+import * as contracts from '@/app/api/fleet/datacenter-contracts/route'
+import * as contract from '@/app/api/fleet/datacenter-contracts/[id]/route'
+
+const access = (grants: Record<string, string>) => ({
+  fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] }, grants, defaults: {},
+  features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: 'everyone' },
+})
+const BOOKKEEPER = access({ fleet: 'write', accounting: 'write' })
+const FLEET_ONLY = access({ fleet: 'write', accounting: 'read' })
+const chart = (vehicleId: string, group: string, seeds: typeof GPU_SPV_CHART) =>
+  seeds.map(a => ({ id: `${vehicleId}-${a.code}`, fund_id: 'f', vehicle_id: vehicleId, portfolio_group: group, code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null }))
+
+beforeEach(() => {
+  s.access = BOOKKEEPER
+  s.m = memoryAdmin({
+    fund_vehicles: [
+      { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] },
+      { id: 'v-vc', fund_id: 'f', name: 'Fund II', kind: 'fund', aliases: [] },
+    ],
+    chart_of_accounts: [...chart('v-gpu', 'H200 SPV I', GPU_SPV_CHART), ...chart('v-vc', 'Fund II', DEFAULT_CHART)],
+    gpu_asset_types: [], gpu_assets: [
+      { id: 'vc-asset-0000-4000-8000-000000000000', fund_id: 'f', vehicle_id: 'v-vc', name: 'stray', status: 'planned', gpu_count: 8, hardware_cost: 1 },
+    ],
+    gpu_asset_events: [], datacenter_contracts: [], accounting_schedules: [], accounting_schedule_lines: [],
+    journal_entries: [], journal_postings: [],
+  }, { unique: [
+    { table: 'chart_of_accounts', key: r => `${r.fund_id}|${r.portfolio_group}|${r.code}` },
+    { table: 'gpu_asset_types', key: r => `${r.fund_id}|${r.code}` },
+  ] })
+})
+
+const url = (path: string) => `https://x.test/api/fleet/${path}`
+const get = (path: string) => new NextRequest(url(path))
+const send = (path: string, method: string, body: object) => new NextRequest(url(path), { method, body: JSON.stringify(body) })
+const params = (id: string) => ({ params: Promise.resolve({ id }) })
+const json = async (r: Response) => ({ status: r.status, body: await r.json() })
+
+const createAsset = async (over: object = {}) => {
+  // The column defaults the database applies (the memory admin applies none), stated.
+  const defaults = { status: 'planned', useful_life_months: 60, depreciation_convention: 'full_month', tax_method: 'book', tax_bonus_pct: 0 }
+  const r = await json(await assets.POST(send('assets', 'POST', { group: 'H200 SPV I', name: 'H200 #1', gpu_count: 8, hardware_cost: 335_000, in_service_date: '2027-01-15', ...defaults, ...over })))
+  expect(r.status).toBe(201)
+  return r.body.id as string
+}
+
+describe('entity and kind', () => {
+  it('a VC entity is not found on every fleet route, by group or by row', async () => {
+    expect((await assets.GET(get('assets?group=Fund II'))).status).toBe(404)
+    expect((await assets.POST(send('assets', 'POST', { group: 'Fund II', name: 'x', gpu_count: 8, hardware_cost: 1 }))).status).toBe(404)
+    expect((await contracts.GET(get('datacenter-contracts?group=Fund II'))).status).toBe(404)
+    const stray = 'vc-asset-0000-4000-8000-000000000000'
+    expect((await asset.GET(get(`assets/${stray}`), params(stray))).status).toBe(404)
+    expect((await purchase.POST(send(`assets/${stray}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(stray))).status).toBe(404)
+    expect((await asset.GET(get('assets/nope'), params('nope'))).status).toBe(404)
+  })
+
+  it('lists a GPU SPV\'s register with capitalized costs read from the ledger', async () => {
+    const id = await createAsset()
+    const r = await json(await assets.GET(get('assets?group=H200 SPV I')))
+    expect(r.body.assets.map((a: any) => [a.id, a.capitalized_costs, a.salvage_value])).toEqual([[id, 0, 33_500]])
+  })
+})
+
+describe('booking needs accounting write', () => {
+  it('purchase, capex and disposal are 403 with fleet write but accounting read, and book nothing', async () => {
+    const id = await createAsset()
+    s.access = FLEET_ONLY
+    expect((await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).status).toBe(403)
+    expect((await capex.POST(send(`assets/${id}/capex`, 'POST', { key: 'k', entryDate: '2027-01-10', amount: 100 }), params(id))).status).toBe(403)
+    expect((await dispose.POST(send(`assets/${id}/dispose`, 'POST', { disposedOn: '2027-06-30', proceeds: 1 }), params(id))).status).toBe(403)
+    expect((await contracts.POST(send('datacenter-contracts', 'POST', { group: 'H200 SPV I', facility: 'DC', start_date: '2027-01-01', monthly_fee: 10_280 }))).status).toBe(403)
+    expect(s.m.tables.journal_entries).toEqual([])
+    expect(s.m.tables.datacenter_contracts).toEqual([])
+  })
+
+  it('with accounting write: purchase once, capex idempotent by key, capex after the life refused', async () => {
+    const id = await createAsset()
+    expect(await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))).toEqual({ status: 200, body: { entryId: 'je-1' } })
+    expect((await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).status).toBe(400)
+
+    const cost = { key: 'INV-4471', entryDate: '2027-01-10', amount: 2_000 }
+    expect((await capex.POST(send(`assets/${id}/capex`, 'POST', { ...cost, key: '' }), params(id))).status).toBe(400)
+    expect(await json(await capex.POST(send(`assets/${id}/capex`, 'POST', cost), params(id)))).toEqual({ status: 200, body: { entryId: 'je-2', capitalizedCosts: 2_000 } })
+    expect(await json(await capex.POST(send(`assets/${id}/capex`, 'POST', cost), params(id)))).toEqual({ status: 200, body: { entryId: 'je-2', capitalizedCosts: 2_000 } })
+    const late = await json(await capex.POST(send(`assets/${id}/capex`, 'POST', { key: 'late', entryDate: '2032-01-05', amount: 10 }), params(id)))
+    expect(late).toMatchObject({ status: 400, body: { error: expect.stringContaining('life ends in 2031-12') } })
+    expect((await json(await asset.GET(get(`assets/${id}`), params(id)))).body.capitalized_costs).toBe(2_000)
+  })
+})
+
+describe('asset payloads', () => {
+  it('validates the tax class on create and on the merged row at update', async () => {
+    expect((await json(await assets.POST(send('assets', 'POST', { group: 'H200 SPV I', name: 'x', gpu_count: 8, hardware_cost: 1, tax_method: 'bonus', tax_life_years: 6 })))).body.error)
+      .toBe('tax_life_years must be 5 or 7 for bonus')
+    const id = await createAsset({ tax_method: 'bonus', tax_bonus_pct: 0.6 })
+    expect((await json(await asset.PATCH(send(`assets/${id}`, 'PATCH', { tax_life_years: 6 }), params(id)))).body.error).toBe('tax_life_years must be 5 or 7 for bonus')
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { tax_life_years: 7 }), params(id))).status).toBe(200)
+  })
+
+  it('fixes the hardware cost once booked, refuses unknown references, deletes only a planned asset', async () => {
+    const id = await createAsset()
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { asset_type_id: 'nope' }), params(id))).status).toBe(400)
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { hardware_cost: 1 }), params(id))).status).toBe(409)
+    expect((await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status).toBe(409)
+    const planned = await createAsset({ name: 'spare' })
+    expect((await asset.DELETE(send(`assets/${planned}`, 'DELETE', {}), params(planned))).status).toBe(200)
+  })
+
+  it('asset types: created once per code', async () => {
+    const body = { code: 'h200-nvl', label: 'H200 NVL', gpus_per_server: 8, anchor_rate: 4.5 }
+    expect((await assetTypes.POST(send('asset-types', 'POST', body))).status).toBe(201)
+    expect((await assetTypes.POST(send('asset-types', 'POST', body))).status).toBe(409)
+    expect((await assetTypes.POST(send('asset-types', 'POST', { ...body, code: 'H200 NVL' }))).status).toBe(400)
+    expect((await json(await assetTypes.GET())).body.assetTypes.map((t: any) => t.code)).toEqual(['h200-nvl'])
+  })
+
+  it('events: bounded by the server\'s GPU count, listed in order', async () => {
+    const id = await createAsset()
+    expect((await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'downtime', starts_at: '2027-03-01T00:00:00Z', gpus_affected: 9 }), params(id))).status).toBe(400)
+    expect((await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'reboot', starts_at: '2027-03-01T00:00:00Z' }), params(id))).status).toBe(400)
+    await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'maintenance', starts_at: '2027-04-01T00:00:00Z' }), params(id))
+    expect((await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'downtime', starts_at: '2027-03-01T00:00:00Z', ends_at: '2027-03-02T00:00:00Z', gpus_affected: 2 }), params(id))).status).toBe(201)
+    expect((await json(await events.GET(get(`assets/${id}/events`), params(id)))).body.events.map((e: any) => e.kind)).toEqual(['downtime', 'maintenance'])
+  })
+})
+
+describe('datacenter contracts', () => {
+  const create = (over: object = {}) => contracts.POST(send('datacenter-contracts', 'POST', {
+    group: 'H200 SPV I', facility: 'Austin DC', start_date: '2027-01-01', monthly_fee: 10_280, escalator_pct: 0.05, ...over,
+  }))
+
+  it('creates the contract and its accrual schedule; fee terms are fixed once accruing', async () => {
+    const r = await json(await create())
+    expect(r.status).toBe(201)
+    expect(r.body.schedule.created).toBeGreaterThan(0)
+    const id = r.body.contract.id
+    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { monthly_fee: 11_000 }), params(id))).status).toBe(409)
+    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { power_kw: 40, status: 'ended', end_date: '2030-12-31' }), params(id))).status).toBe(200)
+    expect(await json(await contract.POST(send(`datacenter-contracts/${id}`, 'POST', { action: 'roll', asOf: '2026-01-01' }), params(id)))).toMatchObject({ status: 200, body: { created: 0 } })
+  })
+
+  it('validates the payload; schedule: false needs only fleet write; roll needs accounting write', async () => {
+    expect((await create({ monthly_fee: -1 })).status).toBe(400)
+    expect((await create({ start_date: '2027-06-01', end_date: '2027-01-01' })).status).toBe(400)
+    s.access = FLEET_ONLY
+    const r = await json(await create({ schedule: false }))
+    expect(r.status).toBe(201)
+    expect(s.m.tables.accounting_schedules).toEqual([])
+    expect((await contract.POST(send(`datacenter-contracts/${r.body.contract.id}`, 'POST', { action: 'roll' }), params(r.body.contract.id))).status).toBe(403)
+  })
+})

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { isReservedSourceRef } from '@/lib/accounting/reserved-refs'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // accounting domain (lib/access/route-domains.ts). The middleware has already checked the caller's
@@ -209,6 +210,9 @@ export async function POST(req: NextRequest) {
   if (group instanceof NextResponse) return group
 
   const { entryDate, memo, sourceType, sourceRef, status, postings } = body
+  if (isReservedSourceRef(sourceRef)) {
+    return NextResponse.json({ error: 'That source reference is reserved for entries the system books itself.' }, { status: 400 })
+  }
   if (!entryDate || !Array.isArray(postings) || postings.length === 0) {
     return NextResponse.json({ error: 'entryDate and at least one posting are required' }, { status: 400 })
   }
