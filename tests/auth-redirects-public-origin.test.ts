@@ -31,6 +31,10 @@ vi.mock('@/lib/activity', () => ({ logActivity: () => {} }))
 vi.mock('@/lib/cache/tags', () => ({ expireTag: () => {} }))
 vi.mock('@/lib/pending-actions/browser-principal', () => ({ resolveBrowserPrincipal: async () => ({ userId: 'u', fundId: 'f' }) }))
 vi.mock('@/lib/pending-actions/call-notices-publish', () => ({ executePublishCallNotices: async () => ({}) }))
+vi.mock('@/lib/google/oauth-state', async (orig) => ({
+  ...(await orig<typeof import('@/lib/google/oauth-state')>()),
+  consumeGoogleOAuthTransaction: () => ({ codeVerifier: 'v', fundId: 'f', returnTo: '/portfolio/acme' }),
+}))
 vi.mock('@/lib/pending-actions/service', () => ({
   PendingActionServiceError: class extends Error { status = 400 },
   approvePendingAction: async (_a: unknown, _p: unknown, _id: string, opts: { origin?: string }) => {
@@ -43,6 +47,7 @@ import { GET as callback } from '@/app/auth/callback/route'
 import { GET as postLogin } from '@/app/auth/post-login/route'
 import { POST as logout } from '@/app/api/auth/logout/route'
 import { POST as approve } from '@/app/api/pending-actions/[id]/approve/route'
+import { GET as googleCallback } from '@/app/api/auth/google/callback/route'
 
 const BIND = 'http://localhost:3000'
 const PUBLIC = 'https://cap.example.com'
@@ -87,6 +92,16 @@ describe('server-side auth redirects use NEXT_PUBLIC_SITE_URL, not the bind orig
     const res = await approve(new Request(`${BIND}/api/pending-actions/p/approve`, { method: 'POST', body: '{}' }), { params: Promise.resolve({ id: 'p' }) })
     expect(res.status).toBe(200)
     expect(s.approveOrigin).toBe(PUBLIC)
+  })
+
+  it('/api/auth/google/callback: signed out, a bad request and a returnTo all redirect at the public origin', async () => {
+    expect(location(await googleCallback(new NextRequest(`${BIND}/api/auth/google/callback`)))).toBe(`${PUBLIC}/auth`)
+    s.user = { id: 'u' }
+    expect(location(await googleCallback(new NextRequest(`${BIND}/api/auth/google/callback`))))
+      .toBe(`${PUBLIC}/settings?drive_error=missing_params`)
+    vi.stubEnv('ENCRYPTION_KEY', 'k')
+    expect(location(await googleCallback(new NextRequest(`${BIND}/api/auth/google/callback?state=s&error=access_denied`))))
+      .toBe(`${PUBLIC}/portfolio/acme?drive_error=consent_denied`)
   })
 
   it('without NEXT_PUBLIC_SITE_URL, redirects stay on the request origin (next dev, previews)', async () => {
