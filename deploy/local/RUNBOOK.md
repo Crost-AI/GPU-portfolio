@@ -114,16 +114,21 @@ port) serves a copy of that directory baked into its image, and `auth` points
 `GOTRUE_MAILER_SUBJECTS_*` beside them. The copy is baked in, not bind-mounted, because Dokploy
 re-clones the checkout on every deploy and a running container would keep serving the deleted one.
 
-GoTrue fetches each template when it first sends that kind of email and keeps it for up to 10
-minutes. A type it has never fetched successfully goes out as GoTrue's own default, a link with no
-code, which the app's screens cannot use; after a failed re-fetch it keeps the last good copy. So
-when an email arrives without a code, check `dc ps mail-templates` first. An `unhealthy` one also
-blocks `auth` from starting, and with it `migrate` and the app.
+GoTrue fetches each template type when it first sends that kind of email, keeps it for up to 10
+minutes (`TEMPLATE_MAX_AGE`), then re-fetches lazily; after a failed re-fetch it keeps the last good
+copy and retries every 10 s. Only a type it has never fetched goes out as GoTrue's built-in default,
+a link with no code, which the app's screens cannot use. So when an email arrives without a code,
+check `dc ps mail-templates` first. An `unhealthy` one also blocks `auth` from starting, and through
+it `migrate` and the app.
 
-To change a template, edit it, then `dc up -d --build` (rebuilds the image and recreates
-`mail-templates`; `dc up -d` alone keeps the old image), then `dc restart auth` so GoTrue drops its
-cached copies at once instead of within 10 minutes. A deploy that changes `auth`'s environment
-recreates GoTrue, so `/auth/v1` answers 502 for the few seconds it takes to come back healthy.
+To change a template, edit it, then `dc up -d --build`: the new image recreates `mail-templates`
+(`dc up -d` alone keeps the old image), and the new text reaches mail within about 10 minutes by
+itself. `dc restart auth` makes it immediate, but only while `dc ps mail-templates` says healthy:
+restarting GoTrue with no reachable source drops its cached copies and turns every email into the
+link-only default.
+
+A deploy that changes `auth`'s environment recreates GoTrue, so `/auth/v1` answers 502 for the few
+seconds it takes to come back healthy.
 
 ## Crons
 
