@@ -242,6 +242,7 @@ describe('declareDistribution: distributable_cash', () => {
     ['carry lines to someone who is not a recipient', i => ({ ...i, carryLines: [{ lpEntityId: 'lp2', amount: i.carryLines[0].amount }] })],
     ['carry lines that do not total the waterfall', i => ({ ...i, carryLines: [{ lpEntityId: 'mgr', amount: roundTo(i.carryLines[0].amount + 0.01) }] })],
     ['an available less reserve that is not the distribution declared', i => ({ ...i, reserve: roundTo(i.reserve + 100) })],
+    ['an edited LP line with the stated cash and the valid carry unchanged', i => ({ ...i, lines: [{ lpEntityId: 'lp', amount: 1 }] })],
     ['carry lines on a distribution the waterfall gives no carry', i => ({ ...i, distributionDate: F8.distributionDates[0], available: 1_000, reserve: 0, lines: [{ lpEntityId: 'lp', amount: 990 }], carryLines: [{ lpEntityId: 'mgr', amount: 10 }] })],
   ])('refuses %s before writing anything', async (_, edit) => {
     s.postings = postingsBefore(2, engineF1())
