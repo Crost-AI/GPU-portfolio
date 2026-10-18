@@ -221,6 +221,28 @@ describe('declareDistribution: distributable_cash', () => {
     expect(Math.abs(accounts.get('lp')!.carriedInterest + F1.y3Cents.profitToLP * 30 / 70)).toBeLessThanOrEqual(0.01)
   })
 
+  it('freezes the server-recomputed cash tiers, not the request body\'s', async () => {
+    const engine = engineF1()
+    s.postings = postingsBefore(2, engine)
+    const { m } = admin()
+    const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, F8.distributionDates[2], 'waterfall', { available: F1.distributableCents[2], reserve: 0 })
+    if ('error' in p) throw new Error(p.error)
+    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+      requestKey: 'tamper', distributionDate: F8.distributionDates[2], lines: p.lines, carryLines: p.carryLines, splitMethod: 'waterfall', tiers: p.tiers,
+      available: p.available, reserve: p.reserve, cash: { ...p.cash!, unreturnedAfter: 999_999, profitToLP: 1 },
+    })
+    expect(out).not.toHaveProperty('error')
+    expect(m.tables.distributions[0]).toMatchObject({ wf_unreturned_after: 0, wf_profit_lp: F1.y3Cents.profitToLP })
+  })
+
+  it('a failed contingency-history read is an error from the preview and the declaration, not a crash', async () => {
+    s.postings = postingsBefore(2, engineF1())
+    const { m } = admin()
+    m.failNext('distributions', 'select', 'statement timeout')
+    expect(await previewDistribution(m.admin, 'f', 'GPU I', NaN, F8.distributionDates[2], 'waterfall', { available: 1_000, reserve: 0 }))
+      .toEqual({ error: expect.stringMatching(/contingency history could not be read: statement timeout/) })
+  })
+
   it('a retry of a declared request returns all three entry ids', async () => {
     const { m, result, input } = await declareY3()
     const again = await declareDistribution(m.admin, 'f', 'GPU I', 'u', input)
@@ -267,6 +289,7 @@ describe('declareDistribution: distributable_cash', () => {
     const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', edit(await y3Input(m, 'bad')))
     expect(out).toHaveProperty('error')
     expect((out as any).error).toMatch(/recipients|do not match the waterfall|less the reserve/)
+    expect((out as any).code).toMatch(/^(WATERFALL_MISMATCH|STATED_CASH_MISMATCH)$/)
     expect(s.entries).toEqual([])
     expect(m.tables.distributions).toEqual([])
     expect(rpc).not.toHaveBeenCalled()
@@ -316,7 +339,7 @@ describe('distributable_cash: declared cash and contingency, end to end', () => 
     const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
       requestKey: 'pre-carry', distributionDate: '2027-06-30', lines: [{ lpEntityId: 'lp', amount: 100 }], available: 1_000, reserve: 0,
     })
-    expect(out).toEqual({ error: 'The available cash less the reserve must equal the distribution declared' })
+    expect(out).toEqual({ error: 'The available cash less the reserve must equal the distribution declared', code: 'STATED_CASH_MISMATCH' })
     expect(s.entries).toEqual([])
     expect(m.tables.distributions).toEqual([])
     expect(rpc).not.toHaveBeenCalled()

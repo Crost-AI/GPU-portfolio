@@ -213,14 +213,21 @@ export interface CashPreviewOptions {
 }
 
 /** A distributable-cash vehicle's distribution amount, or why the inputs cannot make one. */
-function cashDistributable(opts: CashPreviewOptions): { total: number } | { error: string } {
+/**
+ * The stable codes a distributable-cash refusal carries next to its message, so the declaration
+ * form can tell them apart without parsing text. Every other refusal carries none.
+ */
+export type CashRefusalCode = 'WATERFALL_MISMATCH' | 'STATED_CASH_MISMATCH' | 'RESERVE_REQUIRED'
+export interface CashRefusal { error: string; code?: CashRefusalCode }
+
+function cashDistributable(opts: CashPreviewOptions): { total: number } | CashRefusal {
   const available = Number(opts.available)
   const reserve = Number(opts.reserve)
   if (opts.available == null || !Number.isFinite(available) || available <= 0) {
     return { error: 'A positive available cash amount is required for a distributable-cash waterfall' }
   }
   if (opts.reserve == null || !Number.isFinite(reserve) || reserve < 0 || reserve >= available) {
-    return { error: 'A reserve of at least 0 and less than the available cash is required' }
+    return { error: 'A reserve of at least 0 and less than the available cash is required', code: 'RESERVE_REQUIRED' }
   }
   const total = roundCents(available - reserve)
   const contingency = Number(opts.contingencyReturn ?? 0)
@@ -262,7 +269,7 @@ export async function previewDistribution(
   asOf: string,
   method: 'waterfall' | 'pro_rata' = 'waterfall',
   opts: CashPreviewOptions = {},
-): Promise<DistributionPreview | { error: string }> {
+): Promise<DistributionPreview | CashRefusal> {
   // From whichever producer the vehicle uses: the ledger, or a tracking vehicle's positions.
   const [{ postings: capitalPostings }, terms, names] = await Promise.all([
     loadCapitalPostings(admin, fundId, group),
@@ -279,7 +286,12 @@ export async function previewDistribution(
   }
   const effectiveTerms = method === 'pro_rata' ? { ...terms, kind: 'none' as const } : terms
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
-  const contingencyByDate = isCash ? await loadContingencyByDate(admin, fundId, group) : undefined
+  let contingencyByDate: Map<string, number> | undefined
+  try {
+    contingencyByDate = isCash ? await loadContingencyByDate(admin, fundId, group) : undefined
+  } catch (e) {
+    return { error: `The contingency history could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
+  }
   const { partners, contributions, priors, carryPaidToDate } = loadWaterfallHistory(capitalPostings, recipientIds, asOf, contingencyByDate)
 
   const split = splitDistribution({
@@ -333,10 +345,10 @@ function cashCarryMismatch(
   perRecipient: Map<string, number>,
   declaredTotal: number,
   carryTotal: number,
-): string | null {
+): { cash?: CashSplitExtras } | CashRefusal {
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
   for (const id of Array.from(perRecipient.keys())) {
-    if (!recipientIds.has(id)) return 'Carry lines can only go to the vehicle\'s profit-share recipients'
+    if (!recipientIds.has(id)) return { error: 'Carry lines can only go to the vehicle\'s profit-share recipients', code: 'WATERFALL_MISMATCH' }
   }
   // The waterfall runs on what is actually being declared (cashAmountMismatch has held any stated
   // available/reserve to it already).
@@ -345,7 +357,7 @@ function cashCarryMismatch(
   const split = splitDistribution({
     total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,
   })
-  return roundCents(split.tiers.toGP) === carryTotal ? null : 'The carry lines do not match the waterfall'
+  return roundCents(split.tiers.toGP) === carryTotal ? { cash: split.cash } : { error: 'The carry lines do not match the waterfall', code: 'WATERFALL_MISMATCH' }
 }
 
 /**
@@ -354,12 +366,14 @@ function cashCarryMismatch(
  * plus carry lines): the reserve becomes the next declaration's default and is restated on the
  * register, so it cannot be a figure that describes some other distribution.
  */
-function cashAmountMismatch(input: DeclareDistributionInput, declaredTotal: number): string | null {
+function cashAmountMismatch(input: DeclareDistributionInput, declaredTotal: number): CashRefusal | null {
   const available = Number(input.available)
   const reserve = Number(input.reserve)
-  if (input.available == null || input.reserve == null || !Number.isFinite(available) || !Number.isFinite(reserve) ||
-      reserve < 0 || reserve >= available || roundCents(available - reserve) !== declaredTotal) {
-    return 'The available cash less the reserve must equal the distribution declared'
+  if (input.reserve == null || !Number.isFinite(reserve) || reserve < 0 || (Number.isFinite(available) && reserve >= available)) {
+    return { error: 'A reserve of at least 0 and less than the available cash is required', code: 'RESERVE_REQUIRED' }
+  }
+  if (input.available == null || !Number.isFinite(available) || roundCents(available - reserve) !== declaredTotal) {
+    return { error: 'The available cash less the reserve must equal the distribution declared', code: 'STATED_CASH_MISMATCH' }
   }
   return null
 }
@@ -414,7 +428,7 @@ export async function declareDistribution(
   group: string,
   userId: string | null,
   input: DeclareDistributionInput,
-): Promise<{ entryId: string; carryEntryId: string | null; carryRealizedEntryId: string | null; distributionId: string } | { error: string }> {
+): Promise<{ entryId: string; carryEntryId: string | null; carryRealizedEntryId: string | null; distributionId: string } | CashRefusal> {
 
   if (!validCapitalAmounts([...(input.lines ?? []), ...(input.carryLines ?? [])])) return { error: 'Distribution amounts must be finite nonnegative amounts in cents' }
   const perLp = cleanLines(input.lines)
@@ -440,7 +454,7 @@ export async function declareDistribution(
   const tiers = splitMethod === 'waterfall' && input.tiers ? input.tiers : null
   const cash = splitMethod === 'waterfall' && input.cash ? input.cash : null
   if (input.reserve != null && !(Number.isFinite(Number(input.reserve)) && Number(input.reserve) >= 0)) {
-    return { error: 'The reserve must be a finite amount of at least 0' }
+    return { error: 'The reserve must be a finite amount of at least 0', code: 'RESERVE_REQUIRED' }
   }
 
   const vehicleId = await vehicleIdByName(admin, fundId, group)
@@ -463,6 +477,7 @@ export async function declareDistribution(
     // share must realise it here, or the recipient's capital goes negative by what it was paid
     // and the investors' stays overstated. Worked out before anything is written.
     let realised: Map<string, number> | null = null
+    let serverCash: CashSplitExtras | null = null
     const statesCash = input.available != null || input.reserve != null
     if (perRecipient.size > 0 || cash || statesCash) {
       let terms: VehicleCarryTerms
@@ -474,14 +489,23 @@ export async function declareDistribution(
       // The stated cash must reconcile to the lines whatever else the request carries: a
       // carry-free declaration is held to it as much as one paying a profit share.
       const unreconciled = terms.kind === 'distributable_cash' && statesCash ? cashAmountMismatch(input, declaredTotal) : null
-      if (unreconciled) return { error: unreconciled }
+      if (unreconciled) return unreconciled
       if (terms.kind === 'distributable_cash' && (perRecipient.size > 0 || cash)) {
-        const [{ postings }, contingencyByDate] = await Promise.all([
-          loadCapitalPostings(admin, fundId, group),
-          loadContingencyByDate(admin, fundId, group),
-        ])
-        const mismatch = cashCarryMismatch(postings, contingencyByDate, terms, input, perRecipient, declaredTotal, carryTotal)
-        if (mismatch) return { error: mismatch }
+        let postings: CapitalPosting[]
+        let contingencyByDate: Map<string, number>
+        try {
+          [{ postings }, contingencyByDate] = await Promise.all([
+            loadCapitalPostings(admin, fundId, group),
+            loadContingencyByDate(admin, fundId, group),
+          ])
+        } catch (e) {
+          return { error: `The distribution history could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
+        }
+        const checked = cashCarryMismatch(postings, contingencyByDate, terms, input, perRecipient, declaredTotal, carryTotal)
+        if ('error' in checked) return checked
+        // What the register freezes for the notice is the server's own waterfall, not the
+        // request's: the body's cash is accepted for compatibility and ignored here.
+        serverCash = checked.cash ?? null
         if (perRecipient.size > 0) {
           const plan = realisedCarryPlan(postings, terms, perRecipient, input.distributionDate)
           if ('error' in plan) return plan
@@ -556,11 +580,11 @@ export async function declareDistribution(
         wf_carry: tiers?.carry ?? null,
         // distributable_cash only; absent keys leave every other vehicle's row as it was written.
         ...(carryRealizedEntryId ? { carry_realized_journal_entry_id: carryRealizedEntryId } : {}),
-        ...(cash ? {
-          wf_contingency_return: cash.contingencyReturn,
-          wf_profit_lp: cash.profitToLP,
-          wf_pref_carried_forward: cash.prefCarriedForward,
-          wf_unreturned_after: cash.unreturnedAfter,
+        ...((serverCash ?? cash) ? {
+          wf_contingency_return: (serverCash ?? cash)!.contingencyReturn,
+          wf_profit_lp: (serverCash ?? cash)!.profitToLP,
+          wf_pref_carried_forward: (serverCash ?? cash)!.prefCarriedForward,
+          wf_unreturned_after: (serverCash ?? cash)!.unreturnedAfter,
         } : {}),
         ...(input.reserve != null ? { reserve_amount: roundCents(Number(input.reserve)) } : {}),
         kind,

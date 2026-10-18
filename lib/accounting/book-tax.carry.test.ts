@@ -111,3 +111,11 @@ describe('currency translation', () => {
     ])
   })
 })
+
+describe('carryOnUnrealizedForYear: distributable_cash', () => {
+  it('reverses nothing: a GPU SPV books profit share only as it is paid, never on a mark', () => {
+    const cash: VehicleCarryTerms = { ...straight20, kind: 'distributable_cash', carryRate: 0.3, prefRate: 0.08, recipients: [{ lpEntityId: 'gp', pct: 100 }] }
+    const postings = [p('a', -1_000_000, 'capital_call', '2026-01-15'), p('a', -500_000, 'valuation'), p('a', 100_000, 'carried_interest'), p('gp', -100_000, 'carried_interest')]
+    expect(carryOnUnrealizedForYear(postings, cash, '2025-12-31', '2026-12-31').size).toBe(0)
+  })
+})

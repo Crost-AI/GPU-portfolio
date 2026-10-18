@@ -211,7 +211,9 @@ describe('POST /api/accounting/distributions preview', () => {
   })
 
   it('is a 400 without a reserve, or with only a total', async () => {
-    expect((await preview({ available: 800_000 })).status).toBe(400)
+    const noReserve = await preview({ available: 800_000 })
+    expect(noReserve.status).toBe(400)
+    expect((await noReserve.json()).code).toBe('RESERVE_REQUIRED')
     const res = await preview({ total: 766_507.56 })
     expect(res.status).toBe(400)
     expect((await res.json()).error).toMatch(/available cash/)

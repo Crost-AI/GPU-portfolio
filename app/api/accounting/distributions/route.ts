@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
       reserve: body?.reserve == null ? undefined : Number(body.reserve),
       contingencyReturn: body?.contingencyReturn == null ? undefined : Number(body.contingencyReturn),
     })
-    if ('error' in preview) return NextResponse.json({ error: preview.error }, { status: 400 })
+    if ('error' in preview) return NextResponse.json({ error: preview.error, ...(preview.code ? { code: preview.code } : {}) }, { status: 400 })
     return NextResponse.json(preview)
   }
 
@@ -112,7 +112,9 @@ export async function POST(req: NextRequest) {
           }
         : undefined,
     })
-    if ('error' in result) return NextResponse.json({ error: result.error }, { status: 400 })
+    // A distributable-cash refusal carries a stable code (WATERFALL_MISMATCH, STATED_CASH_MISMATCH,
+    // RESERVE_REQUIRED) next to its message; every other refusal is unchanged.
+    if ('error' in result) return NextResponse.json({ error: result.error, ...(result.code ? { code: result.code } : {}) }, { status: 400 })
     const date = String(body.distributionDate)
     const lines = linesOf(body.lines)
     const extras: Record<string, unknown> = {}

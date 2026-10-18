@@ -45,17 +45,24 @@ describe('POST /api/accounting/distributions: distributable_cash passthrough', (
     expect(s.declare.mock.calls[0][4].cash.contingencyReturn).toBe(60)
   })
 
-  it('a refusal from declareDistribution is a 400 with its message', async () => {
-    s.declare.mockResolvedValue({ error: 'The available cash less the reserve must equal the distribution declared' })
+  it.each(['WATERFALL_MISMATCH', 'STATED_CASH_MISMATCH', 'RESERVE_REQUIRED'])('a %s refusal is a 400 carrying its code', async code => {
+    s.declare.mockResolvedValue({ error: 'refused', code })
     const res = await post({ action: 'declare', distributionDate: '2027-02-01', lines: [{ lpEntityId: 'lp', amount: 100 }], available: 1_000, reserve: 0 })
     expect(res.status).toBe(400)
-    expect((await res.json()).error).toMatch(/less the reserve/)
+    expect(await res.json()).toEqual({ error: 'refused', code })
+  })
+
+  it('an ordinary refusal stays error-only', async () => {
+    s.declare.mockResolvedValue({ error: 'A valid distribution date is required' })
+    const res = await post({ action: 'declare', distributionDate: '', lines: [{ lpEntityId: 'lp', amount: 100 }] })
+    expect(await res.json()).toEqual({ error: 'A valid distribution date is required' })
   })
 
   it('preview passes available, reserve and contingencyReturn, and a refusal is a 400', async () => {
-    s.preview.mockResolvedValue({ error: 'A reserve of at least 0 and less than the available cash is required' })
+    s.preview.mockResolvedValue({ error: 'A reserve of at least 0 and less than the available cash is required', code: 'RESERVE_REQUIRED' })
     const res = await post({ action: 'preview', asOf: '2027-06-30', available: 500, reserve: 500, contingencyReturn: 20 })
     expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('RESERVE_REQUIRED')
     expect(s.preview.mock.calls[0].slice(3, 7)).toEqual([NaN, '2027-06-30', 'waterfall', { available: 500, reserve: 500, contingencyReturn: 20 }])
   })
 })

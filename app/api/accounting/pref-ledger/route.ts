@@ -38,10 +38,10 @@ export async function GET(req: NextRequest) {
   }
   // Every event on the books, a future-dated one included: the ledger restates what was recorded.
   const all = '9999-12-31'
-  const contingencyByDate = await loadContingencyByDate(admin, gate.fundId, group)
-  const { contributions, priors } = loadWaterfallHistory(postings, new Set(terms.recipients.map(r => r.lpEntityId)), all, contingencyByDate)
   let rows
   try {
+    const contingencyByDate = await loadContingencyByDate(admin, gate.fundId, group)
+    const { contributions, priors } = loadWaterfallHistory(postings, new Set(terms.recipients.map(r => r.lpEntityId)), all, contingencyByDate)
     rows = prefLedger(cashWaterfallEvents(contributions, priors, all), cashWaterfallTerms(terms))
   } catch (e) {
     return NextResponse.json({ error: `The pref ledger could not be replayed: ${e instanceof Error ? e.message : String(e)}` }, { status: 400 })
