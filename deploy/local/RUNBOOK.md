@@ -115,10 +115,11 @@ port) serves a copy of that directory baked into its image, and `auth` points
 re-clones the checkout on every deploy and a running container would keep serving the deleted one.
 
 GoTrue fetches each template type when it first sends that kind of email, keeps it for up to 10
-minutes (`TEMPLATE_MAX_AGE`), then re-fetches lazily; after a failed re-fetch it keeps the last good
-copy and retries every 10 s. Only a type it has never fetched goes out as GoTrue's built-in default,
-a link with no code, which the app's screens cannot use. So when an email arrives without a code,
-check `dc ps mail-templates` first. An `unhealthy` one also blocks `auth` from starting, and through
+minutes (`GOTRUE_MAILER_TEMPLATE_MAX_AGE`), then re-fetches lazily; after a failed re-fetch it keeps
+the last good copy and tries again on a later send. Only a type it has never fetched goes out as
+GoTrue's built-in default, a link with no code, which the app's screens cannot use, and a type that
+fell back to it stays on it for up to 10 minutes after `mail-templates` recovers. So when an email
+arrives without a code, check `dc ps mail-templates` first. An `unhealthy` one also blocks `auth` from starting, and through
 it `migrate` and the app.
 
 To change a template, edit it, then `dc up -d --build`: the new image recreates `mail-templates`
