@@ -424,7 +424,9 @@ export function runFleetScenario(a: FleetAssumptions, fleet: PlannedAsset[], ter
     const operatingProfit = revenue - expenses
     // The fee is on gross revenue only: never on sale proceeds or the contingency return.
     const fee = feeRate * revenue
-    const depreciation = year <= a.lifeYears ? yearlyDepreciation : 0
+    // Capped at what is left above salvage, so a fractional life (2.5 years) charges its final
+    // part-year and the NBV, hence the sale at book, reaches salvage instead of stopping short.
+    const depreciation = Math.max(0, Math.min(yearlyDepreciation, basis - salvage - depreciated))
     depreciated += depreciation
     const nbv = basis - depreciated
     const sale = year === a.saleYear ? cents(nbv) : 0

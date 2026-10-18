@@ -415,6 +415,14 @@ describe('resolveFleet and inputs', () => {
     expect(perType.waterfall).toEqual(flat.waterfall)
   })
 
+  it('a fractional life charges its final part-year and the sale lands on salvage', () => {
+    const r = run('base', { lifeYears: 2.5 })
+    expect(r.operating.slice(1).map(o => o.depreciation)).toEqual([469_800, 469_800, 234_900, 0, 0])
+    expect(r.operating[3].nbv).toBe(PACK_INPUTS.salePrice)
+    expect(r.operating[5].saleProceeds).toBe(PACK_INPUTS.salePrice)
+    expect(r.waterfall).toEqual(run('base').waterfall)
+  })
+
   it('overrides replace the vehicle terms', () => {
     const r = run('base', { overrides: { feeRate: 0, carryRate: 0.2 } })
     expect(r.waterfall.every(w => w.fee === 0)).toBe(true)
