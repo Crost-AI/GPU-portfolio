@@ -429,6 +429,14 @@ describe('resolveFleet and inputs', () => {
     expect(r.waterfall[3].carry).toBe(Math.round(r.waterfall[3].afterCapital * 0.2 * 100) / 100)
   })
 
+  it('rejects invalid effective terms from overrides with ScenarioInputError', () => {
+    for (const overrides of [{ carryRate: 2 }, { carryRate: -0.1 }, { prefRate: 1.5 }, { rocLpShare: 0 }, { rocLpShare: 1.2 }, { feeRate: -0.01 }, { feeRate: 1 }]) {
+      expect(() => run('base', { overrides }), JSON.stringify(overrides)).toThrow(ScenarioInputError)
+    }
+    expect(() => runFleetScenario(packAssumptions('base'), PACK_FLEET, { ...PACK_SCENARIO_TERMS, waterfall: { ...PACK_SCENARIO_TERMS.waterfall, recipients: [] } }))
+      .toThrow(ScenarioInputError)
+  })
+
   it('rejects unrunnable assumptions with ScenarioInputError', () => {
     expect(() => run('base', { saleYear: 6 })).toThrow(ScenarioInputError)
     expect(() => run('base', { capex: { contingencyPct: 0.1, contingencySpent: 0, returnYear: 6 } })).toThrow(ScenarioInputError)

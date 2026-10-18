@@ -21,7 +21,7 @@
 // The fleet comes from the assumptions (a pitch fleet) or from the asset register through
 // `resolveFleet`; the register is P1b, so that seam throws a typed error until it is wired.
 
-import { accrue, contribute, distribute, emptyState, type CashWaterfallState, type CashWaterfallTerms } from './waterfall'
+import { accrue, contribute, distribute, emptyState, validateCashTerms, type CashWaterfallState, type CashWaterfallTerms } from './waterfall'
 import { irrOf } from '@/lib/accounting/construction-forecast'
 import { apportionCents } from '@/lib/accounting/allocation'
 import { roundCents } from '@/lib/accounting/ledger'
@@ -374,6 +374,11 @@ export function runFleetScenario(a: FleetAssumptions, fleet: PlannedAsset[], ter
     rocLpShare: a.overrides?.rocLpShare ?? terms.waterfall.rocLpShare,
     dayCount: 'periodic',
   }
+  // `distribute` trusts its terms, so the merged ones are checked here: a carry of 2 would
+  // otherwise run and pay investors negative profit.
+  const termsError = validateCashTerms(waterfallTerms)
+  if (termsError) throw new ScenarioInputError(termsError)
+  if (!(feeRate >= 0 && feeRate < 1)) throw new ScenarioInputError('The management fee must be a fraction between 0 and 1 (0.05 = 5%).')
 
   const hardware = sum(fleet.map(f => f.servers * f.hardwareCost))
   const basis = hardware + sum(fleet.map(f => f.servers * (f.capitalizedCosts ?? 0)))
