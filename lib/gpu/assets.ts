@@ -120,10 +120,10 @@ async function capexTotalsByAsset(admin: SupabaseClient, fundId: string, vehicle
     .select('id, source_ref, journal_postings(account_id, amount)')
     .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
     .in('source_ref', chunk).range(f, t))
-  const { data: chart, error } = await (admin as any).from('chart_of_accounts').select('id, code')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).like('code', `${COST_BASE}-%`)
-  if (error) throw error
-  const codeOf = new Map<string, string>(((chart as any[]) ?? []).map(a => [a.id, a.code]))
+  // Paged: one 1600-<a> account per asset, so a large fleet passes PostgREST's 1,000-row cap.
+  const chart = await fetchAllRows<any>((f, t) => (admin as any).from('chart_of_accounts').select('id, code')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).like('code', `${COST_BASE}-%`).range(f, t))
+  const codeOf = new Map<string, string>(chart.map(a => [a.id, a.code]))
   const assetOf = new Map<string, string>(capex.map(e => [e.id, String(e.source_ref).split(':')[1]]))
   for (const e of [...capex, ...reversals]) {
     const assetId = assetOf.get(e.id) ?? assetOf.get(String(e.source_ref).slice('reversal:'.length))
@@ -173,7 +173,16 @@ export function otherVehicleError(ctx: Lifecycle, asset: Pick<GpuAssetRow, 'fund
   return asset.fund_id === ctx.fundId && asset.vehicle_id === ctx.vehicleId ? null : { error: 'This asset belongs to another entity' }
 }
 
-export const IN_PROGRESS = 'Another request is booking this entry right now. Try again in a moment.'
+/**
+ * The refusal for a ref whose entry is still a draft: another request is booking it, or persistEntry
+ * kept it as a draft after a failure. It names the draft so a stuck one can be found and voided.
+ */
+export function inProgress(e: { id: string; entry_date: string }): { error: string; inProgress: true } {
+  return {
+    error: `Entry ${e.id} (${e.entry_date}) for this is still a draft: another request is booking it, or it was kept as a draft after a failure. Try again shortly, or void that draft.`,
+    inProgress: true,
+  }
+}
 
 /** A live (non-void) entry on the actual book, with its postings. */
 export interface LiveEntry {
@@ -192,6 +201,30 @@ export async function liveEntryByRef(admin: SupabaseClient, ctx: Lifecycle, sour
   return ((data as any[]) ?? [])[0] ?? null
 }
 
+/** Whether a posted reversal (`reversal:<id>`) stands against an entry. */
+async function isReversed(admin: SupabaseClient, ctx: Lifecycle, entryId: string): Promise<boolean> {
+  const { data, error } = await (admin as any).from('journal_entries').select('id')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
+    .eq('source_ref', reversalRef(entryId)).order('id').limit(1)
+  if (error) throw error
+  return ((data as any[]) ?? []).length > 0
+}
+
+/**
+ * Whether an entry found under a lifecycle ref may be adopted: posted and not reversed. A draft is
+ * in progress (inProgress); a reversed one nets to zero in the ledger, so adopting it would record
+ * a purchase or disposal the books no longer hold, and the once-only index keeps the ref taken.
+ */
+export async function adoptable(
+  admin: SupabaseClient, ctx: Lifecycle, sourceRef: string, found: LiveEntry,
+): Promise<{ ok: true } | { error: string; inProgress?: true }> {
+  if (found.status !== 'posted') return inProgress(found)
+  if (await isReversed(admin, ctx, found.id)) {
+    return { error: `Entry ${found.id} (${sourceRef}) was booked and then reversed. Void it before booking this again.` }
+  }
+  return { ok: true }
+}
+
 /** An entry's postings to one account, in dollars. */
 export function postedTo(e: LiveEntry, accountId: string): number {
   return (e.journal_postings ?? []).filter(jp => jp.account_id === accountId).reduce((t, jp) => t + Math.round(Number(jp.amount) * 100), 0) / 100
@@ -200,16 +233,20 @@ export function postedTo(e: LiveEntry, accountId: string): number {
 /**
  * Book `entry` once, keyed by its source_ref.
  *
- * An entry already carrying the ref is ADOPTED only when it is POSTED: that is what an earlier
- * attempt booked before its register update failed. A DRAFT is another request still in flight
- * (persistEntry writes a draft header, then the postings, then flips it to posted, and deletes the
- * draft if anything fails), so the answer is "in progress" and the caller changes no register state.
+ * An entry already carrying the ref is ADOPTED only when it is POSTED and NOT REVERSED (adoptable):
+ * that is what an earlier attempt booked before its register update failed. A DRAFT is another
+ * request still in flight (persistEntry writes a draft header, then the postings, then flips it to
+ * posted, and deletes the draft if anything fails), so the answer is "in progress" and the caller
+ * changes no register state.
  */
 export async function bookOnce(
   admin: SupabaseClient, ctx: Lifecycle, entry: JournalEntry,
 ): Promise<{ booked: LiveEntry; adopted: boolean } | { error: string; inProgress?: true }> {
-  const settle = (found: LiveEntry | null) =>
-    found?.status === 'posted' ? { booked: found, adopted: true } : { error: IN_PROGRESS, inProgress: true as const }
+  const settle = async (found: LiveEntry | null) => {
+    if (!found) return { error: `Could not read the entry already booked under ${entry.sourceRef}. Try again.` }
+    const ok = await adoptable(admin, ctx, entry.sourceRef!, found)
+    return 'ok' in ok ? { booked: found, adopted: true } : ok
+  }
   const found = await liveEntryByRef(admin, ctx, entry.sourceRef!)
   if (found) return settle(found)
   const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
@@ -278,23 +315,32 @@ export async function loadCapexEvents(
 }
 
 /**
- * Months whose depreciation is on the books: a posted `gpu-dep:<id>:<YYYY-MM>[...]` entry that has not
- * itself been reversed (a corrected month posts under a suffixed ref).
+ * Depreciation on the books by month: each posted `gpu-dep:<id>:<YYYY-MM>[...]` entry's credit to
+ * 1650-<a>, skipping an entry that has itself been reversed (a corrected month posts under a suffixed
+ * ref and is added to its month). What depreciationSchedule takes as never-recomputed months.
  */
-export async function loadPostedDepreciationMonths(admin: SupabaseClient, ctx: Lifecycle, assetId: string): Promise<Set<string>> {
+export async function loadPostedDepreciation(
+  admin: SupabaseClient, ctx: Lifecycle, assetId: string, accumulatedAccountId: string,
+): Promise<Map<string, number>> {
   const prefix = `gpu-dep:${assetId}:`
-  const { data, error } = await (admin as any).from('journal_entries').select('id, source_ref')
+  const { data, error } = await (admin as any).from('journal_entries').select('id, source_ref, journal_postings(account_id, amount)')
     .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
     .like('source_ref', `${prefix}%`).order('id')
   if (error) throw error
-  const rows: { id: string; source_ref: string }[] = (data as any[]) ?? []
-  if (!rows.length) return new Set()
+  const rows: any[] = (data as any[]) ?? []
+  const out = new Map<string, number>()
+  if (!rows.length) return out
   const { data: rev, error: revError } = await (admin as any).from('journal_entries').select('source_ref')
     .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
     .in('source_ref', rows.map(r => reversalRef(r.id))).order('id')
   if (revError) throw revError
   const reversed = new Set(((rev as any[]) ?? []).map(r => String(r.source_ref).slice('reversal:'.length)))
-  return new Set(rows.filter(r => !reversed.has(r.id)).map(r => r.source_ref.slice(prefix.length, prefix.length + 7)))
+  for (const r of rows) {
+    if (reversed.has(r.id)) continue
+    const month = String(r.source_ref).slice(prefix.length, prefix.length + 7)
+    out.set(month, Math.round(((out.get(month) ?? 0) - postedTo(r, accumulatedAccountId)) * 100) / 100)
+  }
+  return out
 }
 
 /**

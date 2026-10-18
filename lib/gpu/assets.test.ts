@@ -30,7 +30,7 @@ vi.mock('@/lib/accounting/persist', () => ({
   }),
 }))
 
-import { IN_PROGRESS, capitalizeCost, ensureAssetAccounts, listAssets, parseAssetInput, purchaseAsset } from './assets'
+import { capitalizeCost, ensureAssetAccounts, listAssets, parseAssetInput, purchaseAsset } from './assets'
 import { disposeAsset } from './disposal'
 import { buildDepreciationEntry } from './entries'
 import { depreciableFromAsset, depreciationEntryDate, depreciationSchedule } from './depreciation'
@@ -186,14 +186,14 @@ describe('the asset lifecycle on the ledger', () => {
     s.between = async () => { second = await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false }) }
     s.failAfterDraft = true
     expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: 'posting failed' })
-    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(second).toEqual({ error: expect.stringMatching(/^Entry je-1 \(2027-01-05\) for this is still a draft/), inProgress: true })
     expect(stored().purchase_entry_id).toBeNull()
     expect(s.m.tables.journal_entries).toEqual([])
 
     await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })
     s.between = async () => { second = await capitalizeCost(s.m.admin, ctx, stored(), { key: 'k', entryDate: '2027-01-10', amount: 500, invoiced: false }) }
     expect(await capitalizeCost(s.m.admin, ctx, stored(), { key: 'k', entryDate: '2027-01-10', amount: 500, invoiced: false })).toMatchObject({ capitalizedCosts: 500 })
-    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(second).toMatchObject({ error: expect.stringContaining('is still a draft'), inProgress: true })
   })
 
   it('takes capex only on a purchased asset that is not disposed of', async () => {
@@ -264,6 +264,20 @@ describe('the asset lifecycle on the ledger', () => {
     expect(stored()).toMatchObject({ status: 'disposed', disposal_entry_id: 'je-3', disposed_on: '2027-01-31', disposal_proceeds: 300_000 })
   })
 
+  it('a reversed disposal is not adopted on retry', async () => {
+    const a = await purchased()
+    await postDepreciation(['2027-01'])
+    s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
+    await expect(disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 300_000 })).rejects.toBeTruthy()
+    const disposal = s.m.tables.journal_entries.find((e: any) => e.source_ref === `gpu-asset:${ASSET_ID}:disposal`)
+    await persistEntry(s.m.admin, 'f', ctx.group, 'u', {
+      fundId: 'f', entryDate: '2027-02-01', sourceType: 'realized_gain', sourceRef: `reversal:${disposal.id}`,
+      postings: s.m.tables.journal_postings.filter((p: any) => p.journal_entry_id === disposal.id).map((p: any) => ({ accountId: p.account_id, amount: -p.amount, currency: 'USD' })),
+    })
+    expect(await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 })).toEqual({ error: expect.stringContaining('was booked and then reversed') })
+    expect(stored().status).toBe('in_service')
+  })
+
   it('a disposal that meets another\'s draft is in progress; if that one then fails, the asset is not disposed', async () => {
     const a = await purchased()
     await postDepreciation(['2027-01'])
@@ -271,15 +285,41 @@ describe('the asset lifecycle on the ledger', () => {
     s.between = async () => { second = await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 }) }
     s.failAfterDraft = true
     expect(await disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 300_000 })).toEqual({ error: 'posting failed' })
-    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(second).toMatchObject({ error: expect.stringContaining('is still a draft'), inProgress: true })
     expect(stored()).toMatchObject({ status: 'in_service', disposal_entry_id: null })
     expect(s.m.tables.journal_entries.some((e: any) => e.source_ref === `gpu-asset:${ASSET_ID}:disposal`)).toBe(false)
 
     // And when the first one completes, the second learns nothing it did not book.
     s.between = async () => { second = await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 }) }
     expect(await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 })).toMatchObject({ gain: -29_975 })
-    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(second).toMatchObject({ error: expect.stringContaining('is still a draft'), inProgress: true })
     expect(stored().status).toBe('disposed')
+  })
+
+  it('a reversed purchase or disposal is not adopted', async () => {
+    created({ status: 'in_service' })
+    s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
+    await expect(purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).rejects.toBeTruthy()
+    const reverse = async (id: string, date: string) => persistEntry(s.m.admin, 'f', ctx.group, 'u', {
+      fundId: 'f', entryDate: date, sourceType: 'manual', sourceRef: `reversal:${id}`,
+      postings: s.m.tables.journal_postings.filter((p: any) => p.journal_entry_id === id).map((p: any) => ({ accountId: p.account_id, amount: -p.amount, currency: 'USD' })),
+    })
+    await reverse('je-1', '2027-01-06')
+    expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: expect.stringContaining('was booked and then reversed') })
+    expect(stored().purchase_entry_id).toBeNull()
+  })
+
+  it('capitalized costs are found past PostgREST\'s 1,000-row cap on the chart', async () => {
+    const pad = Array.from({ length: 1_100 }, (_, i) => ({ id: `acc-pad-${String(i).padStart(4, '0')}`, fund_id: 'f', vehicle_id: 'v-gpu', portfolio_group: 'H200 SPV I', code: `1600-${String(i).padStart(8, '0')}`, name: 'pad', type: 'asset', subtype: 'fixed_asset' }))
+    s.m = memoryAdmin({
+      fund_vehicles: [{ id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] }],
+      chart_of_accounts: [...GPU_SPV_CHART.map(a => ({ id: `acc-${a.code}`, fund_id: 'f', vehicle_id: 'v-gpu', portfolio_group: 'H200 SPV I', code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null })), ...pad],
+      gpu_assets: [], journal_entries: [], journal_postings: [],
+    }, { maxRows: 1_000, unique: [{ table: 'chart_of_accounts', key: r => `${r.fund_id}|${r.portfolio_group}|${r.code}` }] })
+    await purchased()
+    await capitalizeCost(s.m.admin, ctx, stored(), { key: 'k', entryDate: '2027-01-10', amount: 2_000, invoiced: false })
+    expect(s.m.tables.chart_of_accounts.filter((r: any) => r.code.startsWith('1600-')).length).toBeGreaterThan(1_000)
+    expect(await capitalized()).toBe(2_000)
   })
 
   it('an asset of one entity cannot be purchased, capitalized or disposed of through another', async () => {

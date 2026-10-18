@@ -100,27 +100,51 @@ export const fleetScheduleRef = {
   insurance: (key: string, start: string) => `fleet:insurance:${key}:${start}`,
 }
 
-interface StoredSchedule { id: string; end_date: string | null }
+interface StoredSchedule { id: string; start_date: string; end_date: string | null; amount: number | null }
 
+/** A refusal from a schedule writer: another request mid-write, or a key reused for different terms. */
+export type ScheduleRefusal = { error: string; inProgress?: true }
+
+/** The schedule under `sourceRef`, with its debit line's amount (null while its lines are not committed). */
 async function scheduleByRef(admin: SupabaseClient, t: ScheduleTarget, sourceRef: string): Promise<StoredSchedule | null> {
-  const { data, error } = await (admin as any).from('accounting_schedules').select('id, end_date')
+  const { data, error } = await (admin as any).from('accounting_schedules')
+    .select('id, start_date, end_date, accounting_schedule_lines(amount, sort_order)')
     .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('source_ref', sourceRef).order('id').limit(1)
   if (error) throw error
-  return ((data as any[]) ?? [])[0] ?? null
+  const row = ((data as any[]) ?? [])[0]
+  if (!row) return null
+  const debit = (row.accounting_schedule_lines ?? []).find((l: any) => l.sort_order === 0)
+  return { id: row.id, start_date: row.start_date, end_date: row.end_date, amount: debit ? Number(debit.amount) : null }
 }
 
 /**
- * Insert one schedule and its two lines under `sourceRef`, or return the row already there. The
- * partial unique index accounting_schedules_fleet_once makes this exact under concurrency: the
- * second of two simultaneous inserts gets 23505 and adopts the first's row, never a second
- * required-for-close accrual. Returns the STORED end date, which the rollover ends from. If the
- * lines fail, the header is deleted rather than left active with nothing to post.
+ * Adopt a stored schedule only when it is complete and is the one asked for. A header whose lines
+ * are not committed is another request mid-write (it may yet delete the header): in progress. A
+ * key reused for a different amount (or, when `matchEnd`, a different end date) is refused rather
+ * than silently answered with the old schedule.
+ */
+function adoptSchedule(stored: StoredSchedule, period: SchedulePeriod, sourceRef: string, matchEnd: boolean): StoredSchedule | ScheduleRefusal {
+  if (stored.amount === null) {
+    return { error: `Schedule ${stored.id} (${sourceRef}, from ${stored.start_date}) is still being written by another request. Try again shortly.`, inProgress: true }
+  }
+  if (Math.round(stored.amount * 100) !== Math.round(period.amount * 100) || (matchEnd && stored.end_date !== period.end)) {
+    return { error: `${sourceRef} already exists as schedule ${stored.id} for ${stored.amount} a month to ${stored.end_date ?? 'open'}, not ${period.amount} to ${period.end ?? 'open'}.` }
+  }
+  return stored
+}
+
+/**
+ * Insert one schedule and its two lines under `sourceRef`, or adopt the row already there
+ * (adoptSchedule). The partial unique index accounting_schedules_fleet_once makes this exact under
+ * concurrency: the second of two simultaneous inserts gets 23505 and adopts the first's row, never
+ * a second required-for-close accrual. Returns the STORED end date, which the rollover ends from.
+ * If the lines fail, the header is deleted rather than left active with nothing to post.
  */
 async function insertSchedule(
-  admin: SupabaseClient, t: ScheduleTarget, name: string, period: SchedulePeriod, sourceRef: string,
-): Promise<StoredSchedule> {
+  admin: SupabaseClient, t: ScheduleTarget, name: string, period: SchedulePeriod, sourceRef: string, matchEnd: boolean,
+): Promise<StoredSchedule | ScheduleRefusal> {
   const existing = await scheduleByRef(admin, t, sourceRef)
-  if (existing) return existing
+  if (existing) return adoptSchedule(existing, period, sourceRef, matchEnd)
 
   const { data, error } = await (admin as any).from('accounting_schedules').insert({
     fund_id: t.fundId, vehicle_id: t.vehicleId, name, memo: name, source_type: 'partnership_expense', source_ref: sourceRef,
@@ -130,7 +154,7 @@ async function insertSchedule(
   if (error) {
     if ((error as { code?: string }).code === '23505') {
       const winner = await scheduleByRef(admin, t, sourceRef)
-      if (winner) return winner
+      if (winner) return adoptSchedule(winner, period, sourceRef, matchEnd)
     }
     throw error
   }
@@ -142,7 +166,7 @@ async function insertSchedule(
     await (admin as any).from('accounting_schedules').delete().eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', data.id)
     throw lineError
   }
-  return { id: data.id, end_date: period.end }
+  return { id: data.id, start_date: period.start, end_date: period.end, amount: period.amount }
 }
 
 /**
@@ -152,14 +176,15 @@ async function insertSchedule(
  * schedule's STORED end date is brought to the day before the next period starts, so an intermediate
  * year is never skipped and a schedule left open by an earlier failed attempt is closed rather than
  * accruing alongside its successor. Periods starting before the linked schedule are taken as done,
- * a contract set up late creates its whole history once, and a re-run changes nothing.
+ * a contract set up late creates its whole history once, and a re-run changes nothing. A schedule
+ * another request is still writing makes the whole call in progress, with nothing linked.
  */
 export async function ensureDatacenterSchedule(
   admin: SupabaseClient,
   contract: DatacenterContractRow,
   t: ScheduleTarget,
   asOf: string,
-): Promise<{ scheduleId: string; created: number }> {
+): Promise<{ scheduleId: string; created: number } | ScheduleRefusal> {
   if (contract.fund_id !== t.fundId || contract.vehicle_id !== t.vehicleId) throw new Error('This contract belongs to another entity')
   const periods = datacenterPeriods(contract, asOf)
   let todo = periods
@@ -175,8 +200,11 @@ export async function ensureDatacenterSchedule(
   let created = 0
   let previous: StoredSchedule | null = null
   for (const period of todo) {
-    const before = await scheduleByRef(admin, t, fleetScheduleRef.datacenter(contract.id, period.start))
-    const row = before ?? await insertSchedule(admin, t, name, period, fleetScheduleRef.datacenter(contract.id, period.start))
+    const ref = fleetScheduleRef.datacenter(contract.id, period.start)
+    const before = await scheduleByRef(admin, t, ref)
+    // The stored end of an earlier period is the rollover's to change, so only the amount must match.
+    const row = before ? adoptSchedule(before, period, ref, false) : await insertSchedule(admin, t, name, period, ref, false)
+    if ('error' in row) return row
     if (!before) created++
     if (previous) {
       const end = dayBefore(period.start)
@@ -199,16 +227,19 @@ export async function ensureDatacenterSchedule(
 
 /**
  * The prepaid premium's amortization schedules (Dr 5200 / Cr 1500); returns their ids in order.
- * `key` identifies the policy (e.g. its number), so a double submit adopts rather than duplicates.
+ * `key` identifies the policy (e.g. its number), so a double submit adopts rather than duplicates,
+ * and the same key with a different premium or period is refused.
  */
 export async function createInsuranceSchedules(
   admin: SupabaseClient,
   t: ScheduleTarget,
   p: { key: string; name: string; premium: number; startDate: string; months: number },
-): Promise<string[]> {
+): Promise<string[] | ScheduleRefusal> {
   const ids: string[] = []
   for (const period of insurancePeriods(p.premium, p.startDate, p.months)) {
-    ids.push((await insertSchedule(admin, t, p.name, period, fleetScheduleRef.insurance(p.key, period.start))).id)
+    const row = await insertSchedule(admin, t, p.name, period, fleetScheduleRef.insurance(p.key, period.start), true)
+    if ('error' in row) return row
+    ids.push(row.id)
   }
   return ids
 }

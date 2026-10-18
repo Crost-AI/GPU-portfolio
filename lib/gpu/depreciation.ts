@@ -16,8 +16,10 @@ export interface DepreciableAsset {
   id: string
   /** The cost depreciated from the in-service month: the hardware cost. */
   basis: number
-  /** Capex depreciated PROSPECTIVELY from its month over the remaining life; see depreciationSchedule. */
+  /** Capex by the month it was booked; it joins the cost from that month on (see depreciationSchedule). */
   capex?: CapexEvent[]
+  /** Depreciation already on the books, by month (loadPostedDepreciation). These months are never recomputed. */
+  posted?: ReadonlyMap<MonthKey, number>
   salvage: number
   lifeMonths: number
   inServiceDate: string
@@ -46,23 +48,19 @@ export function defaultSalvage(hardwareCost: number): number {
 }
 
 /**
- * The register row as a depreciable asset; null until it has an in-service date.
- *
- * `capex` are the asset's posted capex entries by month (assets.ts loadCapexEvents), each then
- * depreciated prospectively. `postedMonths` are the months whose depreciation is already on the
- * books (loadPostedDepreciationMonths): a capex dated in or before one of them starts at the first
- * month NOT yet posted, so a back-dated cost never recomputes a month the close already booked.
+ * The register row as a depreciable asset; null until it has an in-service date. `capex` are the
+ * asset's posted capex entries by month (assets.ts loadCapexEvents) and `posted` the depreciation
+ * already booked by month (loadPostedDepreciation).
  */
 export function depreciableFromAsset(
-  row: GpuAssetRow, capex: CapexEvent[] = [], postedMonths: ReadonlySet<MonthKey> = new Set(),
+  row: GpuAssetRow, capex: CapexEvent[] = [], posted?: ReadonlyMap<MonthKey, number>,
 ): DepreciableAsset | null {
   if (!row.in_service_date) return null
-  let firstOpen = monthOf(row.in_service_date)
-  while (postedMonths.has(firstOpen)) firstOpen = addMonths(firstOpen, 1)
   return {
     id: row.id,
     basis: Number(row.hardware_cost),
-    capex: capex.map(e => ({ month: e.month < firstOpen ? firstOpen : e.month, amount: e.amount })),
+    capex,
+    posted,
     salvage: Number(row.salvage_value),
     lifeMonths: row.useful_life_months,
     inServiceDate: row.in_service_date,
@@ -71,57 +69,64 @@ export function depreciableFromAsset(
   }
 }
 
-const monthIndex = (m: MonthKey) => Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1
-
 /**
- * Month-by-month charges. `(basis − salvage) / lifeMonths` rounded to cents, with the FINAL month
- * absorbing the rounding so accumulated depreciation ends exactly at `basis + Σ capex − salvage`.
+ * Month-by-month charges, walked in order from the in-service month.
  *
- *   - full_month: the first charge falls in the in-service month; `lifeMonths` charges.
- *   - mid_month: half a charge in the first and last months; `lifeMonths + 1` months.
- *   - capex is PROSPECTIVE: a cost booked in month k adds `amount / (months remaining from k)` to
- *     each charge from k on (weighted like the base charges, so a mid_month final half stays half).
- *     Months before k are never rewritten, so what the close already posted stays right. A cost
- *     booked before in-service spreads over the whole life; one after the last month lands in it.
+ *   - A month already POSTED carries what the ledger holds. It is never recomputed, whatever has
+ *     been booked since.
+ *   - While nothing has moved the asset off its original plan (no capex yet, every posted month
+ *     as planned), an unposted month takes the §2.7 straight line: `(basis − salvage) / lifeMonths`
+ *     in cents, the FINAL month absorbing the rounding.
+ *   - Otherwise it takes the REMAINING-LIFE charge: (cost booked by that month − accumulated so far
+ *     − salvage) spread over the months left, weighted like the plan. A capex therefore depreciates
+ *     prospectively from the first unposted month at or after its own, wherever it is dated, and a
+ *     mis-posted month corrects itself over the rest of the life.
+ *   - The final month takes whatever is left, so accumulated depreciation ends exactly at
+ *     basis + Σ capex − salvage.
  *
- * A disposal stops depreciation after the disposal month (half that month's charge under
- * mid_month), and the true-up is then never reached: the disposal clears what the ledger holds.
+ * full_month: `lifeMonths` charges from the in-service month. mid_month: half a charge in the first
+ * and last months, `lifeMonths + 1` months. A disposal stops depreciation after the disposal month
+ * (half that month's charge under mid_month); the disposal clears what the ledger holds.
  */
 export function depreciationSchedule(a: DepreciableAsset): DepreciationLine[] {
-  const base = cents(a.basis) - cents(a.salvage)
+  const basis = cents(a.basis)
+  const salvage = cents(a.salvage)
   const capex = (a.capex ?? []).map(e => ({ month: e.month, c: cents(e.amount) }))
-  const total = base + capex.reduce((t, e) => t + e.c, 0)
-  if (total <= 0 || a.lifeMonths <= 0) return []
-  const monthly = Math.round(base / a.lifeMonths)
+  const allCapex = capex.reduce((t, e) => t + e.c, 0)
+  if (a.lifeMonths <= 0 || basis + allCapex - salvage <= 0) return []
+
   const weights = a.convention === 'mid_month'
     ? [0.5, ...Array<number>(a.lifeMonths - 1).fill(1), 0.5]
     : Array<number>(a.lifeMonths).fill(1)
-  const charges = weights.map(w => Math.round(monthly * w))
-  const last = charges.length - 1
+  const last = weights.length - 1
+  const base = Math.max(0, basis - salvage)
+  const monthly = Math.round(base / a.lifeMonths)
+  const planned = weights.map(w => Math.round(monthly * w))
+  planned[last] = base - planned.slice(0, last).reduce((t, c) => t + c, 0)
 
   const first = monthOf(a.inServiceDate)
-  for (const e of capex) {
-    const k = Math.min(last, Math.max(0, monthIndex(e.month) - monthIndex(first)))
-    const share = e.c / weights.slice(k).reduce((t, w) => t + w, 0)
-    for (let j = k; j < last; j++) charges[j] += Math.round(share * weights[j])
-  }
-  charges[last] = total - charges.slice(0, last).reduce((t, c) => t + c, 0)
-
-  let months = charges.map((amount, i) => ({ month: addMonths(first, i), amount }))
-  if (a.disposedOn) {
-    const out = monthOf(a.disposedOn)
-    months = months.filter(m => m.month <= out)
-    const i = months.length - 1
-    if (a.convention === 'mid_month' && i > 0 && i < last && months[i].month === out) months[i] = { ...months[i], amount: Math.round(months[i].amount / 2) }
-  }
-
-  // NBV counts the cost on the books by each month: the basis plus capex booked by then.
-  const costBy = (month: MonthKey) => cents(a.basis) + capex.filter(e => e.month <= month).reduce((t, e) => t + e.c, 0)
+  const out = a.disposedOn ? monthOf(a.disposedOn) : null
+  const lines: DepreciationLine[] = []
   let accumulated = 0
-  return months.map(({ month, amount }) => {
-    accumulated += amount
-    return { month, amount: dollars(amount), accumulated: dollars(accumulated), nbv: dollars(costBy(month) - accumulated) }
-  })
+  let plannedSoFar = 0
+  let onPlan = true
+  for (let i = 0; i <= last; i++) {
+    const month = addMonths(first, i)
+    if (out && month > out) break
+    const cost = basis + (i === last ? allCapex : capex.filter(e => e.month <= month).reduce((t, e) => t + e.c, 0))
+    const posted = a.posted?.get(month)
+    let charge: number
+    if (posted !== undefined) charge = cents(posted)
+    else if (i === last) charge = cost - salvage - accumulated
+    else if (onPlan && cost === basis) charge = planned[i]
+    else charge = Math.round(((cost - salvage - accumulated) * weights[i]) / weights.slice(i).reduce((t, w) => t + w, 0))
+    if (posted === undefined && a.convention === 'mid_month' && month === out && i > 0 && i < last) charge = Math.round(charge / 2)
+    accumulated += charge
+    plannedSoFar += planned[i]
+    onPlan = onPlan && cost === basis && accumulated === plannedSoFar
+    lines.push({ month, amount: dollars(charge), accumulated: dollars(accumulated), nbv: dollars(cost - accumulated) })
+  }
+  return lines
 }
 
 /**

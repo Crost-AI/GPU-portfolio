@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { depreciableFromAsset, depreciationEntryDate, depreciationForMonth, depreciationSchedule, nbvAsOf, type DepreciableAsset } from './depreciation'
 import { PACK_INPUTS, PACK_SERVERS } from './fixtures/pack-v3'
+import { addMonths } from '@/lib/forecast/months'
 import type { GpuAssetRow } from './types'
 
 // §2.7: the pack's three servers, salvage at 10%, 60 months, full-month convention.
@@ -74,14 +75,70 @@ describe('depreciableFromAsset', () => {
     expect(depreciableFromAsset({ ...row, in_service_date: null })).toBeNull()
   })
 
-  it('starts a back-dated capex at the first month not yet posted (X)', () => {
-    const posted = new Set(Array.from({ length: 12 }, (_, i) => `2027-${String(i + 1).padStart(2, '0')}`))
+  it('a back-dated capex joins at the first unposted month; posted months are untouched', () => {
+    const posted = new Map(Array.from({ length: 12 }, (_, i) => [`2027-${String(i + 1).padStart(2, '0')}`, 5_025] as [string, number]))
     const a = depreciableFromAsset(row, [{ month: '2027-10', amount: 4_800 }], posted)!
-    expect(a.capex).toEqual([{ month: '2028-01', amount: 4_800 }])
     const s = depreciationSchedule(a)
     expect(s.slice(0, 12).every(l => l.amount === 5_025)).toBe(true)
     expect(s[12]).toMatchObject({ month: '2028-01', amount: 5_125 })
     expect(s.at(-1)!.accumulated).toBe(335_000 + 4_800 - 33_500)
+  })
+})
+
+describe('the close simulation: build, post one month, rebuild, through the whole life (AA)', () => {
+  interface Booked { booked: string; month: string; amount: number }
+  // Each step books the capex visible by then, rebuilds the schedule from what is posted, checks no
+  // posted month moved, and posts the month due. `skip` leaves a month unposted until the next step.
+  const simulate = (capex: Booked[], over: Partial<DepreciableAsset> = {}, skip?: string) => {
+    const base = server('h', 335_000, over)
+    const posted = new Map<string, number>()
+    const life = base.convention === 'mid_month' ? 61 : 60
+    const build = (month: string) => depreciationSchedule({ ...base, capex: capex.filter(c => c.booked <= month), posted })
+    let deferred: { month: string } | null = null
+    for (let k = 0; k < life; k++) {
+      const month = addMonths('2027-01', k)
+      const s = build(month)
+      for (const [m, amount] of posted) expect(s.find(l => l.month === m)!.amount, `posted ${m} moved at ${month}`).toBe(amount)
+      const due = s.find(l => l.month === month)!.amount
+      expect(due).not.toBeNaN()
+      if (month === skip) { deferred = { month }; continue }
+      posted.set(month, due)
+      if (deferred) {
+        // The skipped month is posted late, at what the schedule says then: still unposted when a
+        // capex arrived, it rightly takes its share.
+        posted.set(deferred.month, build(month).find(l => l.month === deferred!.month)!.amount)
+        deferred = null
+      }
+    }
+    const total = Array.from(posted.values()).reduce((t, a) => t + Math.round(a * 100), 0)
+    return { posted, total, expected: Math.round((335_000 + capex.reduce((t, c) => t + c.amount, 0) - 33_500) * 100) }
+  }
+
+  it('back-dated, current-month and future-dated capex all depreciate exactly once', () => {
+    const capex = [
+      { booked: '2028-01', month: '2027-10', amount: 4_800 },
+      { booked: '2028-01', month: '2028-01', amount: 1_200 },
+      { booked: '2027-05', month: '2029-06', amount: 2_500 },
+      { booked: '2030-03', month: '2030-03', amount: 777.77 },
+    ]
+    const { posted, total, expected } = simulate(capex)
+    expect(posted.size).toBe(60)
+    expect(total).toBe(expected)
+    expect(posted.get('2027-12')).toBe(5_025)
+    expect(posted.get('2028-01')).toBe(5_150)
+  })
+
+  it('with no capex it posts exactly the §2.7 straight line', () => {
+    const { posted, total, expected } = simulate([])
+    expect(Array.from(posted.values()).every(a => a === 5_025)).toBe(true)
+    expect(total).toBe(expected)
+  })
+
+  it('mid_month and a gap in the posted months still end exactly at basis + capex − salvage', () => {
+    const capex = [{ booked: '2028-04', month: '2027-11', amount: 3_333.33 }]
+    expect(simulate(capex, { convention: 'mid_month' }, '2028-03')).toMatchObject({ total: simulate(capex).expected })
+    const gap = simulate(capex, {}, '2028-03')
+    expect(gap.total).toBe(gap.expected)
   })
 })
 

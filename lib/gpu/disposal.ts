@@ -7,8 +7,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { assetAccountCode } from '@/lib/accounting/chart'
 import { loadPostedLedger } from '@/lib/accounting/load'
 import {
-  ACCUMULATED_BASE, CASH_CODE, COST_BASE, IN_PROGRESS, accountIdsByCode, bookOnce, liveEntryByRef, loadCapexEvents,
-  loadPostedDepreciationMonths, otherVehicleError, postedTo, type LiveEntry, type Lifecycle,
+  ACCUMULATED_BASE, CASH_CODE, COST_BASE, accountIdsByCode, adoptable, bookOnce, liveEntryByRef, loadCapexEvents,
+  loadPostedDepreciation, otherVehicleError, postedTo, type LiveEntry, type Lifecycle,
 } from './assets'
 import { depreciableFromAsset, depreciationSchedule } from './depreciation'
 import { buildDisposalEntry, gpuSourceRef } from './entries'
@@ -51,13 +51,16 @@ export async function disposeAsset(
 
   // A disposal already booked: an earlier attempt whose register update failed (adopt it, with ITS
   // date, proceeds and gain, never this request's, and never rebuilt from the already-cleared
-  // accounts), or one still in flight (refuse; nothing changes).
+  // accounts), one still in flight (refuse; nothing changes), or one reversed since (refuse).
   const existing = await liveEntryByRef(admin, ctx, gpuSourceRef.disposal(asset.id))
-  if (existing) return existing.status === 'posted' ? recordFrom(existing) : { error: IN_PROGRESS, inProgress: true }
+  if (existing) {
+    const ok = await adoptable(admin, ctx, gpuSourceRef.disposal(asset.id), existing)
+    return 'ok' in ok ? recordFrom(existing) : ok
+  }
 
   // Depreciation must be on the books for every month through the disposal month, or the gain is
   // overstated and that month's charge would later land on a cleared asset.
-  const posted = await loadPostedDepreciationMonths(admin, ctx, asset.id)
+  const posted = await loadPostedDepreciation(admin, ctx, asset.id, ids.get(accCode)!)
   const dep = depreciableFromAsset({ ...asset, disposed_on: p.disposedOn }, await loadCapexEvents(admin, ctx, asset.id, ids.get(costCode)!), posted)
   const missing = (dep ? depreciationSchedule(dep) : []).map(l => l.month).filter(m => !posted.has(m))
   if (missing.length) return { error: `Post depreciation for ${missing.join(', ')} before disposing of this asset.` }

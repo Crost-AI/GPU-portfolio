@@ -59,15 +59,20 @@ describe('schedules the close proposes', () => {
   const target = { fundId: 'f', vehicleId: 'v-gpu', userId: 'u', accounts: ACCOUNTS }
   const contract = () => m.tables.datacenter_contracts[0] as DatacenterContractRow
   const proposals = (start: string, end: string) => loadCloseEntrySuggestions(m.admin, 'f', 'H200 SPV I', start, end)
+  const ensure = async (...args: Parameters<typeof ensureDatacenterSchedule>) => {
+    const r = await ensureDatacenterSchedule(...args)
+    if ('error' in r) throw new Error(r.error)
+    return r
+  }
 
   it('creates the accrual, is idempotent, and rolls over ON the escalation date', async () => {
-    const first = await ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')
+    const first = await ensure(m.admin, contract(), target, '2027-06-30')
     expect(first.created).toBe(1)
     expect(contract().schedule_id).toBe(first.scheduleId)
-    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2027-12-31')).created).toBe(0)
+    expect((await ensure(m.admin, contract(), target, '2027-12-31')).created).toBe(0)
     expect(m.tables.accounting_schedules).toHaveLength(1)
 
-    const next = await ensureDatacenterSchedule(m.admin, contract(), target, '2028-01-01')
+    const next = await ensure(m.admin, contract(), target, '2028-01-01')
     expect(next.created).toBe(1)
     const [old, current] = m.tables.accounting_schedules
     expect([old.start_date, old.end_date]).toEqual(['2027-01-01', '2027-12-31'])
@@ -86,8 +91,8 @@ describe('schedules the close proposes', () => {
   ])
 
   it('a rollover across two escalations creates every intermediate year, each ending before the next', async () => {
-    await ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')
-    const rolled = await ensureDatacenterSchedule(m.admin, contract(), target, '2029-01-01')
+    await ensure(m.admin, contract(), target, '2027-06-30')
+    const rolled = await ensure(m.admin, contract(), target, '2029-01-01')
     expect(rolled.created).toBe(2)
     expect(rows()).toEqual([
       ['2027-01-01', '2027-12-31', 10_280],
@@ -96,13 +101,13 @@ describe('schedules the close proposes', () => {
     ])
     expect(contract().schedule_id).toBe(rolled.scheduleId)
     expect((await proposals('2028-06-01', '2028-06-30')).map(x => x.postings[0].amount)).toEqual([10_794])
-    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2029-01-01')).created).toBe(0)
+    expect((await ensure(m.admin, contract(), target, '2029-01-01')).created).toBe(0)
   })
 
   it('a contract first set up after an escalation gets its whole history once', async () => {
-    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2028-03-01')).created).toBe(2)
+    expect((await ensure(m.admin, contract(), target, '2028-03-01')).created).toBe(2)
     expect(rows()).toEqual([['2027-01-01', '2027-12-31', 10_280], ['2028-01-01', null, 10_794]])
-    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2028-12-31')).created).toBe(0)
+    expect((await ensure(m.admin, contract(), target, '2028-12-31')).created).toBe(0)
   })
 
   it('a double submit or a second first call creates no duplicate schedule', async () => {
@@ -111,8 +116,8 @@ describe('schedules the close proposes', () => {
     expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)).toEqual(first)
     // Two first calls that both read the contract before either linked a schedule.
     const unlinked = { ...contract() }
-    await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
-    await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
+    await ensure(m.admin, unlinked, target, '2027-06-30')
+    await ensure(m.admin, unlinked, target, '2027-06-30')
     expect(m.tables.accounting_schedules).toHaveLength(3)
   })
 
@@ -127,8 +132,8 @@ describe('schedules the close proposes', () => {
 
     const unlinked = { ...contract() }
     const [x, y] = await Promise.all([
-      ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30'),
-      ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30'),
+      ensure(m.admin, unlinked, target, '2027-06-30'),
+      ensure(m.admin, unlinked, target, '2027-06-30'),
     ])
     expect(x.scheduleId).toBe(y.scheduleId)
     expect(m.tables.accounting_schedules.filter((r: any) => r.source_ref.startsWith('fleet:datacenter:'))).toHaveLength(1)
@@ -137,18 +142,54 @@ describe('schedules the close proposes', () => {
 
   it('a failed contract link, retried past an escalation, closes the stored open schedule (no double accrual)', async () => {
     m.failNext('datacenter_contracts', 'update', 'canceling statement due to statement timeout')
-    await expect(ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
+    await expect(ensure(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
     expect(contract().schedule_id).toBeNull()
     expect(rows()).toEqual([['2027-01-01', null, 10_280]])
 
-    await ensureDatacenterSchedule(m.admin, contract(), target, '2028-01-01')
+    await ensure(m.admin, contract(), target, '2028-01-01')
     expect(rows()).toEqual([['2027-01-01', '2027-12-31', 10_280], ['2028-01-01', null, 10_794]])
     expect((await proposals('2028-01-01', '2028-01-31')).map(x => x.postings[0].amount)).toEqual([10_794])
   })
 
+  it('a header whose lines are not committed is in progress, never adopted (pre-check and 23505)', async () => {
+    const insurance = { key: 'POL-1', name: 'Fleet insurance 2027', premium: 12_000, startDate: '2027-01-01', months: 12 }
+    const winner = { id: 'winner', fund_id: 'f', vehicle_id: 'v-gpu', name: insurance.name, source_ref: 'fleet:insurance:POL-1:2027-01-01', start_date: '2027-01-01', end_date: '2027-12-31', active: true }
+    m.tables.accounting_schedules.push({ ...winner })
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)).toEqual({ error: expect.stringContaining('still being written'), inProgress: true })
+
+    // The winner's header lands between our read and our insert: 23505, and still not adopted.
+    m.tables.accounting_schedules.length = 0
+    let injected = false
+    const raced = memoryAdmin({ fund_vehicles: m.tables.fund_vehicles, accounting_schedules: [], accounting_schedule_lines: [] }, {
+      unique: [{ table: 'accounting_schedules', key: r => (String(r.source_ref ?? '').startsWith('fleet:') ? `${r.fund_id}|${r.vehicle_id}|${r.source_ref}` : null) }],
+      before: (table, op, _payload, tables) => {
+        if (table === 'accounting_schedules' && op === 'insert' && !injected) { injected = true; tables.accounting_schedules.push({ ...winner }) }
+      },
+    })
+    expect(await createInsuranceSchedules(raced.admin, { ...target, accounts: PREPAID }, insurance)).toEqual({ error: expect.stringContaining('still being written'), inProgress: true })
+    // The winner then fails its lines and deletes its header: nothing was reported as done.
+    raced.tables.accounting_schedules.length = 0
+    expect(raced.tables.accounting_schedule_lines).toEqual([])
+  })
+
+  it('the same policy key with a different premium or period is refused, not answered with the old schedule', async () => {
+    const insurance = { key: 'POL-9', name: 'Fleet insurance 2027', premium: 12_000, startDate: '2027-01-01', months: 12 }
+    await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { ...insurance, premium: 15_000 })).toEqual({ error: expect.stringContaining('already exists') })
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { ...insurance, months: 6 })).toEqual({ error: expect.stringContaining('already exists') })
+    expect(m.tables.accounting_schedules).toHaveLength(1)
+  })
+
+  it('two policies starting the same month get two schedules', async () => {
+    const a = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { key: 'POL-A', name: 'Fleet insurance', premium: 12_000, startDate: '2027-01-01', months: 12 })
+    const b = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { key: 'POL-B', name: 'Fleet insurance', premium: 12_000, startDate: '2027-01-01', months: 12 })
+    expect(a).not.toEqual(b)
+    expect(m.tables.accounting_schedules.map((r: any) => r.source_ref).sort()).toEqual(['fleet:insurance:POL-A:2027-01-01', 'fleet:insurance:POL-B:2027-01-01'])
+  })
+
   it('a failed lines insert leaves no header behind', async () => {
     m.failNext('accounting_schedule_lines', 'insert', 'network error')
-    await expect(ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
+    await expect(ensure(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
     expect(m.tables.accounting_schedules).toEqual([])
   })
 
