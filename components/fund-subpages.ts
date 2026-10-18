@@ -10,4 +10,6 @@ export const FUND_SUBPAGE_SLUGS = new Set([
   'forecast',
   'schedule-of-investments', 'performance', 'allocation-terms', 'opening-balances', 'lp-events',
   'migrate',
+  // ── GPU fleet (P5) ──
+  'fleet', 'revenue', 'waterfall', 'scenarios',
 ])

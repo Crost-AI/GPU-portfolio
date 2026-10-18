@@ -114,6 +114,18 @@ export const PAGE_DOMAINS: Record<string, PageDomain> = {
   'funds/[id]/statements': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/status': { domain: 'accounting', gate: 'requireVehicleAccess' },
 
+  // ── GPU fleet (P5) ──
+  // The firm-wide overview lists GPU SPVs only, filtered by canSeeVehicle. Every entity page below
+  // also passes `kinds: ['gpu_spv']`, so a VC entity's id is not found rather than rendered.
+  'fleet': { domain: 'fleet', feature: 'gpu_fleet' },
+  'funds/[id]/fleet': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  'funds/[id]/fleet/[assetId]': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  'funds/[id]/revenue': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  // Investors' capital and the distributions declared to them: the capital accounts' domain.
+  'funds/[id]/waterfall': { domain: 'lp_capital', gate: 'requireVehicleAccess' },
+  // A plan over the vehicle's own books, like the Forecast page.
+  'funds/[id]/scenarios': { domain: 'accounting', gate: 'requireVehicleAccess' },
+
   // ── Administration ─────────────────────────────────────────────────────────
   'usage': { domain: 'admin' },
   'updates': { domain: 'admin' },

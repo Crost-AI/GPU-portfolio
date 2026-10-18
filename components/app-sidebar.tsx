@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles, ListChecks, BadgeCheck } from 'lucide-react'
+import { Building2, ClipboardCheck, Mail, Upload, Send, Settings, LifeBuoy, PanelLeftClose, PanelLeftOpen, Monitor, Sun, Moon, BarChart3, TrendingUp, Lock, Users, Handshake, ArrowDownCircle, FileText, Crown, ShieldCheck, Lightbulb, Microscope, BookOpen, Sparkles, ListChecks, BadgeCheck, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTheme } from 'next-themes'
@@ -147,6 +147,9 @@ const NAV_ITEMS: NavItem[] = [
     href: '/funds', label: 'Financials', icon: BookOpen, featureKey: 'accounting',
     children: ACCOUNTING_SECTIONS.map(({ href, label, domain, requiresFof, feature }) => ({ href, label, domain, requiresFof, featureKey: feature })),
   },
+  // ── GPU fleet (P5) ── Every GPU SPV the caller can see, firm-wide. `gpu_fleet` resolves to the
+  // `fleet` domain, which is none while the switch is off, so the entry is absent until then.
+  { href: '/fleet', label: 'GPU fleet', icon: Server, featureKey: 'gpu_fleet' },
   { href: '/usage', label: 'Usage', icon: Users, adminOnly: true, domain: 'admin' },
   { href: '/settings', label: 'Settings', icon: Settings, badgeKey: 'settings' },
   { href: '/support', label: 'Support', icon: LifeBuoy },
