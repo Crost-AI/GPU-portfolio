@@ -208,16 +208,19 @@ cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
 - **Migrations** run on every deploy: the `migrate` service applies what is new before the app
   starts. Its last log line (`docker compose -p <appName> logs migrate`, or the service's logs in
   Dokploy) is `migrate: applied N, already applied M`, or `migrate: FAILED on <file>`.
-  - With Dokploy's default command, a failed migration fails closed: every push rebuilds the app,
-    and Compose removes the old app container before the dependency chain runs, so the new one is
-    left `Created`, nothing serves, and the deployment shows `error`. The failing file's
-    transaction rolled back and its version was not recorded, so fix forward: push a corrected
-    migration, and the next deploy applies it.
-  - To keep the previous release serving instead, set Dokploy's custom command to migrate first
-    and only then rebuild (the `up` runs migrate again, which applies nothing and is quick):
+  - Recommended: set Dokploy's custom command to
     `docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml run --rm -T migrate && docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
-    A failed migration then stops before anything is recreated. Which of the two to run is the
-    operator's choice; `app.depends_on.migrate` stays either way, for a plain `up`.
+    A failed migration then stops the deploy before anything is recreated, and the previous
+    release keeps serving; the second command's `up` re-runs migrate as a no-op. The trade-off:
+    during the build (about 4 minutes) the old app runs against the new schema, which is what the
+    repo's expand/contract convention expects (contract migrations wait in
+    `supabase/pending-deploy`, see CLAUDE.md).
+  - Fallback, Dokploy's default command: every push rebuilds the app, and Compose removes the old
+    app container before the dependency chain runs, so on a failed migration the new one is left
+    `Created`, nothing serves, and the deployment shows `error`. The failing file's transaction
+    rolled back and its version was not recorded, so fix forward: push a corrected migration, and
+    the next deploy applies it.
+  - Either way `app.depends_on.migrate` stays, so a plain local `up` migrates first too.
   - `migrate.sh` by hand still works and adds the checks. The host's loopback does not reach Kong
     from where Dokploy runs scripts, so its funds check uses `MIGRATE_CHECK_URL` from `.env`.
 - **Scripts** (`migrate.sh`, `backup.sh`, `restore.sh`, `bootstrap-admin.sh`): run them from
