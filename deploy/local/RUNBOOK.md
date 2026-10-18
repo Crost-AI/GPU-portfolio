@@ -224,9 +224,11 @@ cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
   - `migrate.sh` by hand still works and adds the checks. The host's loopback does not reach Kong
     from where Dokploy runs scripts, so its funds check uses `MIGRATE_CHECK_URL` from `.env`.
 - **Scripts** (`migrate.sh`, `backup.sh`, `restore.sh`, `bootstrap-admin.sh`): run them from
-  `/etc/dokploy/compose/<appName>/code`. Dokploy writes `COMPOSE_PROJECT_NAME=<appName>` into
-  `deploy/local/.env`, which they all pass to Compose, so they already target the deployed project:
-  check with `dc ps`. From anywhere else, `export COMPOSE_PROJECT_NAME=<appName>` first. The clone
+  `/etc/dokploy/compose/<appName>/code`. Dokploy (v0.30.8) writes `COMPOSE_PROJECT_NAME="<appName>"`
+  (with `APP_NAME` and `DOCKER_CONFIG`) into `deploy/local/.env`, which they all pass to Compose,
+  so they already target the deployed project with nothing exported: check with `dc ps`. It writes
+  that file only at deploy time, into a clone it replaces on every deploy, so it (and this
+  targeting) exists only after the first deploy. From anywhere else, `export COMPOSE_PROJECT_NAME=<appName>` first. The clone
   is replaced on every deploy, so give `backup.sh` a directory outside it.
 
 ## Row cap (PGRST_DB_MAX_ROWS)
