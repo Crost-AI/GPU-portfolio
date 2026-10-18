@@ -228,8 +228,9 @@ cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
   (with `APP_NAME` and `DOCKER_CONFIG`) into `deploy/local/.env`, which they all pass to Compose,
   so they already target the deployed project with nothing exported: check with `dc ps`. It writes
   that file only at deploy time, into a clone it replaces on every deploy, so it (and this
-  targeting) exists only after the first deploy. From anywhere else, `export COMPOSE_PROJECT_NAME=<appName>` first. The clone
-  is replaced on every deploy, so give `backup.sh` a directory outside it.
+  targeting) exists only after the first deploy. From anywhere else,
+  `export COMPOSE_PROJECT_NAME=<appName>` first. Since the clone is replaced on every deploy, give
+  `backup.sh` a directory outside it.
 
 ## Row cap (PGRST_DB_MAX_ROWS)
 
