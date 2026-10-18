@@ -12,6 +12,7 @@ import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
+import { gpuKindDenial } from '@/lib/accounting/vehicle-domain'
 import { safeLogo, fundLetterhead, loadFundEmail } from '@/lib/vehicle-letterhead'
 import { EMPTY_PROFILE, PROFILE_COLUMNS, parseProfilePatch, profileFromRow } from '@/lib/vehicle-profile'
 
@@ -120,6 +121,8 @@ export async function POST(req: NextRequest) {
   const createAccess = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   const createDenied = entityIdentityChangeDenial(createAccess, { name })
   if (createDenied) return NextResponse.json({ error: createDenied }, { status: 403 })
+  const kindDenied = gpuKindDenial(createAccess, { existing: false, to: kind })
+  if (kindDenied) return NextResponse.json({ error: kindDenied.error }, { status: kindDenied.status })
 
   const { data, error } = await (admin as any)
     .from('fund_vehicles')
@@ -180,7 +183,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   const { data: current } = await (admin as any)
-    .from('fund_vehicles').select('id, name, aliases').eq('id', body.id).eq('fund_id', gate.fundId).maybeSingle()
+    .from('fund_vehicles').select('id, name, kind, aliases').eq('id', body.id).eq('fund_id', gate.fundId).maybeSingle()
   if (!current) return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
   const sameAliases = (x: unknown, y: unknown) =>
     JSON.stringify([...((x as string[]) ?? [])].map(String).sort()) === JSON.stringify([...((y as string[]) ?? [])].map(String).sort())
@@ -189,6 +192,10 @@ export async function PATCH(req: NextRequest) {
     aliases: Array.isArray(body.aliases) && !sameAliases(body.aliases, (current as any).aliases) ? body.aliases : undefined,
   })
   if (identityDenied) return NextResponse.json({ error: identityDenied }, { status: 403 })
+  if (body.kind !== undefined) {
+    const kindDenied = gpuKindDenial(access, { existing: true, from: (current as any).kind, to: body.kind })
+    if (kindDenied) return NextResponse.json({ error: kindDenied.error }, { status: kindDenied.status })
+  }
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
   // The vehicle's own letterhead for its LP documents (lib/vehicle-letterhead.ts); null or blank

@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation'
 import { getUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolvePageAccess, canViewPage } from '@/lib/access/page-gate'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isManagementCompany, kindIsOneOf, type VehicleKind } from '@/lib/vehicle-kinds'
 import type { FeatureKey } from '@/lib/types/features'
 import type { Domain } from '@/lib/access/domains'
 import { canSeeVehicle } from '@/lib/access/scope'
@@ -76,7 +76,8 @@ export async function requireAccountingAccess(): Promise<{ fundId: string; role:
  */
 export async function requireVehicleAccess(
   rawParam: string,
-  opts: { feature?: FeatureKey; domain?: Domain } = {},
+  // `kinds`: the page exists only on these kinds (── GPU fleet (P1) ──); any other entity is not found.
+  opts: { feature?: FeatureKey; domain?: Domain; kinds?: VehicleKind[] } = {},
 ): Promise<{ fundId: string; role: string; vehicle: string; vehicleId: string | null; kind: string | null; active: boolean }> {
   // The request-memoised lookup the (app) layout already made, not a second Auth round trip.
   const user = await getUser()
@@ -98,6 +99,10 @@ export async function requireVehicleAccess(
   // who sees everything reaches it. Not found, rather than a silent bounce: a shared link or stale
   // bookmark should say it isn't available, without confirming the entity exists.
   if (!canSeeVehicle(page.access, resolved.vehicleId)) notFound()
+
+  // A page that means nothing on this kind of entity — the fleet register on a VC SPV. Not found,
+  // like an entity the caller cannot see: the page has nothing to show, not a reason to refuse.
+  if (opts.kinds && !kindIsOneOf(resolved.kind, opts.kinds)) notFound()
 
   return { fundId: page.fundId, role: page.role, ...resolved }
 }

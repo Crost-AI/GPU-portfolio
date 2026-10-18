@@ -6,9 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { DialogControl } from '@/components/add-investment-menu'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { VEHICLE_KIND_OPTIONS, isManagementCompany } from '@/lib/vehicle-kinds'
-
-const KINDS = VEHICLE_KIND_OPTIONS
+import { isManagementCompany, kindOptionsFor } from '@/lib/vehicle-kinds'
+import { useCanWrite } from '@/components/access-context'
 
 /**
  * Create a vehicle of any kind — fund, SPV, direct deal, GP entity, individual, management
@@ -28,6 +27,7 @@ export function AddVehicleButton({ onCreated, open: openProp, onOpenChange, hide
   const [kind, setKind] = useState('fund')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const kinds = kindOptionsFor(useCanWrite('fleet'))
 
   async function create() {
     if (!name.trim()) return
@@ -70,7 +70,7 @@ export function AddVehicleButton({ onCreated, open: openProp, onOpenChange, hide
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Type</label>
             <select value={kind} onChange={e => setKind(e.target.value)} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm">
-              {KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+              {kinds.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
             </select>
           </div>
           {err && <p className="text-sm text-destructive">{err}</p>}

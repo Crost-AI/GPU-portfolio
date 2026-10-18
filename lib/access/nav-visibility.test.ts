@@ -20,6 +20,8 @@ import { effectiveAccess, type AccessContext } from './effective'
 import { domainForFeature, domainFundLevel, domainGrantableToMembers } from './domains'
 import { ROUTE_DOMAINS } from './route-domains'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+import { ACCOUNTING_SECTIONS, UNLISTED_SECTIONS, sectionsForKind, hasSectionForKind, type AccountingSection } from '@/lib/accounting/nav'
+import { Gauge } from 'lucide-react'
 
 const ctx = (features: Partial<FeatureVisibilityMap>, grants: Record<string, string> = {}): AccessContext => ({
   fundId: 'f1',
@@ -140,5 +142,44 @@ describe('nav entries agree with the routes behind them', () => {
   it('shows Inbound to a fund that never bought the Deals product', () => {
     const c = ctx({ deals: 'off' }, { portfolio: 'read' })
     expect(effectiveAccess(c, ROUTE_DOMAINS['api/emails'].domain)).toBe('read')
+  })
+})
+
+// ── GPU fleet (P1) ──
+
+describe('entity sub-nav by kind', () => {
+  const ALL = [...ACCOUNTING_SECTIONS, ...UNLISTED_SECTIONS]
+  const hrefs = (kind: string | null) => sectionsForKind(ALL, kind).map(s => s.href)
+  const FUND = [
+    '/funds/status', '/funds/bank', '/funds/receipts', '/funds/capital-accounts', '/funds/journal', '/funds/ledger',
+    '/funds/periods', '/funds/schedule-of-investments', '/funds/performance', '/funds/forecast', '/funds/statements',
+    '/funds/tax', '/funds/migrate', '/funds/opening-balances', '/funds/allocation-terms',
+  ]
+  const without = (...out: string[]) => FUND.filter(h => !out.includes(h))
+
+  it('every existing kind sees exactly the sections it saw before (captured from main @ d40d63ae)', () => {
+    for (const kind of ['fund', 'spv', 'direct', 'other', null]) expect(hrefs(kind), String(kind)).toEqual(FUND)
+    expect(hrefs('associate')).toEqual(without('/funds/schedule-of-investments', '/funds/performance'))
+    expect(hrefs('individual')).toEqual(without('/funds/capital-accounts', '/funds/performance'))
+    expect(hrefs('manco')).toEqual(without('/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
+  })
+
+  it('a GPU SPV hides only the schedule of investments and Tax (until #68)', () => {
+    expect(hrefs('gpu_spv')).toEqual(without('/funds/schedule-of-investments', '/funds/tax'))
+    expect(hasSectionForKind('tax', 'gpu_spv')).toBe(false)
+    expect(hasSectionForKind('schedule-of-investments', 'gpu_spv')).toBe(false)
+    expect(hasSectionForKind('capital-accounts', 'gpu_spv')).toBe(true)
+  })
+
+  it('showFor lists a section only for those kinds, never for a legacy null kind', () => {
+    const fleet: AccountingSection = { href: '/funds/fleet', label: 'Fleet', icon: Gauge, desc: '', showFor: ['gpu_spv'] }
+    expect(sectionsForKind([fleet], 'gpu_spv')).toEqual([fleet])
+    expect(sectionsForKind([fleet], 'spv')).toEqual([])
+    expect(sectionsForKind([fleet], 'fund')).toEqual([])
+    expect(sectionsForKind([fleet], null)).toEqual([])
+  })
+
+  it('ships no showFor section yet, so no existing kind can lose one', () => {
+    expect(ALL.filter(s => s.showFor)).toEqual([])
   })
 })

@@ -56,16 +56,19 @@ export function effectiveAccess(ctx: AccessContext, domain: Domain, feature?: Fe
   if (level === 'off' || level === 'hidden') return 'none'
 
   if (meta.adminOnly) return ctx.role === 'admin' ? 'write' : 'none'
+
+  // A domain that restates another's data is closed to anyone who cannot read that one, whatever
+  // its own grant says — admins and viewers INCLUDED (#70). `tax` and `fleet` have this, over
+  // `accounting`. It sits before the role short-circuits so that a fund with accounting off has no
+  // fleet or tax pages for anyone, rather than pages whose every ledger read 403s.
+  if (meta.requires && !hasAccess(ctx, meta.requires, 'read')) return 'none'
+
   if (ctx.role === 'admin') return 'write'
 
   // The read-only demo reads everything switched on — including admin-level areas, which is how
   // the demo fund shows off admin pages (it mirrors the old assertReadAccess: admin|viewer pass,
   // plain member does not). Grants never widen it past read.
   if (ctx.role === 'viewer') return 'read'
-
-  // A domain that restates another's data is closed to anyone who cannot read that one, whatever
-  // its own grant says. Only `tax` has this, over `accounting`.
-  if (meta.requires && !hasAccess(ctx, meta.requires, 'read')) return 'none'
 
   // What the fund's own switch allows this member, before any implication. A domain newer than
   // the fund's default rows falls back to the domain it was split from (`defaultFrom`).

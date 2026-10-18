@@ -1,7 +1,9 @@
 import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
 import { requireVehicleAccess } from '../../guard'
 import { FundSubpageChrome } from '@/components/fund-subpage-chrome'
 import { TaxView } from '../../tax/view'
+import { isGpuSpv } from '@/lib/vehicle-kinds'
 
 export const metadata: Metadata = { title: 'Tax' }
 
@@ -13,7 +15,9 @@ export const metadata: Metadata = { title: 'Tax' }
  */
 export default async function TaxPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params
-  const { vehicle, vehicleId } = await requireVehicleAccess(params.id, { domain: 'tax', feature: 'tax_reporting' })
+  const { vehicle, vehicleId, kind } = await requireVehicleAccess(params.id, { domain: 'tax', feature: 'tax_reporting' })
+  // ── GPU fleet (P1) ── every tax route refuses a GPU SPV until #68, so the page would be all 409s.
+  if (isGpuSpv(kind)) notFound()
   return (
     <div className="pt-4 md:pt-8 pb-8 w-full">
       <FundSubpageChrome

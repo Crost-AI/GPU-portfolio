@@ -9,11 +9,14 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
-import type { VehicleKind } from '@/lib/vehicle-kinds'
+import { kindIsOneOf, type VehicleKind } from '@/lib/vehicle-kinds'
 
 /** The sections a vehicle of `kind` shows. Null kind (a legacy vehicle) shows a fund's. */
 export function sectionsForKind(sections: AccountingSection[], kind: string | null | undefined): AccountingSection[] {
-  return sections.filter(s => !s.hideFor || !kind || !s.hideFor.includes(kind as VehicleKind))
+  return sections.filter(s =>
+    (!s.hideFor || !kind || !s.hideFor.includes(kind as VehicleKind))
+    // ── GPU fleet (P1) ── a section only some kinds have; a legacy null kind never matches.
+    && (!s.showFor || kindIsOneOf(kind, s.showFor)))
 }
 
 export interface AccountingSection {
@@ -36,6 +39,11 @@ export interface AccountingSection {
    * the data supports, so a URL is not a hole.
    */
   hideFor?: VehicleKind[]
+  /**
+   * ── GPU fleet (P1) ── The inverse: the ONLY kinds this page is listed for (the fleet register on
+   * a GPU SPV). Omitted = every kind, subject to `hideFor`.
+   */
+  showFor?: VehicleKind[]
   /** Only for a fund of funds — DERIVED from the data (at least one holding is a fund),
    *  never a setting. Consumers filter on it; see lib/portfolio/fof.ts. */
   requiresFof?: boolean
@@ -115,7 +123,7 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     label: 'Schedule of investments',
     icon: Layers,
     desc: 'Each investment at cost and fair value, with its share of net assets.',
-    hideFor: ['associate', 'manco'],
+    hideFor: ['associate', 'manco', 'gpu_spv'],
   },
   {
     href: '/funds/performance',
@@ -145,7 +153,8 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     desc: 'The year’s book-to-tax adjustments, adjusting entries, K-1 package, partner tax forms, and the tax package for the preparer.',
     domain: 'tax',
     feature: 'tax_reporting',
-    hideFor: ['manco'],
+    // gpu_spv: the K-1 loaders read the fund chart's codes; the tax routes refuse it until #68.
+    hideFor: ['manco', 'gpu_spv'],
   },
 ]
 

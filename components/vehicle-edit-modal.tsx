@@ -5,11 +5,11 @@ import { Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { VEHICLE_KIND_OPTIONS } from '@/lib/vehicle-kinds'
+import { kindOptionsFor } from '@/lib/vehicle-kinds'
+import { useCanWrite } from '@/components/access-context'
 import { useVehicleLetterhead, VehicleLetterheadFields } from '@/components/vehicle-letterhead'
 import { STRATEGIES, STRATEGY_LABELS } from '@/lib/vehicle-profile'
 
-const KINDS = VEHICLE_KIND_OPTIONS
 
 export interface EditableVehicle {
   id: string
@@ -30,6 +30,7 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
 }) {
   const [name, setName] = useState(vehicle.name)
   const [kind, setKind] = useState(vehicle.kind || 'fund')
+  const kinds = kindOptionsFor(useCanWrite('fleet'), vehicle.kind)
   const [vintage, setVintage] = useState(vehicle.vintage_year != null ? String(vehicle.vintage_year) : '')
   const [active, setActive] = useState(vehicle.active)
   const [aliases, setAliases] = useState<string[]>(vehicle.aliases ?? [])
@@ -136,7 +137,7 @@ export function VehicleEditModal({ vehicle, onClose, onSaved }: {
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Type</label>
             <select value={kind} onChange={e => setKind(e.target.value)} className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm">
-              {KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+              {kinds.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
             </select>
           </div>
           <div className="space-y-1">
@@ -270,6 +271,7 @@ export function VehicleLinkModal({ group, vehicles, onClose, onSaved }: {
   const [mode, setMode] = useState<'link' | 'create'>(sorted.length > 0 ? 'link' : 'create')
   const [targetId, setTargetId] = useState(sorted[0]?.id ?? '')
   const [kind, setKind] = useState('fund')
+  const kinds = kindOptionsFor(useCanWrite('fleet'))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -330,7 +332,7 @@ export function VehicleLinkModal({ group, vehicles, onClose, onSaved }: {
                 onChange={e => { setKind(e.target.value); setMode('create') }}
                 className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
               >
-                {KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+                {kinds.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
               </select>
             </span>
           </label>

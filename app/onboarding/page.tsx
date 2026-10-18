@@ -20,7 +20,8 @@ import {
   type WizardProduct,
   type WizardStep,
 } from '@/lib/onboarding/wizard'
-import { VEHICLE_KIND_OPTIONS, type VehicleKind } from '@/lib/vehicle-kinds'
+import { kindOptionsFor, type VehicleKind } from '@/lib/vehicle-kinds'
+import { useCanWrite } from '@/components/access-context'
 import { AICapabilitiesList } from '@/components/ai-capabilities-list'
 import { useOrigin } from '@/components/ask-your-assistant'
 
@@ -673,7 +674,7 @@ function ProductsStep({
 
   const wantsEntity = needsFirstEntity(products)
   const mancoOn = products.includes('management_company')
-  const kindOptions = VEHICLE_KIND_OPTIONS.filter(o => o.value !== 'manco' || mancoOn)
+  const kindOptions = kindOptionsFor(useCanWrite('fleet')).filter(o => o.value !== 'manco' || mancoOn)
   // Only the manco chosen: the first entity is the management company itself.
   const onlyManco = mancoOn && !products.includes('fund_operations') && !products.includes('lp_reporting')
   const effectiveKind: VehicleKind = entityKind === 'manco' && !mancoOn ? 'fund' : entityKind

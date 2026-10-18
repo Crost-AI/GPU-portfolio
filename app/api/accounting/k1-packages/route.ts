@@ -10,6 +10,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { amendK1Package, finalizeK1Package, generateK1Package } from '@/lib/tax/k1-package'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle } from '@/lib/access/scope'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // K-1 packages for a vehicle: generate a draft, issue it, amend an issued one.
 //
@@ -44,6 +45,8 @@ export async function GET(req: NextRequest) {
       admin.from('k1_lines' as any).select('*').eq('fund_id', gate.fundId).eq('package_id', packageId),
     ])
     if (!pkg || !canSeeVehicle(access, (pkg as any).vehicle_id ?? null)) return NextResponse.json({ error: 'Package not found' }, { status: 404 })
+    const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+    if (gpuTax) return gpuTax
     return NextResponse.json({ package: pkg, partners: partners ?? [], lines: lines ?? [] })
   }
 
@@ -80,6 +83,8 @@ export async function POST(req: NextRequest) {
   if (action === 'finalize') {
     const packageId = typeof body?.packageId === 'string' ? body.packageId : ''
     if (!packageId) return NextResponse.json({ error: 'packageId is required' }, { status: 400 })
+    const gpuFinal = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+    if (gpuFinal) return gpuFinal
     const result = await finalizeK1Package(admin, gate.fundId, packageId, user.id)
     if ('error' in result) {
       // 409, not 400: the request is well formed and the package is simply not ready. The
@@ -92,6 +97,8 @@ export async function POST(req: NextRequest) {
 
   const group = await resolveGroupOr400(admin, gate, body?.group)
   if (group instanceof NextResponse) return group
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { group })
+  if (gpuTax) return gpuTax
   const taxYear = taxYearOr400(body?.taxYear)
   if (taxYear instanceof NextResponse) return taxYear
 

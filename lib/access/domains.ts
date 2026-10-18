@@ -26,6 +26,8 @@ export type Domain =
   | 'lp_relations'
   | 'compliance'
   | 'tax'
+  // ── GPU fleet (P1) ──
+  | 'fleet'
   | 'admin'
 
 /**
@@ -46,6 +48,8 @@ export const DOMAINS: Domain[] = [
   'lp_relations',
   'compliance',
   'tax',
+  // ── GPU fleet (P1) ──
+  'fleet',
   'admin',
 ]
 
@@ -247,6 +251,26 @@ export const DOMAIN_META: Record<Domain, DomainMeta> = {
      *
      * Finalizing and amending K-1s, delivering them to LPs and reopening a closed tax year stay
      * admin-only (lib/access/admin-only.ts).
+     */
+    requires: 'accounting',
+    defaultFrom: 'accounting',
+  },
+  // ── GPU fleet (P1) ──
+  fleet: {
+    label: 'GPU fleet',
+    description:
+      'The fleet register, datacenter and marketplace accounts, utilization and uptime, marketplace earnings import.',
+    primaryFeature: 'gpu_fleet',
+    features: ['gpu_fleet'],
+    /**
+     * Same shape as `tax`, for the same reasons. Every dollar figure on a fleet page (net book
+     * value, revenue) is the ledger restated, so a member who cannot read the books cannot hold
+     * this either. Fleet routes that POST to the ledger (purchase, disposal, posting earnings)
+     * also check `accounting` write in the handler, so `fleet: write` with `accounting: read` can
+     * record downtime and stage an import but not post.
+     *
+     * `defaultFrom: 'accounting'` is for deploy order: until 20261019100000 seeds this domain's
+     * defaults, members fall back to their accounting level here.
      */
     requires: 'accounting',
     defaultFrom: 'accounting',

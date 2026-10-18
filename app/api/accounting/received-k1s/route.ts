@@ -9,6 +9,7 @@ import { loadK1Dependencies } from '@/lib/tax/year-close'
 import { K1_EXPECTED_HOLDING_TYPE } from '@/lib/tax/received-k1s'
 import { assertVehicleVisible } from '@/lib/accounting/vehicle-visibility'
 import { loadAccessContext } from '@/lib/access/effective'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // K-1s owed to us by the funds we hold.
 //
@@ -28,6 +29,8 @@ export async function GET(req: NextRequest) {
 
   const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { group })
+  if (gpuTax) return gpuTax
   const taxYear = Number(req.nextUrl.searchParams.get('taxYear'))
   if (!Number.isInteger(taxYear)) {
     return NextResponse.json({ error: 'A four-digit taxYear is required' }, { status: 400 })
@@ -79,6 +82,8 @@ export async function POST(req: NextRequest) {
   if (group) {
     const hidden = await assertVehicleVisible(admin, gate, group)
     if (hidden) return hidden
+    const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { group })
+    if (gpuTax) return gpuTax
   } else {
     const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
     if (!access.vehicles.all) return NextResponse.json({ error: 'Choose which of your entities received this K-1.' }, { status: 403 })

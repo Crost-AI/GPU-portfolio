@@ -12,6 +12,7 @@ import {
 } from '@/lib/tax/delivery'
 import { assertK1PackageVisible } from '@/lib/accounting/vehicle-visibility'
 import { loadLpScope, lpVisible } from '@/lib/access/lp-scope'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // Furnishing a package's K-1s, and the consent that makes electronic furnishing valid.
 //
@@ -51,6 +52,8 @@ export async function GET(req: NextRequest) {
   // A package is one entity's — it must be one of the caller's.
   const hiddenPackage = await assertK1PackageVisible(admin, gate, packageId)
   if (hiddenPackage) return hiddenPackage
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+  if (gpuTax) return gpuTax
 
   const { data: pkg } = await admin
     .from('k1_packages' as any)

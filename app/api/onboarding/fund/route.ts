@@ -263,6 +263,10 @@ export async function PATCH(req: NextRequest) {
       if (entity.kind === 'manco' && !products.includes('management_company')) {
         return NextResponse.json({ error: 'Turn on management company books to create a management company' }, { status: 400 })
       }
+      // ── GPU fleet (P1) ── No wizard product turns gpu_fleet on, so a GPU SPV cannot be the first entity.
+      if (entity.kind === 'gpu_spv' && ['off', 'hidden'].includes(buildFeatureVisibility(products).gpu_fleet)) {
+        return NextResponse.json({ error: 'Turn on GPU Operations to create a GPU SPV' }, { status: 400 })
+      }
     }
 
     const featureVisibility = buildFeatureVisibility(products)

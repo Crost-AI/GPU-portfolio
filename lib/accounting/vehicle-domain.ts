@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { hasAccess, loadAccessContext, type AccessContext } from '@/lib/access/effective'
-import { isManagementCompany, type VehicleKind } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany, type VehicleKind } from '@/lib/vehicle-kinds'
 import type { Domain } from '@/lib/access/domains'
 
 /**
@@ -65,6 +65,26 @@ export async function vehicleKindByName(
   const { data: alias } = await (admin as any)
     .from('fund_vehicles').select('kind').eq('fund_id', fundId).contains('aliases', [name]).maybeSingle()
   return ((alias?.kind as VehicleKind) ?? null)
+}
+
+/**
+ * `vehicleKindByName` for a guard that must fail closed: it tells "no such vehicle" (`kind` null,
+ * `error` null) apart from "could not read it" (`error` set). `vehicleKindByName` keeps its
+ * forgiving contract for its other callers.
+ */
+export async function readVehicleKindByName(
+  admin: SupabaseClient,
+  fundId: string,
+  name: string,
+): Promise<{ kind: VehicleKind | null; error: unknown }> {
+  const { data, error } = await (admin as any)
+    .from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('name', name).maybeSingle()
+  if (error) return { kind: null, error }
+  if (data) return { kind: (data.kind as VehicleKind) ?? null, error: null }
+  const { data: alias, error: aliasError } = await (admin as any)
+    .from('fund_vehicles').select('kind').eq('fund_id', fundId).contains('aliases', [name]).maybeSingle()
+  if (aliasError) return { kind: null, error: aliasError }
+  return { kind: (alias?.kind as VehicleKind) ?? null, error: null }
 }
 
 /** What a gate helper (assertReadAccess / assertWriteAccess / resolveFund) hands back. */
@@ -131,4 +151,92 @@ export async function assertMancoVehicle(
     { error: `"${group}" is not a management company. Fund vehicles are managed under Funds.` },
     { status: 400 },
   )
+}
+
+// ── GPU fleet (P1) ──
+/**
+ * The fleet routes' version of `assertMancoVehicle`: the vehicle `?group=` names must BE of `kind`.
+ *
+ * `/api/fleet/*` is gated on `fleet`, which says nothing about which vehicle the caller named, so
+ * without this a VC SPV's books could be read through a fleet route. A legacy name with no registry
+ * row has no kind and is refused. Not found rather than 400: a fleet route has nothing to say about
+ * an entity that is not a GPU SPV, and saying what it is instead would be the leak.
+ *
+ * It checks the KIND only, not the caller's entity scope: callers still resolve the group through
+ * resolveGroupOr400 (or check canSeeVehicle) first.
+ */
+export async function assertVehicleKind(
+  admin: SupabaseClient,
+  fundId: string,
+  group: string,
+  kind: VehicleKind,
+): Promise<NextResponse | null> {
+  const actual = await vehicleKindByName(admin, fundId, group)
+  if (actual === kind) return null
+  return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+}
+
+/**
+ * The one rule for a vehicle's kind and GPU-ness, shared by POST and PATCH /api/vehicles (and the
+ * merge in lib/vehicles-merge.ts). Returns the refusal, or null to allow.
+ *
+ *   - CREATING a GPU SPV needs `fleet` write, the grant that lets the caller see what they made
+ *     (403 otherwise; none while `gpu_fleet` is off, admins included).
+ *   - CHANGING an existing entity into or out of a GPU SPV is refused outright (409), whatever the
+ *     caller holds: a kind change does not reseed the chart, so it would leave a fund chart on a
+ *     GPU SPV or the reverse. Create a new GPU SPV instead. Re-sending an unchanged kind is fine.
+ */
+export function gpuKindDenial(
+  access: AccessContext,
+  change: { existing: boolean; from?: string | null; to: string | null | undefined },
+): { status: 403 | 409; error: string } | null {
+  if (change.existing) {
+    if (change.from === change.to || isGpuSpv(change.from) === isGpuSpv(change.to)) return null
+    return { status: 409, error: GPU_KIND_CHANGE_ERROR }
+  }
+  if (!isGpuSpv(change.to) || hasAccess(access, 'fleet', 'write')) return null
+  return { status: 403, error: 'A GPU SPV needs write access to GPU fleet. Ask an admin to turn on GPU Operations or grant it.' }
+}
+
+export const GPU_KIND_CHANGE_ERROR =
+  'An entity cannot be changed into or out of a GPU SPV: its chart of accounts would not match. Create a new GPU SPV instead.'
+
+/**
+ * ── GPU fleet (P1) ── Fail closed on tax for a GPU SPV until K-1 character understands its chart.
+ *
+ * The tax loaders (k1-load.ts and the book-to-tax run) read the FUND chart's codes: 4000 as a
+ * realized gain, 4120 as other income, 5000–5300 as deductions. On a GPU SPV 4000 is rental revenue,
+ * 4500 a disposal gain (§1245 recapture) and 5150/5400/5900 are expenses those sums never see, so a
+ * package would issue with income missing. Every tax route calls this with the vehicle it was
+ * asked about — by `?group=` name, or by the K-1 package it names — and gets a 409 for a GPU SPV.
+ * Follow-up: GitHub issue #68.
+ *
+ * It fails CLOSED: a lookup that errors (package, vehicle, or the name/alias pair) is a 503, never a
+ * pass, because a timed-out read on a GPU SPV would otherwise let K-1 work run on its chart. Only a
+ * read that succeeds and finds no row — a legacy name, an ordinary vehicle by definition — passes.
+ */
+export async function refuseGpuSpvTax(
+  admin: SupabaseClient,
+  fundId: string,
+  ref: { group?: string | null; packageId?: string | null },
+): Promise<NextResponse | null> {
+  const unverified = () => NextResponse.json({ error: 'Could not verify the entity kind' }, { status: 503 })
+  let kind: string | null = null
+  if (ref.group) {
+    const read = await readVehicleKindByName(admin, fundId, ref.group)
+    if (read.error) return unverified()
+    kind = read.kind
+  } else if (ref.packageId) {
+    const { data: pkg, error: pkgError } = await (admin as any)
+      .from('k1_packages').select('vehicle_id').eq('fund_id', fundId).eq('id', ref.packageId).maybeSingle()
+    if (pkgError) return unverified()
+    if (pkg?.vehicle_id) {
+      const { data: v, error: vError } = await (admin as any)
+        .from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('id', pkg.vehicle_id).maybeSingle()
+      if (vError) return unverified()
+      kind = (v?.kind as string) ?? null
+    }
+  }
+  if (!isGpuSpv(kind)) return null
+  return NextResponse.json({ error: 'Tax reporting is not yet supported for GPU SPVs' }, { status: 409 })
 }

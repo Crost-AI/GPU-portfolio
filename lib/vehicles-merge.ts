@@ -11,6 +11,7 @@ import type { AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 import { retagPortfolioGroup } from './vehicles'
+import { isGpuSpv } from './vehicle-kinds'
 
 /** Tables whose rows name a vehicle by id and move to the merge target. */
 export const MERGE_MOVED_TABLES = ['company_notes', 'inbound_deals', 'diligence_deals', 'pending_actions'] as const
@@ -29,10 +30,15 @@ export async function mergeVehicles(
   if (fromId === intoId) return fail(400, 'Cannot merge a vehicle into itself')
 
   const db = admin as any
-  const { data: fromRow } = await db.from('fund_vehicles').select('id, name, aliases').eq('id', fromId).eq('fund_id', fundId).maybeSingle()
+  const { data: fromRow } = await db.from('fund_vehicles').select('id, name, kind, aliases').eq('id', fromId).eq('fund_id', fundId).maybeSingle()
   if (!fromRow) return fail(404, 'Vehicle not found')
-  const { data: intoRow } = await db.from('fund_vehicles').select('id, name, aliases').eq('id', intoId).eq('fund_id', fundId).maybeSingle()
+  const { data: intoRow } = await db.from('fund_vehicles').select('id, name, kind, aliases').eq('id', intoId).eq('fund_id', fundId).maybeSingle()
   if (!intoRow) return fail(404, 'Target vehicle not found')
+  // ── GPU fleet (P1) ── A GPU SPV's chart is not a fund's; merging across the two would leave
+  // ledger rows on accounts the target's chart does not have (as a kind change would; see gpuKindDenial).
+  if (isGpuSpv(fromRow.kind) !== isGpuSpv(intoRow.kind)) {
+    return fail(409, 'A GPU SPV can only be merged with another GPU SPV: their charts of accounts differ.')
+  }
 
   // Rows that name the source by ID move to the target first: notes (whose entity reference
   // blocks the delete), deals, diligence and staged actions (which would otherwise fall back to

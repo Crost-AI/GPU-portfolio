@@ -6,6 +6,7 @@ import { assertReadAccess } from '@/lib/api-helpers'
 import { rateLimit } from '@/lib/rate-limit'
 import { k1Document } from '@/lib/reports/documents'
 import { assertK1PackageVisible } from '@/lib/accounting/vehicle-visibility'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // One partner's K-1 figures as a PDF.
 //
@@ -34,6 +35,8 @@ export async function GET(req: NextRequest) {
   }
   const hiddenPackage = await assertK1PackageVisible(admin, gate, packageId)
   if (hiddenPackage) return hiddenPackage
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+  if (gpuTax) return gpuTax
 
   const doc = await k1Document(admin, gate.fundId, packageId, lpEntityId)
   if (!doc) return NextResponse.json({ error: 'Partner not in this package' }, { status: 404 })

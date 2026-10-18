@@ -238,3 +238,26 @@ describe('hasAccess / readableDomains / normalizeRole', () => {
     expect(normalizeRole('admin')).toBe('admin')
   })
 })
+
+describe('effectiveAccess — `requires` binds every role (#70)', () => {
+  // ORDER, deliberately: the requires check now runs BEFORE the admin and viewer short-circuits.
+  // A domain that restates the ledger (tax, fleet) is none for anyone who cannot read the books —
+  // an admin included — rather than a page whose every ledger call 403s.
+  const fv = (over: Partial<FeatureVisibilityMap>) => ({ ...DEFAULT_FEATURE_VISIBILITY, ...over }) as FeatureVisibilityMap
+
+  it('denies tax and fleet to an admin and a viewer when accounting is off', () => {
+    const features = fv({ accounting: 'off', tax_reporting: 'everyone', gpu_fleet: 'everyone' })
+    for (const role of ['admin', 'viewer'] as const) {
+      expect(effectiveAccess(ctx({ role, features }), 'tax'), role).toBe('none')
+      expect(effectiveAccess(ctx({ role, features }), 'fleet'), role).toBe('none')
+    }
+  })
+
+  it('leaves an admin and a viewer exactly as before when accounting is on', () => {
+    const features = fv({ accounting: 'everyone', tax_reporting: 'everyone', gpu_fleet: 'everyone' })
+    expect(effectiveAccess(ctx({ role: 'admin', features }), 'tax')).toBe('write')
+    expect(effectiveAccess(ctx({ role: 'admin', features }), 'fleet')).toBe('write')
+    expect(effectiveAccess(ctx({ role: 'viewer', features }), 'tax')).toBe('read')
+    expect(effectiveAccess(ctx({ role: 'viewer', features }), 'fleet')).toBe('read')
+  })
+})

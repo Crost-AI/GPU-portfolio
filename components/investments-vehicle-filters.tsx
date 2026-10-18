@@ -3,7 +3,8 @@
 import { Filter, CheckSquare, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { VEHICLE_KINDS, VEHICLE_KIND_LABELS_PLURAL } from '@/lib/vehicle-kinds'
+import { VEHICLE_KINDS, VEHICLE_KIND_LABELS_PLURAL, GPU_SPV_KIND } from '@/lib/vehicle-kinds'
+import { useCanRead } from '@/components/access-context'
 
 // Re-exported rather than redeclared: these were a second copy of the kind vocabulary, and the
 // filter bar showing a different set of kinds from the one the create modal can produce is a bug
@@ -48,6 +49,8 @@ export function InvestmentVehicleFilters({
   status, onStatusChange,
   entities = [], hiddenEntities = new Set(), onToggleEntity, onShowAllEntities,
 }: Props) {
+  // ── GPU fleet (P1) ── no GPU SPVs chip for a fund that cannot see the fleet.
+  const canReadFleet = useCanRead('fleet')
   const active = selectedKinds.size < VEHICLE_KINDS.length || showEmpty || status !== '' || hiddenEntities.size > 0
 
   return (
@@ -64,7 +67,7 @@ export function InvestmentVehicleFilters({
       </PopoverTrigger>
       <PopoverContent className="w-72 max-h-[70vh] overflow-y-auto p-0" align="end">
         <div className="px-4 py-2 border-b bg-muted text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Vehicle type</div>
-        {VEHICLE_KINDS.map(k => (
+        {VEHICLE_KINDS.filter(k => k !== GPU_SPV_KIND || canReadFleet).map(k => (
           <CheckRow key={k} checked={selectedKinds.has(k)} label={KIND_LABELS[k]} onClick={() => onToggleKind(k)} />
         ))}
 
