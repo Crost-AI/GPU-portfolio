@@ -61,13 +61,13 @@ describe('schedules the close proposes', () => {
 
   it('creates the accrual, is idempotent, and rolls over ON the escalation date', async () => {
     const first = await ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')
-    expect(first.created).toBe(true)
+    expect(first.created).toBe(1)
     expect(contract().schedule_id).toBe(first.scheduleId)
-    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2027-12-31')).created).toBe(false)
+    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2027-12-31')).created).toBe(0)
     expect(m.tables.accounting_schedules).toHaveLength(1)
 
     const next = await ensureDatacenterSchedule(m.admin, contract(), target, '2028-01-01')
-    expect(next.created).toBe(true)
+    expect(next.created).toBe(1)
     const [old, current] = m.tables.accounting_schedules
     expect([old.start_date, old.end_date]).toEqual(['2027-01-01', '2027-12-31'])
     expect([current.start_date, current.end_date, current.required_for_close]).toEqual(['2028-01-01', null, true])
@@ -78,6 +78,52 @@ describe('schedules the close proposes', () => {
     expect(dec.map(s => s.postings.map(p => [p.accountId, p.amount]))).toEqual([[['acc-5100', 10_280], ['acc-2000', -10_280]]])
     expect(jan.map(s => s.postings.map(p => [p.accountId, p.amount]))).toEqual([[['acc-5100', 10_794], ['acc-2000', -10_794]]])
     expect(jan[0]).toMatchObject({ entryDate: '2028-01-31', sourceType: 'partnership_expense', required: true })
+  })
+
+  const rows = () => m.tables.accounting_schedules.map((r: any) => [
+    r.start_date, r.end_date, m.tables.accounting_schedule_lines.find((l: any) => l.schedule_id === r.id && l.sort_order === 0)!.amount,
+  ])
+
+  it('a rollover across two escalations creates every intermediate year, each ending before the next', async () => {
+    await ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')
+    const rolled = await ensureDatacenterSchedule(m.admin, contract(), target, '2029-01-01')
+    expect(rolled.created).toBe(2)
+    expect(rows()).toEqual([
+      ['2027-01-01', '2027-12-31', 10_280],
+      ['2028-01-01', '2028-12-31', 10_794],
+      ['2029-01-01', null, 11_333.7],
+    ])
+    expect(contract().schedule_id).toBe(rolled.scheduleId)
+    expect((await proposals('2028-06-01', '2028-06-30')).map(x => x.postings[0].amount)).toEqual([10_794])
+    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2029-01-01')).created).toBe(0)
+  })
+
+  it('a contract first set up after an escalation gets its whole history once', async () => {
+    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2028-03-01')).created).toBe(2)
+    expect(rows()).toEqual([['2027-01-01', '2027-12-31', 10_280], ['2028-01-01', null, 10_794]])
+    expect((await ensureDatacenterSchedule(m.admin, contract(), target, '2028-12-31')).created).toBe(0)
+  })
+
+  it('a double submit or a second first call creates no duplicate schedule', async () => {
+    const insurance = { name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 }
+    const first = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)
+    expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)).toEqual(first)
+    // Two first calls that both read the contract before either linked a schedule.
+    const unlinked = { ...contract() }
+    await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
+    await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
+    expect(m.tables.accounting_schedules).toHaveLength(3)
+  })
+
+  it('a failed lines insert leaves no header behind', async () => {
+    m.failNext('accounting_schedule_lines', 'insert', 'network error')
+    await expect(ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
+    expect(m.tables.accounting_schedules).toEqual([])
+  })
+
+  it('refuses a target that is not the contract’s vehicle', async () => {
+    await expect(ensureDatacenterSchedule(m.admin, contract(), { ...target, vehicleId: 'v-other' }, '2027-06-30')).rejects.toThrow('another entity')
+    expect(m.tables.accounting_schedules).toEqual([])
   })
 
   it('amortizes an insurance premium through accounting_schedules: Dr 5200 / Cr 1500 monthly', async () => {

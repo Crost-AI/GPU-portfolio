@@ -11,7 +11,7 @@ import { monthEnd } from './depreciation'
 
 export const gpuSourceRef = {
   purchase: (assetId: string) => `gpu-asset:${assetId}:purchase`,
-  capex: (assetId: string, n: number) => `gpu-asset:${assetId}:capex:${n}`,
+  capex: (assetId: string, key: string) => `gpu-asset:${assetId}:capex:${key}`,
   depreciation: (assetId: string, month: MonthKey) => `gpu-dep:${assetId}:${month}`,
   disposal: (assetId: string) => `gpu-asset:${assetId}:disposal`,
 }
@@ -44,22 +44,28 @@ export function buildPurchaseEntry(
   return entry(base, 'manual', gpuSourceRef.purchase(p.assetId), [[p.costAccountId, c], [p.offsetAccountId, -c]])
 }
 
-/** Capitalized shipping, installation or spares (decision R8/Q6): Dr 1600-<a> / Cr 1000 or 2000. */
+/**
+ * Capitalized shipping, installation or spares (decision R8/Q6): Dr 1600-<a> / Cr 1000 or 2000.
+ * `key` is the caller's idempotency key for this cost, so a retry carries the same ref.
+ */
 export function buildCapexEntry(
   base: Base,
-  p: { assetId: string; n: number; amount: number; costAccountId: string; offsetAccountId: string },
+  p: { assetId: string; key: string; amount: number; costAccountId: string; offsetAccountId: string },
 ): JournalEntry {
   const c = cents(p.amount)
-  return entry(base, 'manual', gpuSourceRef.capex(p.assetId, p.n), [[p.costAccountId, c], [p.offsetAccountId, -c]])
+  return entry(base, 'manual', gpuSourceRef.capex(p.assetId, p.key), [[p.costAccountId, c], [p.offsetAccountId, -c]])
 }
 
-/** One month's depreciation, dated at month end: Dr 5300 / Cr 1650-<a>. */
+/**
+ * One month's depreciation: Dr 5300 / Cr 1650-<a>. Dated at month end, or `entryDate` when given
+ * (depreciationEntryDate: the disposal date in the month of disposal).
+ */
 export function buildDepreciationEntry(
-  p: { fundId: string; assetId: string; month: MonthKey; amount: number; expenseAccountId: string; accumulatedAccountId: string; memo?: string; currency?: string },
+  p: { fundId: string; assetId: string; month: MonthKey; amount: number; expenseAccountId: string; accumulatedAccountId: string; entryDate?: string; memo?: string; currency?: string },
 ): JournalEntry {
   const c = cents(p.amount)
   return entry(
-    { fundId: p.fundId, entryDate: monthEnd(p.month), memo: p.memo ?? `Depreciation — ${p.month}`, currency: p.currency },
+    { fundId: p.fundId, entryDate: p.entryDate ?? monthEnd(p.month), memo: p.memo ?? `Depreciation — ${p.month}`, currency: p.currency },
     'partnership_expense', gpuSourceRef.depreciation(p.assetId, p.month),
     [[p.expenseAccountId, c], [p.accumulatedAccountId, -c]],
   )

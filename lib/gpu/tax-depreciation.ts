@@ -3,6 +3,10 @@
 // The SPV takes bonus/MACRS on its return while the books depreciate straight line to salvage, so
 // each asset carries its own tax method and the difference per tax year is a book-to-tax item.
 // Wiring that difference into the book-to-tax run and K-1s is a follow-up (#68).
+//
+// HALF-YEAR CONVENTION ONLY. The mid-quarter convention (§168(d)(3): more than 40% of a year's
+// depreciable basis placed in service in Q4, Pub. 946 Tables A-2 to A-5) is not supported; a fleet
+// that goes live late in the year needs the preparer to check it. Tracked on #68.
 
 import { depreciableFromAsset, depreciationSchedule, type DepreciableAsset } from './depreciation'
 import type { GpuAssetRow, TaxMethod } from './types'
@@ -61,7 +65,9 @@ function macrs(basisCents: number, cls: 5 | 7): number[] {
  *   - bonus: `taxBonusPct` of the basis in year 1, then MACRS (`taxLifeYears` 7, else 5) on the rest.
  *
  * A MACRS or bonus asset disposed of in a later year takes half that year's amount and nothing
- * after (half-year convention); one disposed of in the year placed in service takes none.
+ * after (half-year convention), except in the table's final year, whose percentage is already the
+ * half year left (Pub. 946 ch. 4, year of disposition), so it is taken in full. One disposed of in
+ * the year placed in service takes none.
  */
 export function taxDepreciationSchedule(a: TaxDepreciableAsset): TaxYearLine[] {
   const basis = cents(a.basis)
@@ -81,9 +87,10 @@ export function taxDepreciationSchedule(a: TaxDepreciableAsset): TaxYearLine[] {
     years = new Map(amounts.map((c, i) => [start + i, c]))
     if (a.disposedOn) {
       const out = yearOf(a.disposedOn)
+      const finalYear = start + amounts.length - 1
       for (const y of Array.from(years.keys())) {
         if (y > out || out === start) years.delete(y)
-        else if (y === out) years.set(y, Math.round(years.get(y)! / 2))
+        else if (y === out && y !== finalYear) years.set(y, Math.round(years.get(y)! / 2))
       }
     }
   }

@@ -39,6 +39,11 @@ describe('MACRS', () => {
     expect(s.map(l => l.amount)).toEqual([287_100, 459_360, 137_808])
     expect(taxDepreciationSchedule(asset({ disposedOn: '2027-11-01' }))).toEqual([])
   })
+
+  it('a disposal in the table’s final year takes that year’s amount in full (it is already the half year)', () => {
+    expect(taxDepreciationSchedule(asset({ disposedOn: '2032-05-01' })).at(-1)).toEqual({ year: 2032, amount: 82_684.8, accumulated: PACK_INPUTS.capital })
+    expect(taxDepreciationSchedule(asset({ disposedOn: '2031-05-01' })).at(-1)!.amount).toBe(82_684.8)
+  })
 })
 
 describe('book and straight-line methods', () => {

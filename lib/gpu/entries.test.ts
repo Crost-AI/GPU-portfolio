@@ -21,9 +21,9 @@ describe('lifecycle entries (§2.6)', () => {
     expect([e.sourceType, e.sourceRef]).toEqual(['manual', `gpu-asset:${ASSET}:purchase`])
   })
 
-  it('capex n: its own ref per capitalized cost', () => {
-    const e = buildCapexEntry(base, { assetId: ASSET, n: 2, amount: 1_250, costAccountId: ACC.cost, offsetAccountId: ACC.cash })
-    expect(e.sourceRef).toBe(`gpu-asset:${ASSET}:capex:2`)
+  it('capex: its ref carries the caller\'s idempotency key', () => {
+    const e = buildCapexEntry(base, { assetId: ASSET, key: 'inv-4471', amount: 1_250, costAccountId: ACC.cost, offsetAccountId: ACC.cash })
+    expect(e.sourceRef).toBe(`gpu-asset:${ASSET}:capex:inv-4471`)
     expect(legs(e)).toEqual({ [ACC.cost]: 1_250, [ACC.cash]: -1_250 })
   })
 

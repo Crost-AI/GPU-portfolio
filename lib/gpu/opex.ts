@@ -94,7 +94,18 @@ interface ScheduleTarget {
   accounts: { expense: string; offset: string }
 }
 
+/**
+ * Insert one schedule and its two lines, or return the one already there for this vehicle, name and
+ * start date, so a double submit or a retry never creates a second required-for-close accrual. If
+ * the lines fail, the header is deleted rather than left active with nothing to post.
+ */
 async function insertSchedule(admin: SupabaseClient, t: ScheduleTarget, name: string, period: SchedulePeriod): Promise<string> {
+  const { data: existing, error: findError } = await (admin as any).from('accounting_schedules').select('id')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('name', name).eq('start_date', period.start).eq('active', true)
+    .order('id').limit(1)
+  if (findError) throw findError
+  if (((existing as any[]) ?? []).length) return (existing as any[])[0].id
+
   const { data, error } = await (admin as any).from('accounting_schedules').insert({
     fund_id: t.fundId, vehicle_id: t.vehicleId, name, memo: name, source_type: 'partnership_expense',
     start_date: period.start, end_date: period.end, day_of_month: MONTH_END_DAY, required_for_close: true,
@@ -105,46 +116,59 @@ async function insertSchedule(admin: SupabaseClient, t: ScheduleTarget, name: st
     { schedule_id: data.id, account_id: t.accounts.expense, amount: period.amount, sort_order: 0 },
     { schedule_id: data.id, account_id: t.accounts.offset, amount: -period.amount, sort_order: 1 },
   ])
-  if (lineError) throw lineError
+  if (lineError) {
+    await (admin as any).from('accounting_schedules').delete().eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', data.id)
+    throw lineError
+  }
   return data.id
 }
 
 /**
- * Make the contract's accrual schedule the one for the escalation period containing `asOf`.
+ * Bring the contract's accrual schedules up to the escalation period containing `asOf`.
  *
- * Idempotent: when the linked schedule already starts on that period's start, nothing changes. On
- * an escalation date it ends the current schedule the day before and creates the next at the
- * escalated fee, starting ON the escalation date, then links it from the contract.
+ * Every period through `asOf` gets its own schedule, each ending the day before the NEXT escalation
+ * (an intermediate year is never skipped or absorbed by its predecessor), and the contract links
+ * the latest. Periods starting on or before the linked schedule's start are taken as already
+ * there, so a contract set up late creates its whole history once, and a re-run creates nothing.
  */
 export async function ensureDatacenterSchedule(
   admin: SupabaseClient,
   contract: DatacenterContractRow,
   t: ScheduleTarget,
   asOf: string,
-): Promise<{ scheduleId: string; created: boolean }> {
+): Promise<{ scheduleId: string; created: number }> {
+  if (contract.fund_id !== t.fundId || contract.vehicle_id !== t.vehicleId) throw new Error('This contract belongs to another entity')
   const periods = datacenterPeriods(contract, asOf)
-  const period = periods[periods.length - 1]
+  let previous: { id: string; end_date: string | null } | null = null
+  let missing = periods
 
   if (contract.schedule_id) {
     const { data: current, error } = await (admin as any).from('accounting_schedules')
-      .select('id, start_date, end_date').eq('fund_id', contract.fund_id).eq('id', contract.schedule_id).maybeSingle()
+      .select('id, start_date, end_date').eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.schedule_id).maybeSingle()
     if (error) throw error
-    if (current?.start_date === period.start) return { scheduleId: current.id, created: false }
     if (current) {
-      const end = dayBefore(period.start)
-      if (!current.end_date || current.end_date > end) {
-        const { error: endError } = await (admin as any).from('accounting_schedules')
-          .update({ end_date: end, updated_at: new Date().toISOString() }).eq('fund_id', contract.fund_id).eq('id', current.id)
-        if (endError) throw endError
-      }
+      previous = current
+      missing = periods.filter(p => p.start > current.start_date)
     }
   }
+  if (!missing.length) return { scheduleId: previous!.id, created: 0 }
 
-  const scheduleId = await insertSchedule(admin, t, `Datacenter — ${contract.facility}`, period)
+  for (const period of missing) {
+    if (previous) {
+      const end = dayBefore(period.start)
+      if (!previous.end_date || previous.end_date > end) {
+        const { error } = await (admin as any).from('accounting_schedules')
+          .update({ end_date: end, updated_at: new Date().toISOString() }).eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', previous.id)
+        if (error) throw error
+      }
+    }
+    previous = { id: await insertSchedule(admin, t, `Datacenter \u2014 ${contract.facility}`, period), end_date: period.end }
+  }
+
   const { error } = await (admin as any).from('datacenter_contracts')
-    .update({ schedule_id: scheduleId, updated_at: new Date().toISOString() }).eq('fund_id', contract.fund_id).eq('id', contract.id)
+    .update({ schedule_id: previous!.id, updated_at: new Date().toISOString() }).eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.id)
   if (error) throw error
-  return { scheduleId, created: true }
+  return { scheduleId: previous!.id, created: missing.length }
 }
 
 /** The prepaid premium's amortization schedules (Dr 5200 / Cr 1500); returns their ids in order. */

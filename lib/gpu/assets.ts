@@ -8,7 +8,8 @@ import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { assetAccountCode } from '@/lib/accounting/chart'
 import { fetchAllRows } from '@/lib/accounting/load'
 import { persistEntry } from '@/lib/accounting/persist'
-import { defaultSalvage } from './depreciation'
+import { reversalRef } from '@/lib/accounting/reversal'
+import { defaultSalvage, type CapexEvent } from './depreciation'
 import { buildCapexEntry, buildPurchaseEntry, gpuSourceRef } from './entries'
 import {
   DEPRECIATION_CONVENTIONS, GPU_ASSET_STATUSES, TAX_METHODS,
@@ -78,6 +79,11 @@ export function parseAssetInput(body: any, partial: boolean): { value: AssetInpu
     if (b.tax_life_years !== null && (!Number.isInteger(num(b.tax_life_years)) || num(b.tax_life_years) <= 0)) return { error: 'tax_life_years must be a positive whole number' }
     out.tax_life_years = b.tax_life_years === null ? null : num(b.tax_life_years)
   }
+  const method = out.tax_method
+  if (method && (method.startsWith('macrs_') || method === 'bonus') && out.tax_life_years != null) {
+    const classes = method === 'macrs_5' ? [5] : method === 'macrs_7' ? [7] : [5, 7]
+    if (!classes.includes(out.tax_life_years)) return { error: `tax_life_years must be ${classes.join(' or ')} for ${method}` }
+  }
   if (has('serials')) {
     if (!Array.isArray(b.serials) || !b.serials.every((s: unknown) => typeof s === 'string')) return { error: 'serials must be a list of strings' }
     out.serials = b.serials
@@ -123,62 +129,139 @@ export async function ensureAssetAccounts(
   return { cost: ids.get(cost)!, accumulated: ids.get(accumulated)! }
 }
 
-interface Lifecycle {
+export interface Lifecycle {
   fundId: string
   group: string
   vehicleId: string
   userId: string | null
 }
 
+/** The refusal when the asset row is not the caller's resolved vehicle's (another entity of the fund). */
+export function otherVehicleError(ctx: Lifecycle, asset: Pick<GpuAssetRow, 'fund_id' | 'vehicle_id'>): { error: string } | null {
+  return asset.fund_id === ctx.fundId && asset.vehicle_id === ctx.vehicleId ? null : { error: 'This asset belongs to another entity' }
+}
+
 /**
  * Book the hardware purchase (Dr 1600-<a> / Cr 1000, or Cr 2000 when `invoiced`) and link it.
- * A planned asset becomes ordered. A second purchase is refused by the entry's source_ref.
+ * A planned asset becomes ordered.
+ *
+ * Recoverable: the entry commits before the register is updated, so if that update fails a retry
+ * hits the once-only index on `gpu-asset:<id>:purchase`, and the entry already there is linked
+ * instead of a second one being booked.
  */
 export async function purchaseAsset(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, p: { entryDate: string; invoiced: boolean },
 ): Promise<{ entryId: string } | { error: string }> {
-  if (asset.purchase_entry_id) return { error: 'This asset’s purchase is already booked' }
+  const other = otherVehicleError(ctx, asset)
+  if (other) return other
+  if (asset.purchase_entry_id) return { error: 'This asset\u2019s purchase is already booked' }
   const accounts = await ensureAssetAccounts(admin, ctx.fundId, ctx.group, ctx.vehicleId, asset)
   const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
   const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!
   const entry = buildPurchaseEntry(
-    { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase — ${asset.name}` },
+    { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase \u2014 ${asset.name}` },
     { assetId: asset.id, amount: Number(asset.hardware_cost), costAccountId: accounts.cost, offsetAccountId: offset },
   )
   const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
-  if ('error' in result) return { error: result.error }
+  const entryId = 'entryId' in result ? result.entryId : result.duplicateOf
+  if (!entryId) return { error: (result as { error: string }).error }
   const { error } = await (admin as any).from('gpu_assets').update({
-    purchase_entry_id: result.entryId, purchase_date: asset.purchase_date ?? p.entryDate,
+    purchase_entry_id: entryId, purchase_date: asset.purchase_date ?? p.entryDate,
     status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
-  }).eq('fund_id', ctx.fundId).eq('id', asset.id)
+  }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
   if (error) throw error
-  return { entryId: result.entryId }
+  return { entryId }
+}
+
+const CAPEX_KEY = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * The asset's posted capex by month: each `gpu-asset:<id>:capex:<key>` entry's debit to 1600-<a>,
+ * and each posted reversal of one as a negative amount in the reversal's month. What the depreciable
+ * basis (depreciableFromAsset) and `capitalized_costs` are both derived from.
+ */
+export async function loadCapexEvents(
+  admin: SupabaseClient, ctx: Lifecycle, assetId: string, costAccountId: string,
+): Promise<CapexEvent[]> {
+  const { data: capex, error } = await (admin as any).from('journal_entries').select('id, entry_date, journal_postings(account_id, amount)')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
+    .like('source_ref', `gpu-asset:${assetId}:capex:%`).order('id')
+  if (error) throw error
+  const rows: any[] = [...((capex as any[]) ?? [])]
+  if (rows.length) {
+    const { data: reversals, error: revError } = await (admin as any).from('journal_entries').select('id, entry_date, journal_postings(account_id, amount)')
+      .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
+      .in('source_ref', rows.map(r => reversalRef(r.id))).order('id')
+    if (revError) throw revError
+    rows.push(...((reversals as any[]) ?? []))
+  }
+  return rows.map(r => ({
+    month: String(r.entry_date).slice(0, 7),
+    amount: (r.journal_postings ?? []).filter((jp: any) => jp.account_id === costAccountId)
+      .reduce((t: number, jp: any) => t + Math.round(Number(jp.amount) * 100), 0) / 100,
+  })).filter(e => e.amount !== 0).sort((x, y) => (x.month < y.month ? -1 : x.month > y.month ? 1 : 0))
 }
 
 /**
- * Capitalize a real installation, shipping or spares cost into the asset (decision R8/Q6): book
- * `gpu-asset:<id>:capex:<n>` and add it to `capitalized_costs`, which raises the depreciable basis
- * and is what unspentContingency subtracts from the budget.
+ * `capitalized_costs` is DERIVED from the ledger, never incremented: Σ loadCapexEvents. Writes it to
+ * the register and returns it, so a half-finished capitalization heals on the next call.
+ */
+export async function reconcileCapitalizedCosts(
+  admin: SupabaseClient, ctx: Lifecycle, assetId: string, costAccountId: string,
+): Promise<number> {
+  const events = await loadCapexEvents(admin, ctx, assetId, costAccountId)
+  const total = events.reduce((t, e) => t + Math.round(e.amount * 100), 0) / 100
+  const { error } = await (admin as any).from('gpu_assets')
+    .update({ capitalized_costs: total, updated_at: new Date().toISOString() }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', assetId)
+  if (error) throw error
+  return total
+}
+
+/**
+ * Capitalize a real installation, shipping or spares cost into the asset (decision R8/Q6), which
+ * raises the depreciable basis and is what unspentContingency subtracts from the budget. Only a
+ * purchased asset that is not disposed of (ordered, in service or offline) takes capex.
+ *
+ * Idempotent per `key` (the caller's identity for this cost, e.g. the invoice number): the entry is
+ * `gpu-asset:<id>:capex:<key>`, so a retry finds it (or hits the once-only index) rather than
+ * booking the cost again, and a key already used for a different amount is refused. Either way
+ * the register is then reconciled from the ledger.
  */
 export async function capitalizeCost(
-  admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, p: { entryDate: string; amount: number; invoiced: boolean; memo?: string },
-): Promise<{ entryId: string } | { error: string }> {
+  admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow,
+  p: { key: string; entryDate: string; amount: number; invoiced: boolean; memo?: string },
+): Promise<{ entryId: string; capitalizedCosts: number } | { error: string }> {
+  const other = otherVehicleError(ctx, asset)
+  if (other) return other
+  if (asset.status === 'disposed' || asset.disposal_entry_id) return { error: 'A disposed asset cannot take capitalized costs' }
+  if (!asset.purchase_entry_id) return { error: 'Book the asset\u2019s purchase before capitalizing costs into it' }
+  if (!CAPEX_KEY.test(p.key ?? '')) return { error: 'key must be 1\u201364 letters, digits, hyphens or underscores' }
   if (!(p.amount > 0)) return { error: 'amount must be more than zero' }
-  const { count, error: countError } = await (admin as any).from('journal_entries').select('id', { count: 'exact', head: true })
-    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).like('source_ref', `${gpuSourceRef.capex(asset.id, 0).slice(0, -1)}%`)
-  if (countError) throw countError
   const accounts = await ensureAssetAccounts(admin, ctx.fundId, ctx.group, ctx.vehicleId, asset)
-  const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
-  const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!
-  const entry = buildCapexEntry(
-    { fundId: ctx.fundId, entryDate: p.entryDate, memo: p.memo ?? `Capitalized cost — ${asset.name}` },
-    { assetId: asset.id, n: (count ?? 0) + 1, amount: p.amount, costAccountId: accounts.cost, offsetAccountId: offset },
-  )
-  const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
-  if ('error' in result) return { error: result.error }
-  const { error } = await (admin as any).from('gpu_assets').update({
-    capitalized_costs: Math.round((Number(asset.capitalized_costs ?? 0) + p.amount) * 100) / 100, updated_at: new Date().toISOString(),
-  }).eq('fund_id', ctx.fundId).eq('id', asset.id)
-  if (error) throw error
-  return { entryId: result.entryId }
+  const sourceRef = gpuSourceRef.capex(asset.id, p.key)
+
+  const { data: found, error: findError } = await (admin as any).from('journal_entries').select('id, journal_postings(account_id, amount)')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('source_ref', sourceRef).neq('status', 'void')
+    .order('id').limit(1)
+  if (findError) throw findError
+  const existing = ((found as any[]) ?? [])[0]
+  let entryId: string
+  if (existing) {
+    const booked = (existing.journal_postings ?? []).filter((jp: any) => jp.account_id === accounts.cost)
+      .reduce((t: number, jp: any) => t + Math.round(Number(jp.amount) * 100), 0)
+    if (booked !== Math.round(p.amount * 100)) return { error: `Key ${p.key} already capitalized ${booked / 100} on this asset` }
+    entryId = existing.id
+  } else {
+    const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
+    const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!
+    const entry = buildCapexEntry(
+      { fundId: ctx.fundId, entryDate: p.entryDate, memo: p.memo ?? `Capitalized cost \u2014 ${asset.name}` },
+      { assetId: asset.id, key: p.key, amount: p.amount, costAccountId: accounts.cost, offsetAccountId: offset },
+    )
+    const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
+    const id = 'entryId' in result ? result.entryId : result.duplicateOf
+    if (!id) return { error: (result as { error: string }).error }
+    entryId = id
+  }
+  return { entryId, capitalizedCosts: await reconcileCapitalizedCosts(admin, ctx, asset.id, accounts.cost) }
 }

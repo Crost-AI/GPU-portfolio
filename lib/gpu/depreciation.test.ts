@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { depreciableFromAsset, depreciationForMonth, depreciationSchedule, nbvAsOf, type DepreciableAsset } from './depreciation'
+import { depreciableFromAsset, depreciationEntryDate, depreciationForMonth, depreciationSchedule, nbvAsOf, type DepreciableAsset } from './depreciation'
 import { PACK_INPUTS, PACK_SERVERS } from './fixtures/pack-v3'
 import type { GpuAssetRow } from './types'
 
@@ -72,5 +72,43 @@ describe('depreciableFromAsset', () => {
   it('depreciates hardware plus capitalized costs (R8/Q6), and waits for an in-service date', () => {
     expect(depreciableFromAsset(row)).toMatchObject({ basis: 339_250.5, salvage: 33_500, lifeMonths: 60 })
     expect(depreciableFromAsset({ ...row, in_service_date: null })).toBeNull()
+  })
+})
+
+describe('capex is depreciated prospectively (Q)', () => {
+  // 4,800 booked in month 13 of 60 adds 4,800 / 48 = 100 a month from that month on.
+  const withCapex = server('h', 335_000, { capex: [{ month: '2028-01', amount: 4_800 }] })
+
+  it('leaves the months before the capex unchanged and spreads it over the remaining life', () => {
+    const s = depreciationSchedule(withCapex)
+    const before = depreciationSchedule(server('h', 335_000))
+    expect(s.slice(0, 12).map(l => l.amount)).toEqual(before.slice(0, 12).map(l => l.amount))
+    expect(s[12]).toMatchObject({ month: '2028-01', amount: 5_125 })
+    expect(s.at(-1)!.amount).toBe(5_125)
+    expect(s.reduce((t, l) => t + l.amount, 0)).toBe(335_000 + 4_800 - 33_500)
+    expect(s.at(-1)!.nbv).toBe(33_500)
+  })
+
+  it('a non-divisible capex still ends exactly at basis + capex − salvage', () => {
+    const s = depreciationSchedule(server('h', 335_000, { capex: [{ month: '2027-07', amount: 1_000 }, { month: '2030-02', amount: 777.77 }] }))
+    expect(Math.round(s.at(-1)!.accumulated * 100)).toBe((335_000 + 1_000 + 777.77 - 33_500) * 100)
+  })
+
+  it('counts capex in NBV from its month', () => {
+    expect(nbvAsOf(withCapex, '2027-12-31')).toBe(335_000 - 5_025 * 12)
+    expect(nbvAsOf(withCapex, '2028-01-31')).toBe(335_000 + 4_800 - 5_025 * 12 - 5_125)
+  })
+
+  it('builds the events from the posted capex, not the register total', () => {
+    const row = { id: 'a', hardware_cost: 335_000, capitalized_costs: 4_800, salvage_value: 33_500, useful_life_months: 60, in_service_date: '2027-01-15', depreciation_convention: 'full_month', disposed_on: null } as unknown as GpuAssetRow
+    expect(depreciableFromAsset(row, [{ month: '2028-01', amount: 4_800 }])).toMatchObject({ basis: 335_000, capex: [{ month: '2028-01', amount: 4_800 }] })
+  })
+})
+
+describe('depreciationEntryDate', () => {
+  it('is the month end, or the disposal date in the month of disposal', () => {
+    expect(depreciationEntryDate('2028-06')).toBe('2028-06-30')
+    expect(depreciationEntryDate('2028-06', '2028-06-10')).toBe('2028-06-10')
+    expect(depreciationEntryDate('2028-05', '2028-06-10')).toBe('2028-05-31')
   })
 })
