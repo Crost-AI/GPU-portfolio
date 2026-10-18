@@ -164,8 +164,13 @@ describe('entity sub-nav by kind', () => {
     expect(hrefs('manco')).toEqual(without('/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
   })
 
-  it('a GPU SPV hides only the schedule of investments and Tax (until #68)', () => {
-    expect(hrefs('gpu_spv')).toEqual(without('/funds/schedule-of-investments', '/funds/tax'))
+  // ── GPU fleet (P5) ── the four operating pages, after Forecast, are the GPU SPV's alone.
+  const GPU = ['/funds/fleet', '/funds/revenue', '/funds/waterfall', '/funds/scenarios']
+
+  it('a GPU SPV hides only the schedule of investments and Tax (until #68), and adds its four pages', () => {
+    const shared = without('/funds/schedule-of-investments', '/funds/tax')
+    const at = shared.indexOf('/funds/forecast') + 1
+    expect(hrefs('gpu_spv')).toEqual([...shared.slice(0, at), ...GPU, ...shared.slice(at)])
     expect(hasSectionForKind('tax', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('schedule-of-investments', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('capital-accounts', 'gpu_spv')).toBe(true)
@@ -179,7 +184,7 @@ describe('entity sub-nav by kind', () => {
     expect(sectionsForKind([fleet], null)).toEqual([])
   })
 
-  it('ships no showFor section yet, so no existing kind can lose one', () => {
-    expect(ALL.filter(s => s.showFor)).toEqual([])
+  it('ships showFor only on the four GPU pages, so no existing kind can lose one', () => {
+    expect(ALL.filter(s => s.showFor).map(s => [s.href, s.showFor])).toEqual(GPU.map(h => [h, ['gpu_spv']]))
   })
 })
