@@ -208,9 +208,13 @@ cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
 - **Migrations** run on every deploy: the `migrate` service applies what is new before the app
   starts. Its last log line (`docker compose -p <appName> logs migrate`, or the service's logs in
   Dokploy) is `migrate: applied N, already applied M`, or `migrate: FAILED on <file>`.
-  - Recommended: set Dokploy's custom command to
-    `docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml run --rm -T migrate && docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
-    A failed migration then stops the deploy before anything is recreated, and the previous
+  - Recommended: set Dokploy's custom command to the following, which starts with `compose`
+    because Dokploy supplies the leading `docker` (the half after `&&` is a plain shell command
+    and keeps its own):
+    `compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml run --rm -T migrate && docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
+    That second half runs outside Dokploy's `env -i`, so a `COMPOSE_PROJECT_NAME` in the Dokploy
+    process's environment would override `.env`: check once in the deploy log that both halves
+    name the same project. A failed migration then stops the deploy before anything is recreated, and the previous
     release keeps serving; the second command's `up` re-runs migrate as a no-op. The trade-off:
     during the build (about 4 minutes) the old app runs against the new schema, which is what the
     repo's expand/contract convention expects (contract migrations wait in
