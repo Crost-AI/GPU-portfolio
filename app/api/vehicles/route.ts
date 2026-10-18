@@ -12,7 +12,7 @@ import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
-import { gpuKindChangeDenial } from '@/lib/accounting/vehicle-domain'
+import { gpuKindDenial } from '@/lib/accounting/vehicle-domain'
 import { safeLogo, fundLetterhead, loadFundEmail } from '@/lib/vehicle-letterhead'
 import { EMPTY_PROFILE, PROFILE_COLUMNS, parseProfilePatch, profileFromRow } from '@/lib/vehicle-profile'
 
@@ -121,8 +121,8 @@ export async function POST(req: NextRequest) {
   const createAccess = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   const createDenied = entityIdentityChangeDenial(createAccess, { name })
   if (createDenied) return NextResponse.json({ error: createDenied }, { status: 403 })
-  const kindDenied = gpuKindChangeDenial(createAccess, null, kind)
-  if (kindDenied) return NextResponse.json({ error: kindDenied }, { status: 403 })
+  const kindDenied = gpuKindDenial(createAccess, { existing: false, to: kind })
+  if (kindDenied) return NextResponse.json({ error: kindDenied.error }, { status: kindDenied.status })
 
   const { data, error } = await (admin as any)
     .from('fund_vehicles')
@@ -193,8 +193,8 @@ export async function PATCH(req: NextRequest) {
   })
   if (identityDenied) return NextResponse.json({ error: identityDenied }, { status: 403 })
   if (body.kind !== undefined) {
-    const kindDenied = gpuKindChangeDenial(access, (current as any).kind, body.kind)
-    if (kindDenied) return NextResponse.json({ error: kindDenied }, { status: 403 })
+    const kindDenied = gpuKindDenial(access, { existing: true, from: (current as any).kind, to: body.kind })
+    if (kindDenied) return NextResponse.json({ error: kindDenied.error }, { status: kindDenied.status })
   }
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }

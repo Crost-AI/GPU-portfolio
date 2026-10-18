@@ -277,6 +277,11 @@ export async function applySetupPlan(
       result.entities.push({ name: e.name, status: 'error', error: 'Turn on management_company to create a management company.' })
       continue
     }
+    // ── GPU fleet (P1) ──
+    if (e.kind === 'gpu_spv' && (visibility.gpu_fleet === 'off' || visibility.gpu_fleet === 'hidden')) {
+      result.entities.push({ name: e.name, status: 'error', error: 'Turn on gpu_operations to create a GPU SPV.' })
+      continue
+    }
     const created = await createFirstEntity(admin, fundId, e)
     result.entities.push(created.ok
       ? { name: e.name, status: created.created ? 'created' : 'exists', id: created.id }

@@ -179,6 +179,19 @@ describe('applySetupPlan', () => {
     expect(r.entities[0]).toMatchObject({ status: 'error', error: expect.stringMatching(/management_company/) })
   })
 
+  // ── GPU fleet (P1) ── #69
+  it('refuses a GPU SPV entity while gpu_fleet is off, and creates it once it is on', async () => {
+    const off = setup()
+    const refused = await applySetupPlan(off.admin, { fundId: FUND, actorId: ACTOR }, plan({ entities: [{ name: 'H200 SPV I', kind: 'gpu_spv' }] }))
+    expect(refused.entities).toEqual([{ name: 'H200 SPV I', status: 'error', error: expect.stringMatching(/gpu_operations/) }])
+    expect(off.tables.fund_vehicles ?? []).toEqual([])
+
+    const on = setup({ settings: { feature_visibility: { ...buildFeatureVisibility(['portfolio_reporting', 'fund_operations']), gpu_fleet: 'admin' } } })
+    const created = await applySetupPlan(on.admin, { fundId: FUND, actorId: ACTOR }, plan({ entities: [{ name: 'H200 SPV I', kind: 'gpu_spv' }] }))
+    expect(created.entities).toEqual([{ name: 'H200 SPV I', status: 'created', id: expect.any(String) }])
+    expect(on.tables.fund_vehicles.map((v: any) => v.kind)).toEqual(['gpu_spv'])
+  })
+
   it('only adds products to a fund that already finished setup', async () => {
     const before = buildFeatureVisibility(['portfolio_reporting', 'fund_operations'])
     const { admin, tables } = setup({ settings: { feature_visibility: before, onboarding: { completed_at: '2026-01-01T00:00:00Z' } } })

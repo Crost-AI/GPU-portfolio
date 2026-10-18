@@ -89,18 +89,13 @@ describe('changing an entity into or out of a GPU SPV', () => {
   ] })
   const kindOf = (id: string) => s.m.tables.fund_vehicles.find((v: any) => v.id === id).kind
 
-  it('is refused without fleet write, in both directions', async () => {
-    s.m = seed(); s.access = fleetAccess({}, {}, 'admin')
-    expect((await updateVehicle(patch({ id: 'v-fund', kind: 'gpu_spv' }))).status).toBe(403)
-    expect((await updateVehicle(patch({ id: 'v-gpu', kind: 'spv' }))).status).toBe(403)
-    expect([kindOf('v-fund'), kindOf('v-gpu')]).toEqual(['fund', 'gpu_spv'])
-    s.access = {}
-  })
-
-  it('is allowed with fleet write', async () => {
-    s.m = seed(); s.access = fleetAccess(FLEET_ON, { fleet: 'write' })
-    expect((await updateVehicle(patch({ id: 'v-fund', kind: 'gpu_spv' }))).status).toBe(200)
-    expect(kindOf('v-fund')).toBe('gpu_spv')
+  it('is refused in both directions, 409, even with fleet write: the chart would not match', async () => {
+    for (const access of [fleetAccess({}, {}, 'admin'), fleetAccess(FLEET_ON, { fleet: 'write' }), fleetAccess(FLEET_ON, {}, 'admin')]) {
+      s.m = seed(); s.access = access
+      expect((await updateVehicle(patch({ id: 'v-fund', kind: 'gpu_spv' }))).status).toBe(409)
+      expect((await updateVehicle(patch({ id: 'v-gpu', kind: 'spv' }))).status).toBe(409)
+      expect([kindOf('v-fund'), kindOf('v-gpu')]).toEqual(['fund', 'gpu_spv'])
+    }
     s.access = {}
   })
 
@@ -110,6 +105,30 @@ describe('changing an entity into or out of a GPU SPV', () => {
     expect(kindOf('v-fund')).toBe('spv')
     expect((await updateVehicle(patch({ id: 'v-gpu', kind: 'gpu_spv', active: false }))).status).toBe(200)
     expect(s.m.tables.fund_vehicles.find((v: any) => v.id === 'v-gpu')).toMatchObject({ kind: 'gpu_spv', active: false })
+    s.access = {}
+  })
+})
+
+describe('merging across GPU-ness', () => {
+  const seed = () => memoryAdmin({ fund_vehicles: [
+    { id: 'v-fund', fund_id: 'f', name: 'Fund IV', kind: 'fund', aliases: [], active: true },
+    { id: 'v-spv', fund_id: 'f', name: 'Acme SPV', kind: 'spv', aliases: [], active: true },
+    { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [], active: true },
+  ] })
+
+  it('refuses a GPU SPV into a fund, and a fund into a GPU SPV, 409, leaving both', async () => {
+    for (const [from, into] of [['v-gpu', 'v-fund'], ['v-fund', 'v-gpu']]) {
+      s.m = seed(); s.access = fleetAccess(FLEET_ON, { fleet: 'write' }, 'admin')
+      expect((await updateVehicle(patch({ id: from, mergeIntoId: into }))).status).toBe(409)
+      expect(s.m.tables.fund_vehicles).toHaveLength(3)
+    }
+    s.access = {}
+  })
+
+  it('still merges two VC vehicles', async () => {
+    s.m = seed(); s.access = fleetAccess({}, {}, 'admin')
+    expect((await updateVehicle(patch({ id: 'v-spv', mergeIntoId: 'v-fund' }))).status).toBe(200)
+    expect(s.m.tables.fund_vehicles.map((v: any) => v.id).sort()).toEqual(['v-fund', 'v-gpu'])
     s.access = {}
   })
 })

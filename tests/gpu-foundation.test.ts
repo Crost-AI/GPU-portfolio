@@ -83,8 +83,15 @@ describe('fleet requires reading the books', () => {
     expect(effectiveAccess(ctx({ features: on, grants: { accounting: 'read' } }), 'fleet')).toBe('read')
   })
 
-  it('is write for an admin once the switch is on', () => {
+  it('is write for an admin and read for a viewer once the switch is on', () => {
     expect(effectiveAccess(ctx({ role: 'admin', features: on }), 'fleet')).toBe('write')
+    expect(effectiveAccess(ctx({ role: 'viewer', features: on }), 'fleet')).toBe('read')
+  })
+
+  it('is none for an admin and a viewer too when accounting is off (#70)', () => {
+    const noBooks = { ...on, accounting: 'off' } as FeatureVisibilityMap
+    expect(effectiveAccess(ctx({ role: 'admin', features: noBooks }), 'fleet')).toBe('none')
+    expect(effectiveAccess(ctx({ role: 'viewer', features: noBooks }), 'fleet')).toBe('none')
   })
 })
 

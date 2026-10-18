@@ -5,6 +5,7 @@ import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { rateLimit } from '@/lib/rate-limit'
 import { closeTaxYear, reopenTaxYear, taxYearState } from '@/lib/tax/year-close'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // Closing and reopening a vehicle's tax year — the tax book's own lock.
 //
@@ -30,6 +31,8 @@ export async function GET(req: NextRequest) {
 
   const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { group })
+  if (gpuTax) return gpuTax
   const taxYear = taxYearOr400(req.nextUrl.searchParams.get('taxYear'))
   if (taxYear instanceof NextResponse) return taxYear
 
@@ -53,6 +56,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const group = await resolveGroupOr400(admin, gate, body?.group)
   if (group instanceof NextResponse) return group
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { group })
+  if (gpuTax) return gpuTax
   const taxYear = taxYearOr400(body?.taxYear)
   if (taxYear instanceof NextResponse) return taxYear
 

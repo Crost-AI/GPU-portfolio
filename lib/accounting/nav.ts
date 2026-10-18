@@ -153,7 +153,8 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     desc: 'The year’s book-to-tax adjustments, adjusting entries, K-1 package, partner tax forms, and the tax package for the preparer.',
     domain: 'tax',
     feature: 'tax_reporting',
-    hideFor: ['manco'],
+    // gpu_spv: the K-1 loaders read the fund chart's codes; the tax routes refuse it until #68.
+    hideFor: ['manco', 'gpu_spv'],
   },
 ]
 

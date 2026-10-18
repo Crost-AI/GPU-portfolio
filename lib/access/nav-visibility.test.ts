@@ -164,8 +164,9 @@ describe('entity sub-nav by kind', () => {
     expect(hrefs('manco')).toEqual(without('/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
   })
 
-  it('a GPU SPV hides only the schedule of investments', () => {
-    expect(hrefs('gpu_spv')).toEqual(without('/funds/schedule-of-investments'))
+  it('a GPU SPV hides only the schedule of investments and Tax (until #68)', () => {
+    expect(hrefs('gpu_spv')).toEqual(without('/funds/schedule-of-investments', '/funds/tax'))
+    expect(hasSectionForKind('tax', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('schedule-of-investments', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('capital-accounts', 'gpu_spv')).toBe(true)
   })

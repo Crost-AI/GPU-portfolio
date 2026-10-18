@@ -7,6 +7,7 @@ import { currentForm, type TaxFormRecord } from '@/lib/tax/forms'
 import { buildStateWorklist, summarizeWorklist, type PartnerStateRow } from '@/lib/tax/state-worklist'
 import { incomeTotal, emptyLines, type K1Category } from '@/lib/accounting/k1-allocation'
 import { assertK1PackageVisible } from '@/lib/accounting/vehicle-visibility'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // Which states have partners, and how much was allocated to each.
 //
@@ -31,6 +32,8 @@ export async function GET(req: NextRequest) {
   // A package is one entity's — it must be one of the caller's.
   const hiddenPackage = await assertK1PackageVisible(admin, gate, packageId)
   if (hiddenPackage) return hiddenPackage
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+  if (gpuTax) return gpuTax
 
   const { data: pkg } = await admin
     .from('k1_packages' as any)

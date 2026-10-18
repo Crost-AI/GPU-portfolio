@@ -309,6 +309,16 @@ describe('PATCH /api/onboarding/fund — later steps', () => {
     expect(writes).toHaveLength(0)
   })
 
+  // ── GPU fleet (P1) ── #69. No wizard product turns gpu_fleet on, so the wizard can never admit one.
+  it('products: refuses a GPU SPV as the first entity before writing anything', async () => {
+    const res = await PATCH(req({
+      action: 'products', products: ['portfolio_reporting', 'fund_operations'], entity: { name: 'H200 SPV I', kind: 'gpu_spv' },
+    }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/GPU Operations/)
+    expect(writes).toHaveLength(0)
+  })
+
   it('products: still saves when the onboarding column has not been migrated yet', async () => {
     const legacy = newFundSettings()
     delete legacy.onboarding

@@ -7,6 +7,7 @@ import { assertReadAccess } from '@/lib/api-helpers'
 import { rateLimit } from '@/lib/rate-limit'
 import { buildK1WorkbookForPackage, type K1PackageRow } from '@/lib/tax/k1-export'
 import { assertK1PackageVisible } from '@/lib/accounting/vehicle-visibility'
+import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
 // The K-1 package as a workbook for the preparer.
 //
@@ -33,6 +34,8 @@ export async function GET(req: NextRequest) {
   // A package is one entity's — it must be one of the caller's.
   const hiddenPackage = await assertK1PackageVisible(admin, gate, packageId)
   if (hiddenPackage) return hiddenPackage
+  const gpuTax = await refuseGpuSpvTax(admin, gate.fundId, { packageId })
+  if (gpuTax) return gpuTax
 
   const { data: pkg } = await admin
     .from('k1_packages' as any)

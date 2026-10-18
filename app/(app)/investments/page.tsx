@@ -207,6 +207,7 @@ export default function InvestmentsPage() {
   const [linkingGroup, setLinkingGroup] = useState<string | null>(null)
   // Filters. Default: hide empty (no-transaction) vehicles and hide GP/associate entities — the
   // common view — but every combination is pickable.
+  // GPU SPVs (like associates, individuals and mancos) start unchecked by design: they hold servers, not positions.
   const [selectedKinds, setSelectedKinds] = useState<Set<string>>(() => new Set(['fund', 'spv', 'direct', 'other']))
   const [showEmpty, setShowEmpty] = useState(false)
   // Specific entities left out (by name). Kept as the HIDDEN set so an entity added later shows.
