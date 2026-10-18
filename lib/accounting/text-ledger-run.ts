@@ -172,12 +172,13 @@ export async function postLedgerText(
 ): Promise<PostTextResult> {
   const { entries, errors } = parseLedgerText(text)
   // #82: authored text is user input. A ref in a system namespace is refused before anything is
-  // read or written, whether it arrives by REST or the post_ledger_text tool.
+  // read or written, whether it arrives by REST or the post_ledger_text tool; only the round-trip
+  // export refs come back (#88).
   for (const e of entries) {
-    const reserved = assertUserRefAllowed(e.ref)
+    const reserved = assertUserRefAllowed(e.ref, { allowRoundTrip: true })
     if (reserved) errors.push(`Entry ${e.date} "${e.narration}": ${reserved}`)
   }
-  if (errors.length && entries.some(e => assertUserRefAllowed(e.ref))) return { posted: 0, errors, unknownAccounts: [] }
+  if (entries.some(e => assertUserRefAllowed(e.ref, { allowRoundTrip: true }))) return { posted: 0, errors, unknownAccounts: [] }
   const accounts = await loadAccounts(admin, fundId, group)
 
   const unknownAccounts = new Set<string>()

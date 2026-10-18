@@ -17,10 +17,11 @@ vi.mock('@/lib/api-helpers', () => ({
   assertReadAccess: async () => ({ fundId: 'f', userId: 'u', role: 'member', need: 'read' }),
   assertWriteAccess: async () => ({ fundId: 'f', userId: 'u', role: 'member', need: 'write' }),
 }))
-vi.mock('@/lib/access/effective', async orig => ({
-  ...(await orig<any>()),
-  loadAccessContext: async () => { if (s.access instanceof Error) throw s.access; return s.access },
-}))
+vi.mock('@/lib/access/effective', async orig => {
+  const real = await orig<any>()
+  // 'real' runs the actual loader against the memory admin, whose access_context RPC fails.
+  return { ...real, loadAccessContext: async (...a: any[]) => (s.access === 'real' ? real.loadAccessContext(...a) : s.access) }
+})
 
 import * as assets from '@/app/api/fleet/assets/route'
 import * as purchase from '@/app/api/fleet/assets/[id]/purchase/route'
@@ -63,9 +64,12 @@ describe('entity scope through the real resolver', () => {
     expect(s.m.tables.journal_entries).toEqual([])
   })
 
-  it('fails closed when the access context cannot be read', async () => {
-    s.access = new Error('access_context: connection reset')
-    await expect(create().then(r => r.status)).rejects.toThrow()
+  it('fails closed when the access context cannot be read (the real loader, a failing RPC)', async () => {
+    s.access = 'real'
+    const r = await create()
+    expect([401, 403, 404]).toContain(r.status)
+    const bought = await purchase.POST(new NextRequest(`https://x.test/api/fleet/assets/${ASSET}/purchase`, { method: 'POST', body: JSON.stringify({ entryDate: '2027-01-05' }) }), { params: Promise.resolve({ id: ASSET }) })
+    expect([401, 403, 404]).toContain(bought.status)
     expect(s.m.tables.gpu_assets).toHaveLength(1)
     expect(s.m.tables.journal_entries).toEqual([])
   })

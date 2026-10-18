@@ -337,12 +337,35 @@ export async function purchaseAsset(
     { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase \u2014 ${asset.name}` },
     { assetId: asset.id, amount: Number(asset.hardware_cost), costAccountId: accounts.cost, offsetAccountId: offset },
   )
+  // CLAIM the row before anything is booked: planned → ordered, only while it is still planned,
+  // unlinked and at the cost this request read. DELETE and a cost edit run under the same
+  // predicate (assets/[id]/route.ts), so whichever lands first wins and the other changes nothing.
+  // An asset already past planned (a retry, or one ordered by hand) needs no claim: neither DELETE
+  // nor a cost edit can touch it.
+  const scoped = (q: any) => q.eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
+  let claimed = false
+  if (asset.status === 'planned') {
+    const { data, error } = await scoped((admin as any).from('gpu_assets').update({ status: 'ordered', updated_at: new Date().toISOString() }))
+      .eq('status', 'planned').is('purchase_entry_id', null).eq('hardware_cost', asset.hardware_cost).select('id')
+    if (error) throw error
+    if (!((data as any[]) ?? []).length) {
+      return { error: 'This asset changed while its purchase was being booked (deleted, edited or booked by another request). Reload it and try again.', inProgress: true }
+    }
+    claimed = true
+  }
   const result = await bookOnce(admin, ctx, entry)
-  if ('error' in result) return result
-  const { error } = await (admin as any).from('gpu_assets').update({
+  if ('error' in result) {
+    // Nothing of ours is in the books (no draft under the ref): give the claim back.
+    if (claimed && !(await liveEntryByRef(admin, ctx, entry.sourceRef!))) {
+      await scoped((admin as any).from('gpu_assets').update({ status: 'planned', updated_at: new Date().toISOString() }))
+        .eq('status', 'ordered').is('purchase_entry_id', null)
+    }
+    return result
+  }
+  const { error } = await scoped((admin as any).from('gpu_assets').update({
     purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date,
     status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
-  }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
+  }))
   if (error) throw error
   return { entryId: result.booked.id }
 }

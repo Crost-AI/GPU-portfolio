@@ -60,7 +60,7 @@ export function datacenterPeriods(c: ContractTerms, through: string): SchedulePe
   const starts = [c.start_date, ...escalationDates(c, through)]
   return starts.map((start, i) => ({
     start,
-    end: i + 1 < starts.length ? dayBefore(starts[i + 1]) : c.end_date,
+    end: i + 1 < starts.length ? dayBefore(starts[i + 1]) : c.end_date ?? null,
     amount: datacenterFeeOn(c, start),
   }))
 }
@@ -139,11 +139,14 @@ export function parseContractInput(body: any, partial: boolean): { value: Contra
   return { value: out }
 }
 
-/** Why a contract's dates do not fit together, or null (checked on the merged row at update too). */
+/**
+ * Why a contract's dates do not fit together, or null (checked on the merged row at update too). An
+ * escalation date after the end is not an error: ending a contract early simply leaves it
+ * inapplicable, and escalationDates stops at the end.
+ */
 export function contractDatesError(c: Pick<ContractInput, 'start_date' | 'end_date' | 'first_escalation_date'>): string | null {
   if (c.start_date && c.end_date && c.end_date < c.start_date) return 'end_date must be on or after start_date'
   if (c.first_escalation_date && c.start_date && c.first_escalation_date <= c.start_date) return 'first_escalation_date must be after start_date'
-  if (c.first_escalation_date && c.end_date && c.first_escalation_date > c.end_date) return 'first_escalation_date must be on or before end_date'
   return null
 }
 
@@ -151,9 +154,13 @@ export function contractDatesError(c: Pick<ContractInput, 'start_date' | 'end_da
  * End a contract's accrual schedules at `endDate`: each active fleet schedule of the contract still
  * open (or ending later) ends then, and one that starts after it is deactivated, so the close stops
  * proposing accruals past the contract. ensureDatacenterSchedule reads the contract's own end_date,
- * so a later roll recreates nothing past it.
+ * so a later roll recreates nothing past it. Idempotent: schedules already aligned are left alone,
+ * so it is safe (and cheap) to run on every PATCH and roll of an ended contract, which is what
+ * repairs a termination whose schedule write failed. `dryRun` counts what would change.
  */
-export async function endDatacenterSchedules(admin: SupabaseClient, t: Pick<ScheduleTarget, 'fundId' | 'vehicleId'>, contractId: string, endDate: string): Promise<number> {
+export async function endDatacenterSchedules(
+  admin: SupabaseClient, t: Pick<ScheduleTarget, 'fundId' | 'vehicleId'>, contractId: string, endDate: string, opts: { dryRun?: boolean } = {},
+): Promise<number> {
   const prefix = `fleet:datacenter:${contractId}:`
   const { data, error } = await (admin as any).from('accounting_schedules').select('id, source_ref, start_date, end_date')
     .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('active', true).like('source_ref', `${prefix}%`).order('start_date').order('id')
@@ -162,10 +169,11 @@ export async function endDatacenterSchedules(admin: SupabaseClient, t: Pick<Sche
   for (const row of ((data as any[]) ?? []).filter(r => String(r.source_ref).startsWith(prefix))) {
     const patch = row.start_date > endDate ? { active: false } : (!row.end_date || row.end_date > endDate) ? { end_date: endDate } : null
     if (!patch) continue
+    changed++
+    if (opts.dryRun) continue
     const { error: upError } = await (admin as any).from('accounting_schedules').update({ ...patch, updated_at: new Date().toISOString() })
       .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', row.id)
     if (upError) throw upError
-    changed++
   }
   return changed
 }

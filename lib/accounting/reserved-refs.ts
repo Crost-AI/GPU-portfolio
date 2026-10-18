@@ -6,8 +6,9 @@
 // intercompany, tax and capital-call code find and void their own entries by ref, and `reversal:<id>`
 // says which entry an entry undoes. A user-supplied ref in one of these namespaces forges those
 // facts, so EVERY user-authored write path refuses it (assertUserRefAllowed): the journal API and
-// the ledger-text import (REST and the post_ledger_text tool), apart from the round-trip export refs
-// below. Internal writers set refs directly through persistEntry and are unaffected.
+// the ledger-text import (REST and the post_ledger_text tool), and the assistant's edit proposals;
+// only the ledger-text import may write the round-trip export refs below. Internal writers set refs
+// directly through persistEntry and are unaffected.
 //
 // reserved-refs.test.ts scans the code for every prefix a system writer uses and fails when one is
 // missing here, so a new system namespace cannot ship unguarded.
@@ -27,7 +28,7 @@ export const RESERVED_SOURCE_REF_PREFIXES = [
 ] as const
 
 /**
- * Reserved namespaces a user path may still WRITE, deliberately: the ledger-text export carries
+ * Reserved namespaces the LEDGER-TEXT import may still write, deliberately: the export carries
  * these refs (text-ledger.ts serializeLedger) so that re-importing the same text finds the first
  * import's entries and refuses them as already in the books. Refusing them would break that
  * round trip. The cost is that a forged `txn:` ref through ledger text stays possible (voiding such
@@ -42,16 +43,20 @@ export function isReservedSourceRef(ref: unknown): boolean {
   return RESERVED_SOURCE_REF_PREFIXES.some(p => r.startsWith(p))
 }
 
-/** Reserved and not a round-trip export ref: what user-authored paths refuse. */
-export function isUserForbiddenRef(ref: unknown): boolean {
+/**
+ * What a user-authored path refuses: any reserved ref, except a round-trip export ref when the
+ * path is the ledger-text import (`allowRoundTrip`), the only place an exported ref legitimately
+ * comes back. The journal JSON API and the assistant refuse every reserved ref.
+ */
+export function isUserForbiddenRef(ref: unknown, opts: { allowRoundTrip?: boolean } = {}): boolean {
   if (!isReservedSourceRef(ref)) return false
   const r = String(ref).trim().toLowerCase()
-  return !ROUND_TRIP_EXEMPT_PREFIXES.some(p => r.startsWith(p))
+  return !(opts.allowRoundTrip && ROUND_TRIP_EXEMPT_PREFIXES.some(p => r.startsWith(p)))
 }
 
 /** The refusal for a user-supplied source_ref, or null when it may be written. */
-export function assertUserRefAllowed(ref: unknown): string | null {
-  return isUserForbiddenRef(ref)
+export function assertUserRefAllowed(ref: unknown, opts: { allowRoundTrip?: boolean } = {}): string | null {
+  return isUserForbiddenRef(ref, opts)
     ? `The reference ${String(ref).trim()} is reserved for entries the system books itself; remove it (or use your own reference).`
     : null
 }

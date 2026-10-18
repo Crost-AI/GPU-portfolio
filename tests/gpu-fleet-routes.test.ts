@@ -14,7 +14,7 @@ import { loadCloseEntrySuggestions } from '@/lib/accounting/close-suggestions'
  * kind check, the register and the lifecycle run for real over the memory admin.
  */
 
-const s = vi.hoisted(() => ({ m: null as any, access: null as any }))
+const s = vi.hoisted(() => ({ m: null as any, access: null as any, between: null as null | (() => Promise<void>) }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
 vi.mock('@/lib/api-helpers', () => ({
@@ -30,8 +30,12 @@ vi.mock('@/lib/accounting/persist', () => ({
     const dup = t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
     const id = `je-${t.journal_entries.length + 1}`
-    t.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef })
+    const header = { id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status: 'draft', entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef }
+    t.journal_entries.push(header)
     for (const p of entry.postings) t.journal_postings.push({ journal_entry_id: id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', account_id: p.accountId, amount: p.amount })
+    // The draft window persistEntry really has, for an interleaved request.
+    if (s.between) { const run = s.between; s.between = null; await run() }
+    header.status = 'posted'
     return { entryId: id }
   }),
 }))
@@ -45,6 +49,7 @@ import * as dispose from '@/app/api/fleet/assets/[id]/dispose/route'
 import * as events from '@/app/api/fleet/assets/[id]/events/route'
 import * as contracts from '@/app/api/fleet/datacenter-contracts/route'
 import * as contract from '@/app/api/fleet/datacenter-contracts/[id]/route'
+import { purchaseAsset } from '@/lib/gpu/assets'
 
 const access = (grants: Record<string, string>) => ({
   fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] }, grants, defaults: {},
@@ -57,6 +62,7 @@ const chart = (vehicleId: string, group: string, seeds: typeof GPU_SPV_CHART) =>
 
 beforeEach(() => {
   s.access = BOOKKEEPER
+  s.between = null
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] },
@@ -154,12 +160,35 @@ describe('asset payloads', () => {
 
   it('the ledger, not the register link, decides what is booked: a purchase whose link failed blocks DELETE and a cost change', async () => {
     const id = await createAsset()
-    s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
+    // Fail the register LINK (after the claim and the posting), not the claim.
+    s.between = async () => { s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout') }
     await expect(purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).rejects.toBeTruthy()
     expect(s.m.tables.gpu_assets.find((a: any) => a.id === id).purchase_entry_id).toBeUndefined()
     expect((await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status).toBe(409)
     expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { hardware_cost: 1 }), params(id))).status).toBe(409)
     expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ hardware_cost: 335_000 })
+  })
+
+  it('a purchase claims the row first: DELETE and a cost edit inside its booking get 409; DELETE first makes the purchase refuse', async () => {
+    const id = await createAsset()
+    let during: number[] = []
+    s.between = async () => {
+      during = [
+        (await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status,
+        (await asset.PATCH(send(`assets/${id}`, 'PATCH', { hardware_cost: 1 }), params(id))).status,
+      ]
+    }
+    expect(await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))).toEqual({ status: 200, body: { entryId: 'je-1' } })
+    expect(during).toEqual([409, 409])
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ status: 'ordered', purchase_entry_id: 'je-1', hardware_cost: 335_000 })
+
+    // The other order: a purchase holding a stale planned row, the asset deleted under it.
+    const other = await createAsset({ name: 'spare' })
+    const stale = s.m.tables.gpu_assets.find((a: any) => a.id === other)
+    expect((await asset.DELETE(send(`assets/${other}`, 'DELETE', {}), params(other))).status).toBe(200)
+    const ctx = { fundId: 'f', group: 'H200 SPV I', vehicleId: 'v-gpu', userId: 'u' }
+    expect(await purchaseAsset(s.m.admin, ctx, { ...stale }, { entryDate: '2027-01-05', invoiced: false })).toMatchObject({ inProgress: true })
+    expect(s.m.tables.journal_entries.filter((e: any) => e.source_ref === `gpu-asset:${other}:purchase`)).toEqual([])
   })
 
   it('locks the in-service date and convention once depreciation is booked', async () => {
@@ -221,11 +250,52 @@ describe('datacenter contracts', () => {
     expect(s.m.tables.accounting_schedules).toHaveLength(1)
   })
 
-  it('keeps the first escalation date inside the contract', async () => {
+  it('the first escalation date must follow the start; one after the end simply never applies', async () => {
     expect((await create({ first_escalation_date: '2027-01-01' })).status).toBe(400)
-    expect((await create({ first_escalation_date: '2029-01-01', end_date: '2028-12-31' })).status).toBe(400)
-    const id = (await json(await create({ schedule: false, first_escalation_date: '2027-07-01' }))).body.contract.id
-    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { end_date: '2027-06-30' }), params(id))).status).toBe(400)
+    expect((await create({ schedule: false, first_escalation_date: '2029-01-01', end_date: '2028-12-31' })).status).toBe(201)
+  })
+
+  it('an accruing contract can end early, before an explicit future escalation', async () => {
+    const id = (await json(await create({ first_escalation_date: '2027-07-01' }))).body.contract.id
+    expect(await json(await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { end_date: '2027-06-30', status: 'ended' }), params(id))))
+      .toMatchObject({ status: 200, body: { schedulesEnded: 1 } })
+    expect(await loadCloseEntrySuggestions(s.m.admin, 'f', 'H200 SPV I', '2027-07-01', '2027-07-31')).toEqual([])
+  })
+
+  it('a termination whose schedule write failed is repaired by the identical retry', async () => {
+    const id = (await json(await create({ escalator_pct: 0 }))).body.contract.id
+    s.m.failNext('accounting_schedules', 'update', 'canceling statement due to statement timeout')
+    await expect(contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended', end_date: '2027-06-30' }), params(id))).rejects.toBeTruthy()
+    expect(s.m.tables.datacenter_contracts[0]).toMatchObject({ status: 'ended', end_date: '2027-06-30' })
+    expect(s.m.tables.accounting_schedules[0].end_date).toBeNull()
+    expect(await json(await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended', end_date: '2027-06-30' }), params(id))))
+      .toMatchObject({ status: 200, body: { schedulesEnded: 1 } })
+    expect(await loadCloseEntrySuggestions(s.m.admin, 'f', 'H200 SPV I', '2027-07-01', '2027-07-31')).toEqual([])
+    // Already aligned: a further save changes nothing and needs no accounting write.
+    s.access = FLEET_ONLY
+    expect(await json(await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { power_kw: 40 }), params(id)))).toMatchObject({ status: 200, body: { schedulesEnded: 0 } })
+  })
+
+  it('ending a contract ends every materialised period: the current one shortened, later ones deactivated', async () => {
+    const id = (await json(await create())).body.contract.id
+    await contract.POST(send(`datacenter-contracts/${id}`, 'POST', { action: 'roll', asOf: '2029-06-01' }), params(id))
+    const rows = () => s.m.tables.accounting_schedules.map((r: any) => [r.start_date, r.end_date, r.active])
+    expect(rows()).toEqual([['2027-01-01', '2027-12-31', true], ['2028-01-01', '2028-12-31', true], ['2029-01-01', null, true]])
+    expect(await json(await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended', end_date: '2027-09-30' }), params(id))))
+      .toMatchObject({ status: 200, body: { schedulesEnded: 3 } })
+    expect(rows()).toEqual([['2027-01-01', '2027-09-30', true], ['2028-01-01', '2028-12-31', false], ['2029-01-01', null, false]])
+    for (const [start, end] of [['2027-10-01', '2027-10-31'], ['2028-06-01', '2028-06-30'], ['2029-06-01', '2029-06-30']]) {
+      expect(await loadCloseEntrySuggestions(s.m.admin, 'f', 'H200 SPV I', start, end), start).toEqual([])
+    }
+  })
+
+  it('an ended contract is not reopened or extended', async () => {
+    const id = (await json(await create({ escalator_pct: 0 }))).body.contract.id
+    await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended', end_date: '2027-06-30' }), params(id))
+    for (const body of [{ status: 'active' }, { end_date: '2027-12-31' }, { end_date: null }]) {
+      expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', body), params(id))).status, JSON.stringify(body)).toBe(409)
+    }
+    expect(s.m.tables.datacenter_contracts[0]).toMatchObject({ status: 'ended', end_date: '2027-06-30' })
   })
 
   it('validates the payload; schedule: false needs only fleet write; roll needs accounting write', async () => {

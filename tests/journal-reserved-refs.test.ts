@@ -53,7 +53,11 @@ describe('the reserved and exempt lists', () => {
     expect(ROUND_TRIP_EXEMPT_PREFIXES.every(p => (RESERVED_SOURCE_REF_PREFIXES as readonly string[]).includes(p))).toBe(true)
     expect([...EDIT_LOCKED_PREFIXES]).toEqual(['gpu-asset:', 'gpu-dep:'])
     for (const ref of FORBIDDEN) expect(assertUserRefAllowed(ref), ref).toMatch(/reserved/)
-    for (const ref of ['txn:t1', 'qb:abc', 'adopted:e1', 'carta:x', 'INV-4471', null]) expect(assertUserRefAllowed(ref)).toBeNull()
+    for (const ref of ['txn:t1', 'qb:abc', 'adopted:e1', 'carta:x']) {
+      expect(assertUserRefAllowed(ref), ref).toMatch(/reserved/)
+      expect(assertUserRefAllowed(ref, { allowRoundTrip: true }), ref).toBeNull()
+    }
+    for (const ref of ['INV-4471', null]) expect(assertUserRefAllowed(ref)).toBeNull()
     expect(isReservedSourceRef('  GPU-DEP:x')).toBe(true)
   })
 
@@ -103,10 +107,10 @@ describe('every user-authored write path refuses a reserved ref before writing',
     expect(persistEntry).not.toHaveBeenCalled()
   })
 
-  it('journal POST still takes an ordinary ref and a round-trip export ref', async () => {
+  it('journal POST takes an ordinary ref, but not even a round-trip export ref (only ledger text re-imports those)', async () => {
     expect((await POST(journal('POST', { sourceRef: 'bank:2027-01-05:42' }))).status).not.toBe(400)
-    expect((await POST(journal('POST', { sourceRef: 'txn:t1' }))).status).not.toBe(400)
-    expect(persistEntry).toHaveBeenCalledTimes(2)
+    expect((await POST(journal('POST', { sourceRef: 'txn:t1' }))).status).toBe(400)
+    expect(persistEntry).toHaveBeenCalledOnce()
   })
 
   it('journal PUT refuses to rewrite a fleet draft, and refuses a reserved ref in the body', async () => {

@@ -43,9 +43,15 @@ export async function PATCH(req: NextRequest, props: Params) {
   if (taxError) return NextResponse.json({ error: taxError }, { status: 400 })
   const refs = await assetRefsError(r.req.admin, r.req.ctx, parsed.value)
   if (refs) return NextResponse.json({ error: refs }, { status: 400 })
-  const { data, error } = await (r.req.admin as any).from('gpu_assets').update({ ...parsed.value, updated_at: new Date().toISOString() })
-    .eq('fund_id', r.req.fundId).eq('vehicle_id', r.req.vehicleId).eq('id', id).select('*').single()
+  // A cost change applies only while the asset is still planned and unlinked: the same predicate the
+  // purchase claims under, so a purchase that claimed the row first leaves this matching nothing.
+  let q = (r.req.admin as any).from('gpu_assets').update({ ...parsed.value, updated_at: new Date().toISOString() })
+    .eq('fund_id', r.req.fundId).eq('vehicle_id', r.req.vehicleId).eq('id', id)
+  if (costChange) q = q.eq('status', 'planned').is('purchase_entry_id', null).eq('hardware_cost', row.hardware_cost)
+  const { data: saved, error } = await q.select('*')
   if (error) return NextResponse.json({ error: 'Could not save the asset' }, { status: 500 })
+  const data = ((saved as any[]) ?? [])[0]
+  if (!data) return NextResponse.json({ error: 'The hardware cost can change only while the asset is planned and nothing is booked' }, { status: 409 })
   return NextResponse.json({ ...data, capitalized_costs: await capitalizedCostsOf(r.req.admin, r.req.ctx, id) })
 }
 
@@ -58,8 +64,10 @@ export async function DELETE(_req: NextRequest, props: Params) {
   if (r.row.status !== 'planned' || r.row.purchase_entry_id || (await assetLedgerState(r.req.admin, r.req.ctx, id)).booked) {
     return NextResponse.json({ error: 'Only a planned asset with nothing booked can be deleted' }, { status: 409 })
   }
-  const { error } = await (r.req.admin as any).from('gpu_assets').delete()
-    .eq('fund_id', r.req.fundId).eq('vehicle_id', r.req.vehicleId).eq('id', id).eq('status', 'planned').is('purchase_entry_id', null)
+  // Under the purchase's claim predicate: a purchase that claimed the row first leaves nothing to delete.
+  const { data: gone, error } = await (r.req.admin as any).from('gpu_assets').delete()
+    .eq('fund_id', r.req.fundId).eq('vehicle_id', r.req.vehicleId).eq('id', id).eq('status', 'planned').is('purchase_entry_id', null).select('id')
   if (error) return NextResponse.json({ error: 'Could not delete the asset' }, { status: 500 })
+  if (!((gone as any[]) ?? []).length) return NextResponse.json({ error: 'Only a planned asset with nothing booked can be deleted' }, { status: 409 })
   return NextResponse.json({ deleted: id })
 }
