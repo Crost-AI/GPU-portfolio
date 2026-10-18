@@ -11,6 +11,7 @@ import { vehicleIdByName, vehicleNameById } from '@/lib/accounting/vehicle-id'
 import { persistEntry } from '@/lib/accounting/persist'
 import { postIntercompanyCharge, voidUnsettledCharge } from '@/lib/accounting/intercompany'
 import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
+import { recordAudit } from '@/lib/audit/events'
 import { firstDay, lastDay, type MonthKey } from '@/lib/forecast/months'
 
 export const DEFAULT_FEE_REVENUE_SUBTYPES = ['rental_revenue']
@@ -127,10 +128,17 @@ export async function accrueGrossRevenueFee(
 
     const charges = terms.payeeVehicleId ? await monthCharges(admin, fundId, vehicleId, terms.payeeVehicleId, ref) : []
     const refs = [ref, ...charges.map(c => `intercompany:${c.id}`)]
-    const feeEntries = await fetchAllRowsIn<{ id: string }>(refs, (chunk, from, to) => (admin as any)
-      .from('journal_entries').select('id')
+    const feeEntries = await fetchAllRowsIn<{ id: string; source_ref: string | null }>(refs, (chunk, from, to) => (admin as any)
+      .from('journal_entries').select('id, source_ref')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual').neq('status', 'void').in('source_ref', chunk)
       .range(from, to))
+    // A live charge whose SPV entry is not live is a half-voided state the true-up must not build on:
+    // it would read the fee as unbooked and raise a second charge beside one still settleable.
+    const liveRefs = new Set(feeEntries.map(e => e.source_ref))
+    const orphan = charges.find(c => !liveRefs.has(`intercompany:${c.id}`))
+    if (orphan) {
+      return { error: `Intercompany charge ${orphan.id} is ${orphan.status} but ${group}'s entry for it is not on the books; void or repair it before the fee is trued up.` }
+    }
     booked = roundCents(await postingsOn(admin, feeEntries.map(e => e.id), feeIds))
   } catch (e) {
     return { error: `The fee basis could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
@@ -169,17 +177,23 @@ async function postingsOn(admin: SupabaseClient, entryIds: string[], accountIds:
 }
 
 /** A live intercompany charge carrying a month's fee ref: the fee itself, or a rebate of it. */
-interface MonthCharge { id: string; kind: string; status: string; amount: number }
+interface MonthCharge {
+  id: string; kind: string; status: string; amount: number
+  from_entry_id: string | null; to_entry_id: string | null
+  from_settlement_entry_id: string | null; to_settlement_entry_id: string | null
+}
 
 /**
  * The month's live charges between the SPV and its payee: fees the SPV owes the manco and rebates
  * the manco owes the SPV, each raised by the true-up under the month's `source_ref`. Their
  * SPV-side entries are what is already booked. Keyed on the system column and both counterparties,
- * never the memo: a charge raised by hand is neither counted nor voided here, whatever it says.
+ * never the memo. `source_ref` is written by the fee path, but it is not immutable: a
+ * management_company writer could set it through the Data API. The guarantee is the pair, ref AND
+ * counterparties, so a charge raised by hand between other vehicles is never counted or voided.
  */
 async function monthCharges(admin: SupabaseClient, fundId: string, vehicleId: string, payeeVehicleId: string, ref: string): Promise<MonthCharge[]> {
   const read = (kind: string, payer: string, payee: string) => fetchAllRows<MonthCharge>((from, to) => (admin as any)
-    .from('intercompany_transactions').select('id, kind, status, amount')
+    .from('intercompany_transactions').select('id, kind, status, amount, from_entry_id, to_entry_id, from_settlement_entry_id, to_settlement_entry_id')
     .eq('fund_id', fundId).eq('source_ref', ref).eq('kind', kind)
     .eq('from_vehicle_id', payer).eq('to_vehicle_id', payee).neq('status', 'void')
     .range(from, to))
@@ -220,7 +234,10 @@ async function bookIntercompanyFee(
 
   let unsettled: MonthCharge[]
   try {
-    unsettled = (await monthCharges(admin, fundId, vehicleId, payeeVehicleId, ref)).filter(c => c.kind === 'management_fee' && c.status === 'accrued')
+    // Anything with a settlement side linked is treated as paid, even while its status still reads
+    // accrued: voiding is refused for it, so it is rebated instead and the month never stalls.
+    unsettled = (await monthCharges(admin, fundId, vehicleId, payeeVehicleId, ref)).filter(c =>
+      c.kind === 'management_fee' && c.status === 'accrued' && !c.from_settlement_entry_id && !c.to_settlement_entry_id)
   } catch (e) {
     return { error: `The month's fee charges could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
   }
@@ -228,6 +245,11 @@ async function bookIntercompanyFee(
   for (const c of unsettled) {
     const voided = await voidUnsettledCharge(admin, fundId, c.id)
     if ('error' in voided) return voided
+    await recordAudit(admin, {
+      fundId, vehicleId, actorId: userId, action: 'intercompany.void', subjectType: 'intercompany_transaction', subjectId: c.id,
+      reason: `gpu fee true-up ${ref}`,
+      details: { entryIds: [c.from_entry_id, c.to_entry_id].filter(Boolean), amount: Number(c.amount), payeeVehicleId },
+    })
   }
   return charge(roundCents(unsettled.reduce((t, c) => t + Number(c.amount), 0) + delta))
 }

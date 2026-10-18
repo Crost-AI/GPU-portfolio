@@ -4,7 +4,7 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 // The fee true-up through the REAL intercompany register: a reduction must leave the charges
 // netting to the fee, so settlement moves the net fee in cash and leaves no balance behind.
 
-const s = vi.hoisted(() => ({ m: null as any, n: 0 }))
+const s = vi.hoisted(() => ({ m: null as any, n: 0, rpcFails: false, rpcCalls: 0 }))
 const VEHICLES: Record<string, string> = { 'GPU I': 'v1', ManCo: 'mc', 'ManCo II': 'mc2' }
 vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleIdByName: async (_a: unknown, _f: string, name: string) => VEHICLES[name] ?? null,
@@ -46,6 +46,20 @@ beforeEach(() => {
     intercompany_transactions: [],
     vehicle_fee_terms: [{ fund_id: 'f', vehicle_id: 'v1', basis: 'gross_revenue', annual_rate: 0.05, revenue_subtypes: ['rental_revenue'], frequency: 'monthly', payee_vehicle_id: 'mc', effective_from: '2027-01-01', effective_to: null }],
   })
+  s.rpcFails = false
+  s.rpcCalls = 0
+  // void_intercompany_charge, as the migration defines it: all or nothing.
+  s.m.admin.rpc = async (name: string, args: any) => {
+    if (name !== 'void_intercompany_charge') return { data: null, error: { message: `rpc ${name} unsupported` } }
+    s.rpcCalls++
+    const c = s.m.tables.intercompany_transactions.find((r: any) => r.id === args.p_charge_id && r.fund_id === args.p_fund_id)
+    if (!c) return { data: null, error: { message: 'Charge not found' } }
+    if (c.status !== 'accrued' || c.from_settlement_entry_id || c.to_settlement_entry_id) return { data: null, error: { message: 'only an unsettled charge can be voided' } }
+    if (s.rpcFails) return { data: null, error: { message: 'closed period on ManCo' } }
+    for (const e of s.m.tables.journal_entries) if (e.id === c.from_entry_id || e.id === c.to_entry_id) Object.assign(e, { status: 'void', posted_at: null })
+    c.status = 'void'
+    return { data: null, error: null }
+  }
 })
 
 /** Balance of each account by vehicle and code, over live entries only. */
@@ -134,5 +148,51 @@ describe('the true-up finds only its own charges', () => {
     const fees = s.m.tables.intercompany_transactions.filter((c: any) => c.source_ref === 'gpu-fee:v1:2027-01' && c.to_vehicle_id === 'mc')
     expect(fees.map((c: any) => [c.status, c.amount])).toEqual([['void', 5_000], ['accrued', 4_000]])
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
+  })
+})
+
+describe('the reduction void is atomic and retry-safe', () => {
+  it('a failure inside the void leaves the charge and both entries as they were, and the retry nets cleanly', async () => {
+    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    const [original] = live('management_fee')
+    reverseRevenue(20_000)
+    s.rpcFails = true
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ error: expect.stringMatching(/could not be voided: closed period/) })
+    expect(live('management_fee').map((c: any) => [c.id, c.status, c.amount])).toEqual([[original.id, 'accrued', 5_000]])
+    expect(s.m.tables.journal_entries.filter((e: any) => [original.from_entry_id, original.to_entry_id].includes(e.id)).map((e: any) => e.status)).toEqual(['posted', 'posted'])
+    s.rpcFails = false
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: -1_000 })
+    expect(live('management_fee').map((c: any) => c.amount)).toEqual([4_000])
+    expect(balances()['v1:5000']).toBe(4_000)
+  })
+
+  it('refuses to build on a half-voided charge: accrued, but its SPV entry is not on the books', async () => {
+    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    const [charge] = live('management_fee')
+    s.m.tables.journal_entries.find((e: any) => e.id === charge.from_entry_id).status = 'void'
+    const out = await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    expect(out).toEqual({ error: expect.stringMatching(new RegExp(`charge ${charge.id} is accrued but GPU I's entry for it is not on the books`)) })
+    expect(live()).toHaveLength(1)
+  })
+
+  it('a charge with one settlement side linked is treated as paid: rebated, never voided', async () => {
+    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    const [charge] = live('management_fee')
+    charge.to_settlement_entry_id = 'settle-half'
+    reverseRevenue(20_000)
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: -1_000 })
+    expect(s.rpcCalls).toBe(0)
+    expect(live('management_fee_rebate').map((c: any) => c.amount)).toEqual([1_000])
+    expect(charge.status).toBe('accrued')
+  })
+
+  it('records the void in the audit trail with its entry ids', async () => {
+    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    const [charge] = live('management_fee')
+    reverseRevenue(20_000)
+    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
+    const audit = (s.m.tables.accounting_audit_events ?? []).find((r: any) => r.action === 'intercompany.void')
+    expect(audit).toMatchObject({ subject_id: charge.id, reason: 'gpu fee true-up gpu-fee:v1:2027-01' })
+    expect(audit.details.entryIds).toEqual([charge.from_entry_id, charge.to_entry_id])
   })
 })

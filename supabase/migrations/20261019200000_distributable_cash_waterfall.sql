@@ -98,6 +98,46 @@ alter table public.intercompany_transactions
 create index if not exists intercompany_transactions_source_ref
   on public.intercompany_transactions (fund_id, source_ref) where source_ref is not null;
 
+-- 4c. Void an unsettled intercompany charge in ONE transaction: both of its journal entries, the
+--     allocation entries they generated (and their skips), and the register row. The GPU fee
+--     true-up re-issues a reduced fee this way; done as separate writes, a failure part-way left
+--     one ledger voided, the other live and the charge still settleable. The row lock makes a
+--     settlement that started first win, and one that starts later find the charge void.
+create or replace function public.void_intercompany_charge(p_fund_id uuid, p_charge_id uuid)
+returns void language plpgsql set search_path = public as $$
+declare
+  c record;
+  entry_ids uuid[];
+begin
+  select status, from_entry_id, to_entry_id, from_settlement_entry_id, to_settlement_entry_id
+    into c
+    from public.intercompany_transactions
+   where id = p_charge_id and fund_id = p_fund_id
+   for update;
+  if not found then raise exception 'Charge % not found', p_charge_id; end if;
+  if c.status <> 'accrued' or c.from_settlement_entry_id is not null or c.to_settlement_entry_id is not null then
+    raise exception 'Charge % is % or part-settled; only an unsettled charge can be voided (rebate it instead)', p_charge_id, c.status;
+  end if;
+  entry_ids := array_remove(array[c.from_entry_id, c.to_entry_id], null);
+
+  delete from public.journal_entry_allocation_skips
+   where fund_id = p_fund_id and source_entry_id = any(entry_ids);
+  update public.journal_entries
+     set status = 'void', posted_at = null
+   where fund_id = p_fund_id
+     and (id = any(entry_ids)
+          or id in (select allocation_entry_id from public.journal_entry_allocations
+                     where fund_id = p_fund_id and source_entry_id = any(entry_ids)));
+  update public.intercompany_transactions
+     set status = 'void'
+   where id = p_charge_id and fund_id = p_fund_id;
+end;
+$$;
+-- Service role only (the pattern of 20260509000002_memo_agent_jobs_lockdown.sql): the only caller is
+-- the close, holding the service-role key.
+revoke execute on function public.void_intercompany_charge(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.void_intercompany_charge(uuid, uuid) to service_role;
+
 -- 5. A distribution's third entry: the profit share realised at declaration (see column above).
 --    The register functions link, publish and clean up all three entries together. Restated in
 --    full from 20261006174407 / 20261006164431; the only changes are the third id in each linked

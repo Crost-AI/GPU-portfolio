@@ -332,38 +332,14 @@ export async function resolveSideAccounts(
 
 /**
  * Void an ACCRUED charge and both of its entries — a charge that has to be re-issued at another
- * amount before any cash moved (a GPU SPV's fee true-up when revenue is reversed). The entries are
- * voided as the journal voids one, with the allocations they generated, payer first. A settled
- * charge, or one with a settlement entry linked, is refused: what has been paid is undone by a
- * rebate, not by voiding history. Returns what is left when a step fails, so nothing half-voided
- * passes silently.
+ * amount before any cash moved (a GPU SPV's fee true-up when revenue is reversed). One database
+ * transaction (`void_intercompany_charge`): the charge is locked, rechecked unsettled, and its two
+ * entries, the allocations they generated and the row are voided together or not at all. A settled
+ * charge is refused: what has been paid is undone by a rebate, not by voiding history.
  */
 export async function voidUnsettledCharge(admin: SupabaseClient, fundId: string, chargeId: string): Promise<{ ok: true } | { error: string }> {
-  const { data, error } = await admin.from('intercompany_transactions' as any)
-    .select('status, from_entry_id, to_entry_id, from_settlement_entry_id, to_settlement_entry_id')
-    .eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
-  if (error) return { error: `The charge could not be read: ${error.message}` }
-  const row = data as any
-  if (!row) return { error: 'Charge not found' }
-  if (row.status !== 'accrued' || row.from_settlement_entry_id || row.to_settlement_entry_id) {
-    return { error: `Charge ${chargeId} is ${row.status === 'accrued' ? 'part-settled' : row.status}; it can only be rebated, not voided.` }
-  }
-  const { setGeneratedAllocationStatus } = await import('./continuous-allocation')
-  const done: string[] = []
-  for (const entryId of [row.from_entry_id, row.to_entry_id].filter(Boolean) as string[]) {
-    const allocation = await setGeneratedAllocationStatus(admin, fundId, entryId, 'void')
-    const { error: voidErr } = allocation.error
-      ? { error: { message: allocation.error } }
-      : await admin.from('journal_entries' as any).update({ status: 'void', posted_at: null }).eq('id', entryId).eq('fund_id', fundId)
-    if (voidErr) {
-      return { error: `Entry ${entryId} of charge ${chargeId} could not be voided (${voidErr.message})${done.length ? `; ${done.join(', ')} already voided` : ''}.` }
-    }
-    done.push(entryId)
-  }
-  const { error: rowErr } = await admin.from('intercompany_transactions' as any)
-    .update({ status: 'void' }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
-  if (rowErr) return { error: `Charge ${chargeId}'s entries were voided but the charge was not (${rowErr.message}).` }
-  return { ok: true }
+  const { error } = await admin.rpc('void_intercompany_charge' as any, { p_fund_id: fundId, p_charge_id: chargeId } as any)
+  return error ? { error: `Charge ${chargeId} could not be voided: ${error.message}` } : { ok: true }
 }
 
 // ── Posting ───────────────────────────────────────────────────────────────────────────────────
