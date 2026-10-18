@@ -125,6 +125,23 @@ export async function assetRefsError(admin: SupabaseClient, ctx: Pick<Lifecycle,
   return null
 }
 
+/**
+ * What the LEDGER holds for an asset, posted or draft: any lifecycle entry (`gpu-asset:<id>:…`) and
+ * any depreciation (`gpu-dep:<id>:…`). A null purchase_entry_id does not mean unbooked: the purchase
+ * commits before the register is linked, and an in-flight request holds a draft.
+ */
+export async function assetLedgerState(admin: SupabaseClient, ctx: Pick<Lifecycle, 'fundId' | 'vehicleId'>, assetId: string): Promise<{ booked: boolean; depreciated: boolean }> {
+  const live = async (prefix: string) => {
+    const { data, error } = await (admin as any).from('journal_entries').select('id')
+      .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).neq('status', 'void')
+      .like('source_ref', `${prefix}%`).order('id').limit(1)
+    if (error) throw error
+    return ((data as any[]) ?? []).length > 0
+  }
+  const [lifecycle, depreciated] = await Promise.all([live(`gpu-asset:${assetId}:`), live(`gpu-dep:${assetId}:`)])
+  return { booked: lifecycle || depreciated, depreciated }
+}
+
 /** One asset's capitalized costs from its posted capex (0 before its cost account exists). */
 export async function capitalizedCostsOf(admin: SupabaseClient, ctx: Lifecycle, assetId: string): Promise<number> {
   const { data, error } = await (admin as any).from('chart_of_accounts').select('id')

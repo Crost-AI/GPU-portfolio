@@ -4,6 +4,7 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import { GPU_SPV_CHART, DEFAULT_CHART } from '@/lib/accounting/chart'
 import { DEFAULT_FEATURE_VISIBILITY } from '@/lib/types/features'
 import type { JournalEntry } from '@/lib/accounting/types'
+import { loadCloseEntrySuggestions } from '@/lib/accounting/close-suggestions'
 
 /**
  * ── GPU fleet (P1) ── The /api/fleet handlers. The middleware's `fleet` gate is covered in
@@ -151,6 +152,24 @@ describe('asset payloads', () => {
     expect((await asset.DELETE(send(`assets/${planned}`, 'DELETE', {}), params(planned))).status).toBe(200)
   })
 
+  it('the ledger, not the register link, decides what is booked: a purchase whose link failed blocks DELETE and a cost change', async () => {
+    const id = await createAsset()
+    s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
+    await expect(purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).rejects.toBeTruthy()
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id).purchase_entry_id).toBeUndefined()
+    expect((await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status).toBe(409)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { hardware_cost: 1 }), params(id))).status).toBe(409)
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ hardware_cost: 335_000 })
+  })
+
+  it('locks the in-service date and convention once depreciation is booked', async () => {
+    const id = await createAsset()
+    s.m.tables.journal_entries.push({ id: 'je-dep', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2027-01-31', source_type: 'partnership_expense', source_ref: `gpu-dep:${id}:2027-01` })
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { in_service_date: '2027-03-01' }), params(id))).status).toBe(409)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { depreciation_convention: 'mid_month' }), params(id))).status).toBe(409)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { notes: 'rack 4', in_service_date: '2027-01-15' }), params(id))).status).toBe(200)
+  })
+
   it('asset types: created once per code', async () => {
     const body = { code: 'h200-nvl', label: 'H200 NVL', gpus_per_server: 8, anchor_rate: 4.5 }
     expect((await assetTypes.POST(send('asset-types', 'POST', body))).status).toBe(201)
@@ -182,6 +201,31 @@ describe('datacenter contracts', () => {
     expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { monthly_fee: 11_000 }), params(id))).status).toBe(409)
     expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { power_kw: 40, status: 'ended', end_date: '2030-12-31' }), params(id))).status).toBe(200)
     expect(await json(await contract.POST(send(`datacenter-contracts/${id}`, 'POST', { action: 'roll', asOf: '2026-01-01' }), params(id)))).toMatchObject({ status: 200, body: { created: 0 } })
+  })
+
+  it('ending a contract ends its accruals at the contract end; a later roll recreates nothing', async () => {
+    const id = (await json(await create({ escalator_pct: 0 }))).body.contract.id
+    const proposals = (start: string, end: string) => loadCloseEntrySuggestions(s.m.admin, 'f', 'H200 SPV I', start, end)
+    expect((await proposals('2027-07-01', '2027-07-31')).map(x => x.postings[0].amount)).toEqual([10_280])
+
+    s.access = FLEET_ONLY
+    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { end_date: '2027-06-30' }), params(id))).status).toBe(403)
+    s.access = BOOKKEEPER
+    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended' }), params(id))).status).toBe(400)
+    expect(await json(await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { status: 'ended', end_date: '2027-06-30' }), params(id))))
+      .toMatchObject({ status: 200, body: { schedulesEnded: 1 } })
+    expect((await proposals('2027-06-01', '2027-06-30')).map(x => x.postings[0].amount)).toEqual([10_280])
+    expect(await proposals('2027-07-01', '2027-07-31')).toEqual([])
+    await contract.POST(send(`datacenter-contracts/${id}`, 'POST', { action: 'roll', asOf: '2028-06-30' }), params(id))
+    expect(await proposals('2027-07-01', '2027-07-31')).toEqual([])
+    expect(s.m.tables.accounting_schedules).toHaveLength(1)
+  })
+
+  it('keeps the first escalation date inside the contract', async () => {
+    expect((await create({ first_escalation_date: '2027-01-01' })).status).toBe(400)
+    expect((await create({ first_escalation_date: '2029-01-01', end_date: '2028-12-31' })).status).toBe(400)
+    const id = (await json(await create({ schedule: false, first_escalation_date: '2027-07-01' }))).body.contract.id
+    expect((await contract.PATCH(send(`datacenter-contracts/${id}`, 'PATCH', { end_date: '2027-06-30' }), params(id))).status).toBe(400)
   })
 
   it('validates the payload; schedule: false needs only fleet write; roll needs accounting write', async () => {

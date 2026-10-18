@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { assetRefsError, capitalizedCostsOf, parseAssetInput, taxClassError } from '@/lib/gpu/assets'
+import { assetLedgerState, assetRefsError, capitalizedCostsOf, parseAssetInput, taxClassError } from '@/lib/gpu/assets'
 import { fleetRowRequest } from '@/lib/gpu/http'
 import type { GpuAssetRow } from '@/lib/gpu/types'
 
@@ -14,8 +14,10 @@ export async function GET(_req: NextRequest, props: Params) {
   return NextResponse.json({ ...r.row, capitalized_costs: await capitalizedCostsOf(r.req.admin, r.req.ctx, id) })
 }
 
-// PATCH — edit the register row. A disposed asset is closed; the hardware cost is fixed once its
-// purchase is booked (the ledger holds it); the tax class is checked on the merged row.
+// PATCH — edit the register row. A disposed asset is closed. What the LEDGER holds decides the rest
+// (a null purchase_entry_id does not mean unbooked): the hardware cost is fixed once anything is
+// booked for the asset, and the in-service date and convention once any depreciation is. The tax
+// class is checked on the merged row.
 export async function PATCH(req: NextRequest, props: Params) {
   const { id } = await props.params
   const r = await fleetRowRequest<GpuAssetRow>('write', 'gpu_assets', id)
@@ -24,8 +26,18 @@ export async function PATCH(req: NextRequest, props: Params) {
   if ('error' in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 })
   const row = r.row
   if (row.status === 'disposed') return NextResponse.json({ error: 'A disposed asset cannot be edited' }, { status: 409 })
-  if (row.purchase_entry_id && parsed.value.hardware_cost !== undefined && parsed.value.hardware_cost !== Number(row.hardware_cost)) {
-    return NextResponse.json({ error: 'The hardware cost is booked; correct it in the ledger, not the register' }, { status: 409 })
+  const v = parsed.value
+  const costChange = v.hardware_cost !== undefined && v.hardware_cost !== Number(row.hardware_cost)
+  const scheduleChange = (v.in_service_date !== undefined && v.in_service_date !== row.in_service_date)
+    || (v.depreciation_convention !== undefined && v.depreciation_convention !== row.depreciation_convention)
+  if (costChange || scheduleChange) {
+    const ledger = await assetLedgerState(r.req.admin, r.req.ctx, id)
+    if (costChange && (row.purchase_entry_id || ledger.booked)) {
+      return NextResponse.json({ error: 'The hardware cost is booked; correct it in the ledger, not the register' }, { status: 409 })
+    }
+    if (scheduleChange && ledger.depreciated) {
+      return NextResponse.json({ error: 'Depreciation is already booked; the in-service date and convention cannot change' }, { status: 409 })
+    }
   }
   const taxError = taxClassError(parsed.value.tax_method ?? row.tax_method, parsed.value.tax_life_years !== undefined ? parsed.value.tax_life_years : row.tax_life_years)
   if (taxError) return NextResponse.json({ error: taxError }, { status: 400 })
@@ -37,12 +49,13 @@ export async function PATCH(req: NextRequest, props: Params) {
   return NextResponse.json({ ...data, capitalized_costs: await capitalizedCostsOf(r.req.admin, r.req.ctx, id) })
 }
 
-// DELETE — only a planned asset with nothing booked; anything else has a ledger history to keep.
+// DELETE — only a planned asset with nothing in the ledger (posted or in flight); anything else has
+// a history to keep.
 export async function DELETE(_req: NextRequest, props: Params) {
   const { id } = await props.params
   const r = await fleetRowRequest<GpuAssetRow>('write', 'gpu_assets', id)
   if (r instanceof NextResponse) return r
-  if (r.row.status !== 'planned' || r.row.purchase_entry_id) {
+  if (r.row.status !== 'planned' || r.row.purchase_entry_id || (await assetLedgerState(r.req.admin, r.req.ctx, id)).booked) {
     return NextResponse.json({ error: 'Only a planned asset with nothing booked can be deleted' }, { status: 409 })
   }
   const { error } = await (r.req.admin as any).from('gpu_assets').delete()

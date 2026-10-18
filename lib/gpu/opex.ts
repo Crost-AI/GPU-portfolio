@@ -134,8 +134,40 @@ export function parseContractInput(body: any, partial: boolean): { value: Contra
     if (b.vendor_id !== null && typeof b.vendor_id !== 'string') return { error: 'vendor_id must be a string' }
     out.vendor_id = b.vendor_id
   }
-  if (out.start_date && out.end_date && out.end_date < out.start_date) return { error: 'end_date must be on or after start_date' }
+  const dates = contractDatesError(out)
+  if (dates) return { error: dates }
   return { value: out }
+}
+
+/** Why a contract's dates do not fit together, or null (checked on the merged row at update too). */
+export function contractDatesError(c: Pick<ContractInput, 'start_date' | 'end_date' | 'first_escalation_date'>): string | null {
+  if (c.start_date && c.end_date && c.end_date < c.start_date) return 'end_date must be on or after start_date'
+  if (c.first_escalation_date && c.start_date && c.first_escalation_date <= c.start_date) return 'first_escalation_date must be after start_date'
+  if (c.first_escalation_date && c.end_date && c.first_escalation_date > c.end_date) return 'first_escalation_date must be on or before end_date'
+  return null
+}
+
+/**
+ * End a contract's accrual schedules at `endDate`: each active fleet schedule of the contract still
+ * open (or ending later) ends then, and one that starts after it is deactivated, so the close stops
+ * proposing accruals past the contract. ensureDatacenterSchedule reads the contract's own end_date,
+ * so a later roll recreates nothing past it.
+ */
+export async function endDatacenterSchedules(admin: SupabaseClient, t: Pick<ScheduleTarget, 'fundId' | 'vehicleId'>, contractId: string, endDate: string): Promise<number> {
+  const prefix = `fleet:datacenter:${contractId}:`
+  const { data, error } = await (admin as any).from('accounting_schedules').select('id, source_ref, start_date, end_date')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('active', true).like('source_ref', `${prefix}%`).order('start_date').order('id')
+  if (error) throw error
+  let changed = 0
+  for (const row of ((data as any[]) ?? []).filter(r => String(r.source_ref).startsWith(prefix))) {
+    const patch = row.start_date > endDate ? { active: false } : (!row.end_date || row.end_date > endDate) ? { end_date: endDate } : null
+    if (!patch) continue
+    const { error: upError } = await (admin as any).from('accounting_schedules').update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', row.id)
+    if (upError) throw upError
+    changed++
+  }
+  return changed
 }
 
 /** The vehicle's accrual accounts for a datacenter schedule: Dr 5100 / Cr 2000. */

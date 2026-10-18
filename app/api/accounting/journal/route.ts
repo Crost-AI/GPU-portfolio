@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isReservedSourceRef } from '@/lib/accounting/reserved-refs'
+import { assertUserRefAllowed, isEditLockedRef } from '@/lib/accounting/reserved-refs'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // accounting domain (lib/access/route-domains.ts). The middleware has already checked the caller's
@@ -146,6 +146,13 @@ export async function PUT(req: NextRequest) {
     .maybeSingle()
   if (!existing) return NextResponse.json({ error: 'Entry not found' }, { status: 404 })
   if ((existing as any).status !== 'draft') return NextResponse.json({ error: 'Only draft entries can be edited — reverse or void a posted entry.' }, { status: 400 })
+  // A fleet lifecycle draft (#82): the lifecycle adopts the posted entry as its own, so its lines
+  // are the ones it wrote. Void it instead. A new ref cannot be set here at all.
+  if (isEditLockedRef((existing as any).source_ref)) {
+    return NextResponse.json({ error: `Entry ${id} is a GPU fleet entry (${(existing as any).source_ref}); void it rather than edit it.` }, { status: 400 })
+  }
+  const reservedRef = 'sourceRef' in body ? assertUserRefAllowed(body.sourceRef) : null
+  if (reservedRef) return NextResponse.json({ error: reservedRef }, { status: 400 })
   // The source type is kept unless the caller sets it: editing a bank-drafted capital call must
   // not silently turn it into a "manual" entry that the roll-forward files under Other.
   const sourceType: string = typeof body.sourceType === 'string' && body.sourceType ? body.sourceType : ((existing as any).source_type ?? 'manual')
@@ -210,9 +217,8 @@ export async function POST(req: NextRequest) {
   if (group instanceof NextResponse) return group
 
   const { entryDate, memo, sourceType, sourceRef, status, postings } = body
-  if (isReservedSourceRef(sourceRef)) {
-    return NextResponse.json({ error: 'That source reference is reserved for entries the system books itself.' }, { status: 400 })
-  }
+  const reserved = assertUserRefAllowed(sourceRef)
+  if (reserved) return NextResponse.json({ error: reserved }, { status: 400 })
   if (!entryDate || !Array.isArray(postings) || postings.length === 0) {
     return NextResponse.json({ error: 'entryDate and at least one posting are required' }, { status: 400 })
   }
