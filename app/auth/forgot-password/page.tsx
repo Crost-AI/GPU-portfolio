@@ -29,8 +29,11 @@ export default function ForgotPasswordPage() {
     }
     setError(null)
     setLoading(true)
-    // No redirectTo — the email carries a 6-digit recovery code, not a link.
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase())
+    // The email carries a 6-digit code; if it carries a link (or both), the link lands on the
+    // callback, which exchanges it and continues to the reset page.
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: `${window.location.origin}/auth/callback?next=/auth/reset-password`,
+    })
     if (error) setError(error.message)
     else setSent(true)
     setLoading(false)

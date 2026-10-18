@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { safeNextPath } from '@/lib/safe-redirect'
+import { codeLandingDestination, isRecoveryLanding } from '@/lib/auth/code-landing'
 import { PRIVACY_URL, PRODUCT_LICENSE, TERMS_URL } from '@/lib/site-links'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,23 +56,12 @@ function AuthForm() {
         setError('Invalid or expired link. Please try again.')
         return
       }
-      // Check if this is a recovery session — redirect to set new password
-      const { data: { session } } = await supabase.auth.getSession()
-      let destination = session?.user?.recovery_sent_at ? '/auth/reset-password' : (nextPath ?? '/')
-      // If user has no fund, send to onboarding. A password recovery keeps its own
-      // destination; everything else (including a pending OAuth authorization)
-      // still needs a fund to land in.
-      if (destination !== '/auth/reset-password') {
-        const { data: fund } = await supabase.from('funds').select('id').limit(1).maybeSingle()
-        if (!fund) destination = '/onboarding?confirmed=true'
-      }
-      // If MFA is enrolled, verify first then continue to destination
+      const recovery = isRecoveryLanding(nextPath, searchParams.get('type'))
+      // A password recovery keeps its own destination, so it needs no fund lookup.
+      const hasFund = recovery || !!(await supabase.from('funds').select('id').limit(1).maybeSingle()).data
       const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-      if (aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') {
-        router.replace(`/auth/mfa-verify?next=${encodeURIComponent(destination)}`)
-      } else {
-        router.replace(destination)
-      }
+      const mfaPending = !!aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2'
+      router.replace(codeLandingDestination({ next: nextPath, recovery, hasFund, mfaPending }))
     }
     exchangeCode()
   }, [searchParams, supabase, router])

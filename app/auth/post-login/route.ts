@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { logActivity } from '@/lib/activity'
 import { safeNextPath } from '@/lib/safe-redirect'
+import { publicOrigin } from '@/lib/public-origin'
 
 /**
  * Post-login side effects for the OTP flows.
@@ -14,7 +15,8 @@ import { safeNextPath } from '@/lib/safe-redirect'
  * redirect. OAuth still uses `/auth/callback` (code exchange).
  */
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
+  const origin = publicOrigin(request)
   // safeNextPath, not startsWith('/') && !startsWith('//') — `/\evil.example` passes that pair.
   const next = safeNextPath(searchParams.get('next')) ?? '/'
   const method = searchParams.get('method') ?? 'otp'
