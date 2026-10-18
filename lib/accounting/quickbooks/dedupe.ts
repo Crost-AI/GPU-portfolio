@@ -1,3 +1,5 @@
+import { ACTUAL_BOOK, type LedgerBook } from '@/lib/accounting/books'
+
 /**
  * Which incoming transactions are already in the book. Pure; importQbJournal does the reads.
  *
@@ -22,6 +24,15 @@
  *
  * STATUS IS NOT FILTERED. A voided entry still counts as imported, as it always has: voiding an
  * imported transaction should not bring it back on the next run. The reason says so.
+ *
+ * BOTH BOOKS. A transaction can be routed to the tax book (book-routing.ts), and the route can
+ * change between passes when an account's tax-book flag is moved. The ref does not include the
+ * book, so the book entries passed in are from BOTH books, and an entry in either one makes the
+ * transaction present. When it is in the other book from the one it would now go to, it is NOT
+ * moved: bookConflicts() names it for a person to decide, because the entry may already be posted,
+ * allocated to partners or reversed by hand. The one exception is a VOIDED entry in the other book:
+ * voiding it is how a person moves a transaction between books, so it does not block the import
+ * into the new one. A voided entry in the same book still blocks, as above.
  */
 
 export interface DedupeCandidate {
@@ -33,6 +44,8 @@ export interface DedupeCandidate {
   /** The existing vendor the payee name resolves to, if any. Never created here. */
   vendorId: string | null
   lpEntityIds: string[]
+  /** The book this transaction would be imported into. Omitted means the actual book. */
+  book?: LedgerBook
 }
 
 export interface BookEntry {
@@ -41,6 +54,8 @@ export interface BookEntry {
   status: string
   vendorId: string | null
   lpEntityIds: string[]
+  /** Omitted means the actual book. */
+  book?: LedgerBook
 }
 
 export interface DuplicateTransaction {
@@ -50,6 +65,23 @@ export interface DuplicateTransaction {
   existingEntryId: string
   existingRef: string
   existingStatus: string
+  existingBook: LedgerBook
+  reason: string
+}
+
+/**
+ * Already imported, but into the other book from the one its mapping now routes it to. Reported,
+ * never moved: see the header.
+ */
+export interface BookConflict {
+  entryDate: string
+  memo: string | null
+  sourceRef: string
+  existingEntryId: string
+  existingStatus: string
+  existingBook: LedgerBook
+  /** Where the current mapping would put it. */
+  mappedBook: LedgerBook
   reason: string
 }
 
@@ -84,6 +116,11 @@ function compare(c: DedupeCandidate, b: BookEntry): Agreement {
   return agreed ? 'same' : 'unknown'
 }
 
+const bookOf = (x: { book?: LedgerBook }): LedgerBook => x.book ?? ACTUAL_BOOK
+
+/** A voided entry in the OTHER book does not block: voiding it is how a transaction is moved. */
+const blocks = (c: DedupeCandidate, b: BookEntry) => b.status !== 'void' || bookOf(b) === bookOf(c)
+
 const VOIDED = ' That entry is voided; a voided entry still blocks re-import, so a voided transaction is not brought back.'
 const entries = (n: number) => `${n} entr${n === 1 ? 'y' : 'ies'}`
 
@@ -99,20 +136,23 @@ export function matchImported(cands: DedupeCandidate[], book: BookEntry[]): Dedu
     const c = cands[i]
     found.push({ i, d: {
       entryDate: c.entryDate, memo: c.memo, sourceRef: c.ref,
-      existingEntryId: b.id, existingRef: b.sourceRef, existingStatus: b.status,
+      existingEntryId: b.id, existingRef: b.sourceRef, existingStatus: b.status, existingBook: bookOf(b),
       reason: reason + (b.status === 'void' ? VOIDED : ''),
     } })
   }
 
   const groups = new Map<string, number[]>()
   cands.forEach((c, i) => {
-    const same = byRef.get(c.ref)?.[0]
+    // A live entry is the better answer than a voided one: it is what the books actually hold.
+    const live = (byRef.get(c.ref) ?? []).filter(b => blocks(c, b))
+    const same = live.find(b => b.status !== 'void') ?? live[0]
     if (same) return duplicate(i, same, 'Already imported: same date, accounts, amounts, payee and memo.')
     groups.set(c.legacyRef, [...(groups.get(c.legacyRef) ?? []), i])
   })
 
   for (const [legacyRef, idx] of Array.from(groups)) {
-    const olds = [...(byRef.get(legacyRef) ?? [])].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    // Transactions sharing a legacy ref touch the same accounts, so they route to the same book.
+    const olds = [...(byRef.get(legacyRef) ?? [])].filter(b => blocks(cands[idx[0]], b)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     if (!olds.length) continue
 
     const pair = new Map<number, BookEntry>()
@@ -147,4 +187,27 @@ export function matchImported(cands: DedupeCandidate[], book: BookEntry[]): Dedu
     duplicates: found.sort((a, b) => a.i - b.i).map(x => x.d),
     recovered: recovered.sort((a, b) => a.i - b.i).map(x => x.r),
   }
+}
+
+/**
+ * The present transactions whose existing entry is in the other book from the one the mapping now
+ * routes them to. `cands` and `duplicates` as passed to and returned by matchImported.
+ */
+export function bookConflicts(cands: DedupeCandidate[], duplicates: DuplicateTransaction[]): BookConflict[] {
+  const byRef = new Map(cands.map(c => [c.ref, c]))
+  const out: BookConflict[] = []
+  for (const d of duplicates) {
+    const c = byRef.get(d.sourceRef)
+    if (!c || bookOf(c) === d.existingBook) continue
+    const mapped = bookOf(c)
+    out.push({
+      entryDate: d.entryDate, memo: d.memo, sourceRef: d.sourceRef,
+      existingEntryId: d.existingEntryId, existingStatus: d.existingStatus, existingBook: d.existingBook, mappedBook: mapped,
+      reason: `Imported earlier into the ${d.existingBook} book; the mapping now sends it to the ${mapped} book. ` +
+        (d.existingStatus === 'posted'
+          ? 'It was left where it is. To move it, void that entry (reopening its period if it is closed) and import again.'
+          : 'It was left where it is. To move it, discard that draft and import again.'),
+    })
+  }
+  return out
 }

@@ -351,6 +351,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
               qbAccount: { type: 'string', description: 'The source account name, exactly as in the transactions (e.g. "Investments:Acme Ventures III")' },
               accountCode: { type: 'string', description: 'Chart code on this vehicle' },
               excluded: { type: 'boolean', description: 'Deliberately not imported; transactions touching it are skipped whole' },
+              taxBook: { type: 'boolean', description: "The source account is kept on a tax basis only (a preparer's year-end K-1 entries, tax-basis write-offs). Every transaction touching it imports, whole, into the TAX book instead of the actual ledger, so it does not move book capital. Omit to keep the saved flag; ignored when excluded." },
               note: { type: 'string' },
             },
           },
@@ -360,7 +361,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'import_journal',
-    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend; the `duplicates` in the result says which entry each matched transaction matched and why, and `recovered` lists transactions an earlier import wrongly skipped as duplicates (same date and amount, different payee). Transactions touching an unmapped account are skipped and named. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
+    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend; the `duplicates` in the result says which entry each matched transaction matched and why, and `recovered` lists transactions an earlier import wrongly skipped as duplicates (same date and amount, different payee). Transactions touching an unmapped account are skipped and named. A transaction touching an account mapped `taxBook` imports whole into the tax book (`taxBook` in the result says how many and why; one in a closed tax year is refused and named); one already imported into the other book is listed in `bookConflicts` and left where it is. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -428,6 +429,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
         allocate: { type: 'boolean', description: 'default true; false skips the partner allocation' },
+        book: { type: 'string', enum: ['actual', 'tax'], description: "default 'actual'. 'tax' posts tax-book drafts (an outside journal's tax-routed entries): no partner allocation, refused in a closed tax year" },
       },
     },
   },
@@ -443,6 +445,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         end: { type: 'string', description: 'ISO date; only drafts on or before it' },
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
+        book: { type: 'string', enum: ['actual', 'tax'], description: "default 'actual'. 'tax' discards tax-book drafts (an outside journal's tax-routed entries)" },
       },
     },
   },

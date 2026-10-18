@@ -69,7 +69,8 @@ export function JournalView({ onPlainText }: { onPlainText?: () => void } = {}) 
   // 'all' means draft + posted, NOT literally everything — voided entries are discarded and
   // only come back when you ask for them by name. The API applies the same rule.
   const [status, setStatus] = useState<'all' | 'draft' | 'posted' | 'void'>('all')
-  // Which set of books: the ledger, or the book-to-tax adjusting entries the tax run wrote.
+  // Which set of books: the ledger, or the tax book (the tax run's book-to-tax adjustments and
+  // any outside-journal entries imported to it).
   const [book, setBook] = useState<'actual' | 'tax'>('actual')
   // Adjusting entries only — the AJE list a preparer asks for.
   const [adjustingOnly, setAdjustingOnly] = useState(false)
@@ -188,8 +189,10 @@ export function JournalView({ onPlainText }: { onPlainText?: () => void } = {}) 
     const scope = ids
       ? `${ids.length} selected draft${ids.length === 1 ? '' : 's'}`
       : `every draft in ${rangeLabel}`
+    // Tax-book drafts are an outside journal's tax-routed entries (quickbooks/book-routing.ts).
+    // The server posts them to the tax book with no partner allocation.
     const question = action === 'post'
-      ? `Post ${scope} to the ledger? This cannot be bulk-undone.`
+      ? `Post ${scope} to the ${book === 'tax' ? 'tax book' : 'ledger'}? This cannot be bulk-undone.`
       : `Discard ${scope}? They're marked void and drop off this list — pick "Voided" in the status filter to see them again.`
     if (!window.confirm(question)) return
 
@@ -203,7 +206,7 @@ export function JournalView({ onPlainText }: { onPlainText?: () => void } = {}) 
     const released: Required<Pick<ReleaseReport, 'removedTransactions' | 'unlinkedRegisterRows' | 'warnings'>> = { removedTransactions: [], unlinkedRegisterRows: [], warnings: [] }
 
     const call = (body: Record<string, unknown>) =>
-      lf(`/api/accounting/journal/bulk-${action}`, { method: 'POST', body: JSON.stringify(body) })
+      lf(`/api/accounting/journal/bulk-${action}`, { method: 'POST', body: JSON.stringify(book === 'tax' ? { ...body, book } : body) })
         .then(r => (r.ok ? r.json() : Promise.reject(new Error(`bulk-${action} failed`))))
         .then((d: { changed?: number; skipped?: { id: string; reason: string }[]; hasMore?: boolean; cursor?: string | null } & ReleaseReport) => {
           totalPosted += d.changed ?? 0
@@ -238,7 +241,7 @@ export function JournalView({ onPlainText }: { onPlainText?: () => void } = {}) 
         setPosting(false)
         loadPage() // also clears the selection
       })
-  }, [lf, loadPage, allMatching, sel.draftIds, rangeLabel, preset, start, end])
+  }, [lf, loadPage, allMatching, sel.draftIds, rangeLabel, preset, start, end, book])
 
   return (
     <div className="space-y-4">

@@ -21,6 +21,12 @@ import { ACTUAL_BOOK } from '@/lib/accounting/books'
  * and the tie-out would be useless exactly when it is needed. The response says so, and the
  * UI labels it.
  *
+ * Compares the ACTUAL book. Transactions the import routed to the tax book (a tax-basis file's
+ * K-1 entries, book-routing.ts) are in the QuickBooks trial balance but deliberately not in ours,
+ * so the imported tax-book entries are taken out of the QuickBooks side and reported separately
+ * as `taxRouted` (compareTrialBalance). Only imported ones: the tax run's own adjustments were
+ * never in QuickBooks.
+ *
  * POST — { text, asOf, group? }
  */
 export async function POST(req: NextRequest) {
@@ -48,7 +54,7 @@ export async function POST(req: NextRequest) {
 
   // Paginated: a migrated vehicle can hold far more than the PostgREST 1000-row default, and a
   // truncated ledger produces a tie-out that fails for the wrong reason.
-  const [acctRows, entryRows, postingRows, mappingRows] = await Promise.all([
+  const [acctRows, entryRows, postingRows, mappingRows, taxEntryRows, taxPostingRows] = await Promise.all([
     fetchAllRows((f, t) => admin.from('chart_of_accounts' as any)
       .select('id, code, name, type, subtype, company_id, lp_entity_id')
       .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).range(f, t)),
@@ -65,6 +71,16 @@ export async function POST(req: NextRequest) {
     (admin as any).from('qb_account_mappings')
       .select('qb_account, account_code, excluded')
       .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('source', 'quickbooks'),
+    fetchAllRows((f, t) => admin.from('journal_entries' as any)
+      .select('id')
+      .eq('book', 'tax').eq('source_type', 'quickbooks')
+      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
+      .in('status', ['posted', 'draft'])
+      .lte('entry_date', body.asOf).range(f, t)),
+    fetchAllRows((f, t) => admin.from('journal_postings' as any)
+      .select('journal_entry_id, account_id, amount, currency')
+      .eq('book', 'tax')
+      .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).range(f, t)),
   ])
 
   const inWindow = new Set(((entryRows as any[]) ?? []).map(e => e.id))
@@ -85,11 +101,15 @@ export async function POST(req: NextRequest) {
   const capitalRollups = new Map(accounts.filter(a => a.type === 'equity' && a.subtype === 'lp_capital' && a.lpEntityId && pooledCapital)
     .map(a => [a.code, pooledCapital!.code]))
   const ours = trialBalance(accounts, postings)
-  const result = compareTrialBalance(ours, theirs, mapping, capitalRollups)
+  const taxIds = new Set(((taxEntryRows as any[]) ?? []).map(e => e.id))
+  const taxRouted = trialBalance(accounts, ((taxPostingRows as any[]) ?? [])
+    .filter(p => taxIds.has(p.journal_entry_id))
+    .map(p => ({ accountId: p.account_id, amount: Number(p.amount), currency: p.currency })))
+  const result = compareTrialBalance(ours, theirs, mapping, capitalRollups, taxRouted)
   const qbEntryIds = new Set((entryRows as any[]).filter(e => e.source_type === 'quickbooks').map(e => e.id))
   const qbPostings = (postingRows as any[]).filter(p => qbEntryIds.has(p.journal_entry_id))
     .map(p => ({ accountId: p.account_id, amount: Number(p.amount), currency: p.currency }))
-  const quickBooksOnly = compareTrialBalance(trialBalance(accounts, qbPostings), theirs, mapping, capitalRollups)
+  const quickBooksOnly = compareTrialBalance(trialBalance(accounts, qbPostings), theirs, mapping, capitalRollups, taxRouted)
   const cashIds = new Set(accounts.filter(a => a.code === '1000' || a.subtype === 'cash').map(a => a.id))
   const openingEntries = (entryRows as any[]).filter(e => e.source_type === 'opening_balance').map(e => ({
     id: e.id, date: e.entry_date, memo: e.memo, status: e.status,
@@ -101,6 +121,7 @@ export async function POST(req: NextRequest) {
     asOf: body.asOf,
     ...result,
     includesDrafts: true,
+    taxRoutedEntryCount: taxIds.size,
     quickBooksOnly: { ties: quickBooksOnly.ties, differenceCount: quickBooksOnly.lines.length },
     openingEntries,
     unmappedAccounts: theirs.filter(r => !mapping.has(r.account)).map(r => r.account),

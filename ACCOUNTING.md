@@ -58,6 +58,21 @@ accounts: an entity gets the chart for its kind when it is created, and one crea
 it the first time its books are opened. You choose how much history to bring in. (A QuickBooks
 general ledger can be imported instead: **Migrate from QuickBooks** on the status page.)
 
+**A QuickBooks file kept on a tax basis.** Some preparers book their year-end K-1 entries straight
+into QuickBooks: a lower-tier fund's pass-through income or loss against the investment account and a
+"K-1 attributes"-style income account, or tax-basis write-offs. Those are book-to-tax differences, not
+fair-value events. Mark such source accounts **Tax book** in the import mapping. Every transaction
+touching one imports whole into the tax book as a draft. It is never split across books, and the actual
+ledger and partners' book capital are left alone. Post those drafts from the Journal's **Tax book**
+view. Posting never allocates them to partners, and a transaction dated in a closed tax year is refused
+and named in the import result. Duplicate detection looks in both books: if you change a mark after
+importing, a transaction already imported into the other book is listed as a conflict and not moved.
+Void or discard that entry and import again to move it. The tie-out takes the imported tax-book
+entries out of the QuickBooks trial balance, so the ledger ties to the file without them, and shows
+their totals separately. These entries carry no partner capital lines, so they reach the tax-basis
+statements but not each partner's K-1 capital account. Allocate them by partner in the tax book if a
+K-1 needs them.
+
 ### A1. Full history (reconstruct from inception) — recommended for the SPV
 
 Best when volume is low and you want a complete, auditable trail.

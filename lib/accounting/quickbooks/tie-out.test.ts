@@ -173,3 +173,57 @@ describe('per-LP capital detail', () => {
     expect(result.ties).toBe(true)
   })
 })
+
+describe('compareTrialBalance with tax-routed entries', () => {
+  // A tax-basis QuickBooks file: the preparer booked a 50,000 K-1 loss from a lower-tier fund
+  // against the investment and a K-1 income account. The import sent that entry to the tax book,
+  // so the ledger holds the investment at 3,000,000 while QuickBooks says 2,950,000.
+  const TAX_TB = parseQbTrialBalance([
+    'Account,Debit,Credit',
+    'Bank:Operating,"250,000.00",',
+    'Investments:Acme Ventures III,"2,950,000.00",',
+    'K-1 attributes,"50,000.00",',
+    "Partners' Capital,,\"3,250,000.00\"",
+  ].join('\n')).rows
+  const mapping = new Map([...MAPPING, ['K-1 attributes', '4900']])
+  const ledger = ours([
+    { code: '1000', name: 'Cash', balance: 250_000 },
+    { code: '1100', name: 'Investments at cost', balance: 3_000_000 },
+    { code: '3100', name: "Partners' capital", balance: -3_250_000 },
+  ])
+  const taxBook = ours([
+    { code: '1100', name: 'Investments at cost', balance: -50_000 },
+    { code: '4900', name: 'K-1 income', balance: 50_000 },
+  ])
+
+  it('without them, the correctly routed entries are exactly the differences', () => {
+    const result = compareTrialBalance(ledger, TAX_TB, mapping)
+    expect(result.ties).toBe(false)
+    expect(result.lines.map(l => [l.code, l.difference])).toEqual([['1100', 50_000], ['4900', -50_000]])
+    expect(result.taxRouted).toEqual({ lines: [], total: 0 })
+  })
+
+  it('takes them out of the QuickBooks side, so the actual book ties, and reports them on their own', () => {
+    const result = compareTrialBalance(ledger, TAX_TB, mapping, new Map(), taxBook)
+    expect(result.ties).toBe(true)
+    expect(result.taxRouted).toEqual({
+      lines: [
+        { code: '1100', name: 'Investments at cost', amount: -50_000 },
+        { code: '4900', name: 'K-1 income', amount: 50_000 },
+      ],
+      total: 0,
+    })
+  })
+
+  it('a tax-routed entry not yet imported still shows as a difference', () => {
+    const partial = ours([{ code: '1100', name: 'Investments at cost', balance: -20_000 }, { code: '4900', name: 'K-1 income', balance: 20_000 }])
+    const result = compareTrialBalance(ledger, TAX_TB, mapping, new Map(), partial)
+    expect(result.lines.map(l => [l.code, l.difference])).toEqual([['1100', 30_000], ['4900', -30_000]])
+  })
+
+  it('rolls a tax-routed per-partner capital line up to the pooled account, as it does ours', () => {
+    const capitalTax = ours([{ code: '3101', name: 'Capital — Jane Doe', balance: -1_000 }, { code: '4900', name: 'K-1 income', balance: 1_000 }])
+    const result = compareTrialBalance(ledger, TAX_TB, mapping, new Map([['3101', '3100']]), capitalTax)
+    expect(result.taxRouted.lines.map(l => l.code)).toEqual(['3100', '4900'])
+  })
+})
