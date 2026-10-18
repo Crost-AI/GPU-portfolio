@@ -321,6 +321,14 @@ export const TABLE_RULES: Record<string, TableRule> = {
   k1_deliveries: { scope: 'service', note: 'Electronic K-1 delivery records.' },
   k1_delivery_consents: { scope: 'service', note: 'A partner’s consent to electronic delivery — a legal fact, never manufacturable from a browser.' },
   reminder_deliveries: { scope: 'service', note: 'Which reminder thresholds were emailed; the ops-reminders cron is the only reader and writer.' },
+  // ── GPU fleet (P1) ──
+  // Read only by /api/fleet routes (domain `fleet`, feature `gpu_fleet`) with the service role, so
+  // a Data API grant would bypass that gate. tests/gpu-data-api-grants.test.ts pins the set.
+  gpu_asset_types: { scope: 'service', note: 'GPU server types per fund; served by the fleet routes.' },
+  gpu_assets: { scope: 'service', note: 'The GPU SPV fleet register; served and written by the fleet routes.' },
+  gpu_asset_events: { scope: 'service', note: 'Manual per-server downtime and maintenance log; served by the fleet routes.' },
+  datacenter_contracts: { scope: 'service', note: 'Datacenter contracts and their accrual schedule link; served by the fleet routes.' },
+  gpu_fleet_settings: { scope: 'service', note: 'Per-vehicle fleet settings (capex contingency budget); served by the fleet routes.' },
   // ---- Deliberately public -------------------------------------------------------------------
   site_content: { scope: 'public', note: 'Legacy: the in-app marketing page that read it moved to hemrock.com (tdavidson/content). Table kept; nothing reads or writes it.' },
 

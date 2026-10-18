@@ -12,6 +12,7 @@ type FailOp = Op | 'select'
 
 const EMBEDS: Record<string, Record<string, string>> = {
   journal_entries: { journal_postings: 'journal_entry_id' },
+  accounting_schedules: { accounting_schedule_lines: 'schedule_id' },
 }
 
 export interface MemoryAdminOptions {

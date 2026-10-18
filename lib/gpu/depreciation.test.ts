@@ -1,0 +1,76 @@
+import { describe, it, expect } from 'vitest'
+import { depreciableFromAsset, depreciationForMonth, depreciationSchedule, nbvAsOf, type DepreciableAsset } from './depreciation'
+import { PACK_INPUTS, PACK_SERVERS } from './fixtures/pack-v3'
+import type { GpuAssetRow } from './types'
+
+// §2.7: the pack's three servers, salvage at 10%, 60 months, full-month convention.
+const server = (id: string, cost: number, over: Partial<DepreciableAsset> = {}): DepreciableAsset => ({
+  id, basis: cost, salvage: cost * 0.1, lifeMonths: 60, inServiceDate: '2027-01-15', convention: 'full_month', ...over,
+})
+const FLEET = PACK_SERVERS.map(s => server(s, PACK_INPUTS.servers[s].cost))
+
+describe('§2.7 fixture', () => {
+  it('depreciates 5,025 / 6,150 / 8,400 a month, 234,900 a year', () => {
+    expect(FLEET.map(a => depreciationForMonth(a, '2027-01'))).toEqual([5025, 6150, 8400])
+    const year = FLEET.flatMap(depreciationSchedule).filter(l => l.month.startsWith('2027')).reduce((s, l) => s + l.amount, 0)
+    expect(year).toBe(234_900)
+  })
+
+  it('runs exactly 60 months and leaves NBV 130,500 (the salvage) at month 60', () => {
+    for (const a of FLEET) {
+      const s = depreciationSchedule(a)
+      expect(s).toHaveLength(60)
+      expect([s[0].month, s[59].month]).toEqual(['2027-01', '2031-12'])
+      expect(s[59].accumulated).toBe(a.basis - a.salvage)
+    }
+    expect(FLEET.reduce((t, a) => t + nbvAsOf(a, '2031-12-31'), 0)).toBe(130_500)
+  })
+
+  it('counts a month in NBV only once its month end has passed', () => {
+    const [h200] = FLEET
+    expect(nbvAsOf(h200, '2026-12-31')).toBe(335_000)
+    expect(nbvAsOf(h200, '2027-01-30')).toBe(335_000)
+    expect(nbvAsOf(h200, '2027-01-31')).toBe(329_975)
+    expect(nbvAsOf(h200, '2040-01-01')).toBe(33_500)
+  })
+})
+
+describe('rounding and conventions', () => {
+  it('puts the rounding in the final month on a non-divisible basis', () => {
+    const s = depreciationSchedule(server('x', 100_000, { salvage: 0, lifeMonths: 7 }))
+    expect(s.slice(0, 6).every(l => l.amount === 14_285.71)).toBe(true)
+    expect(s[6].amount).toBe(14_285.74)
+    expect(s[6].accumulated).toBe(100_000)
+    expect(s[6].nbv).toBe(0)
+  })
+
+  it('mid_month: half a charge in the first and last months, lifeMonths + 1 months in all', () => {
+    const s = depreciationSchedule(server('h', 335_000, { convention: 'mid_month' }))
+    expect(s).toHaveLength(61)
+    expect([s[0].amount, s[1].amount, s[59].amount, s[60].amount]).toEqual([2512.5, 5025, 5025, 2512.5])
+    expect(s[60].accumulated).toBe(301_500)
+  })
+
+  it('stops after the disposal month and never reaches the true-up', () => {
+    const s = depreciationSchedule(server('h', 335_000, { disposedOn: '2028-06-10' }))
+    expect(s.at(-1)).toMatchObject({ month: '2028-06', amount: 5025, accumulated: 5025 * 18 })
+    const mid = depreciationSchedule(server('h', 335_000, { convention: 'mid_month', disposedOn: '2028-06-10' }))
+    expect(mid.at(-1)).toMatchObject({ month: '2028-06', amount: 2512.5 })
+  })
+
+  it('nothing to depreciate when salvage covers the basis', () => {
+    expect(depreciationSchedule(server('z', 1000, { salvage: 1000 }))).toEqual([])
+  })
+})
+
+describe('depreciableFromAsset', () => {
+  const row = {
+    id: 'a', hardware_cost: 335_000, capitalized_costs: 4_250.5, salvage_value: 33_500, useful_life_months: 60,
+    in_service_date: '2027-01-15', depreciation_convention: 'full_month', disposed_on: null,
+  } as unknown as GpuAssetRow
+
+  it('depreciates hardware plus capitalized costs (R8/Q6), and waits for an in-service date', () => {
+    expect(depreciableFromAsset(row)).toMatchObject({ basis: 339_250.5, salvage: 33_500, lifeMonths: 60 })
+    expect(depreciableFromAsset({ ...row, in_service_date: null })).toBeNull()
+  })
+})
