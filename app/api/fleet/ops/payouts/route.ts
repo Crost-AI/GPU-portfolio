@@ -11,6 +11,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 // GET ?group= — `{ payouts, receivable }`: every payout (an expected one with its candidate bank
 // inflows) and the 1150 tie-out as of today.
+// No extra accounting check: effectiveAccess gives `fleet` nothing without accounting read, so a fleet reader already reads the books.
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()

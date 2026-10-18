@@ -32,8 +32,11 @@ export interface AutoMatchOutcome {
   // outcome has exactly the keys it had before.
   /** Inflows matched to an expected marketplace payout and posted (Dr 1000 / Cr 1150). */
   payouts?: { txnId: string; payoutId: string; amount: number; entryId: string }[]
-  /** Inflows that fit several expected payouts — a human picks on the payouts page. */
-  ambiguousPayouts?: { txnId: string; amount: number; description: string | null; candidates: PayoutCandidate[] }[]
+  /**
+   * Inflows that fit several expected payouts, or one payout AND a partner's open call at the same
+   * amount (`lpCandidates`) — a human picks.
+   */
+  ambiguousPayouts?: { txnId: string; amount: number; description: string | null; candidates: PayoutCandidate[]; lpCandidates?: OpenBalance[] }[]
 }
 
 const CENT = 0.005
@@ -105,8 +108,12 @@ export async function autoMatchOpenCapital(
     const inflow = amount > 0
     if (payouts && inflow) {
       const fits = payouts.filter(p => isPayoutCandidate({ amount: p.amount, payout_date: p.payoutDate }, t))
-      if (fits.length > 1) {
-        out.ambiguousPayouts!.push({ txnId: t.id, amount, description: t.description, candidates: fits })
+      // A payout is booked only when no partner's open call fits the same inflow: a wire that could
+      // be either is a person's call, never the order of this loop.
+      const lp = fits.length ? matchTransaction(amount, t.description, openOf(receivables)) : null
+      const lpCandidates = !lp || lp.kind === 'none' ? [] : lp.kind === 'ambiguous' ? lp.candidates : openOf(receivables).filter(o => o.lpEntityId === lp.lpEntityId)
+      if (fits.length > 1 || lpCandidates.length) {
+        out.ambiguousPayouts!.push({ txnId: t.id, amount, description: t.description, candidates: fits, ...(lpCandidates.length ? { lpCandidates } : {}) })
         continue
       }
       if (fits.length === 1) {

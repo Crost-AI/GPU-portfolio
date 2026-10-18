@@ -44,12 +44,12 @@ export async function GET(req: NextRequest) {
   ])
   const nameOf = new Map(assets.map(a => [a.id, a.name]))
   const out = rows.map(r => ({
-    id: r.id, runId: r.run_id, assetId: r.asset_id, assetName: r.asset_id ? nameOf.get(r.asset_id) ?? null : null, assetRef: r.asset_ref,
+    id: r.id, runId: r.run_id ?? null, assetId: r.asset_id ?? null, assetName: r.asset_id ? nameOf.get(r.asset_id) ?? null : null, assetRef: r.asset_ref,
     periodStart: r.period_start, periodEnd: r.period_end,
     gpuHoursRented: r.gpu_hours_rented == null ? null : Number(r.gpu_hours_rented),
     utilizationPct: r.utilization_pct == null ? null : Number(r.utilization_pct),
     gross: Number(r.gross), fee: Number(r.marketplace_fee), net: Number(r.net), downtimeHours: Number(r.downtime_hours),
-    note: r.note, currency: r.currency, status: r.status, supersedesId: r.supersedes_id, entryId: r.journal_entry_id,
+    note: r.note, currency: r.currency, status: r.status, supersedesId: r.supersedes_id ?? null, entryId: r.journal_entry_id ?? null,
   }))
   const by = (r: typeof out[number]) => (r.assetName ?? r.assetRef).toLowerCase()
   out.sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : a.periodEnd > b.periodEnd ? -1 : by(a) < by(b) ? -1 : by(a) > by(b) ? 1 : 0))
