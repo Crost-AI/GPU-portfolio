@@ -122,6 +122,17 @@ expect "...and records and keeps nothing of it" \
   "$(q "select count(*) from supabase_migrations.schema_migrations where version = '20990101000002'")/$(q "select count(*) from pg_tables where tablename = 'harness_c'")" "0/0"
 rm "$migrations/20990101000002_bad.sql"
 
+# A version's row that names only its first file, or nothing (the CLI applies only the first file of
+# a shared version): the first file counts as applied, the other one is still applied.
+for row in "null" "'a'"; do
+  q "truncate supabase_migrations.schema_migrations; drop table harness_big, harness_b;
+     insert into supabase_migrations.schema_migrations (version, name) values ('20990101000001', $row)" >/dev/null
+  inner first-file >/dev/null
+  expect "a shared version recorded with name $row: applies _b, not _a" \
+    "$(grep '^applying 20990101000001' "$tmp/first-file.out" | tr '\n' ' ')$(last first-file)" \
+    "applying 20990101000001_b migrate: applied 2, already applied 1"
+done
+
 # migrate.sh: applies through the `migrate` service, then checks. Its other checks fail here (no
 # Supabase schemas); only the last one, GET /rest/v1/funds, is under test. storage.buckets is
 # listed, not just counted, so it has to exist for the script to get that far.
@@ -135,8 +146,8 @@ grep -qxF "run --rm -T migrate" "$LOG" && ok "migrate.sh: applies through the co
 expect "migrate.sh: from the app container, 200 is ok" "$(APP_UP=1 FUNDS_CODE=200 host)" \
   "ok    GET /rest/v1/funds with the service key, from the app container"
 grep -q harness-service-key "$LOG" && bad "migrate.sh: the service key is on a docker command line" || ok "migrate.sh: the service key reaches the app container through the environment, not argv"
-expect "migrate.sh: from the app container, 000 is a skip" "$(APP_UP=1 FUNDS_CODE=000 host)" \
-  "skip  GET /rest/v1/funds: Kong unreachable from the app container (set MIGRATE_CHECK_URL to where Kong answers)"
+expect "migrate.sh: from the app container, 000 (Kong down) is a FAIL" "$(APP_UP=1 FUNDS_CODE=000 host)" \
+  "FAIL  GET /rest/v1/funds with the service key, from the app container: expected 200, got 000"
 expect "migrate.sh: from the app container, 404 is a FAIL (after retrying)" "$(APP_UP=1 FUNDS_CODE=404 host)/$(grep -c 'app sh -c' "$LOG")" \
   "FAIL  GET /rest/v1/funds with the service key, from the app container: expected 200, got 404/10"
 expect "migrate.sh: MIGRATE_CHECK_URL from the environment, unreachable: skip" "$(MIGRATE_CHECK_URL=http://127.0.0.1:1 host)" \

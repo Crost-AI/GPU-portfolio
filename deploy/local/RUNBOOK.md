@@ -65,7 +65,9 @@ What each step does:
   bucket's size limit) and `GET /rest/v1/funds` with the service key. That last one goes to
   `MIGRATE_CHECK_URL` from this host when it is set (in the environment or `.env`), and otherwise
   runs from inside the app container. It prints `skip` instead of `FAIL` when the app is not
-  running or Kong does not answer.
+  running, or when `MIGRATE_CHECK_URL` does not answer. Like any `dc run`, it starts db, auth and
+  storage if needed, and recreates them if the running containers no longer match the compose
+  file or `.env`.
 - **bootstrap-admin.sh** runs `npm run bootstrap` (`scripts/bootstrap-fund.ts`) inside the app
   container. That adds your email to `allowed_signups`, creates the confirmed account, creates the
   fund with you as `admin`, and prints an agent/MCP API key. Any other `npm run bootstrap` flag is
@@ -129,6 +131,9 @@ runs the migrations, and if the backup is older than them, `restore.sh` refuses 
 
 The backup stops the app, the scheduler, PostgREST and Storage while it runs, so the database and
 the files describe the same moment, then starts them again. Schedule it for a quiet time.
+Starting the app again also re-runs the exited `migrate` container, which applies whatever is in
+`supabase/migrations` on disk. So run `backup.sh` (and `migrate.sh`) after `dc up`, not after a
+bare `git pull`: a failing new migration would leave the app stopped after the backup.
 
 Restarted services come back on new container IPs. Kong re-resolves them within 5 s
 (`KONG_DNS_VALID_TTL=5`, `KONG_DNS_STALE_TTL=0`, `KONG_DNS_NOT_FOUND_TTL=1` on the `kong` service).
@@ -154,7 +159,9 @@ starts.
 Restore into fresh volumes, as above. Over a stack with newer migrations, `pg_restore` would
 replace only what the dump has: the newer tables would stay behind next to the older migration
 history, and the next migrate would trip over them. So `restore.sh` refuses when `public`
-has relations the dump lacks, unless you pass `--force`. Steps 1–3 below change nothing that a
+has relations the dump lacks, unless you pass `--force`. With `--force` over newer tables, the data
+restore completes, but the final `dc up -d`'s migrate then fails on the first newer `create table`
+and leaves the app down. Steps 1–3 below change nothing that a
 failure leaves broken; step 4 is where the old files are replaced:
 
 1. It reads both halves to the end, and checks that the storage volume has room for a second copy of the files, before touching anything.
@@ -176,7 +183,7 @@ deploy/local/scripts/migrate.sh       # optional: the checks (migrate already ra
 
 Take a backup first. To change a Supabase image version, edit `docker-compose.yml`. A Postgres
 **major** upgrade (17 → 18) cannot reuse the data volume: back up, `dc down -v`, change the image,
-`dc up -d`, then restore.
+then run `restore.sh` directly (as in "Backup and restore").
 
 ## Deploy on Dokploy
 
@@ -199,10 +206,16 @@ cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
 - **Migrations** run on every deploy: the `migrate` service applies what is new before the app
   starts. Its last log line (`docker compose -p <appName> logs migrate`, or the service's logs in
   Dokploy) is `migrate: applied N, already applied M`, or `migrate: FAILED on <file>`.
-  - A failed migration fails closed: Compose recreates the app before the dependency chain runs,
-    so the app stays down and the deployment shows `error`. The failing file's transaction rolled
-    back and its version was not recorded, so fix forward: push a corrected migration, and the
-    next deploy applies it.
+  - With Dokploy's default command, a failed migration fails closed: every push rebuilds the app,
+    and Compose removes the old app container before the dependency chain runs, so the new one is
+    left `Created`, nothing serves, and the deployment shows `error`. The failing file's
+    transaction rolled back and its version was not recorded, so fix forward: push a corrected
+    migration, and the next deploy applies it.
+  - To keep the previous release serving instead, set Dokploy's custom command to migrate first
+    and only then rebuild (the `up` runs migrate again, which applies nothing and is quick):
+    `docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml run --rm -T migrate && docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
+    A failed migration then stops before anything is recreated. Which of the two to run is the
+    operator's choice; `app.depends_on.migrate` stays either way, for a plain `up`.
   - `migrate.sh` by hand still works and adds the checks. The host's loopback does not reach Kong
     from where Dokploy runs scripts, so its funds check uses `MIGRATE_CHECK_URL` from `.env`.
 - **Scripts** (`migrate.sh`, `backup.sh`, `restore.sh`, `bootstrap-admin.sh`): run them from

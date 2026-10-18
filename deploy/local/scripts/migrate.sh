@@ -93,7 +93,9 @@ check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets
 # container, which shares Kong's network (localhost:8000 there is Kong); the key goes in through
 # `-e SERVICE_KEY`, not on the docker command line. `notify pgrst` is asynchronous: until
 # PostgREST has reloaded, a new table answers 404, so any answer but 200 is retried a few times.
-# No answer at all (000), or no app to ask from, is a skip, not a FAIL.
+# No app to ask from is a skip, not a FAIL, and so is no answer at all (000) from MIGRATE_CHECK_URL,
+# which may not be reachable from here. From the app container it is a FAIL: there, localhost:8000
+# is Kong itself, so no answer means Kong is down.
 SERVICE_KEY="$(env_get SERVICE_ROLE_KEY)"; export SERVICE_KEY
 check_url="${MIGRATE_CHECK_URL:-$(env_get MIGRATE_CHECK_URL)}"
 funds() {
@@ -110,8 +112,10 @@ where="${check_url:-the app container}"
 if [[ -z "$check_url" && -z "$(dc ps -q --status running app)" ]]; then
   echo "skip  GET /rest/v1/funds: app not running (or set MIGRATE_CHECK_URL to where Kong answers)"
 else
-  for _ in $(seq 1 10); do code="$(funds)"; [[ "$code" == 200 || "$code" == 000 ]] && break; sleep 2; done
-  if [[ "$code" == 000 ]]; then
+  for _ in $(seq 1 10); do
+    code="$(funds)"; [[ "$code" == 200 || ("$code" == 000 && -n "$check_url") ]] && break; sleep 2
+  done
+  if [[ "$code" == 000 && -n "$check_url" ]]; then
     echo "skip  GET /rest/v1/funds: Kong unreachable from $where (set MIGRATE_CHECK_URL to where Kong answers)"
   else
     check "GET /rest/v1/funds with the service key, from $where" "$code" 200

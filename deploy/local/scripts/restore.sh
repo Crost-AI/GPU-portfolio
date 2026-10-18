@@ -6,7 +6,9 @@
 # itself; the dump carries the schema and the migration history). Its final `up -d` runs the
 # `migrate` service, which migrates the backup forward. Restoring over a stack with NEWER migrations
 # would leave their tables behind next to the older history, so this refuses when `public` has
-# relations the dump does not, unless --force. deploy/local/.env must hold the backup's ENCRYPTION_KEY.
+# relations the dump does not, unless --force. With --force over them, the data restore completes,
+# but the final `up -d`'s migrate then fails on the first newer `create table` and the app stays
+# down. deploy/local/.env must hold the backup's ENCRYPTION_KEY.
 #
 # Every writer (app, scheduler, PostgREST, storage API, and GoTrue, whose tables are replaced too)
 # is stopped throughout. The steps run so that a failure leaves something usable:
@@ -75,6 +77,8 @@ if [[ -n "$extra" ]] && ((!force)); then
   head -10 <<<"$extra" | sed 's/^/  /' >&2
   echo "Restore into a fresh stack (dc down -v, then this directly: it starts db, auth and storage itself," >&2
   echo "and its final up -d migrates the backup forward), or pass --force to restore over them anyway." >&2
+  echo "With --force the data restore completes, but the final up -d's migrate then fails on the first" >&2
+  echo "newer create table and leaves the app down." >&2
   exit 1
 fi
 
