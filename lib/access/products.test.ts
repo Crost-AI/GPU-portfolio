@@ -28,8 +28,16 @@ describe('PRODUCT_META', () => {
     }
   })
 
-  it('orders products 1..4', () => {
-    expect(orderedProducts()).toEqual(['portfolio_reporting', 'investment_workflow', 'lp_reporting', 'fund_operations'])
+  it('orders products 1..5', () => {
+    expect(orderedProducts()).toEqual(['portfolio_reporting', 'investment_workflow', 'lp_reporting', 'fund_operations', 'gpu_operations'])
+  })
+
+  // ── GPU fleet (P1) ──
+  it('GPU Operations owns the fleet and ships off', () => {
+    expect(productForFeature('gpu_fleet')).toBe('gpu_operations')
+    expect(productForDomain('fleet')).toBe('gpu_operations')
+    expect(PRODUCT_META.gpu_operations).toMatchObject({ order: 5, shipsOn: false, domains: ['fleet'], features: ['gpu_fleet'] })
+    expect(recommendedVisibilityForProduct('gpu_operations')).toEqual({ gpu_fleet: 'admin' })
   })
 
   it('exactly one product ships on', () => {

@@ -25,4 +25,6 @@ export const FEATURE_META: Record<FeatureKey, { label: string; description: stri
   gp_economics: { label: 'GP economics', description: 'Carry terms, carry accrued and paid per partner, per-deal carry, and GP entity ownership. Split out of Accounting so someone can reconcile the bank without seeing the partners’ carry.', href: '/support#accounting' },
   management_company: { label: 'Management company', description: 'The firm\u2019s own operating books \u2014 cash, payroll and compensation, the quarterly management-fee cycle, and intercompany balances with the funds it manages. Its own access grant, because a manco ledger carries salaries that appear nowhere in a fund\u2019s books.', href: '/support#management-company' },
   tax_reporting: { label: 'Tax reporting', description: 'Schedule K-1 packages per vehicle and tax year, the partner allocation behind them, and delivery to the LP portal. Derived from the capital accounts, so it needs Accounting on.', href: '/support#accounting' },
+  // ── GPU fleet (P1) ──
+  gpu_fleet: { label: 'GPU fleet', description: 'GPU SPVs: the fleet register, depreciation, datacenter and marketplace accounts, utilization and uptime, and marketplace earnings. Its figures are the ledger restated, so it needs Accounting on.', href: '/support#accounting' },
 }

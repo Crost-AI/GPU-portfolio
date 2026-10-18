@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { hasAccess, loadAccessContext, type AccessContext } from '@/lib/access/effective'
-import { isManagementCompany, type VehicleKind } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany, type VehicleKind } from '@/lib/vehicle-kinds'
 import type { Domain } from '@/lib/access/domains'
 
 /**
@@ -131,4 +131,40 @@ export async function assertMancoVehicle(
     { error: `"${group}" is not a management company. Fund vehicles are managed under Funds.` },
     { status: 400 },
   )
+}
+
+// ── GPU fleet (P1) ──
+/**
+ * The fleet routes' version of `assertMancoVehicle`: the vehicle `?group=` names must BE of `kind`.
+ *
+ * `/api/fleet/*` is gated on `fleet`, which says nothing about which vehicle the caller named, so
+ * without this a VC SPV's books could be read through a fleet route. A legacy name with no registry
+ * row has no kind and is refused. Not found rather than 400: a fleet route has nothing to say about
+ * an entity that is not a GPU SPV, and saying what it is instead would be the leak.
+ */
+export async function assertVehicleKind(
+  admin: SupabaseClient,
+  fundId: string,
+  group: string,
+  kind: VehicleKind,
+): Promise<NextResponse | null> {
+  const actual = await vehicleKindByName(admin, fundId, group)
+  if (actual === kind) return null
+  return NextResponse.json({ error: 'Vehicle not found' }, { status: 404 })
+}
+
+/**
+ * Creating a GPU SPV, or turning an entity into or out of one, needs `fleet` write — the grant that
+ * lets the caller see what they made. POST and PATCH /api/vehicles both ask this, so the rule lives
+ * once. `from` is the current kind (null on create); re-sending an unchanged kind is not a change.
+ * Returns the refusal message, or null to allow.
+ */
+export function gpuKindChangeDenial(
+  access: AccessContext,
+  from: string | null | undefined,
+  to: string | null | undefined,
+): string | null {
+  if (from === to || (!isGpuSpv(from) && !isGpuSpv(to))) return null
+  if (hasAccess(access, 'fleet', 'write')) return null
+  return 'A GPU SPV needs write access to GPU fleet. Ask an admin to turn on GPU Operations or grant it.'
 }

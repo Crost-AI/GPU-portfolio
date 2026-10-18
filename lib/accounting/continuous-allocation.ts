@@ -27,9 +27,14 @@ const SUBTYPE_TO_SOURCE: Record<string, AllocationCategory> = {
   operating_expense: 'partnership_expense', realized_gain: 'realized_gain',
   unrealized: 'valuation', fx_translation: 'fx_revaluation', interest_income: 'income', portfolio_income: 'income',
   equity_method: 'income',
+  // ── GPU fleet (P1) ──
+  // Selling a server is a realization, like selling a position. The GPU chart's other subtypes
+  // need no entry: its expenses fall to partnership_expense and rental_revenue to income.
+  disposal_gain: 'realized_gain',
 }
 
-function categoryFor(account: Account): AllocationCategory {
+/** Exported for tests: the allocation category an account's P&L lands in. */
+export function categoryFor(account: Account): AllocationCategory {
   return (account.subtype && SUBTYPE_TO_SOURCE[account.subtype])
     || (account.type === 'expense' ? 'partnership_expense' : 'income')
 }

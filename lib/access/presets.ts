@@ -24,6 +24,9 @@ const NONE: AccessPreset['grants'] = {
   portfolio: 'none', relationships: 'none', dealflow: 'none', diligence: 'none', accounting: 'none',
   management_company: 'none', lp_capital: 'none', gp_economics: 'none', lp_relations: 'none', compliance: 'none',
   tax: 'none',
+  // ── GPU fleet (P1) ── No preset grants it: an admin grants the fleet per person once GPU
+  // Operations is on, and a preset that did would warn "product is off" on every VC fund.
+  fleet: 'none',
 }
 
 export const ACCESS_PRESETS: AccessPreset[] = [

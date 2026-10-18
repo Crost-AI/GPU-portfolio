@@ -12,7 +12,7 @@
  * bundle. That module re-exports these values so the two can't drift.
  */
 
-export const VEHICLE_KINDS = ['fund', 'spv', 'direct', 'associate', 'individual', 'manco', 'other'] as const
+export const VEHICLE_KINDS = ['fund', 'spv', 'direct', 'associate', 'individual', 'manco', 'gpu_spv', 'other'] as const
 
 export type VehicleKind = (typeof VEHICLE_KINDS)[number]
 
@@ -27,6 +27,28 @@ export const MANCO_KIND: VehicleKind = 'manco'
  */
 export const INDIVIDUAL_KIND: VehicleKind = 'individual'
 
+// ── GPU fleet (P1) ──
+/**
+ * An SPV that owns and rents out GPU servers: an operating partnership with a fleet register,
+ * depreciation and a distributable-cash waterfall, rather than a portfolio of positions. Its
+ * partner-equity side is a fund's, code for code, so it closes to partners like one. Creating one
+ * needs the `fleet` grant, behind the `gpu_fleet` switch (POST /api/vehicles).
+ */
+export const GPU_SPV_KIND: VehicleKind = 'gpu_spv'
+
+export function isGpuSpv(kind: string | null | undefined): boolean {
+  return kind === GPU_SPV_KIND
+}
+
+/**
+ * Is `kind` one of `kinds`? For a page or nav section that exists only on some kinds
+ * (`requireVehicleAccess({ kinds })`, `showFor`). A null kind (a legacy vehicle with no registry
+ * row) never matches: it is a fund by definition, so it is never a GPU SPV.
+ */
+export function kindIsOneOf(kind: string | null | undefined, kinds: readonly VehicleKind[]): boolean {
+  return !!kind && (kinds as readonly string[]).includes(kind)
+}
+
 /** Singular, for a picker: "what is this one thing?" */
 export const VEHICLE_KIND_LABELS: Record<VehicleKind, string> = {
   fund: 'Fund',
@@ -35,6 +57,7 @@ export const VEHICLE_KIND_LABELS: Record<VehicleKind, string> = {
   associate: 'GP / associate entity',
   individual: 'Individual / angel',
   manco: 'Management company',
+  gpu_spv: 'GPU SPV',
   other: 'Other',
 }
 
@@ -46,6 +69,7 @@ export const VEHICLE_KIND_LABELS_PLURAL: Record<VehicleKind, string> = {
   associate: 'GP / associate entities',
   individual: 'Individuals',
   manco: 'Management companies',
+  gpu_spv: 'GPU SPVs',
   other: 'Other',
 }
 
@@ -62,6 +86,16 @@ export function closesToOwnerEquity(kind: string | null | undefined): boolean {
 /** Options for a `<select>`, in the order they should appear. */
 export const VEHICLE_KIND_OPTIONS: { value: VehicleKind; label: string }[] =
   VEHICLE_KINDS.map(value => ({ value, label: VEHICLE_KIND_LABELS[value] }))
+
+/**
+ * ── GPU fleet (P1) ── The picker's options for this caller: `GPU SPV` only for someone who can
+ * write the fleet (useCanWrite('fleet'), which is none while `gpu_fleet` is off), or when it is
+ * the entity's current kind, so editing an existing GPU SPV still shows what it is. The server
+ * refuses the rest (gpuKindChangeDenial in lib/accounting/vehicle-domain.ts).
+ */
+export function kindOptionsFor(canWriteFleet: boolean, current?: string | null): { value: VehicleKind; label: string }[] {
+  return VEHICLE_KIND_OPTIONS.filter(o => o.value !== GPU_SPV_KIND || canWriteFleet || current === GPU_SPV_KIND)
+}
 
 export function isVehicleKind(v: unknown): v is VehicleKind {
   return typeof v === 'string' && (VEHICLE_KINDS as readonly string[]).includes(v)

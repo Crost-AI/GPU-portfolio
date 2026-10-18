@@ -1,4 +1,4 @@
-export type FeatureKey = 'interactions' | 'investments' | 'notes' | 'lp_letters' | 'imports' | 'asks' | 'lps' | 'lp_tracking' | 'lp_portal' | 'lp_activity' | 'compliance' | 'deals' | 'diligence' | 'accounting' | 'gp_economics' | 'tax_reporting' | 'management_company'
+export type FeatureKey = 'interactions' | 'investments' | 'notes' | 'lp_letters' | 'imports' | 'asks' | 'lps' | 'lp_tracking' | 'lp_portal' | 'lp_activity' | 'compliance' | 'deals' | 'diligence' | 'accounting' | 'gp_economics' | 'tax_reporting' | 'management_company' | 'gpu_fleet'
 
 export type FeatureVisibility = 'everyone' | 'admin' | 'hidden' | 'off'
 
@@ -57,6 +57,10 @@ export const DEFAULT_FEATURE_VISIBILITY: FeatureVisibilityMap = {
   // domain like `tax_reporting`: a forecast is built from the vehicle's chart and its posted actuals,
   // so anyone who can read the books can read every figure it shows. Its own switch because a fund
   // keeping books need not be planning in the product. Off by default, like all of Fund Operations.
+  // ── GPU fleet (P1) ──
+  // GPU SPVs: the fleet register, datacenter and marketplace accounts, utilization, earnings. Off
+  // by default so a VC-only fund is unchanged; owned by the GPU Operations product, which ships off.
+  gpu_fleet: 'off',
 }
 
 /**

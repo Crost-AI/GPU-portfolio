@@ -2,7 +2,7 @@ import type { FeatureKey, FeatureVisibility, FeatureVisibilityMap } from '@/lib/
 import { DEFAULT_FEATURE_VISIBILITY } from '@/lib/types/features'
 import { DOMAIN_META, type Domain } from '@/lib/access/domains'
 
-export type ProductKey = 'portfolio_reporting' | 'investment_workflow' | 'lp_reporting' | 'fund_operations'
+export type ProductKey = 'portfolio_reporting' | 'investment_workflow' | 'lp_reporting' | 'fund_operations' | 'gpu_operations'
 
 export interface ProductMeta {
   label: string
@@ -48,6 +48,15 @@ export const PRODUCT_META: Record<ProductKey, ProductMeta> = {
     shipsOn: false,
     domains: ['accounting', 'management_company', 'tax', 'gp_economics', 'compliance'],
     features: ['accounting', 'management_company', 'tax_reporting', 'gp_economics', 'compliance'],
+  },
+  // ── GPU fleet (P1) ──
+  gpu_operations: {
+    label: 'GPU Operations',
+    description: 'GPU SPVs: the fleet register, depreciation, datacenter and marketplace accounts, utilization, and marketplace earnings.',
+    order: 5,
+    shipsOn: false,
+    domains: ['fleet'],
+    features: ['gpu_fleet'],
   },
 }
 

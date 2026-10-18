@@ -325,6 +325,7 @@ export function chartForVehicleKind(kind: string | null | undefined): ChartAccou
   if (kind === 'manco') return MANAGEMENT_COMPANY_CHART
   if (kind === 'associate') return GP_ENTITY_CHART
   if (kind === 'individual') return INDIVIDUAL_CHART
+  if (kind === 'gpu_spv') return GPU_SPV_CHART
   return DEFAULT_CHART
 }
 
@@ -389,4 +390,70 @@ export const INDIVIDUAL_CHART: ChartAccountSeed[] = [
 /** The per-LP capital account code for an entity, e.g. 3100-<entity>. */
 export function lpCapitalCode(lpEntityId: string): string {
   return `3100-${lpEntityId.slice(0, 8)}`
+}
+
+// ── GPU fleet (P1) ──
+
+/**
+ * Starter chart for a GPU SPV — a partnership that owns GPU servers and rents them out.
+ *
+ * An operating business with partners. The partner-equity block (3000/3100/3200) is the fund
+ * chart's code for code, so capital accounts, allocation, calls, distributions, carry and K-1s run
+ * unchanged; 1300/2300/2350 keep the fund chart's codes for the same reason (RECEIVABLE_CODE,
+ * DISTRIBUTION_PAYABLE_CODE, ADVANCE_CODE). What differs is the business: equipment at cost and
+ * accumulated depreciation instead of investments at cost and unrealized appreciation, rental
+ * revenue instead of realized gains, and the costs of keeping servers racked and rented.
+ *
+ * 1600/1650 carry a per-asset sub-account (`assetAccountCode`), provisioned when a server is
+ * purchased, so net book value can be read per server. A disposal's gain or loss (4500) allocates
+ * as a realized gain (continuous-allocation.ts).
+ */
+export const GPU_SPV_CHART: ChartAccountSeed[] = [
+  // Assets
+  { code: '1000', name: 'Cash', type: 'asset', subtype: 'cash' },
+  { code: '1050', name: 'Cash \u2014 reserve', type: 'asset', subtype: 'cash' },
+  { code: '1150', name: 'Marketplace receivable', type: 'asset', subtype: 'marketplace_receivable' },
+  { code: '1300', name: 'Due from LPs', type: 'asset', subtype: 'receivable' },
+  { code: '1500', name: 'Prepaid expenses (insurance, datacenter)', type: 'asset', subtype: 'prepaid' },
+  { code: '1550', name: 'Deposits', type: 'asset', subtype: 'deposit' },
+  { code: '1600', name: 'GPU equipment at cost', type: 'asset', subtype: 'fixed_asset' },
+  // Contra-asset: a credit balance on an asset account, kept apart from 1600 so gross cost stays visible.
+  { code: '1650', name: 'Accumulated depreciation', type: 'asset', subtype: 'accumulated_depreciation' },
+
+  // Liabilities
+  { code: '2000', name: 'Accounts payable / accrued expenses', type: 'liability', subtype: 'accrued' },
+  // The management fee when there is no intercompany link to the manco; with one, it books to 2900-<manco>.
+  { code: '2100', name: 'Due to manager', type: 'liability', subtype: 'due_to_gp' },
+  { code: '2300', name: 'Distributions payable', type: 'liability', subtype: 'distributions_payable' },
+  { code: '2350', name: 'Capital contributions received in advance', type: 'liability', subtype: 'capital_advance' },
+  { code: '2900', name: 'Due to affiliates', type: 'liability', subtype: INTERCOMPANY_PAYABLE_SUBTYPE },
+
+  // Equity — the fund chart's, code for code.
+  { code: '3000', name: "Partners' capital \u2014 manager (GP)", type: 'equity', subtype: 'gp_capital' },
+  { code: '3100', name: "Partners' capital \u2014 investors", type: 'equity', subtype: 'lp_capital' },
+  { code: '3200', name: 'Undistributed earnings (bridge)', type: 'equity', subtype: 'undistributed_earnings' },
+
+  // Income
+  { code: '4000', name: 'GPU rental revenue (gross)', type: 'income', subtype: 'rental_revenue' },
+  { code: '4100', name: 'Interest income', type: 'income', subtype: 'interest_income' },
+  { code: '4500', name: 'Gain/(loss) on disposal of equipment', type: 'income', subtype: 'disposal_gain' },
+
+  // Expenses
+  { code: '5000', name: 'Management fee', type: 'expense', subtype: 'management_fee' },
+  { code: '5100', name: 'Datacenter hosting & connectivity', type: 'expense', subtype: 'datacenter' },
+  { code: '5150', name: 'Marketplace processing fees', type: 'expense', subtype: 'processing_fee' },
+  { code: '5200', name: 'Insurance', type: 'expense', subtype: 'insurance' },
+  { code: '5250', name: 'Repairs, spares & RMA', type: 'expense', subtype: 'repairs' },
+  { code: '5300', name: 'Depreciation', type: 'expense', subtype: 'depreciation' },
+  { code: '5400', name: 'Professional & organizational', type: 'expense', subtype: 'partnership_expense' },
+  { code: '5900', name: 'Other expenses', type: 'expense', subtype: 'operating_expense' },
+]
+
+/**
+ * The per-asset sub-account code for a GPU server, e.g. 1600-<asset> or 1650-<asset>.
+ * Same shape as `lpCapitalCode` / `intercompanyCode`: one account per server, so cost and
+ * accumulated depreciation — and so net book value — can be read per asset.
+ */
+export function assetAccountCode(base: string, assetId: string): string {
+  return `${base}-${assetId.slice(0, 8)}`
 }
