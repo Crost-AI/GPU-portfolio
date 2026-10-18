@@ -34,7 +34,7 @@ import FleetOverviewPage from '@/app/(app)/fleet/page'
 import { GpuDetailView } from '@/app/(app)/funds/[id]/gpu-detail-view'
 import { FundDetailView } from '@/app/(app)/funds/[id]/fund-detail-view'
 import { FleetOverview } from '@/components/gpu/fleet-overview'
-import { profitShare, profitShareTotals } from '@/components/gpu/waterfall-view'
+import { profitShare, profitShareTotals, historyScope, HISTORY_CAP } from '@/components/gpu/waterfall-view'
 
 // For the page gates (sections 7 and 8): the caller's page access and the vehicle rows are the
 // fixture; canViewPage and the resolver behind it are the real ones.
@@ -392,6 +392,13 @@ describe('9. the waterfall\u2019s profit share is what was PAID, beside what was
 
   it('fully paid', () => {
     expect(profitShare(row([{ amount: 20_000, settled: 20_000 }]))).toEqual({ paid: 20_000, declared: 20_000 })
+  })
+
+  it('the tiles say they cover the distributions shown, and flag a capped history', () => {
+    expect(historyScope(1)).toEqual({ caption: 'In the 1 distribution shown', truncated: false })
+    expect(historyScope(12)).toEqual({ caption: 'In the 12 distributions shown', truncated: false })
+    expect(historyScope(HISTORY_CAP)).toEqual({ caption: `In the ${HISTORY_CAP} distributions shown`, truncated: true })
+    expect(HISTORY_CAP).toBe(200)
   })
 
   it('cumulative tiles sum each', () => {

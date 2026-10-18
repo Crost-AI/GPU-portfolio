@@ -54,6 +54,18 @@ export function profitShareTotals(rows: Pick<HistoryRow, 'carryTotal' | 'lines'>
   }, { paid: 0, declared: 0 })
 }
 
+/**
+ * GET /api/accounting/distributions returns the newest 200 (listDistributions `.limit(200)`), so a
+ * sum over the response is a sum over what is shown, never a lifetime figure. The server aggregate
+ * arrives with the P2 history in P5-3.
+ */
+export const HISTORY_CAP = 200
+
+/** The caption under the cumulative tiles: what they sum, and what they leave out. */
+export function historyScope(n: number): { caption: string; truncated: boolean } {
+  return { caption: `In the ${n} ${n === 1 ? 'distribution' : 'distributions'} shown`, truncated: n >= HISTORY_CAP }
+}
+
 const STATUS_LABEL: Record<HistoryRow['status'], string> = { open: 'Unpaid', partial: 'Part paid', settled: 'Paid' }
 
 export function WaterfallView(_props: { vehicle: string; vehicleId: string | null }) {
@@ -136,10 +148,18 @@ export function WaterfallView(_props: { vehicle: string; vehicleId: string | nul
           <div className="space-y-3">
           {seesTerms && (() => {
             const totals = profitShareTotals(history)
+            const scope = historyScope(history.length)
             return (
-              <div className="grid grid-cols-2 gap-3">
-                <Metric label="Profit share paid" value={money(totals.paid)} sub="Settled to date, every distribution" />
-                <Metric label="Profit share declared" value={money(totals.declared)} sub="Declared to date, paid or not" />
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-3">
+                  <Metric label="Profit share paid" value={money(totals.paid)} sub={scope.caption} />
+                  <Metric label="Profit share declared" value={money(totals.declared)} sub={scope.caption} />
+                </div>
+                {scope.truncated && (
+                  <p className="text-sm text-muted-foreground">
+                    Only the newest {HISTORY_CAP} distributions are shown; older ones are not included in these totals.
+                  </p>
+                )}
               </div>
             )
           })()}
