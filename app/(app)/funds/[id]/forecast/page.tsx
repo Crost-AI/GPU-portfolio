@@ -33,5 +33,6 @@ function tabParam(raw: string | string[] | undefined): ForecastTab | undefined {
   if (t === 'portfolio') return 'investments'
   if (t === 'fund') return 'financials'
   if (t === 'returns') return 'charts'
-  return t === 'charts' || t === 'investments' || t === 'capital' || t === 'financials' ? t : undefined
+  // `fleet` is a GPU SPV's; the view falls back to its first tab for a kind without it.
+  return t === 'charts' || t === 'investments' || t === 'capital' || t === 'financials' || t === 'fleet' ? t : undefined
 }

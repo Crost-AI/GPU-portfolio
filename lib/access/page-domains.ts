@@ -90,7 +90,12 @@ export const PAGE_DOMAINS: Record<string, PageDomain> = {
   // the minimum to open any of them:
   //   - a section slug in the `[id]` slot is the firm-wide landing (requireAccountingAccess),
   //   - an entity id is that entity's lead page (requireVehicleAccess),
-  //   - and when that entity is a MANAGEMENT COMPANY the gate demands `management_company` too.
+  //   - and when that entity is a MANAGEMENT COMPANY the gate demands `management_company` too,
+  //   - and when it is a GPU SPV the lead page is the GPU one only for a caller who can view
+  //     `fleet` behind `gpu_fleet`; anyone else gets the plain fund lead page.
+  //   - ── GPU fleet (P5) ── a GPU section's landing (/funds/fleet, revenue, waterfall, scenarios)
+  //     is gated by requireGpuSectionAccess instead: `fleet` behind `gpu_fleet`, and the section's
+  //     own domain (lp_capital for the waterfall).
   // The registry maps one domain per page; the second half of a page that straddles two is gated
   // in the page's own path, which for every entity page is app/(app)/funds/guard.ts.
   'funds/[id]': { domain: 'accounting', gate: 'requireVehicleAccess' },
@@ -113,6 +118,20 @@ export const PAGE_DOMAINS: Record<string, PageDomain> = {
   'funds/[id]/schedule-of-investments': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/statements': { domain: 'accounting', gate: 'requireVehicleAccess' },
   'funds/[id]/status': { domain: 'accounting', gate: 'requireVehicleAccess' },
+
+  // ── GPU fleet (P5) ──
+  // The firm-wide overview lists GPU SPVs only, filtered by canSeeVehicle. Every entity page below
+  // also passes `kinds: ['gpu_spv']`, so a VC entity's id is not found rather than rendered.
+  'fleet': { domain: 'fleet', feature: 'gpu_fleet' },
+  'funds/[id]/fleet': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  'funds/[id]/fleet/[assetId]': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  'funds/[id]/revenue': { domain: 'fleet', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  // Investors' capital and the distributions declared to them: the capital accounts' domain. Behind
+  // the GPU switch as well, so an existing GPU SPV shows nothing GPU once gpu_fleet is off; the page
+  // also asks lp_capital under its own switch, which the distributions route uses.
+  'funds/[id]/waterfall': { domain: 'lp_capital', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
+  // A plan over the vehicle's own books, like the Forecast page; behind the GPU switch likewise.
+  'funds/[id]/scenarios': { domain: 'accounting', feature: 'gpu_fleet', gate: 'requireVehicleAccess' },
 
   // ── Administration ─────────────────────────────────────────────────────────
   'usage': { domain: 'admin' },

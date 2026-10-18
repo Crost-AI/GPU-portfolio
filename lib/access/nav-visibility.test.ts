@@ -17,11 +17,13 @@ import path from 'node:path'
  */
 
 import { effectiveAccess, type AccessContext } from './effective'
-import { domainForFeature, domainFundLevel, domainGrantableToMembers } from './domains'
+import { domainForFeature, domainFundLevel, domainGrantableToMembers, type Domain } from './domains'
 import { ROUTE_DOMAINS } from './route-domains'
-import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+import { DEFAULT_FEATURE_VISIBILITY, type FeatureKey, type FeatureVisibilityMap } from '@/lib/types/features'
 import { ACCOUNTING_SECTIONS, UNLISTED_SECTIONS, sectionsForKind, hasSectionForKind, type AccountingSection } from '@/lib/accounting/nav'
 import { Gauge } from 'lucide-react'
+import { canSee, fundsChildrenFor } from '@/components/app-sidebar'
+import { gpuQuickLinks } from '@/app/(app)/funds/[id]/gpu-detail-view'
 
 const ctx = (features: Partial<FeatureVisibilityMap>, grants: Record<string, string> = {}): AccessContext => ({
   fundId: 'f1',
@@ -164,8 +166,13 @@ describe('entity sub-nav by kind', () => {
     expect(hrefs('manco')).toEqual(without('/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
   })
 
-  it('a GPU SPV hides only the schedule of investments and Tax (until #68)', () => {
-    expect(hrefs('gpu_spv')).toEqual(without('/funds/schedule-of-investments', '/funds/tax'))
+  // ── GPU fleet (P5) ── the four operating pages, after Forecast, are the GPU SPV's alone.
+  const GPU = ['/funds/fleet', '/funds/revenue', '/funds/waterfall', '/funds/scenarios']
+
+  it('a GPU SPV hides only the schedule of investments and Tax (until #68), and adds its four pages', () => {
+    const shared = without('/funds/schedule-of-investments', '/funds/tax')
+    const at = shared.indexOf('/funds/forecast') + 1
+    expect(hrefs('gpu_spv')).toEqual([...shared.slice(0, at), ...GPU, ...shared.slice(at)])
     expect(hasSectionForKind('tax', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('schedule-of-investments', 'gpu_spv')).toBe(false)
     expect(hasSectionForKind('capital-accounts', 'gpu_spv')).toBe(true)
@@ -179,7 +186,39 @@ describe('entity sub-nav by kind', () => {
     expect(sectionsForKind([fleet], null)).toEqual([])
   })
 
-  it('ships no showFor section yet, so no existing kind can lose one', () => {
-    expect(ALL.filter(s => s.showFor)).toEqual([])
+  it('ships showFor only on the four GPU pages, so no existing kind can lose one', () => {
+    expect(ALL.filter(s => s.showFor).map(s => [s.href, s.showFor])).toEqual(GPU.map(h => [h, ['gpu_spv']]))
+  })
+})
+
+// ── GPU fleet (P5) ──
+
+describe('a GPU SPV’s Waterfall link needs both of its switches', () => {
+  const SEG = 'SEG'
+  const WATERFALL = `/funds/${SEG}/waterfall`
+  const on = (lps: 'everyone' | 'off') =>
+    ({ ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps, lp_tracking: 'everyone', gpu_fleet: 'everyone' }) as FeatureVisibilityMap
+  const admin = (features: FeatureVisibilityMap) =>
+    ({ fundId: 'f', userId: 'u', role: 'admin', vehicles: { all: true, ids: [] }, features, grants: {}, defaults: {} }) as AccessContext
+  const bound = (c: AccessContext) => (d: Domain, f?: FeatureKey) => effectiveAccess(c, d, f)
+  const subnav = (c: AccessContext) => fundsChildrenFor(SEG, false, 'gpu_spv').filter(k => canSee(k, true, bound(c))).map(k => k.href)
+  const quick = (c: AccessContext) => gpuQuickLinks(true, bound(c)).map(s => s.href)
+
+  it('gpu_fleet on, LP Reporting off: no Waterfall in the subnav or the quick links', () => {
+    const c = admin(on('off'))
+    expect(subnav(c)).not.toContain(WATERFALL)
+    expect(quick(c)).not.toContain('/funds/waterfall')
+    // The other three stay.
+    expect(subnav(c)).toEqual(expect.arrayContaining([`/funds/${SEG}/fleet`, `/funds/${SEG}/revenue`, `/funds/${SEG}/scenarios`]))
+  })
+
+  it('gpu_fleet on, LP Reporting on: Waterfall in both', () => {
+    const c = admin(on('everyone'))
+    expect(subnav(c)).toContain(WATERFALL)
+    expect(quick(c)).toContain('/funds/waterfall')
+  })
+
+  it('only the waterfall carries alsoRequires, so no existing section changes', () => {
+    expect([...ACCOUNTING_SECTIONS, ...UNLISTED_SECTIONS].filter(s => s.alsoRequires).map(s => [s.href, s.alsoRequires])).toEqual([['/funds/waterfall', { domain: 'lp_capital' }]])
   })
 })

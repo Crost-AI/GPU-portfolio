@@ -36,6 +36,9 @@ const NOT_IN_DEMO: Record<string, string> = {
   'funds/[id]/migrate': 'reached from Admin, not the nav; an import flow',
   'funds/[id]/opening-balances': 'reached from Admin, not the nav; a setup flow',
   'funds/[id]/tax': 'tax_reporting ships off',
+  // ── GPU fleet (P5) ──
+  'fleet': 'gpu_fleet ships off, and the demo fund has no GPU SPV',
+  'funds/[id]/fleet/[assetId]': 'gpu_fleet ships off, and the demo fund has no GPU SPV',
 }
 
 function pages(dir = APP_DIR, prefix = ''): string[] {
