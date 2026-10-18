@@ -3,14 +3,18 @@
 #
 #   deploy/local/tests/harness.sh
 #
-# 1. migrate.sh against a throwaway Postgres container: a migration over Linux's 128 KiB
-#    single-argument limit applies and is recorded whole, a shared version records both files, and
-#    a second run applies nothing.
+# 1. migrate-inner.sh (the compose `migrate` service) against a throwaway Postgres container: it
+#    applies nothing over a history the previous migrate.sh wrote (production's), a migration over
+#    Linux's 128 KiB single-argument limit applies and is recorded whole, a shared version records
+#    both files, a second run applies nothing, and a failing file is named and not recorded. Then
+#    migrate.sh's last check: from the app container, or MIGRATE_CHECK_URL; skipped when unreachable.
 # 2. backup.sh and restore.sh against a fake `docker` that records what they ask for and fails on
 #    demand: which services stop and start, on success and on a failure at every step.
 # 3. swap-staged-files.sh in the pinned storage image (busybox, as in production) with a real
 #    failing `mv`: a move that fails keeps both directories and exits 1.
 # 4. Kong's DNS TTLs, so services restarted by backup/restore (new IPs) are re-resolved in 5 s.
+# 5. The resolved compose config: the app waits for the `migrate` service, which mounts only
+#    supabase/migrations and its script; GoTrue's MFA and mailer settings.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 real_docker="$(command -v docker)"
@@ -26,16 +30,26 @@ expect() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1: expected [$3], got
 mkdir -p "$tmp/repo/deploy/local" "$tmp/repo/supabase/migrations" "$tmp/bin"
 cp -R "$here/scripts" "$tmp/repo/deploy/local/"
 touch "$tmp/repo/deploy/local/docker-compose.yml"
-printf 'KONG_HTTP_PORT=1\nSERVICE_ROLE_KEY=x\n' > "$tmp/repo/deploy/local/.env"   # port 1: refused
+printf 'KONG_HTTP_PORT=1\nSERVICE_ROLE_KEY=harness-service-key\n' > "$tmp/repo/deploy/local/.env"
 cat > "$tmp/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 # `docker inspect` / `docker compose -f … --env-file … <cmd>`. Logs <cmd>; exits 1 when FAIL_ON
-# is in it. With PG set, `exec -T db psql …` runs in that real container.
+# is in it. With PG set, `exec -T db psql …` runs in that real container, and `run --rm -T migrate`
+# runs migrate-inner.sh against it. The app is running when APP_UP is set, and its curl answers
+# FUNDS_CODE, but only when SERVICE_KEY reached it through the environment.
 if [[ "$1" == inspect ]]; then echo healthy; exit 0; fi
 shift; while [[ "$1" == -f || "$1" == --env-file ]]; do shift 2; done
 echo "$*" >> "$LOG"
 [[ -n "${FAIL_ON:-}" && "$*" == *"$FAIL_ON"* ]] && exit 1
 case "$*" in
+  "run --rm -T migrate")
+    exec "$REAL_DOCKER" run --rm --label "ao.session=${AO_SESSION:-}" --network "container:$PG" \
+      -v "$MIGRATIONS:/migrations:ro" -v "$INNER:/usr/local/bin/migrate-inner.sh:ro" \
+      -e PGHOST=localhost -e PGUSER=postgres -e PGDATABASE=postgres -e PGPASSWORD=harness \
+      --entrypoint bash supabase/postgres:17.6.1.136 /usr/local/bin/migrate-inner.sh ;;
+  "ps -q --status running app") [[ -n "${APP_UP:-}" ]] && echo fake ;;
+  "exec -T -e SERVICE_KEY app sh -c "*)
+    [[ "$SERVICE_KEY" == harness-service-key ]] && printf '%s' "$FUNDS_CODE" || printf 'no-key' ;;
   "ps -q "*) echo fake ;;
   "ps --services --status running") printf '%s\n' $RUNNING ;;
   "exec -T db psql -U supabase_admin -d postgres -tA -c select c.relname"*) printf '%s\n' $DB_RELS ;;
@@ -61,26 +75,75 @@ else
   ok "the container refuses a 140000-byte argument (the limit the big migration must avoid)"
 fi
 
-big="$tmp/repo/supabase/migrations/20990101000000_big.sql"
+migrations="$tmp/repo/supabase/migrations"
+big="$migrations/20990101000000_big.sql"
 { echo "create table harness_big (body text);"
-  # \$mig\$ in the text makes migrate.sh pick another dollar-quote tag.
+  # \$mig\$ in the text makes the runner pick another dollar-quote tag.
   printf "insert into harness_big values ('%s');\n" "\$mig\$ $(head -c 140000 /dev/zero | tr '\0' y)"
 } > "$big"
-echo "create table harness_a (x int);" > "$tmp/repo/supabase/migrations/20990101000001_a.sql"
-echo "create table harness_b (x int);" > "$tmp/repo/supabase/migrations/20990101000001_b.sql"
+echo "create table harness_a (x int);" > "$migrations/20990101000001_a.sql"
+echo "create table harness_b (x int);" > "$migrations/20990101000001_b.sql"
 size="$(wc -c < "$big" | tr -d ' ')"
 
-export PG="$pg"
-: > "$LOG"; "$scripts/migrate.sh" > "$tmp/migrate1.out" 2>&1 || true   # its stack checks fail here
+export PG="$pg" MIGRATIONS="$migrations" INNER="$here/scripts/migrate-inner.sh"
 q() { "$real_docker" exec "$pg" psql -U postgres -tAc "$1"; }
+inner() { docker compose run --rm -T migrate > "$tmp/$1.out" 2>&1 && echo 0 || echo 1; }   # via the fake
+last() { tail -1 "$tmp/$1.out"; }
+
+# Production's history was written by the psql loop in migrate.sh as it shipped in a688a182. The
+# runner must read it as applied, or the first deploy re-applies every file to a live database.
+if git -C "$here" show a688a182:deploy/local/scripts/migrate.sh > "$scripts/migrate-a688a182.sh"; then
+  chmod +x "$scripts/migrate-a688a182.sh"
+  : > "$LOG"; "$scripts/migrate-a688a182.sh" > "$tmp/old.out" 2>&1 || true   # its stack checks fail here
+  rows="$(q "select count(*) from supabase_migrations.schema_migrations")"
+  expect "the a688a182 migrate.sh applied the 3 files (2 history rows)" "$(grep -c '^applying' "$tmp/old.out")/$rows" "3/2"
+  expect "migrate-inner.sh over that history: exits 0" "$(inner compat)" 0
+  expect "...and applies nothing" "$(last compat)" "migrate: applied 0, already applied 3"
+  expect "...and adds no history row" "$(q "select count(*) from supabase_migrations.schema_migrations")" "$rows"
+  rm "$scripts/migrate-a688a182.sh"
+else bad "git show a688a182:deploy/local/scripts/migrate.sh (needs the repo's history)"; fi
+
+q "drop schema supabase_migrations cascade; drop table harness_big, harness_a, harness_b" >/dev/null 2>&1
+expect "migrate-inner.sh on an empty database: exits 0" "$(inner first)" 0
+expect "...and says what it did" "$(last first)" "migrate: applied 3, already applied 0"
 expect "a ${size}-byte migration applied" "$(q "select length(body) > 140000 from harness_big")" t
 expect "its history row holds the whole file" \
   "$(q "select octet_length(statements[1]) from supabase_migrations.schema_migrations where version = '20990101000000'")" "$size"
 expect "a shared version records both files" \
   "$(q "select name from supabase_migrations.schema_migrations where version = '20990101000001'")" "a,b"
 expect "both files of the shared version ran" "$(q "select count(*) from pg_tables where tablename in ('harness_a', 'harness_b')")" 2
-"$scripts/migrate.sh" > "$tmp/migrate2.out" 2>&1 || true
-expect "a second run applies nothing" "$(grep -c '^applying' "$tmp/migrate2.out" || true)" 0
+inner second >/dev/null
+expect "a second run applies nothing" "$(grep -c '^applying' "$tmp/second.out" || true)/$(last second)" "0/migrate: applied 0, already applied 3"
+
+printf 'create table harness_c (x int);\nselect harness_no_such_function();\n' > "$migrations/20990101000002_bad.sql"
+expect "a failing migration: exits 1" "$(inner bad)" 1
+expect "...names the file on the last line" "$(last bad)" "migrate: FAILED on 20990101000002_bad.sql"
+expect "...and records and keeps nothing of it" \
+  "$(q "select count(*) from supabase_migrations.schema_migrations where version = '20990101000002'")/$(q "select count(*) from pg_tables where tablename = 'harness_c'")" "0/0"
+rm "$migrations/20990101000002_bad.sql"
+
+# migrate.sh: applies through the `migrate` service, then checks. Its other checks fail here (no
+# Supabase schemas); only the last one, GET /rest/v1/funds, is under test. storage.buckets is
+# listed, not just counted, so it has to exist for the script to get that far.
+"$real_docker" exec "$pg" psql -U supabase_admin -d postgres -qc \
+  "create table storage.buckets (id text, public bool, file_size_limit bigint)"
+unset MIGRATE_CHECK_URL
+host() { : > "$LOG"; "$scripts/migrate.sh" > "$tmp/host.out" 2>&1 || true; grep 'GET /rest/v1/funds' "$tmp/host.out"; }
+expect "migrate.sh: app not running: skips the funds check" "$(host)" \
+  "skip  GET /rest/v1/funds: app not running (or set MIGRATE_CHECK_URL to where Kong answers)"
+grep -qxF "run --rm -T migrate" "$LOG" && ok "migrate.sh: applies through the compose migrate service" || bad "migrate.sh: did not run the migrate service"
+expect "migrate.sh: from the app container, 200 is ok" "$(APP_UP=1 FUNDS_CODE=200 host)" \
+  "ok    GET /rest/v1/funds with the service key, from the app container"
+grep -q harness-service-key "$LOG" && bad "migrate.sh: the service key is on a docker command line" || ok "migrate.sh: the service key reaches the app container through the environment, not argv"
+expect "migrate.sh: from the app container, 000 is a skip" "$(APP_UP=1 FUNDS_CODE=000 host)" \
+  "skip  GET /rest/v1/funds: Kong unreachable from the app container (set MIGRATE_CHECK_URL to where Kong answers)"
+expect "migrate.sh: from the app container, 404 is a FAIL (after retrying)" "$(APP_UP=1 FUNDS_CODE=404 host)/$(grep -c 'app sh -c' "$LOG")" \
+  "FAIL  GET /rest/v1/funds with the service key, from the app container: expected 200, got 404/10"
+expect "migrate.sh: MIGRATE_CHECK_URL from the environment, unreachable: skip" "$(MIGRATE_CHECK_URL=http://127.0.0.1:1 host)" \
+  "skip  GET /rest/v1/funds: Kong unreachable from http://127.0.0.1:1 (set MIGRATE_CHECK_URL to where Kong answers)"
+echo "MIGRATE_CHECK_URL=http://127.0.0.1:1" >> "$tmp/repo/deploy/local/.env"
+expect "migrate.sh: MIGRATE_CHECK_URL from .env, unreachable: skip" "$(APP_UP=1 FUNDS_CODE=200 host)" \
+  "skip  GET /rest/v1/funds: Kong unreachable from http://127.0.0.1:1 (set MIGRATE_CHECK_URL to where Kong answers)"
 unset PG
 
 # ── 2. backup.sh / restore.sh against the fake ──────────────────────────────────────────────────
@@ -168,11 +231,35 @@ expect "swap: a staged file that will not move fails it" "$(swap staged)" 1
 [[ -f "$tmp/vol/staged/.restore-old/stub/live/f" && -d "$tmp/vol/staged/.restore-staging/fail-new-top" ]] \
   && ok "swap: ...and keeps the previous files in .restore-old and the unmoved backup file in staging" || bad "swap: deleted something after a failed staged move"
 
-# ── 4. Kong re-resolves restarted services quickly (static: the resolved compose config) ─────────
-kong_env="$(POSTGRES_PASSWORD=x JWT_SECRET=x ANON_KEY=x SERVICE_ROLE_KEY=x ENCRYPTION_KEY=x CRON_SECRET=x \
-  "$real_docker" compose -f "$here/docker-compose.yml" --env-file /dev/null config --format json \
-  | python3 -c 'import json, sys; e = json.load(sys.stdin)["services"]["kong"]["environment"]; print(e.get("KONG_DNS_VALID_TTL"), e.get("KONG_DNS_STALE_TTL"), e.get("KONG_DNS_NOT_FOUND_TTL"))')"
-expect "kong: DNS valid/stale/not-found TTLs keep restarted services reachable (5 0 1)" "$kong_env" "5 0 1"
+# ── 4/5. The resolved compose config (static) ───────────────────────────────────────────────────
+config() {
+  env POSTGRES_PASSWORD=x JWT_SECRET=x ANON_KEY=x SERVICE_ROLE_KEY=x ENCRYPTION_KEY=x CRON_SECRET=x "$@" \
+    "$real_docker" compose -f "$here/docker-compose.yml" --env-file /dev/null config --format json > "$tmp/config.json"
+}
+cfg() { python3 -c 'import json, sys; s = json.load(open(sys.argv[1]))["services"]; print(eval(sys.argv[2]))' "$tmp/config.json" "$@"; }
+config
+expect "kong: DNS valid/stale/not-found TTLs keep restarted services reachable (5 0 1)" \
+  "$(cfg '" ".join(str(s["kong"]["environment"].get(k)) for k in ("KONG_DNS_VALID_TTL", "KONG_DNS_STALE_TTL", "KONG_DNS_NOT_FOUND_TTL"))')" "5 0 1"
+
+expect "app: waits for migrate to exit 0" "$(cfg 's["app"]["depends_on"]["migrate"]["condition"]')" service_completed_successfully
+expect "migrate: one-shot (restart no), the db's image, no ports, no build" \
+  "$(cfg 's["migrate"]["restart"], s["migrate"]["image"] == s["db"]["image"], "ports" in s["migrate"], "build" in s["migrate"]')" "('no', True, False, False)"
+expect "migrate: waits for db, auth and storage to be healthy" \
+  "$(cfg 'sorted((k, v["condition"]) for k, v in s["migrate"]["depends_on"].items())')" \
+  "[('auth', 'service_healthy'), ('db', 'service_healthy'), ('storage', 'service_healthy')]"
+expect "migrate: mounts exactly supabase/migrations and its script, read-only (never pending-deploy)" \
+  "$(cfg 'sorted((v["type"], v["source"].replace(sys.argv[3], ""), v["target"], v.get("read_only")) for v in s["migrate"]["volumes"])' "$(cd "$here/../.." && pwd)")" \
+  "[('bind', '/deploy/local/scripts/migrate-inner.sh', '/usr/local/bin/migrate-inner.sh', True), ('bind', '/supabase/migrations', '/migrations', True)]"
+expect "migrate: runs migrate-inner.sh with the PG* environment" \
+  "$(cfg 's["migrate"]["entrypoint"], sorted(s["migrate"]["environment"].items())')" \
+  "(['bash', '/usr/local/bin/migrate-inner.sh'], [('PGDATABASE', 'postgres'), ('PGHOST', 'db'), ('PGPASSWORD', 'x'), ('PGUSER', 'postgres')])"
+expect "auth: TOTP MFA enrol and verify on" \
+  "$(cfg 's["auth"]["environment"]["GOTRUE_MFA_TOTP_ENROLL_ENABLED"], s["auth"]["environment"]["GOTRUE_MFA_TOTP_VERIFY_ENABLED"]')" "('true', 'true')"
+expect "auth: mailer autoconfirm off and no external hosts by default" \
+  "$(cfg 's["auth"]["environment"]["GOTRUE_MAILER_AUTOCONFIRM"], s["auth"]["environment"]["GOTRUE_MAILER_EXTERNAL_HOSTS"]')" "('false', '')"
+config MAILER_AUTOCONFIRM=true MAILER_EXTERNAL_HOSTS=cap.example.com
+expect "auth: MAILER_AUTOCONFIRM and MAILER_EXTERNAL_HOSTS from .env reach GoTrue" \
+  "$(cfg 's["auth"]["environment"]["GOTRUE_MAILER_AUTOCONFIRM"], s["auth"]["environment"]["GOTRUE_MAILER_EXTERNAL_HOSTS"]')" "('true', 'cap.example.com')"
 
 echo "$pass passed, $failed failed"
 ((failed == 0))

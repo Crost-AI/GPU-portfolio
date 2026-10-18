@@ -2,10 +2,11 @@
 # Restore a backup made by backup.sh:
 #   deploy/local/scripts/restore.sh [--force] deploy/local/backups/<time>
 #
-# Restore into a fresh stack: `dc down -v && dc up -d`, then this (no migrate.sh: the dump carries
-# the schema and the migration history). Restoring over a stack with NEWER migrations would leave
-# their tables behind next to the older history, so this refuses when `public` has relations the
-# dump does not, unless --force. deploy/local/.env must hold the backup's ENCRYPTION_KEY.
+# Restore into a fresh stack: `dc down -v`, then this directly (it starts db, auth and storage
+# itself; the dump carries the schema and the migration history). Its final `up -d` runs the
+# `migrate` service, which migrates the backup forward. Restoring over a stack with NEWER migrations
+# would leave their tables behind next to the older history, so this refuses when `public` has
+# relations the dump does not, unless --force. deploy/local/.env must hold the backup's ENCRYPTION_KEY.
 #
 # Every writer (app, scheduler, PostgREST, storage API, and GoTrue, whose tables are replaced too)
 # is stopped throughout. The steps run so that a failure leaves something usable:
@@ -72,7 +73,8 @@ extra="$(comm -23 <(sort -u <<<"$live_rels") <(sort -u <<<"$dump_rels"))"
 if [[ -n "$extra" ]] && ((!force)); then
   echo "Refusing: public has relations the backup does not, so this stack is ahead of it:" >&2
   head -10 <<<"$extra" | sed 's/^/  /' >&2
-  echo "Restore into a fresh stack (dc down -v && dc up -d), or pass --force to restore over them anyway." >&2
+  echo "Restore into a fresh stack (dc down -v, then this directly: it starts db, auth and storage itself," >&2
+  echo "and its final up -d migrates the backup forward), or pass --force to restore over them anyway." >&2
   exit 1
 fi
 

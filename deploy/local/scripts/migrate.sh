@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Apply supabase/migrations to the local stack, then check the result.
+# Apply supabase/migrations to the local stack, then check the result. `docker compose up` already
+# applies them (the `migrate` service, before the app starts); this is the way to see the checks.
 #
-#   deploy/local/scripts/migrate.sh         # psql inside the db container (the default)
+#   deploy/local/scripts/migrate.sh         # the compose `migrate` service (scripts/migrate-inner.sh)
 #   deploy/local/scripts/migrate.sh --cli   # the host supabase CLI: supabase db push
 #
 # Both record applied files in supabase_migrations.schema_migrations, so either one skips what the
-# other applied. psql is the default because the CLI cannot install this repo from empty: four
-# versions are shared by two files each (e.g. 20260625000000_*), the history table's key is the
-# version, and `db push` applies the first file of each pair, fails on the second, and from then on
-# counts both as applied. The psql path applies both and records one row per version, naming both
-# files. Once the database is up to date, `--cli` is fine for later migrations.
+# other applied. The `migrate` service is the default because the CLI cannot install this repo from
+# empty (four versions are shared by two files each; see migrate-inner.sh). Once the database is up
+# to date, `--cli` is fine for later migrations.
+#
+# MIGRATE_CHECK_URL (environment or .env): where Kong answers from this host (behind a proxy, the
+# public URL), for the last check. Unset, that check runs from inside the app container instead.
 #
 # supabase/pending-deploy/ is never applied: those files wait for a release to ship first
 # (CLAUDE.md), and are moved into migrations/ when it has.
@@ -61,46 +63,12 @@ if [[ "${1:-}" == "--cli" ]]; then
   pg_port="$(env_get POSTGRES_HOST_PORT)"
   (cd "$repo" && supabase db push --yes \
     --db-url "postgresql://postgres:$(urlencode "$(env_get POSTGRES_PASSWORD)")@127.0.0.1:${pg_port:-54322}/postgres")
+  # 3. Let PostgREST see the new schema.
+  psql_db -c "notify pgrst, 'reload schema'"
 else
-  # The history table as the CLI creates it.
-  psql_db <<'SQL'
-create schema if not exists supabase_migrations;
-create table if not exists supabase_migrations.schema_migrations (version text primary key, statements text[], name text);
-SQL
-  # "version name" per applied file; a shared version's row names its files comma-separated.
-  applied="$(psql_db -tA -c "select version || ' ' || n from supabase_migrations.schema_migrations, unnest(string_to_array(coalesce(name, ''), ',')) n")"
-  versions="$(psql_db -tA -c "select version from supabase_migrations.schema_migrations")"
-  for f in "$repo"/supabase/migrations/*.sql; do
-    base="$(basename "$f" .sql)"; version="${base%%_*}"; name="${base#*_}"
-    grep -qxF "$version $name" <<<"$applied" && continue
-    # A version the CLI recorded (name unknown to compare) counts as applied when its file is the
-    # first of its version, which is the one the CLI applies.
-    first="$(basename "$(ls "$repo/supabase/migrations/${version}"_*.sql | head -1)" .sql)"
-    grep -qxF "$version" <<<"$versions" && [[ "$base" == "$first" ]] && continue
-    [[ "$version" =~ ^[0-9]+$ && "$name" =~ ^[A-Za-z0-9_]+$ ]] || { echo "unexpected migration file name: $base" >&2; exit 1; }
-    echo "applying $base"
-    # One transaction per file, history row included, as the CLI does. Exception: a file with its
-    # own begin/commit (20260714000001_commitment_events_snapshot_dedup.sql) ends that transaction
-    # early, so its history row commits separately; the CLI behaves the same. Interrupted between
-    # the two, the next run applies that file again.
-    #
-    # The file is recorded as one statement where the CLI splits it (nothing compares
-    # statements), as a dollar-quoted literal whose tag the file does not contain, not even without
-    # its closing "$" (a file ending in "$mig" would close the literal early). Everything travels
-    # on stdin: Linux caps a single argument at 128 KiB, and migrations here pass 100 KiB.
-    tag=mig; while grep -qF "\$$tag" "$f"; do tag="mig_$RANDOM"; done
-    { cat "$f"
-      printf '\n;\ninsert into supabase_migrations.schema_migrations (version, name, statements)\n'
-      printf "values ('%s', '%s', array[\$%s\$" "$version" "$name" "$tag"
-      cat "$f"
-      printf '$%s$]) on conflict (version) do update\n' "$tag"
-      printf "set name = schema_migrations.name || ',' || excluded.name, statements = schema_migrations.statements || excluded.statements;\n"
-    } | psql_db --single-transaction
-  done
+  # The compose `migrate` service: scripts/migrate-inner.sh, which `up` also runs before the app.
+  dc run --rm -T migrate
 fi
-
-# 3. Let PostgREST see the new schema.
-psql_db -c "notify pgrst, 'reload schema'"
 
 # 4. Check what the app depends on.
 fail=0
@@ -120,9 +88,34 @@ check "the 8 private buckets the app uses" \
   "$(psql_db -tA -c "select count(*) from storage.buckets where not public and id = any(string_to_array('$expected', ' '))")" 8
 check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets where public")" 0
 
-service_key="$(env_get SERVICE_ROLE_KEY)"; kong_port="$(env_get KONG_HTTP_PORT)"
-code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${kong_port:-8000}/rest/v1/funds?select=id&limit=1" \
-  -H "apikey: $service_key" -H "Authorization: Bearer $service_key" || true)"   # unreachable: 000, a FAIL below
-check "GET /rest/v1/funds with the service key" "$code" 200
+# GET /rest/v1/funds through Kong with the service key. With MIGRATE_CHECK_URL (from the environment
+# or .env: where Kong answers from here, behind a proxy the public URL), from this host; otherwise from inside the app
+# container, which shares Kong's network (localhost:8000 there is Kong); the key goes in through
+# `-e SERVICE_KEY`, not on the docker command line. `notify pgrst` is asynchronous: until
+# PostgREST has reloaded, a new table answers 404, so any answer but 200 is retried a few times.
+# No answer at all (000), or no app to ask from, is a skip, not a FAIL.
+SERVICE_KEY="$(env_get SERVICE_ROLE_KEY)"; export SERVICE_KEY
+check_url="${MIGRATE_CHECK_URL:-$(env_get MIGRATE_CHECK_URL)}"
+funds() {
+  if [[ -n "$check_url" ]]; then
+    curl -s -o /dev/null -w '%{http_code}' "$check_url/rest/v1/funds?select=id&limit=1" \
+      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" || true
+  else
+    dc exec -T -e SERVICE_KEY app sh -c 'curl -s -o /dev/null -w "%{http_code}" \
+      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \
+      "http://localhost:8000/rest/v1/funds?select=id&limit=1"' || true
+  fi
+}
+where="${check_url:-the app container}"
+if [[ -z "$check_url" && -z "$(dc ps -q --status running app)" ]]; then
+  echo "skip  GET /rest/v1/funds: app not running (or set MIGRATE_CHECK_URL to where Kong answers)"
+else
+  for _ in $(seq 1 10); do code="$(funds)"; [[ "$code" == 200 || "$code" == 000 ]] && break; sleep 2; done
+  if [[ "$code" == 000 ]]; then
+    echo "skip  GET /rest/v1/funds: Kong unreachable from $where (set MIGRATE_CHECK_URL to where Kong answers)"
+  else
+    check "GET /rest/v1/funds with the service key, from $where" "$code" 200
+  fi
+fi
 
 exit "$fail"
