@@ -2,10 +2,11 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { requireAccountingAccess, requireVehicleAccess } from '../guard'
+import { requireAccountingAccess, requireGpuSectionAccess, requireVehicleAccess } from '../guard'
 import { FUND_SUBPAGE_SLUGS } from '@/components/fund-subpages'
 import { sectionForSlug } from '@/lib/accounting/nav'
 import { isManagementCompany, isGpuSpv } from '@/lib/vehicle-kinds'
+import { canViewPage } from '@/lib/access/page-gate'
 import { AccountingPageHeader, AccountingBody } from '@/components/accounting-chrome'
 import { FirmVehiclesTable } from '@/components/accounting/firm-vehicles'
 import { capitalActionFromParam, type CapitalAction } from '@/lib/accounting/capital-action'
@@ -61,7 +62,7 @@ export default async function EntityPage(props: { params: Promise<{ id: string }
     return <FirmSectionPage slug={params.id} action={action} />
   }
 
-  const { vehicle, vehicleId, kind, active } = await requireVehicleAccess(params.id)
+  const { vehicle, vehicleId, kind, active, page } = await requireVehicleAccess(params.id)
 
   return (
     <div className="pt-4 md:pt-8 pb-8 w-full">
@@ -70,8 +71,9 @@ export default async function EntityPage(props: { params: Promise<{ id: string }
       </Link>
       {isManagementCompany(kind) && vehicleId
         ? <MancoDetailView vehicle={vehicle} vehicleId={vehicleId} active={active} />
-        // ── GPU fleet (P5) ── a GPU SPV has a fleet, not a portfolio: its own lead page.
-        : isGpuSpv(kind) && vehicleId
+        // ── GPU fleet (P5) ── a GPU SPV has a fleet, not a portfolio: its own lead page — but only
+        // behind the GPU switch. With gpu_fleet off (or no fleet grant) it is shown as a fund.
+        : isGpuSpv(kind) && vehicleId && canViewPage(page, 'fleet', 'gpu_fleet')
           ? <GpuDetailView vehicle={vehicle} vehicleId={vehicleId} active={active} />
           : <FundDetailView vehicle={vehicle} vehicleId={vehicleId} />}
     </div>
@@ -84,14 +86,17 @@ export default async function EntityPage(props: { params: Promise<{ id: string }
  * row's link changes. Admin is also where an entity is added, so that page carries the button.
  */
 async function FirmSectionPage({ slug, action }: { slug: string; action: CapitalAction | null }) {
-  await requireAccountingAccess()
+  const section = sectionForSlug(slug)
+  // ── GPU fleet (P5) ── a GPU section's landing lists GPU SPVs, so it needs the fleet area and the
+  // section's own domain, not just the books. Every other slug is gated exactly as before.
+  if (section?.showFor?.includes('gpu_spv')) await requireGpuSectionAccess(section)
+  else await requireAccountingAccess()
 
   // Two slugs are not pages of their own any more: plain-text authoring is a tab on the journal,
   // and LP capital events are one of the producers on the capital accounts page.
   if (slug === 'text') redirect('/funds/journal?tab=text')
   if (slug === 'lp-events') redirect('/funds/capital-accounts')
 
-  const section = sectionForSlug(slug)
   if (!section) redirect('/funds')
 
   return (

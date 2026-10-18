@@ -143,7 +143,8 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
   },
   // ── GPU fleet (P5) ──
   // The operating pages of a GPU SPV, next to the plan. `showFor` keeps them off every other kind,
-  // and off the firm-wide subnav (a null kind never matches).
+  // and off the firm-wide subnav (a null kind never matches); `gpu_fleet` keeps all four off a GPU
+  // SPV too while the switch is off.
   {
     href: '/funds/fleet',
     label: 'Fleet',
@@ -168,6 +169,7 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     icon: GitBranch,
     desc: 'Preferred return, capital returned and unreturned, and distributions declared through the waterfall.',
     domain: 'lp_capital',
+    feature: 'gpu_fleet',
     showFor: ['gpu_spv'],
   },
   {
@@ -175,6 +177,9 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     label: 'Scenarios',
     icon: FlaskConical,
     desc: 'The pitch scenarios side by side: utilization, investor and project returns, and when capital comes back.',
+    // Explicit, or the subnav would read the domain off `gpu_fleet` (fleet) rather than the books.
+    domain: 'accounting',
+    feature: 'gpu_fleet',
     showFor: ['gpu_spv'],
   },
   {

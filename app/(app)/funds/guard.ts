@@ -1,11 +1,12 @@
 import { notFound, redirect } from 'next/navigation'
 import { getUser } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { resolvePageAccess, canViewPage } from '@/lib/access/page-gate'
+import { resolvePageAccess, canViewPage, type PageAccess } from '@/lib/access/page-gate'
 import { isManagementCompany, kindIsOneOf, type VehicleKind } from '@/lib/vehicle-kinds'
 import type { FeatureKey } from '@/lib/types/features'
 import type { Domain } from '@/lib/access/domains'
 import { canSeeVehicle } from '@/lib/access/scope'
+import type { AccountingSection } from '@/lib/accounting/nav'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -46,6 +47,32 @@ export async function requireAccountingAccess(): Promise<{ fundId: string; role:
 }
 
 /**
+ * ── GPU fleet (P5) ── The gate for the firm-wide landing of a GPU section (/funds/fleet, /revenue,
+ * /waterfall, /scenarios). Those sections exist only on GPU SPVs, so their landing lists GPU SPVs —
+ * which `requireAccountingAccess` alone would show to a caller with the books but no fleet, or with
+ * `gpu_fleet` off. So it asks for the fleet area AND the section's own domain: Fleet and Revenue are
+ * fleet; the waterfall is investors' capital as well; Scenarios the books. Sent back to the section
+ * on failure, as `requireVehicleAccess` sends a refused management company.
+ *
+ * The section's domain is asked under its OWN switch, not the section's `feature`: the nav entries
+ * carry `gpu_fleet` so the subnav drops them with the switch, and passing that here would replace
+ * the switch the domain's routes are gated on (lp_capital's is `lps`) rather than add to it.
+ */
+export async function requireGpuSectionAccess(
+  section: Pick<AccountingSection, 'domain'>,
+): Promise<{ fundId: string; role: string }> {
+  const user = await getUser()
+  if (!user) redirect('/auth')
+
+  const page = await resolvePageAccess(user.id)
+  if (!page
+    || !canViewPage(page, 'fleet', 'gpu_fleet')
+    || !canViewPage(page, section.domain ?? 'accounting')) redirect('/funds')
+
+  return { fundId: page.fundId, role: page.role }
+}
+
+/**
  * THE GATE FOR A PAGE ABOUT ONE ENTITY — which grant it needs is decided by the ENTITY, not by
  * the page.
  *
@@ -78,7 +105,7 @@ export async function requireVehicleAccess(
   rawParam: string,
   // `kinds`: the page exists only on these kinds (── GPU fleet (P1) ──); any other entity is not found.
   opts: { feature?: FeatureKey; domain?: Domain; kinds?: VehicleKind[] } = {},
-): Promise<{ fundId: string; role: string; vehicle: string; vehicleId: string | null; kind: string | null; active: boolean }> {
+): Promise<{ fundId: string; role: string; vehicle: string; vehicleId: string | null; kind: string | null; active: boolean; page: PageAccess }> {
   // The request-memoised lookup the (app) layout already made, not a second Auth round trip.
   const user = await getUser()
   if (!user) redirect('/auth')
@@ -104,7 +131,9 @@ export async function requireVehicleAccess(
   // like an entity the caller cannot see: the page has nothing to show, not a reason to refuse.
   if (opts.kinds && !kindIsOneOf(resolved.kind, opts.kinds)) notFound()
 
-  return { fundId: page.fundId, role: page.role, ...resolved }
+  // `page` (── GPU fleet (P5) ──): the resolved access, so a page that branches on a second domain
+  // asks it without resolving twice. Server-side only; never hand it to a client component.
+  return { fundId: page.fundId, role: page.role, ...resolved, page }
 }
 
 /**
