@@ -108,14 +108,18 @@ export function scenarioComparison(results: Record<string, FleetScenarioResult>,
     row('managerTotal', 'Total manager earnings', 'usd', each(r => r.returns.managerTotal), null, hide),
   )
 
-  const years = rs[0]?.waterfall.map(w => w.year) ?? []
+  // Scenarios can sell in different years: the columns run to the longest horizon, and a year after
+  // a scenario's sale is null (the SPV has closed), so every row lines up with the columns.
+  const years = Array.from({ length: Math.max(0, ...rs.map(r => r.waterfall.length)) }, (_, k) => k + 1)
+  const aligned = (values: number[], length: number, redact: boolean, id: string) =>
+    row(id, id, 'usd', Array.from({ length }, (_, k) => values[k] ?? null), sum(values), redact)
   const series = (f: (r: FleetScenarioResult) => number[], redact = false): Table => ({
     columns: years,
-    rows: ids.map((id, k) => flow(id, id, f(rs[k]), redact)),
+    rows: ids.map((id, k) => aligned(f(rs[k]), years.length, redact, id)),
   })
   const netCashFlow: Table = {
     columns: [0, ...years],
-    rows: ids.map((id, k) => row(id, id, 'usd', rs[k].operating.map(o => o.netCashFlow), sum(rs[k].operating.map(o => o.netCashFlow)))),
+    rows: ids.map((id, k) => aligned(rs[k].operating.map(o => o.netCashFlow), years.length + 1, false, id)),
   }
 
   return {

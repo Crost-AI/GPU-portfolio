@@ -60,6 +60,24 @@ describe('scenarioComparison', () => {
     byKey(cmp.series.toManager, 'base').values.forEach((v, k) => expect(Math.abs((v as number) - F1.years[k].toManager)).toBeLessThanOrEqual(1))
   })
 
+  it('series line up across different sale years, in either order', () => {
+    const short = run('base', { saleYear: 3 })
+    const long = run('base')
+    for (const results of [{ short, long }, { long, short }]) {
+      const cmp = scenarioComparison(results, { showCarry: true })
+      for (const t of [cmp.series.revenue, cmp.series.operatingProfit, cmp.series.toInvestors, cmp.series.toManager]) {
+        expect(t.columns).toEqual([1, 2, 3, 4, 5])
+        t.rows.forEach(r => expect(r.values).toHaveLength(5))
+      }
+      expect(cmp.series.netCashFlow.columns).toEqual([0, 1, 2, 3, 4, 5])
+      const s = byKey(cmp.series.netCashFlow, 'short')
+      expect(s.values.slice(4)).toEqual([null, null])
+      expect(s.total).toBe(Math.round(short.operating.reduce((a, o) => a + o.netCashFlow, 0) * 100) / 100)
+      expect(byKey(cmp.series.toInvestors, 'long').values).toEqual(long.waterfall.map(w => w.toInvestors))
+      expect(byKey(cmp.series.toInvestors, 'short').values.slice(3)).toEqual([null, null])
+    }
+  })
+
   it('without gp_economics, every manager figure is null and nothing else changes', () => {
     const results = all({ cadence: 'quarterly' })
     const shown = scenarioComparison(results, { showCarry: true })
