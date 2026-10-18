@@ -114,13 +114,16 @@ describe('merging across GPU-ness', () => {
     { id: 'v-fund', fund_id: 'f', name: 'Fund IV', kind: 'fund', aliases: [], active: true },
     { id: 'v-spv', fund_id: 'f', name: 'Acme SPV', kind: 'spv', aliases: [], active: true },
     { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [], active: true },
+    { id: 'v-gpu2', fund_id: 'f', name: 'H200 SPV II', kind: 'gpu_spv', aliases: [], active: true },
   ] })
 
-  it('refuses a GPU SPV into a fund, and a fund into a GPU SPV, 409, leaving both', async () => {
-    for (const [from, into] of [['v-gpu', 'v-fund'], ['v-fund', 'v-gpu']]) {
+  it('refuses a GPU SPV into a fund or an SPV, and either into a GPU SPV, 409, leaving all', async () => {
+    for (const [from, into] of [['v-gpu', 'v-fund'], ['v-fund', 'v-gpu'], ['v-gpu', 'v-spv'], ['v-spv', 'v-gpu']]) {
       s.m = seed(); s.access = fleetAccess(FLEET_ON, { fleet: 'write' }, 'admin')
-      expect((await updateVehicle(patch({ id: from, mergeIntoId: into }))).status).toBe(409)
-      expect(s.m.tables.fund_vehicles).toHaveLength(3)
+      const res = await updateVehicle(patch({ id: from, mergeIntoId: into }))
+      expect(res.status, `${from} -> ${into}`).toBe(409)
+      expect((await res.json()).error).toMatch(/only be merged with another GPU SPV/)
+      expect(s.m.tables.fund_vehicles).toHaveLength(4)
     }
     s.access = {}
   })
@@ -128,7 +131,15 @@ describe('merging across GPU-ness', () => {
   it('still merges two VC vehicles', async () => {
     s.m = seed(); s.access = fleetAccess({}, {}, 'admin')
     expect((await updateVehicle(patch({ id: 'v-spv', mergeIntoId: 'v-fund' }))).status).toBe(200)
-    expect(s.m.tables.fund_vehicles.map((v: any) => v.id).sort()).toEqual(['v-fund', 'v-gpu'])
+    expect(s.m.tables.fund_vehicles.map((v: any) => v.id).sort()).toEqual(['v-fund', 'v-gpu', 'v-gpu2'])
+    s.access = {}
+  })
+
+  it('still merges two GPU SPVs', async () => {
+    s.m = seed(); s.access = fleetAccess(FLEET_ON, { fleet: 'write' }, 'admin')
+    expect((await updateVehicle(patch({ id: 'v-gpu2', mergeIntoId: 'v-gpu' }))).status).toBe(200)
+    expect(s.m.tables.fund_vehicles.map((v: any) => v.id).sort()).toEqual(['v-fund', 'v-gpu', 'v-spv'])
+    expect(s.m.tables.fund_vehicles.find((v: any) => v.id === 'v-gpu').aliases).toContain('H200 SPV II')
     s.access = {}
   })
 })

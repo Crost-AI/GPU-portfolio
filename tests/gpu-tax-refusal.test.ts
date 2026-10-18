@@ -50,16 +50,19 @@ import * as stateWorklist from '@/app/api/accounting/state-worklist/route'
 import * as taxYear from '@/app/api/accounting/tax-year/route'
 import * as receivedK1s from '@/app/api/accounting/received-k1s/route'
 import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
+import { postTaxAdjustments } from '@/lib/accounting/book-tax-run'
+import { generateK1Package, finalizeK1Package } from '@/lib/tax/k1-package'
 
 const VEHICLE = { fund: 'Fund II', gpu: 'H200 SPV I' } as const
 const PACKAGE = { fund: 'p-fund', gpu: 'p-gpu' } as const
 type Side = keyof typeof VEHICLE
+const GPU_ALIAS = 'H200 SPV One'
 
 beforeEach(() => {
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v-fund', fund_id: 'f', name: VEHICLE.fund, kind: 'fund', aliases: [] },
-      { id: 'v-gpu', fund_id: 'f', name: VEHICLE.gpu, kind: 'gpu_spv', aliases: [] },
+      { id: 'v-gpu', fund_id: 'f', name: VEHICLE.gpu, kind: 'gpu_spv', aliases: [GPU_ALIAS] },
     ],
     k1_packages: [
       { id: PACKAGE.fund, fund_id: 'f', vehicle_id: 'v-fund', tax_year: 2026, version: 1, status: 'draft' },
@@ -78,7 +81,7 @@ const CALLS: [string, (side: Side) => Promise<Response>][] = [
   ['GET tax-adjustments', side => taxAdjustments.GET(get('tax-adjustments', `group=${VEHICLE[side]}&taxYear=2026`))],
   ['POST tax-adjustments', side => taxAdjustments.POST(post('tax-adjustments', { group: VEHICLE[side], taxYear: 2026 }))],
   ['GET k1-packages?packageId', side => k1Packages.GET(get('k1-packages', `packageId=${PACKAGE[side]}`))],
-  ['POST k1-packages (generate)', side => k1Packages.POST(post('k1-packages', { group: VEHICLE[side], taxYear: 2026 }))],
+  ['POST k1-packages (generate)', side => k1Packages.POST(post('k1-packages', { action: 'generate', group: VEHICLE[side], taxYear: 2026 }))],
   ['POST k1-packages (finalize)', side => k1Packages.POST(post('k1-packages', { action: 'finalize', packageId: PACKAGE[side] }))],
   ['GET k1-packages/export', side => k1Export.GET(get('k1-packages/export', `packageId=${PACKAGE[side]}`))],
   ['GET k1-packages/pdf', side => k1Pdf.GET(get('k1-packages/pdf', `packageId=${PACKAGE[side]}&lpEntityId=e1`))],
@@ -129,5 +132,57 @@ describe('refuseGpuSpvTax', () => {
       'tax-adjustments': 2, 'k1-packages': 3, 'k1-packages/export': 1, 'k1-packages/pdf': 1,
       'k1-deliveries': 1, 'state-worklist': 1, 'tax-year': 2, 'received-k1s': 2, 'tax-forms': 0,
     })
+  })
+})
+
+describe('refuseGpuSpvTax fails closed when the kind cannot be read', () => {
+  // Fail the nth select on `table` (1-based): the guard's lookups run in a fixed order — package then
+  // vehicle by id, or name then alias — and nothing before the guard reads these tables here.
+  const failNthSelect = (table: string, n: number) => {
+    const from = s.m.admin.from
+    let seen = 0
+    s.m.admin.from = (t: string) => {
+      if (t === table && ++seen === n) s.m.failNext(t, 'select', 'canceling statement due to statement timeout')
+      return from(t)
+    }
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  const generate = (group: string) => k1Packages.POST(post('k1-packages', { action: 'generate', group, taxYear: 2026 }))
+  const adjust = (group: string) => taxAdjustments.POST(post('tax-adjustments', { group, taxYear: 2026 }))
+  const finalize = () => k1Packages.POST(post('k1-packages', { action: 'finalize', packageId: PACKAGE.gpu }))
+
+  // [label, route call, downstream that must never run, table, nth select]
+  const CASES: [string, () => Promise<Response>, unknown, string, number][] = [
+    ['k1-packages generate, name lookup', () => generate(VEHICLE.gpu), generateK1Package, 'fund_vehicles', 1],
+    ['k1-packages generate, alias lookup', () => generate(GPU_ALIAS), generateK1Package, 'fund_vehicles', 2],
+    ['k1-packages generate, name lookup on a fund', () => generate(VEHICLE.fund), generateK1Package, 'fund_vehicles', 1],
+    ['k1-packages finalize, package lookup', finalize, finalizeK1Package, 'k1_packages', 1],
+    ['k1-packages finalize, vehicle lookup', finalize, finalizeK1Package, 'fund_vehicles', 1],
+    ['tax-adjustments POST, name lookup', () => adjust(VEHICLE.gpu), postTaxAdjustments, 'fund_vehicles', 1],
+    ['tax-adjustments POST, alias lookup', () => adjust(GPU_ALIAS), postTaxAdjustments, 'fund_vehicles', 2],
+  ]
+
+  it.each(CASES)('%s errors: 503 and the tax work never runs', async (_label, call, downstream, table, n) => {
+    failNthSelect(table, n)
+    const res = await call()
+    expect(res.status).toBe(503)
+    expect((await res.json()).error).toBe('Could not verify the entity kind')
+    expect(downstream).not.toHaveBeenCalled()
+  })
+
+  it('a GPU SPV named by alias is still refused when every lookup succeeds', async () => {
+    expect((await generate(GPU_ALIAS)).status).toBe(409)
+    expect((await adjust(GPU_ALIAS)).status).toBe(409)
+    expect(generateK1Package).not.toHaveBeenCalled()
+    expect(postTaxAdjustments).not.toHaveBeenCalled()
+  })
+
+  it('a legacy name with no registry row (no error, no row) still reaches the tax work', async () => {
+    await expect(generate('Legacy Fund')).rejects.toThrow(SERVED)
+    await expect(adjust('Legacy Fund')).rejects.toThrow(SERVED)
+    expect(generateK1Package).toHaveBeenCalledOnce()
+    expect(postTaxAdjustments).toHaveBeenCalledOnce()
   })
 })

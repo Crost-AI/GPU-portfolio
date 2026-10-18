@@ -67,6 +67,26 @@ export async function vehicleKindByName(
   return ((alias?.kind as VehicleKind) ?? null)
 }
 
+/**
+ * `vehicleKindByName` for a guard that must fail closed: it tells "no such vehicle" (`kind` null,
+ * `error` null) apart from "could not read it" (`error` set). `vehicleKindByName` keeps its
+ * forgiving contract for its other callers.
+ */
+export async function readVehicleKindByName(
+  admin: SupabaseClient,
+  fundId: string,
+  name: string,
+): Promise<{ kind: VehicleKind | null; error: unknown }> {
+  const { data, error } = await (admin as any)
+    .from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('name', name).maybeSingle()
+  if (error) return { kind: null, error }
+  if (data) return { kind: (data.kind as VehicleKind) ?? null, error: null }
+  const { data: alias, error: aliasError } = await (admin as any)
+    .from('fund_vehicles').select('kind').eq('fund_id', fundId).contains('aliases', [name]).maybeSingle()
+  if (aliasError) return { kind: null, error: aliasError }
+  return { kind: (alias?.kind as VehicleKind) ?? null, error: null }
+}
+
 /** What a gate helper (assertReadAccess / assertWriteAccess / resolveFund) hands back. */
 export interface VehicleGate {
   fundId: string
@@ -190,21 +210,30 @@ export const GPU_KIND_CHANGE_ERROR =
  * package would issue with income missing. Every tax route calls this with the vehicle it was
  * asked about — by `?group=` name, or by the K-1 package it names — and gets a 409 for a GPU SPV.
  * Follow-up: GitHub issue #68.
+ *
+ * It fails CLOSED: a lookup that errors (package, vehicle, or the name/alias pair) is a 503, never a
+ * pass, because a timed-out read on a GPU SPV would otherwise let K-1 work run on its chart. Only a
+ * read that succeeds and finds no row — a legacy name, an ordinary vehicle by definition — passes.
  */
 export async function refuseGpuSpvTax(
   admin: SupabaseClient,
   fundId: string,
   ref: { group?: string | null; packageId?: string | null },
 ): Promise<NextResponse | null> {
+  const unverified = () => NextResponse.json({ error: 'Could not verify the entity kind' }, { status: 503 })
   let kind: string | null = null
   if (ref.group) {
-    kind = await vehicleKindByName(admin, fundId, ref.group)
+    const read = await readVehicleKindByName(admin, fundId, ref.group)
+    if (read.error) return unverified()
+    kind = read.kind
   } else if (ref.packageId) {
-    const { data: pkg } = await (admin as any)
+    const { data: pkg, error: pkgError } = await (admin as any)
       .from('k1_packages').select('vehicle_id').eq('fund_id', fundId).eq('id', ref.packageId).maybeSingle()
+    if (pkgError) return unverified()
     if (pkg?.vehicle_id) {
-      const { data: v } = await (admin as any)
+      const { data: v, error: vError } = await (admin as any)
         .from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('id', pkg.vehicle_id).maybeSingle()
+      if (vError) return unverified()
       kind = (v?.kind as string) ?? null
     }
   }

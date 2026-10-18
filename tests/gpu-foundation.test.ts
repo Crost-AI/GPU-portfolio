@@ -27,6 +27,7 @@ import { accessMap, effectiveAccess, type AccessContext } from '@/lib/access/eff
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { assertVehicleKind, domainForVehicleKind } from '@/lib/accounting/vehicle-domain'
 import { requireVehicleAccess } from '@/app/(app)/funds/guard'
+import TaxPage from '@/app/(app)/funds/[id]/tax/page'
 import { kindIsOneOf, closesToOwnerEquity, isGpuSpv, kindOptionsFor, GPU_SPV_KIND } from '@/lib/vehicle-kinds'
 
 const VC_FEATURES = {
@@ -171,5 +172,11 @@ describe('requireVehicleAccess({ kinds })', () => {
   it('without `kinds`, admits any entity as before', async () => {
     await expect(requireVehicleAccess(VC)).resolves.toMatchObject({ vehicle: 'Acme SPV', kind: 'spv' })
     await expect(requireVehicleAccess('Old Fund')).resolves.toMatchObject({ vehicle: 'Old Fund', kind: null })
+  })
+
+  it('the Tax page is not found on a GPU SPV and still renders on a VC entity', async () => {
+    const page = (id: string) => TaxPage({ params: Promise.resolve({ id }) })
+    await expect(page(GPU)).rejects.toThrow('NEXT_NOT_FOUND')
+    await expect(page(VC)).resolves.toBeTruthy()
   })
 })
