@@ -5,7 +5,7 @@ import { ArrowLeft } from 'lucide-react'
 import { requireAccountingAccess, requireVehicleAccess } from '../guard'
 import { FUND_SUBPAGE_SLUGS } from '@/components/fund-subpages'
 import { sectionForSlug } from '@/lib/accounting/nav'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isManagementCompany, isGpuSpv } from '@/lib/vehicle-kinds'
 import { AccountingPageHeader, AccountingBody } from '@/components/accounting-chrome'
 import { FirmVehiclesTable } from '@/components/accounting/firm-vehicles'
 import { capitalActionFromParam, type CapitalAction } from '@/lib/accounting/capital-action'
@@ -16,6 +16,7 @@ import { FirmCloseView } from '@/components/accounting/firm-close'
 import { FirmDraftsView } from '@/components/accounting/firm-drafts'
 import { FirmHoldingsView } from '@/components/accounting/firm-holdings'
 import { MancoDetailView } from './manco-detail-view'
+import { GpuDetailView } from './gpu-detail-view'
 
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await props.params
@@ -69,7 +70,10 @@ export default async function EntityPage(props: { params: Promise<{ id: string }
       </Link>
       {isManagementCompany(kind) && vehicleId
         ? <MancoDetailView vehicle={vehicle} vehicleId={vehicleId} active={active} />
-        : <FundDetailView vehicle={vehicle} vehicleId={vehicleId} />}
+        // ── GPU fleet (P5) ── a GPU SPV has a fleet, not a portfolio: its own lead page.
+        : isGpuSpv(kind) && vehicleId
+          ? <GpuDetailView vehicle={vehicle} vehicleId={vehicleId} active={active} />
+          : <FundDetailView vehicle={vehicle} vehicleId={vehicleId} />}
     </div>
   )
 }
