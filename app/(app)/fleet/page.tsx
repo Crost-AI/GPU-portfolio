@@ -21,15 +21,16 @@ export default async function FleetOverviewPage() {
   const page = await resolvePageAccess(user.id)
   if (!page || !canViewPage(page, 'fleet', 'gpu_fleet')) redirect('/dashboard')
 
-  const { data } = await (createAdminClient() as any)
+  const { data, error } = await (createAdminClient() as any)
     .from('fund_vehicles')
     .select('id, name, active')
     .eq('fund_id', page.fundId)
     .eq('kind', GPU_SPV_KIND)
     .order('active', { ascending: false })
     .order('name')
-  // Only the caller's entities: a member scoped to some vehicles sees those alone.
-  const vehicles: FleetVehicle[] = ((data ?? []) as FleetVehicle[]).filter(v => canSeeVehicle(page.access, v.id))
+  // Only the caller's entities: a member scoped to some vehicles sees those alone. A failed query is
+  // said, not shown as an empty fleet with an Add vehicle prompt.
+  const vehicles: FleetVehicle[] = error ? [] : ((data ?? []) as FleetVehicle[]).filter(v => canSeeVehicle(page.access, v.id))
 
   return (
     <div className="px-4 md:pl-8 md:pr-4 pt-4 md:pt-8 pb-8 w-full">
@@ -37,7 +38,13 @@ export default async function FleetOverviewPage() {
         Every GPU SPV, with the fleet&rsquo;s book value, revenue and utilization across them.
       </AccountingPageHeader>
       <AccountingBody>
-        <FleetOverview vehicles={vehicles} />
+        {error ? (
+          <div role="alert" className="rounded-card border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            Could not load the GPU SPVs. Reload the page to try again.
+          </div>
+        ) : (
+          <FleetOverview vehicles={vehicles} />
+        )}
       </AccountingBody>
     </div>
   )
