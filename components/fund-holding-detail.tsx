@@ -1,14 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, FileText, Loader2, Plus, SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useCurrency, formatCurrency } from '@/components/currency-context'
 import { FundReviewCard, resolveSummary, type FundReviewDecision, type FundReviewItem } from '@/components/fund-review-card'
 import { FundHoldingNavs, type NavStatementRow } from '@/components/fund-holding-navs'
+import { FundPositionChart } from '@/components/fund-position-chart'
+import { fundPositionSeries } from '@/lib/portfolio/fund-position-series'
 import { useCanWrite } from '@/components/access-context'
 import { latestOnly } from '@/lib/portfolio/latest-only'
 import { investingEntities, type EntityChoice } from '@/lib/portfolio/investing-entities'
@@ -23,6 +27,9 @@ interface RegisterEvent {
   investment_transaction_id: string | null
   recallable_amount: number
 }
+
+/** Which Add dialog is open: a notice (call or distribution) or a NAV statement. */
+type RegisterDialog = 'notice' | 'nav' | null
 
 /** What a NAV save, edit or delete did to the ledger, said back (lib/portfolio/fof-nav.ts). */
 function bookingText(json: any): string | null {
@@ -41,14 +48,19 @@ function bookingText(json: any): string | null {
  * fund are two positions, so the panel shows one entity at a time and switches between them.
  *
  * Rendered inline on the holding's page (/companies/[id]) — the register lives where the holding does.
+ * Recording happens in dialogs, opened from the register's one Add menu (capital call, distribution,
+ * NAV statement and, when the page passes `onAddTransaction`, the generic transaction form), so the
+ * page shows the register itself rather than three always-open forms.
  */
 export function FundHoldingDetail({
-  companyId, vehicleId = null, onChanged,
+  companyId, vehicleId = null, onChanged, onAddTransaction,
 }: {
   companyId: string
   /** The entity to open the register for. Omitted: the holding's first entity by name. */
   vehicleId?: string | null
   onChanged?: () => void
+  /** Opens the page's generic Add Transaction dialog — offered last in the Add menu, as the advanced path. */
+  onAddTransaction?: () => void
 }) {
   const currency = useCurrency()
   const [loading, setLoading] = useState(true)
@@ -66,6 +78,8 @@ export function FundHoldingDetail({
   const [reviewsWarning, setReviewsWarning] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [dialog, setDialog] = useState<RegisterDialog>(null)
 
   const [eventForm, setEventForm] = useState({ kind: 'call', eventDate: '', amount: '' })
   const [navForm, setNavForm] = useState({ asOfDate: '', reportedNav: '', basis: 'final' })
@@ -120,6 +134,7 @@ export function FundHoldingDetail({
   }, [])
 
   const fmt = (v: number) => formatCurrency(Number(v), currency)
+  const positionPoints = useMemo(() => fundPositionSeries(events, navs), [events, navs])
   const entityName = held.find(v => v.id === entity)?.name ?? choices.find(v => v.id === entity)?.name ?? null
   /** Where a new notice or statement goes: the entity shown, or the one just chosen. */
   const target = entity ?? (chosenVehicle || null)
@@ -136,6 +151,14 @@ export function FundHoldingDetail({
     }
   }
 
+  /** Opens an Add dialog. A notice dialog opens on the kind the menu named. */
+  function openDialog(which: 'call' | 'distribution' | 'nav') {
+    setMenuOpen(false); setNotice(null)
+    if (which === 'nav') { setDialog('nav'); return }
+    setEventForm(f => ({ ...f, kind: which }))
+    setDialog('notice')
+  }
+
   async function addEvent() {
     if (!eventForm.eventDate || !eventForm.amount) { setNotice('A date and an amount are required.'); return }
     if (!target) { setNotice('Choose which entity holds this fund.'); return }
@@ -145,6 +168,8 @@ export function FundHoldingDetail({
     })
     if (!json) return
     setEventForm({ kind: 'call', eventDate: '', amount: '' })
+    setDialog(null)
+    setNotice('Notice recorded as a draft. Confirm it below to book it.')
     await load(target); onChanged?.()
   }
 
@@ -170,6 +195,7 @@ export function FundHoldingDetail({
     })
     if (!json) return
     setNavForm({ asOfDate: '', reportedNav: '', basis: 'final' })
+    setDialog(null)
     setNotice(bookingText(json))
     await load(target); onChanged?.()
   }
@@ -208,15 +234,77 @@ export function FundHoldingDetail({
     await load(entity); onChanged?.()
   }
 
+  const entityPicker = (id: string) => (
+    <select
+      id={id}
+      value={chosenVehicle}
+      onChange={e => setChosenVehicle(e.target.value)}
+      className="border rounded-lg px-2 py-1 text-sm h-9 w-full max-w-xs bg-background"
+    >
+      <option value="">Choose an entity…</option>
+      {choices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+    </select>
+  )
+
+  /** In a dialog: where the record goes, and — for a holding with no entity yet — the choice of one. */
+  const dialogEntity = entity ? (
+    <p className="text-sm text-muted-foreground">For <span className="font-medium text-foreground">{entityName ?? 'this entity'}</span>.</p>
+  ) : (
+    <div className="space-y-1">
+      <Label htmlFor="dialog-vehicle">Which entity holds this fund?</Label>
+      {entityPicker('dialog-vehicle')}
+      <p className="text-xs text-muted-foreground">Recorded with this entry. A notice with no entity cannot be confirmed to the ledger.</p>
+    </div>
+  )
+
+  const dialogNotice = notice && <p role="alert" className="text-sm text-destructive">{notice}</p>
+
+  const menuItems: { key: string; label: string; hint: string; icon: typeof Plus; onSelect: () => void }[] = [
+    { key: 'call', label: 'Capital call', hint: 'A notice to pay in capital', icon: ArrowUpRight, onSelect: () => openDialog('call') },
+    { key: 'distribution', label: 'Distribution', hint: 'Cash the manager sent back', icon: ArrowDownLeft, onSelect: () => openDialog('distribution') },
+    { key: 'nav', label: 'NAV statement', hint: 'The manager’s reported value', icon: FileText, onSelect: () => openDialog('nav') },
+    ...(onAddTransaction ? [{
+      key: 'transaction', label: 'Other transaction', hint: 'The full transaction form (advanced)', icon: SlidersHorizontal,
+      onSelect: () => { setMenuOpen(false); onAddTransaction() },
+    }] : []),
+  ]
+
   return (
     <section className="space-y-3" aria-label={name ? `${name} register` : 'Fund register'}>
-      <h2 className="text-base font-medium">Fund register</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-base font-medium">Fund register</h2>
+        {canWrite && (
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 h-8 py-2 text-muted-foreground hover:text-foreground" aria-haspopup="menu">
+                <Plus className="h-3.5 w-3.5" />Add<ChevronDown className="h-3.5 w-3.5 opacity-60" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 p-1">
+              {menuItems.map(({ key, label, hint, icon: Icon, onSelect }) => (
+                <button
+                  key={key}
+                  type="button"
+                  className="flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                  onClick={onSelect}
+                >
+                  <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span>
+                    <span className="block font-medium">{label}</span>
+                    <span className="block text-xs text-muted-foreground">{hint}</span>
+                  </span>
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        )}
+      </div>
 
         {loading ? (
           <div className="p-8 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
         ) : (
           <div className="space-y-6">
-            {notice && <p role="status" className="text-sm">{notice}</p>}
+            {notice && !dialog && <p role="status" className="text-sm">{notice}</p>}
 
             {/* WHICH ENTITY. Each entity's commitment, notices and statements are its own position. */}
             {held.length > 1 ? (
@@ -237,19 +325,18 @@ export function FundHoldingDetail({
             ) : (
               <div className="space-y-1 rounded-lg border border-warning bg-warning-subtle p-3">
                 <Label htmlFor="holding-vehicle">Which entity holds this fund?</Label>
-                <select
-                  id="holding-vehicle"
-                  value={chosenVehicle}
-                  onChange={e => setChosenVehicle(e.target.value)}
-                  className="border rounded-lg px-2 py-1 text-sm h-9 w-full max-w-xs bg-background"
-                >
-                  <option value="">Choose an entity…</option>
-                  {choices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
+                {entityPicker('holding-vehicle')}
                 <p className="text-sm text-muted-foreground">
-                  Recorded with the first notice or statement below. A notice with no entity cannot be confirmed to the ledger.
+                  Recorded with the first notice or statement. A notice with no entity cannot be confirmed to the ledger.
                 </p>
               </div>
+            )}
+
+            {(events.length > 0 || navs.length > 0) && (
+              <section className="space-y-2">
+                <h3 className="text-base font-medium">Position over time</h3>
+                <FundPositionChart points={positionPoints} />
+              </section>
             )}
 
             {reviewsWarning && <p role="alert" className="text-sm text-warning">{reviewsWarning}</p>}
@@ -268,34 +355,10 @@ export function FundHoldingDetail({
 
             <section className="space-y-2">
               <h3 className="text-base font-medium">Notices received</h3>
-              <div className="flex items-end gap-2">
-                <div className="space-y-1">
-                  <Label htmlFor="ev-kind">Kind</Label>
-                  <select
-                    id="ev-kind"
-                    value={eventForm.kind}
-                    onChange={e => setEventForm(f => ({ ...f, kind: e.target.value }))}
-                    className="border rounded-lg px-2 py-1 text-sm h-9"
-                  >
-                    <option value="call">Call</option>
-                    <option value="distribution">Distribution</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="ev-date">Date</Label>
-                  <Input id="ev-date" type="date" value={eventForm.eventDate}
-                         onChange={e => setEventForm(f => ({ ...f, eventDate: e.target.value }))} />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="ev-amount">Amount</Label>
-                  <Input id="ev-amount" type="number" className="tabular-nums" value={eventForm.amount}
-                         onChange={e => setEventForm(f => ({ ...f, amount: e.target.value }))} />
-                </div>
-                {canWrite && <Button size="sm" onClick={addEvent} disabled={busy}>Record</Button>}
-              </div>
-
               {events.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No notices recorded yet.</p>
+                <p className="text-sm text-muted-foreground">
+                  No notices recorded yet.{canWrite && ' Record a capital call or distribution from Add.'}
+                </p>
               ) : (
                 <Table>
                   <TableHeader>
@@ -334,11 +397,70 @@ export function FundHoldingDetail({
 
             <section className="space-y-2">
               <h3 className="text-base font-medium">Manager NAV statements</h3>
-              <p className="text-xs text-muted-foreground">
+              <FundHoldingNavs navs={navs} busy={busy} readOnly={!canWrite} onEdit={editNav} onDelete={deleteNav}
+                               onRebook={entity ? rebookNav : undefined} />
+            </section>
+          </div>
+        )}
+
+      {canWrite && (
+        <Dialog open={dialog === 'notice'} onOpenChange={o => { if (!o) { setDialog(null); setNotice(null) } }}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{eventForm.kind === 'distribution' ? 'Record a distribution' : 'Record a capital call'}</DialogTitle>
+              <DialogDescription>
+                Saved as a draft notice. Confirm it in the register to book its transaction.
+              </DialogDescription>
+            </DialogHeader>
+            <form className="space-y-4" onSubmit={e => { e.preventDefault(); void addEvent() }}>
+              {dialogEntity}
+              <div className="space-y-1">
+                <Label htmlFor="ev-kind">Kind</Label>
+                <select
+                  id="ev-kind"
+                  value={eventForm.kind}
+                  onChange={e => setEventForm(f => ({ ...f, kind: e.target.value }))}
+                  className="border rounded-lg px-2 py-1 text-sm h-9 w-full bg-background"
+                >
+                  <option value="call">Call</option>
+                  <option value="distribution">Distribution</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="ev-date">Date</Label>
+                  <Input id="ev-date" type="date" value={eventForm.eventDate}
+                         onChange={e => setEventForm(f => ({ ...f, eventDate: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="ev-amount">Amount</Label>
+                  <Input id="ev-amount" type="number" className="tabular-nums" value={eventForm.amount}
+                         onChange={e => setEventForm(f => ({ ...f, amount: e.target.value }))} />
+                </div>
+              </div>
+              {dialogNotice}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => { setDialog(null); setNotice(null) }}>Cancel</Button>
+                <Button type="submit" disabled={busy}>{busy && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Record</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {canWrite && (
+        <Dialog open={dialog === 'nav'} onOpenChange={o => { if (!o) { setDialog(null); setNotice(null) } }}>
+          <DialogContent className="max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Record a NAV statement</DialogTitle>
+              <DialogDescription>
                 The valuation date is the manager&rsquo;s, not the date it arrived. Saving a statement books its mark to
                 the ledger at that date; editing or deleting one re-books or removes it.
-              </p>
-              <div className="flex items-end gap-2">
+              </DialogDescription>
+            </DialogHeader>
+            <form className="space-y-4" onSubmit={e => { e.preventDefault(); void addNav() }}>
+              {dialogEntity}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="nav-date">As of</Label>
                   <Input id="nav-date" type="date" value={navForm.asOfDate}
@@ -349,27 +471,29 @@ export function FundHoldingDetail({
                   <Input id="nav-value" type="number" className="tabular-nums" value={navForm.reportedNav}
                          onChange={e => setNavForm(f => ({ ...f, reportedNav: e.target.value }))} />
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="nav-basis">Basis</Label>
-                  <select
-                    id="nav-basis"
-                    value={navForm.basis}
-                    onChange={e => setNavForm(f => ({ ...f, basis: e.target.value }))}
-                    className="border rounded-lg px-2 py-1 text-sm h-9"
-                  >
-                    <option value="final">Final</option>
-                    <option value="preliminary">Preliminary</option>
-                    <option value="estimate">Estimate</option>
-                  </select>
-                </div>
-                {canWrite && <Button size="sm" onClick={addNav} disabled={busy}>Record</Button>}
               </div>
-
-              <FundHoldingNavs navs={navs} busy={busy} readOnly={!canWrite} onEdit={editNav} onDelete={deleteNav}
-                               onRebook={entity ? rebookNav : undefined} />
-            </section>
-          </div>
-        )}
+              <div className="space-y-1">
+                <Label htmlFor="nav-basis">Basis</Label>
+                <select
+                  id="nav-basis"
+                  value={navForm.basis}
+                  onChange={e => setNavForm(f => ({ ...f, basis: e.target.value }))}
+                  className="border rounded-lg px-2 py-1 text-sm h-9 w-full bg-background"
+                >
+                  <option value="final">Final</option>
+                  <option value="preliminary">Preliminary</option>
+                  <option value="estimate">Estimate</option>
+                </select>
+              </div>
+              {dialogNotice}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => { setDialog(null); setNotice(null) }}>Cancel</Button>
+                <Button type="submit" disabled={busy}>{busy && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}Record</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </section>
   )
 }

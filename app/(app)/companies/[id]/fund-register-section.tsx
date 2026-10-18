@@ -11,15 +11,26 @@ import { initialEntity } from './holding-panels'
  * committed to shows one entity at a time — it opens on the one a link named (`?entity=`) when the
  * viewer has it, and FundHoldingDetail's own entity picker switches between them. No remount on a
  * switch: the detail syncs its `vehicleId` and drops a stale response itself (latest-only.ts).
+ *
+ * Its Add menu is the page's one Add for a fund holding: notices and NAV statements open its own
+ * dialogs, and "Other transaction" opens the investments section's generic form (`onAddTransaction`).
  */
-export function FundRegisterSection({ companyId, entities, initialEntityId }: {
+export function FundRegisterSection({ companyId, entities, initialEntityId, onChanged, onAddTransaction }: {
   companyId: string
   entities: HoldingEntity[]
   initialEntityId: string | null
+  /** A notice confirmed or a NAV saved booked a transaction: the investments section reloads. */
+  onChanged?: () => void
+  onAddTransaction?: () => void
 }) {
   return (
     <div className="mt-6">
-      <FundHoldingDetail companyId={companyId} vehicleId={initialEntity(entities, initialEntityId)} />
+      <FundHoldingDetail
+        companyId={companyId}
+        vehicleId={initialEntity(entities, initialEntityId)}
+        onChanged={onChanged}
+        onAddTransaction={onAddTransaction}
+      />
     </div>
   )
 }

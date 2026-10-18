@@ -8,9 +8,13 @@
 export type HoldingKind = 'company' | 'fund' | 'crypto'
 
 export interface HoldingPanels {
-  /** AI summary, metric charts, the MRR/cash highlights, founders and overview. */
+  /** The AI analyst summary. A fund holding has one too — it reads the manager's reports and documents. */
+  aiSummary: boolean
+  /** The KPI metric charts (user-entered or extracted time series). A fund holding may track some. */
+  metricCharts: boolean
+  /** The MRR/cash highlights, stage and industry, founders and overview. */
   companyProfile: boolean
-  /** The fund-of-funds register (FundHoldingDetail). */
+  /** The fund-of-funds register (FundHoldingDetail), with its position-over-time chart. */
   register: boolean
   /** Watched wallets. */
   wallets: boolean
@@ -23,6 +27,8 @@ export interface HoldingPanels {
 export function holdingPanels(kind: HoldingKind | null | undefined): HoldingPanels {
   const k = kind ?? 'company'
   return {
+    aiSummary: k === 'company' || k === 'fund',
+    metricCharts: k === 'company' || k === 'fund',
     companyProfile: k === 'company',
     register: k === 'fund',
     wallets: k === 'crypto',

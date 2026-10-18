@@ -4,13 +4,13 @@ import { holdingPanels, needsEntities, initialEntity, initialAsOf, quoteBasisNot
 
 describe('holdingPanels', () => {
   it('a company keeps its profile and may carry a price feed', () => {
-    expect(holdingPanels('company')).toEqual({ companyProfile: true, register: false, wallets: false, priceFeed: true, units: false })
+    expect(holdingPanels('company')).toEqual({ aiSummary: true, metricCharts: true, companyProfile: true, register: false, wallets: false, priceFeed: true, units: false })
   })
-  it('a fund holding shows its register, not a company profile', () => {
-    expect(holdingPanels('fund')).toEqual({ companyProfile: false, register: true, wallets: false, priceFeed: false, units: false })
+  it('a fund holding shows its register, an AI summary and any KPI charts, not a company profile', () => {
+    expect(holdingPanels('fund')).toEqual({ aiSummary: true, metricCharts: true, companyProfile: false, register: true, wallets: false, priceFeed: false, units: false })
   })
   it('a digital asset shows its units, its wallets and its price feed', () => {
-    expect(holdingPanels('crypto')).toEqual({ companyProfile: false, register: false, wallets: true, priceFeed: true, units: true })
+    expect(holdingPanels('crypto')).toEqual({ aiSummary: false, metricCharts: false, companyProfile: false, register: false, wallets: true, priceFeed: true, units: true })
   })
   it('a row from before the discriminator reads as a company', () => {
     expect(holdingPanels(undefined)).toEqual(holdingPanels('company'))

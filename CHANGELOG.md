@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fund holdings: one Add menu, a position chart and the AI summary
+- **Notices and NAV statements are recorded in dialogs.** A fund holding's register no longer shows two always-open forms. Its header has one Add menu: Capital call, Distribution, NAV statement and Other transaction. Each opens a dialog with the same fields and the same saves as before: a notice is saved as a draft and confirmed in the register to book it, and saving a NAV statement books its mark. For a holding with no entity yet, each dialog asks which entity holds the fund. Members who can't write see no Add.
+- **One Add per page.** On a fund holding the investment details section no longer has its own Add button. Other transaction in the register's menu opens the same Add Transaction dialog, so nothing is lost. Editing and deleting transactions are unchanged. Confirming a notice or saving a NAV now refreshes the investment details.
+- **Position over time.** The register charts the position from its own notices and statements: cumulative contributed and distributed (confirmed notices only) and the manager's reported NAV on each statement date. A second view shows TVPI and DPI. Each point uses the same roll-forward as the register's figures (`lib/portfolio/fund-position-series.ts`, built on `computeFundPositions`).
+- **The AI summary and KPI metrics show on fund holdings.** `holdingPanels` splits `aiSummary` and `metricCharts` out of `companyProfile`. MRR and cash highlights, stage, industry and founders stay company-only. A fund holding with no metrics shows a one-line Add metric instead of the large empty card.
+- **Analyze with nothing to read says so.** When a holding has no reports, metrics or documents, the server saves no summary. The panel used to reload to the same empty state without a word. It now shows the server's message.
+
 ### Reopen and preview period closes from chat
 - **`reopen_period`.** An assistant can reopen a closed period, as the Periods page's Reopen does, by `period_id` or `from_date` with a required `reason`. It is always offered, not behind `AGENT_DESTRUCTIVE_ACTIONS`: closing again re-allocates. It is admin-only, so from chat it is staged for an admin to approve, with the periods it would reopen in the preview. It shares `lib/accounting/reopen.ts` with the Periods page so both write the same `period.reopen` audit event.
 - **`preview_close`.** A read-only preview of closing through a date (`previewCloseThrough`): the months covered, what each would allocate, and what blocks it.

@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -57,6 +58,12 @@ export function CompanyPageView({
   // A demo snapshot recorded before holdingType existed reads as a company.
   const panels = holdingPanels(holdingType)
   const back = panels.companyProfile ? { href: '/dashboard', label: 'Portfolio' } : { href: '/investments', label: 'Investments' }
+  const active = company.status !== 'exited' && company.status !== 'written-off'
+  // A fund holding has ONE Add menu, on the register: it records notices and NAVs in its own dialogs
+  // and opens the investments section's generic transaction form as "Other transaction".
+  const [txnAddRequest, setTxnAddRequest] = useState(0)
+  // Bumped when the register books something, so the investments section refetches.
+  const [investmentsVersion, setInvestmentsVersion] = useState(0)
 
   return (
     <CompanyPanelProvider companyId={company.id} userId={userId} isAdmin={isAdmin}>
@@ -112,25 +119,32 @@ export function CompanyPageView({
       {/* Content + Notes panel side by side */}
       <div className="flex flex-col lg:flex-row gap-6 items-start">
         <div className="flex-1 min-w-0 max-w-page w-full [&>*:first-child]:mt-0">
-          {panels.companyProfile && company.status !== 'exited' && company.status !== 'written-off' && (
-            <>
-              <CompanySummary
-                companyId={company.id}
-                hasClaudeKey={hasClaudeKey}
-                hasOpenAIKey={hasOpenAIKey}
-                defaultAIProvider={defaultAIProvider}
-              />
+          {panels.aiSummary && active && (
+            <CompanySummary
+              companyId={company.id}
+              hasClaudeKey={hasClaudeKey}
+              hasOpenAIKey={hasOpenAIKey}
+              defaultAIProvider={defaultAIProvider}
+            />
+          )}
 
-              <CompanyCharts
-                companyId={company.id}
-                companyName={company.name}
-                metrics={metrics}
-              />
-            </>
+          {panels.metricCharts && active && (
+            <CompanyCharts
+              companyId={company.id}
+              companyName={company.name}
+              metrics={metrics}
+              compactEmpty={panels.register}
+            />
           )}
 
           {showInvestments && panels.register && (
-            <FundRegisterSection companyId={company.id} entities={entities ?? []} initialEntityId={initialEntityId ?? null} />
+            <FundRegisterSection
+              companyId={company.id}
+              entities={entities ?? []}
+              initialEntityId={initialEntityId ?? null}
+              onChanged={() => setInvestmentsVersion(v => v + 1)}
+              onAddTransaction={() => setTxnAddRequest(n => n + 1)}
+            />
           )}
 
           {showInvestments && (
@@ -140,6 +154,9 @@ export function CompanyPageView({
               portfolioGroups={company.portfolio_group ?? []}
               adminOnly={featureVisibility.investments === 'admin'}
               showUnits={panels.units}
+              hideAddButton={panels.register}
+              addRequest={txnAddRequest}
+              reloadKey={investmentsVersion}
             />
           )}
 
