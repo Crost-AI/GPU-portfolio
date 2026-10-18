@@ -50,6 +50,9 @@ export interface PartnerEconomics {
 export interface PriorDistribution {
   date: string
   amount: number
+  /** distributable_cash: the unspent contingency inside `amount`, as declared (R8). The capital
+   *  postings cannot say it, so the register's wf_contingency_return supplies it. */
+  contingencyReturn?: number
 }
 
 export type SplitMethod = 'waterfall' | 'pro_rata' | 'manual'
@@ -288,7 +291,10 @@ export function cashWaterfallEvents(contributions: DatedContribution[], priors: 
   return [
     ...contributions.filter(c => c.amount > 0 && c.date <= asOf && c.lpEntityId)
       .map(c => ({ kind: 'contribution' as const, date: c.date, lpEntityId: c.lpEntityId as string, amount: c.amount })),
-    ...priors.filter(p => p.amount > 0 && p.date <= asOf).map(p => ({ kind: 'distribution' as const, date: p.date, amount: p.amount })),
+    ...priors.filter(p => p.amount > 0 && p.date <= asOf).map(p => ({
+      kind: 'distribution' as const, date: p.date, amount: p.amount,
+      ...(p.contingencyReturn ? { contingencyReturn: Math.min(p.contingencyReturn, p.amount) } : {}),
+    })),
   ]
 }
 

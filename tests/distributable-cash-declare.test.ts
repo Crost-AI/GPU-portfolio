@@ -23,7 +23,7 @@ vi.mock('@/lib/accounting/persist', () => ({
 
 import { previewDistribution, declareDistribution, listDistributions } from '@/lib/accounting/distributions'
 import { computeCapitalAccounts } from '@/lib/accounting/capital-account'
-import { contribute, distribute, emptyState, type CashDistribution } from '@/lib/gpu/waterfall'
+import { contribute, distribute, emptyState, replay, type CashDistribution } from '@/lib/gpu/waterfall'
 import { F1, F8, PACK_INPUTS, PACK_TERMS } from '@/lib/gpu/fixtures/pack-v3'
 
 const CAPITAL = PACK_INPUTS.capital
@@ -95,6 +95,41 @@ describe('previewDistribution: distributable_cash', () => {
     s.postings = postingsBefore(0, engineF1())
     const { m } = admin()
     expect(await previewDistribution(m.admin, 'f', 'GPU I', 500, '2028-01-01', 'waterfall', opts)).toHaveProperty('error')
+  })
+
+  it('replays an earlier contingency return as contingency, not through the tiers', async () => {
+    // 130,500 of unspent contingency went back the day after the close; the register says so.
+    s.postings = [at('lp', -CAPITAL, 'capital_call', '2027-01-01'), at('lp', 130_500, 'distribution', '2027-01-02')]
+    const { m } = admin(cashTerms, [
+      { id: 'd0', fund_id: 'f', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-01-02', wf_contingency_return: 130_500 },
+    ])
+    const terms = { ...PACK_TERMS, dayCount: '30_360' as const, recipients: [{ lpEntityId: 'mgr', pct: 100 }] }
+    const before = replay([
+      { kind: 'contribution', date: '2027-01-01', lpEntityId: 'lp', amount: CAPITAL },
+      { kind: 'distribution', date: '2027-01-02', amount: 130_500, contingencyReturn: 130_500 },
+    ], terms, '2028-01-01')
+    const oracle = distribute(before, 700_000, '2028-01-01', terms)
+    const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 700_000, reserve: 0 })
+    if ('error' in p) throw new Error(p.error)
+    expect(p.tiers).toMatchObject({ preferred: oracle.tiers.preferred, returnOfCapital: oracle.tiers.returnOfCapital })
+    expect(p.cash?.unreturnedAfter).toBe(oracle.tiers.unreturnedAfter)
+    // The day before the return earned 1/360 of pref on the full capital; the rest of the year on 1,305,000.
+    expect(p.cash?.prefDue).toBe(Math.round((CAPITAL * 0.08 / 360 + 1_305_000 * 0.08 * 359 / 360) * 100) / 100)
+  })
+
+  it('a register row from before the column (wf_contingency_return null) replays as no contingency', async () => {
+    s.postings = [at('lp', -CAPITAL, 'capital_call', '2027-01-01'), at('lp', 130_500, 'distribution', '2027-01-02')]
+    const preview = async (rows: any[]) => {
+      const { m } = admin(cashTerms, rows)
+      const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 700_000, reserve: 0 })
+      if ('error' in p) throw new Error(p.error)
+      return p
+    }
+    const legacy = await preview([{ id: 'd0', fund_id: 'f', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-01-02', wf_contingency_return: null }])
+    const none = await preview([])
+    expect(legacy.tiers).toEqual(none.tiers)
+    expect(legacy.cash).toEqual(none.cash)
+    expect(legacy.cash?.contingencyReturn).toBe(0)
   })
 
   it('offers the newest declared reserve as the default', async () => {

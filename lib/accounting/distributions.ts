@@ -137,7 +137,13 @@ export interface WaterfallHistory {
  * at `asOf`, the dated contributions, and the prior distribution totals. Shared by the preview and
  * the pref ledger, so both read the same history.
  */
-export function loadWaterfallHistory(capitalPostings: CapitalPosting[], recipientIds: Set<string>, asOf: string): WaterfallHistory {
+export function loadWaterfallHistory(
+  capitalPostings: CapitalPosting[],
+  recipientIds: Set<string>,
+  asOf: string,
+  /** distributable_cash: each declared date's contingency return (loadContingencyByDate). */
+  contingencyByDate?: Map<string, number>,
+): WaterfallHistory {
   const accounts = computeCapitalAccounts(capitalPostings, { end: asOf })
   const partners = Array.from(accounts.entries()).map(([lpEntityId, a]) => ({
     lpEntityId,
@@ -166,8 +172,32 @@ export function loadWaterfallHistory(capitalPostings: CapitalPosting[], recipien
     priorByDate.set(date, roundCents((priorByDate.get(date) ?? 0) + p.amount))
     if (isCarry && recipientIds.has(p.lpEntityId)) carryPaidToDate = roundCents(carryPaidToDate + p.amount)
   }
-  const priors: PriorDistribution[] = Array.from(priorByDate.entries()).map(([date, amount]) => ({ date, amount }))
+  const priors: PriorDistribution[] = Array.from(priorByDate.entries()).map(([date, amount]) => {
+    const contingencyReturn = contingencyByDate?.get(date)
+    return contingencyReturn ? { date, amount, contingencyReturn } : { date, amount }
+  })
   return { partners, contributions, priors, carryPaidToDate }
+}
+
+/**
+ * The contingency each declared distribution returned (R8), summed per date to match the priors.
+ * The capital postings record only what each partner received, so without this a replay would run
+ * an earlier contingency return through the tiers as pref and return of capital.
+ */
+export async function loadContingencyByDate(admin: SupabaseClient, fundId: string, group: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  if (!vehicleId) return out
+  const { data, error } = await (admin as any)
+    .from('distributions')
+    .select('distribution_date, wf_contingency_return')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'declared')
+  if (error) throw new Error(`distributions read failed: ${error.message}`)
+  for (const row of (data ?? []) as any[]) {
+    const amount = Number(row.wf_contingency_return ?? 0)
+    if (amount > 0) out.set(row.distribution_date, roundCents((out.get(row.distribution_date) ?? 0) + amount))
+  }
+  return out
 }
 
 export interface CashPreviewOptions {
@@ -246,7 +276,8 @@ export async function previewDistribution(
   }
   const effectiveTerms = method === 'pro_rata' ? { ...terms, kind: 'none' as const } : terms
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
-  const { partners, contributions, priors, carryPaidToDate } = loadWaterfallHistory(capitalPostings, recipientIds, asOf)
+  const contingencyByDate = isCash ? await loadContingencyByDate(admin, fundId, group) : undefined
+  const { partners, contributions, priors, carryPaidToDate } = loadWaterfallHistory(capitalPostings, recipientIds, asOf, contingencyByDate)
 
   const split = splitDistribution({
     total,
@@ -293,6 +324,7 @@ export async function previewDistribution(
  */
 function cashCarryMismatch(
   postings: CapitalPosting[],
+  contingencyByDate: Map<string, number>,
   terms: VehicleCarryTerms,
   input: DeclareDistributionInput,
   perRecipient: Map<string, number>,
@@ -313,7 +345,7 @@ function cashCarryMismatch(
     }
   }
   const total = declaredTotal
-  const h = loadWaterfallHistory(postings, recipientIds, input.distributionDate)
+  const h = loadWaterfallHistory(postings, recipientIds, input.distributionDate, contingencyByDate)
   const split = splitDistribution({
     total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,
   })
@@ -427,8 +459,11 @@ export async function declareDistribution(
         return { error: e instanceof Error ? e.message : String(e) }
       }
       if (terms.kind === 'distributable_cash') {
-        const { postings } = await loadCapitalPostings(admin, fundId, group)
-        const mismatch = cashCarryMismatch(postings, terms, input, perRecipient, declaredTotal, carryTotal)
+        const [{ postings }, contingencyByDate] = await Promise.all([
+          loadCapitalPostings(admin, fundId, group),
+          loadContingencyByDate(admin, fundId, group),
+        ])
+        const mismatch = cashCarryMismatch(postings, contingencyByDate, terms, input, perRecipient, declaredTotal, carryTotal)
         if (mismatch) return { error: mismatch }
         if (perRecipient.size > 0) {
           const plan = realisedCarryPlan(postings, terms, perRecipient, input.distributionDate)

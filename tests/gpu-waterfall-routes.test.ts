@@ -8,7 +8,10 @@ const s = vi.hoisted(() => ({ m: null as any, postings: [] as any[], mancoWrite:
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
 vi.mock('@/lib/api-helpers', async orig => ({ ...(await orig<any>()), assertWriteAccess: async () => ({ fundId: 'f', userId: 'u', role: 'admin' }), assertReadAccess: async () => ({ fundId: 'f', userId: 'u', role: 'admin' }) }))
-vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: async () => 'GPU I' }))
+vi.mock('@/lib/accounting/http-vehicle', () => ({
+  resolveGroupOr400: async () => 'GPU I',
+  resolveGroupWithAccess: async () => ({ group: 'GPU I', access: { vehicles: { all: false, ids: s.sees } } }),
+}))
 vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: async () => 'v1' }))
 vi.mock('@/lib/accounting/capital-source', () => ({ loadCapitalPostings: async () => ({ postings: s.postings }) }))
 // The caller's grants: accounting write always (the route's gate); management_company write and the
@@ -149,6 +152,25 @@ describe('GET /api/accounting/pref-ledger', () => {
     expect(y1).toMatchObject({ unreturnedStart: 1_435_500, broughtForward: 0, accrued: 114_840, paid: 50_000, carriedForward: 64_840 })
     expect(y1.perInvestor.map((i: any) => i.name)).toEqual(['Alpha LP', 'Beta LP'])
     expect(y1.perInvestor.reduce((t: number, i: any) => t + Math.round(i.carriedForward * 100), 0)).toBe(6_484_000)
+  })
+
+  it('replays a declared contingency return the way the preview does, so the two agree', async () => {
+    s.m.tables.vehicle_waterfall_terms.push(cashRow)
+    s.m.tables.distributions = [{ id: 'd0', fund_id: 'f', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-01-02', wf_contingency_return: 130_500 }]
+    s.postings = [
+      { lpEntityId: 'a', amount: -1_435_500, sourceType: 'capital_call', entryDate: '2027-01-01' },
+      { lpEntityId: 'a', amount: 130_500, sourceType: 'distribution', entryDate: '2027-01-02' },
+    ]
+    const preview = await (await postDistribution(req('/api/accounting/distributions', 'POST', { group: 'GPU I', action: 'preview', asOf: '2028-01-01', available: 700_000, reserve: 0 }))).json()
+    // Book what the preview says, then read the ledger back.
+    s.postings.push({ lpEntityId: 'a', amount: preview.tiers.toLP, sourceType: 'distribution', entryDate: '2028-01-01' })
+    const rows = await (await getLedger(req('/api/accounting/pref-ledger?group=GPU%20I'))).json()
+    const contingencyRow = rows.find((r: any) => r.periodEnd === '2027-01-02')
+    expect(contingencyRow).toMatchObject({ paid: 0, unreturnedStart: 1_435_500 })
+    const y1 = rows.find((r: any) => r.periodEnd === '2028-01-01')
+    expect(y1.broughtForward + y1.accrued).toBeCloseTo(preview.cash.prefDue, 2)
+    expect(y1).toMatchObject({ unreturnedStart: 1_305_000, paid: preview.tiers.preferred, carriedForward: preview.cash.prefCarriedForward })
+    expect(y1.perInvestor[0].unreturnedEnd).toBe(preview.cash.unreturnedAfter)
   })
 
   it('is a 400 for a vehicle on other terms', async () => {

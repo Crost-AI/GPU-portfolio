@@ -14,7 +14,7 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { loadCarryTerms } from '@/lib/accounting/carry'
 import { loadCapitalPostings } from '@/lib/accounting/capital-source'
 import { loadEntityNames } from '@/lib/accounting/load'
-import { loadWaterfallHistory } from '@/lib/accounting/distributions'
+import { loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import { prefLedger } from '@/lib/gpu/waterfall'
 
@@ -38,7 +38,8 @@ export async function GET(req: NextRequest) {
   }
   // Every event on the books, a future-dated one included: the ledger restates what was recorded.
   const all = '9999-12-31'
-  const { contributions, priors } = loadWaterfallHistory(postings, new Set(terms.recipients.map(r => r.lpEntityId)), all)
+  const contingencyByDate = await loadContingencyByDate(admin, gate.fundId, group)
+  const { contributions, priors } = loadWaterfallHistory(postings, new Set(terms.recipients.map(r => r.lpEntityId)), all, contingencyByDate)
   let rows
   try {
     rows = prefLedger(cashWaterfallEvents(contributions, priors, all), cashWaterfallTerms(terms))
