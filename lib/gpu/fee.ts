@@ -13,6 +13,7 @@ import {
   buildPayeeEntry, buildPayerEntry, ensureIntercompanyAccounts, postIntercompanyCharge, resolveSideAccounts, unwindIntercompanyEntry,
 } from '@/lib/accounting/intercompany'
 import type { JournalEntry } from '@/lib/accounting/types'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { firstDay, lastDay, type MonthKey } from '@/lib/forecast/months'
 
 export const DEFAULT_FEE_REVENUE_SUBTYPES = ['rental_revenue']
@@ -113,28 +114,35 @@ export async function accrueGrossRevenueFee(
   if (!feeAccount) return { error: `${group}'s chart has no management fee expense account (5000)` }
   const feeIds = new Set(chart.filter(a => a.subtype === 'management_fee').map(a => a.id).concat(feeAccount.id))
 
-  // What the month earned, from posted entries only.
-  const { data: monthEntries, error: entErr } = await (admin as any)
-    .from('journal_entries').select('id')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual').eq('status', 'posted')
-    .gte('entry_date', start).lte('entry_date', end)
-  if (entErr) return { error: `journal_entries read failed: ${entErr.message}` }
-  const revenue = roundCents(-(await postingsOn(admin, (monthEntries ?? []).map((e: any) => e.id), revenueIds)))
-
-  // What is already booked for the month: entries under its ref, and the SPV side of every live
-  // intercompany charge tagged with it.
+  // What the month earned (posted entries only), and what is already booked for it: entries under
+  // its ref, and the SPV side of every live intercompany charge tagged with it. Paged and chunked,
+  // because a busy month has more entries than one read or one `.in()` can carry; a failed read is
+  // returned, not thrown, so the close that called this unwinds.
   const ref = grossRevenueFeeRef(vehicleId, month)
-  const { data: charges, error: chErr } = await (admin as any)
-    .from('intercompany_transactions').select('id')
-    .eq('fund_id', fundId).eq('from_vehicle_id', vehicleId).eq('kind', 'management_fee').neq('status', 'void')
-    .like('memo', `%[${ref}]%`)
-  if (chErr) return { error: `intercompany_transactions read failed: ${chErr.message}` }
-  const refs = [ref, ...((charges ?? []) as any[]).map(c => `intercompany:${c.id}`)]
-  const { data: feeEntries, error: feeErr } = await (admin as any)
-    .from('journal_entries').select('id')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual').neq('status', 'void').in('source_ref', refs)
-  if (feeErr) return { error: `journal_entries read failed: ${feeErr.message}` }
-  const booked = roundCents(await postingsOn(admin, (feeEntries ?? []).map((e: any) => e.id), feeIds))
+  let revenue: number
+  let booked: number
+  try {
+    const monthEntries = await fetchAllRows<{ id: string }>((from, to) => (admin as any)
+      .from('journal_entries').select('id')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual').eq('status', 'posted')
+      .gte('entry_date', start).lte('entry_date', end)
+      .range(from, to))
+    revenue = roundCents(-(await postingsOn(admin, monthEntries.map(e => e.id), revenueIds)))
+
+    const charges = await fetchAllRows<{ id: string }>((from, to) => (admin as any)
+      .from('intercompany_transactions').select('id')
+      .eq('fund_id', fundId).eq('from_vehicle_id', vehicleId).eq('kind', 'management_fee').neq('status', 'void')
+      .like('memo', `%[${ref}]%`)
+      .range(from, to))
+    const refs = [ref, ...charges.map(c => `intercompany:${c.id}`)]
+    const feeEntries = await fetchAllRowsIn<{ id: string }>(refs, (chunk, from, to) => (admin as any)
+      .from('journal_entries').select('id')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual').neq('status', 'void').in('source_ref', chunk)
+      .range(from, to))
+    booked = roundCents(await postingsOn(admin, feeEntries.map(e => e.id), feeIds))
+  } catch (e) {
+    return { error: `The fee basis could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
+  }
 
   const target = inForce ? grossRevenueFee(terms, new Map([[month, revenue]])).get(month)! : 0
   const delta = roundCents(target - booked)
@@ -158,13 +166,14 @@ export async function accrueGrossRevenueFee(
   return { entryId: result.entryId, delta }
 }
 
-/** The signed sum of postings in `entryIds` that hit `accountIds`. */
+/** The signed sum of postings in `entryIds` that hit `accountIds`, read in chunks of entry ids. */
 async function postingsOn(admin: SupabaseClient, entryIds: string[], accountIds: Set<string>): Promise<number> {
   if (entryIds.length === 0 || accountIds.size === 0) return 0
-  const { data, error } = await (admin as any)
-    .from('journal_postings').select('account_id, amount').eq('book', 'actual').in('journal_entry_id', entryIds)
-  if (error) throw new Error(`journal_postings read failed: ${error.message}`)
-  return ((data ?? []) as any[]).filter(p => accountIds.has(p.account_id)).reduce((t, p) => t + Number(p.amount), 0)
+  const rows = await fetchAllRowsIn<{ account_id: string; amount: number }>(entryIds, (chunk, from, to) => (admin as any)
+    .from('journal_postings').select('id, account_id, amount').eq('book', 'actual')
+    .in('journal_entry_id', chunk).in('account_id', Array.from(accountIds))
+    .range(from, to))
+  return rows.reduce((t, p) => t + Number(p.amount), 0)
 }
 
 async function bookIntercompanyFee(

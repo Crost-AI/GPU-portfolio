@@ -56,7 +56,7 @@ const income = (id: string, accountId: string, amount: number, entryDate: string
   ],
 })
 
-function seed(payee: string | null, extra: Record<string, unknown> = {}) {
+function seed(payee: string | null, extra: Record<string, unknown> = {}, opts: { maxRows?: number } = {}) {
   const rows = [
     income('e-rev', 'rev', 100_000, '2027-01-15'),
     income('e-int', 'int', 1_000, '2027-01-31'),     // interest: never in the basis
@@ -70,7 +70,7 @@ function seed(payee: string | null, extra: Record<string, unknown> = {}) {
     journal_postings: rows.flatMap(r => r.postings),
     intercompany_transactions: [],
     vehicle_fee_terms: [{ fund_id: 'f', vehicle_id: 'v1', basis: 'gross_revenue', annual_rate: 0.05, revenue_subtypes: ['rental_revenue'], frequency: 'monthly', payee_vehicle_id: payee, effective_from: '2027-01-01', effective_to: null, ...extra }],
-  })
+  }, opts)
 }
 const reverseRevenue = (amount: number) => {
   const r = income('e-rev-rev', 'rev', -amount, '2027-01-25')
@@ -108,6 +108,37 @@ describe('accrueGrossRevenueFee without a payee: Dr 5000 / Cr 2100', () => {
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
     seed(null, { effective_from: '2027-02-01' })
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
+    expect(persistEntry).not.toHaveBeenCalled()
+  })
+})
+
+describe('accrueGrossRevenueFee on a busy month', () => {
+  it('chunks the postings read past IN_CHUNK entries and pages past the row cap', async () => {
+    // PostgREST's max_rows, so a read that does not page is visibly short.
+    seed(null, {}, { maxRows: 1000 })
+    // 1,200 more revenue entries of 100 each in January: more entries than one page returns, and
+    // far more ids than one .in() chunk (200) may carry.
+    for (let i = 0; i < 1_200; i++) {
+      const r = income(`busy-${i}`, 'rev', 100, '2027-01-10')
+      s.m.tables.journal_entries.push(r.entry)
+      s.m.tables.journal_postings.push(...r.postings)
+    }
+    const inSizes: number[] = []
+    const from = s.m.admin.from.bind(s.m.admin)
+    s.m.admin.from = (table: string) => {
+      const q = from(table)
+      const inner = q.in
+      q.in = (k: string, vs: unknown[]) => { if (k === 'journal_entry_id') inSizes.push(vs.length); return inner(k, vs) }
+      return q
+    }
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 + 0.05 * 120_000 })
+    expect(Math.max(...inSizes)).toBeLessThanOrEqual(200)
+  })
+
+  it('returns a failed read as an error, so the close can unwind', async () => {
+    seed(null)
+    s.m.failNext('journal_postings', 'select', 'statement timeout')
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ error: expect.stringMatching(/statement timeout/) })
     expect(persistEntry).not.toHaveBeenCalled()
   })
 })
