@@ -113,7 +113,7 @@ describe('accrueGrossRevenueFee without a payee: Dr 5000 / Cr 2100', () => {
 })
 
 describe('accrueGrossRevenueFee on a busy month', () => {
-  it('chunks the postings read past IN_CHUNK entries and pages past the row cap', async () => {
+  it('reads the complete basis and the complete booked sum: > 1000 postings, > 200 entries each side', async () => {
     // PostgREST's max_rows, so a read that does not page is visibly short.
     seed(null, {}, { maxRows: 1000 })
     // 1,200 more revenue entries of 100 each in January: more entries than one page returns, and
@@ -123,6 +123,15 @@ describe('accrueGrossRevenueFee on a busy month', () => {
       s.m.tables.journal_entries.push(r.entry)
       s.m.tables.journal_postings.push(...r.postings)
     }
+    // And 250 fee entries of 10 already booked under the month's ref: the booked side crosses a chunk too.
+    for (let i = 0; i < 250; i++) {
+      const id = `booked-${i}`
+      s.m.tables.journal_entries.push({ id, fund_id: 'f', vehicle_id: 'v1', book: 'actual', status: 'posted', entry_date: '2027-01-31', source_type: 'management_fee', source_ref: 'gpu-fee:v1:2027-01' })
+      s.m.tables.journal_postings.push(
+        { journal_entry_id: id, book: 'actual', fund_id: 'f', account_id: 'fee', amount: 10 },
+        { journal_entry_id: id, book: 'actual', fund_id: 'f', account_id: 'dtm', amount: -10 },
+      )
+    }
     const inSizes: number[] = []
     const from = s.m.admin.from.bind(s.m.admin)
     s.m.admin.from = (table: string) => {
@@ -131,7 +140,7 @@ describe('accrueGrossRevenueFee on a busy month', () => {
       q.in = (k: string, vs: unknown[]) => { if (k === 'journal_entry_id') inSizes.push(vs.length); return inner(k, vs) }
       return q
     }
-    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 + 0.05 * 120_000 })
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 + 0.05 * 120_000 - 2_500 })
     expect(Math.max(...inSizes)).toBeLessThanOrEqual(200)
   })
 
