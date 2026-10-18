@@ -15,7 +15,10 @@ export function publicOrigin(request: Request): string {
   const site = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL
   if (site) {
     try {
-      return new URL(site).origin
+      // `localhost:3000` or `cap.example.com:443` parse with the host as the scheme, and their
+      // origin is the string "null": only an http(s) URL is a usable origin.
+      const url = new URL(site)
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.origin
     } catch {
       // An unparseable value: fall through to the request's own origin.
     }

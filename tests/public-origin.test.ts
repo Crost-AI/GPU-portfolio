@@ -41,7 +41,9 @@ describe('publicOrigin', () => {
   })
 
   it("is the request's own origin when the configured value is not a URL", () => {
-    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'cap.example.com')
-    expect(publicOrigin(new Request('http://localhost:3000/x'))).toBe('http://localhost:3000')
+    for (const site of ['cap.example.com', 'localhost:3000', 'cap.example.com:443', 'ftp://cap.example.com']) {
+      vi.stubEnv('NEXT_PUBLIC_SITE_URL', site)
+      expect(publicOrigin(new Request('http://localhost:3000/x'))).toBe('http://localhost:3000')
+    }
   })
 })
