@@ -8,7 +8,10 @@ import { AccountingBody, AccountingPageHeader } from '@/components/accounting-ch
 import { Metric } from '@/components/ui/metric'
 import { useAccess, useIsAdmin } from '@/components/access-context'
 import { canSee } from '@/components/app-sidebar'
-import { ACCOUNTING_SECTIONS } from '@/lib/accounting/nav'
+import { ACCOUNTING_SECTIONS, type AccountingSection } from '@/lib/accounting/nav'
+import type { Domain } from '@/lib/access/domains'
+import type { FeatureKey } from '@/lib/types/features'
+import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 
 // ── GPU fleet (P5) ── The GPU SPV's lead page, in place of a fund's performance lead: what the fleet
@@ -17,6 +20,15 @@ import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 
 // The four GPU sections, straight from the nav, so the quick links and the subnav cannot disagree.
 const GPU_SECTIONS = ACCOUNTING_SECTIONS.filter(s => s.showFor?.includes('gpu_spv'))
+
+/**
+ * Only the sections this caller can open, by the same `canSee` the subnav uses: Fleet and Revenue
+ * need the fleet grant, the waterfall investors' capital under both its switches, Scenarios the
+ * books this page already required. A link that bounces to the dashboard is worse than no link.
+ */
+export function gpuQuickLinks(isAdmin: boolean, access: (domain: Domain, feature?: FeatureKey) => AccessLevel): AccountingSection[] {
+  return GPU_SECTIONS.filter(s => canSee({ domain: s.domain, featureKey: s.feature, alsoRequires: s.alsoRequires }, isAdmin, access))
+}
 
 export function GpuDetailView({
   vehicle, vehicleId, active,
@@ -33,10 +45,7 @@ export function GpuDetailView({
   // is what tells the sidebar this entity's KIND, and the subnav's GPU sections are built from it.
   useEffect(() => { setVehicle(vehicle, vehicleId) }, [vehicle, vehicleId, setVehicle])
 
-  // Only the sections this caller can open: Fleet and Revenue need the fleet grant, the waterfall
-  // needs investors' capital, Scenarios the books this page already required. A link that bounces
-  // to the dashboard is worse than no link.
-  const links = GPU_SECTIONS.filter(s => canSee({ domain: s.domain, featureKey: s.feature }, isAdmin, access))
+  const links = gpuQuickLinks(isAdmin, access)
 
   return (
     <>

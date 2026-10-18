@@ -25,6 +25,8 @@ interface NavChild {
   featureKey?: FeatureKey
   /** Only where the featureKey can't imply it (or there is no featureKey). */
   domain?: Domain
+  /** A second domain the page needs under its own switch (lib/accounting/nav.ts `alsoRequires`). */
+  alsoRequires?: { domain: Domain; feature?: FeatureKey }
   /** Notes moved from a top-level item into Portfolio, and its unread count moved with it. */
   badgeKey?: 'notes'
   /** Highlight only on the exact path, never on descendants. The Funds "Overview" child
@@ -61,11 +63,13 @@ interface NavItem {
  * request 403s is worse than no link, and a link to data the user shouldn't have is worse still.
  */
 export function canSee(
-  entry: { adminOnly?: boolean; featureKey?: FeatureKey; domain?: Domain },
+  entry: { adminOnly?: boolean; featureKey?: FeatureKey; domain?: Domain; alsoRequires?: { domain: Domain; feature?: FeatureKey } },
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
 ): boolean {
   if (entry.adminOnly && !isAdmin) return false
+  // ── GPU fleet (P5) ── a page behind two switches is visible only if both are.
+  if (entry.alsoRequires && access(entry.alsoRequires.domain, entry.alsoRequires.feature) === 'none') return false
 
   const domain = entry.domain ?? (entry.featureKey ? domainForFeature(entry.featureKey) : undefined)
   // No domain and no feature: an always-available entry (Settings, Support).
@@ -145,7 +149,7 @@ const NAV_ITEMS: NavItem[] = [
     // that turns it on to 'admin' still only shows it to admins). Hard-coding adminOnly
     // on top of that also hid it from the read-only demo viewer, who should see the books.
     href: '/funds', label: 'Financials', icon: BookOpen, featureKey: 'accounting',
-    children: ACCOUNTING_SECTIONS.map(({ href, label, domain, requiresFof, feature }) => ({ href, label, domain, requiresFof, featureKey: feature })),
+    children: ACCOUNTING_SECTIONS.map(({ href, label, domain, requiresFof, feature, alsoRequires }) => ({ href, label, domain, requiresFof, featureKey: feature, alsoRequires })),
   },
   // ── GPU fleet (P5) ── Every GPU SPV the caller can see, firm-wide. `gpu_fleet` resolves to the
   // `fleet` domain, which is none while the switch is off, so the entry is absent until then.
@@ -267,6 +271,7 @@ export function fundsChildrenFor(fundSeg: string | null, fofActive: boolean, kin
     label: s.label,
     domain: s.domain,
     featureKey: s.feature,
+    alsoRequires: s.alsoRequires,
   }))
   return fundSeg ? [{ href: `/funds/${fundSeg}`, label: 'Overview', exact: true }, ...children] : children
 }

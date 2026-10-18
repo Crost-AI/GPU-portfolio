@@ -45,6 +45,12 @@ export interface AccountingSection {
    * a GPU SPV). Omitted = every kind, subject to `hideFor`.
    */
   showFor?: VehicleKind[]
+  /**
+   * ── GPU fleet (P5) ── A second domain the page needs, under its OWN switch. `feature` above
+   * replaces the domain's switch rather than adding to it, so a page behind two switches (the
+   * waterfall: `gpu_fleet`, and lp_capital's `lps`) names the second one here.
+   */
+  alsoRequires?: { domain: Domain; feature?: FeatureKey }
   /** Only for a fund of funds — DERIVED from the data (at least one holding is a fund),
    *  never a setting. Consumers filter on it; see lib/portfolio/fof.ts. */
   requiresFof?: boolean
@@ -170,6 +176,8 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     desc: 'Preferred return, capital returned and unreturned, and distributions declared through the waterfall.',
     domain: 'lp_capital',
     feature: 'gpu_fleet',
+    // The distributions route behind it is lp_capital under `lps`; with LP Reporting off, no link.
+    alsoRequires: { domain: 'lp_capital' },
     showFor: ['gpu_spv'],
   },
   {
