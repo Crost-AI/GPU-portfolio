@@ -31,7 +31,11 @@ export type PrefDayCount = 'act_365' | '30_360' | 'periodic'
 export interface CashWaterfallTerms {
   /** Simple preferred return on unreturned capital, e.g. 0.08. */
   prefRate: number
-  /** `periodic` ignores dates: each accrual is `periodFraction` years (scenario engine, fixtures). */
+  /**
+   * `act_365` as `preferredTarget`; `30_360` is 30E/360 (European), additive across any split of a
+   * period, with every anniversary exactly one year (F8 reproduces F1 to the cent); `periodic`
+   * ignores dates: each accrual is `periodFraction` years (scenario engine, fixtures).
+   */
   dayCount: PrefDayCount
   /** Investors' share of the return-of-capital flow; 1.0 = all of it. */
   rocLpShare: number
@@ -48,9 +52,13 @@ export interface InvestorPosition {
   /** Contributed less capital returned, cents-exact. */
   unreturned: number
   /**
-   * Cumulative preferred return accrued, EXACT (unrounded) — rounding happens at payment. A
-   * distribution that pays the vehicle's whole pref due settles this to `prefPaid`, so the sub-cent
-   * difference between an exact accrual and the cents paid never leaks into the next period.
+   * Preferred return accrued, EXACT (unrounded) between payments — rounding happens at payment.
+   * NOT a pure lifetime accrual: a distribution that pays the vehicle's whole pref due snaps this
+   * to `prefPaid`, so each fully paid period is rounded on its own and its sub-cent difference
+   * never leaks into the next (F1 Y3 = 10,606.32). Lifetime `prefPaid` can therefore drift from
+   * the exact accrual by a few cents, and an owed amount that rounds to a pref due of 0 is
+   * forgiven at the next distribution. `toWaterfallState().preferredTarget` is accrued-to-date on
+   * this basis, not lifetime exact accrual.
    */
   prefAccrued: number
   /** Cumulative preferred return paid, cents. */
@@ -156,6 +164,9 @@ export function validateCashTerms(terms: CashTermsInput): string | null {
     return "The manager's profit share must be a fraction between 0 and 1 (0.3 = 30%)."
   }
   if (terms.recipients.length === 0) return 'Choose who receives the profit share.'
+  if (terms.recipients.some(r => !(Number.isFinite(r.pct) && r.pct > 0 && r.pct <= 100))) {
+    return 'Each profit-share recipient percentage must be above 0 and at most 100.'
+  }
   const pct = terms.recipients.reduce((s, r) => s + r.pct, 0)
   if (Math.abs(pct - 100) > 0.001) return `Profit-share recipient percentages must total 100 (they total ${pct}).`
   return null
@@ -171,16 +182,17 @@ function parseDate(iso: string): { y: number; m: number; d: number; ms: number }
 }
 
 /**
- * Years between two ISO dates. ACT/365 matches `preferredTarget`; 30/360 is the US bond basis,
- * which makes each anniversary exactly one year and so reproduces the pack's annual figures.
+ * Years between two ISO dates. ACT/365 matches `preferredTarget`. `30_360` is 30E/360
+ * (European): days = 360·ΔY + 30·ΔM + (min(D2,30) − min(D1,30)). That is f(to) − f(from), so
+ * splitting a period at any event never changes the total (the US bond basis is not additive:
+ * month-end legs over a year sum to 361 days). Every anniversary is exactly one year, which
+ * reproduces the pack's annual figures (F8).
  */
 export function yearFraction(from: string, to: string, dayCount: Exclude<PrefDayCount, 'periodic'>): number {
   const a = parseDate(from)
   const b = parseDate(to)
   if (dayCount === 'act_365') return (b.ms - a.ms) / (365 * DAY_MS)
-  const d1 = Math.min(a.d, 30)
-  const d2 = b.d === 31 && d1 === 30 ? 30 : b.d
-  return (360 * (b.y - a.y) + 30 * (b.m - a.m) + (d2 - d1)) / 360
+  return (360 * (b.y - a.y) + 30 * (b.m - a.m) + (Math.min(b.d, 30) - Math.min(a.d, 30))) / 360
 }
 
 const cents = (n: number) => Math.round(roundCents(n) * 100)
@@ -215,18 +227,20 @@ export function contribute(
   state: CashWaterfallState,
   e: Extract<WaterfallEvent, { kind: 'contribution' }>,
 ): CashWaterfallState {
+  if (!(e.amount > 0)) throw new Error(`A contribution must be positive (got ${e.amount}).`)
+  const amount = roundCents(e.amount)
   const existing = state.investors.find(i => i.lpEntityId === e.lpEntityId)
   if (existing && existing.lastAccrual < e.date) {
     throw new Error(`Accrue ${e.lpEntityId} to ${e.date} before adding a contribution on that date.`)
   }
   const investors = existing
     ? state.investors.map(i => i === existing
-      ? { ...i, contributed: roundCents(i.contributed + e.amount), unreturned: roundCents(i.unreturned + e.amount) }
+      ? { ...i, contributed: roundCents(i.contributed + amount), unreturned: roundCents(i.unreturned + amount) }
       : i)
     : [...state.investors, {
       lpEntityId: e.lpEntityId,
-      contributed: roundCents(e.amount),
-      unreturned: roundCents(e.amount),
+      contributed: amount,
+      unreturned: amount,
       prefAccrued: 0,
       prefPaid: 0,
       lastAccrual: e.date,
@@ -234,18 +248,18 @@ export function contribute(
   return { ...state, investors }
 }
 
-/** Split the manager's take across the recipients by pct; the last absorbs the rounding cent. */
+/**
+ * Split the manager's take across the recipients by pct, in their given order. Largest remainder
+ * (`apportionCents`) conserves the total exactly and never yields a negative line, which rounding
+ * each share and letting the last absorb the rest could (30/30/30/10 on 2 cents gave 1+1+1−1).
+ */
 function splitAcrossRecipients(totalCents: number, recipients: CarryRecipient[]): { lpEntityId: string; amount: number }[] {
   if (totalCents <= 0) return []
   if (recipients.length === 0) throw new Error('The waterfall pays the manager but no profit-share recipient is named.')
-  const out: { lpEntityId: string; amount: number }[] = []
-  let allocated = 0
-  recipients.forEach((r, i) => {
-    const amt = i === recipients.length - 1 ? totalCents - allocated : Math.round((totalCents * r.pct) / 100)
-    allocated += amt
-    if (amt > 0) out.push({ lpEntityId: r.lpEntityId, amount: dollars(amt) })
-  })
-  return out
+  const parts = apportionCents(totalCents, recipients.map(r => r.pct))
+  return recipients
+    .map((r, i) => ({ lpEntityId: r.lpEntityId, amount: dollars(parts[i]) }))
+    .filter(l => l.amount > 0)
 }
 
 /** Run one distribution of `amount` on `date` through the tiers (plan §3.4). */
@@ -328,7 +342,11 @@ export function distribute(
   }
 }
 
-/** Date order; on the same date contributions come first, as `replayWaterfallState` counts them. */
+/**
+ * Date order; on the same date contributions come first, as `replayWaterfallState` counts them.
+ * Same-date distributions keep input order (the sort is stable), so a caller replaying stored
+ * distributions must pass them in a deterministic order (e.g. by created_at, id).
+ */
 function ordered(events: WaterfallEvent[]): WaterfallEvent[] {
   return [...events].sort((a, b) =>
     a.date.localeCompare(b.date) || (a.kind === b.kind ? 0 : a.kind === 'contribution' ? -1 : 1))
@@ -376,6 +394,8 @@ export function prefLedger(events: WaterfallEvent[], terms: CashWaterfallTerms):
     const due = dist ? dist.tiers.prefDue : roundCents(state.investors.reduce((s, i) => s + i.prefAccrued - i.prefPaid, 0))
     const paid = dist ? dist.tiers.preferred : 0
     const carriedForward = dist ? dist.tiers.prefCarriedForward : due
+    // The row's carried-forward total, apportioned by what each still owes, so the lines tie to it.
+    const cfLines = apportionCents(cents(carriedForward), state.investors.map(i => Math.max(0, i.prefAccrued - i.prefPaid)))
     rows.push({
       periodStart: before.asOf,
       periodEnd: e.date,
@@ -384,7 +404,7 @@ export function prefLedger(events: WaterfallEvent[], terms: CashWaterfallTerms):
       broughtForward,
       paid,
       carriedForward,
-      perInvestor: state.investors.map(i => {
+      perInvestor: state.investors.map((i, k) => {
         const was = before.investors.find(b => b.lpEntityId === i.lpEntityId)
         const owedBefore = was ? was.prefAccrued - was.prefPaid : 0
         const linePaid = dist?.lines.find(l => l.lpEntityId === i.lpEntityId)?.preferred ?? 0
@@ -393,7 +413,7 @@ export function prefLedger(events: WaterfallEvent[], terms: CashWaterfallTerms):
           lpEntityId: i.lpEntityId,
           accrued: roundCents(owedAfter + linePaid - owedBefore),
           paid: linePaid,
-          carriedForward: roundCents(owedAfter),
+          carriedForward: dollars(cfLines[k]),
           unreturnedEnd: i.unreturned,
         }
       }),

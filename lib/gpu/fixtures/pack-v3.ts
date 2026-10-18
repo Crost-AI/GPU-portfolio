@@ -235,6 +235,11 @@ export interface ExpectedScenario {
   carry: number[]
   toLP: number[]
   totalToLP: number
+  /** Five-year totals: the pack's fees and profit share; pref and ROC summed from the years. */
+  totalFee: number
+  totalPref: number
+  totalRoc: number
+  totalCarry: number
   multiple: number
   irrPct: number
 }
@@ -250,6 +255,10 @@ export const F4: Record<'balanced' | 'demand_led' | 'oversupply', ExpectedScenar
     carry: [0, 0, 220_507, 230_576, 267_370],
     toLP: [789_976, 783_191, 555_560, 538_011, 623_863],
     totalToLP: 3_290_599,
+    totalFee: 249_660,
+    totalPref: 178_709,
+    totalRoc: 1_435_500,
+    totalCarry: 718_453,
     multiple: 2.29,
     irrPct: 39.4,
   },
@@ -262,6 +271,10 @@ export const F4: Record<'balanced' | 'demand_led' | 'oversupply', ExpectedScenar
     carry: [0, 95_224, 330_459, 328_215, 365_009],
     toLP: [882_613, 943_336, 771_072, 765_836, 851_688],
     totalToLP: 4_214_544,
+    totalFee: 320_107,
+    totalPref: 168_258,
+    totalRoc: 1_435_500,
+    totalCarry: 1_118_908,
     multiple: 2.94,
     irrPct: 53.0,
   },
@@ -274,6 +287,10 @@ export const F4: Record<'balanced' | 'demand_led' | 'oversupply', ExpectedScenar
     carry: [0, 0, 0, 74_814, 95_292],
     toLP: [701_662, 530_354, 389_832, 204_033, 222_348],
     totalToLP: 2_048_228,
+    totalFee: 154_409,
+    totalPref: 215_815,
+    totalRoc: 1_435_500,
+    totalCarry: 170_106,
     multiple: 1.43,
     irrPct: 17.2,
   },

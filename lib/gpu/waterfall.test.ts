@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  accrue, contribute, distribute, emptyState, prefLedger, replay, toWaterfallState, validateCashTerms,
+  accrue, contribute, distribute, emptyState, prefLedger, replay, toWaterfallState, validateCashTerms, yearFraction,
   type CashDistribution, type CashTermsInput, type CashWaterfallTerms, type WaterfallEvent,
 } from './waterfall'
 import {
@@ -8,6 +8,7 @@ import {
   packDistributableCash, packRate, type ExpectedYear, type PackScenarioId,
 } from './fixtures/pack-v3'
 import { irrOf } from '@/lib/accounting/construction-forecast'
+import { roundCents } from '@/lib/accounting/ledger'
 
 const CAPITAL = PACK_INPUTS.capital
 const LP = 'lp'
@@ -86,6 +87,14 @@ function assertYears(id: PackScenarioId, expected: ExpectedYear[]) {
   })
   return { years, results }
 }
+/** Five-year totals within ±$1, summed from the unrounded (cents) figures. */
+function assertTotals(id: PackScenarioId, results: CashDistribution[], e: { fee: number; pref: number; roc: number; toLP: number }) {
+  const total = (f: (r: CashDistribution) => number) => results.reduce((s, r) => s + f(r), 0)
+  near(packDistributableCash(id).reduce((s, y) => s + y.fee, 0), e.fee, `${id} total fee`)
+  near(total(r => r.tiers.preferred), e.pref, `${id} total pref`)
+  near(total(r => r.tiers.returnOfCapital), e.roc, `${id} total ROC`)
+  near(total(r => r.tiers.toLP), e.toLP, `${id} total to investors`)
+}
 const roundSum = (...xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) * 100) / 100
 
 describe('packDistributableCash (the pack operating model)', () => {
@@ -159,6 +168,7 @@ describe('F2 / F3: Oversupply stress cases', () => {
     expect(results.every(r => r.tiers.profitToLP === 0 && r.tiers.carry === 0 && r.carryLines.length === 0)).toBe(true)
     const ret = investorReturns(results)
     near(ret.total, F2.totals.toLP, 'to investors')
+    assertTotals('oversupply_60', results, F2.totals)
     expect(ret.irrPct).toBe(F2.irrPct)
     expect(ret.multiple).toBe(F2.multiple)
   })
@@ -169,6 +179,7 @@ describe('F2 / F3: Oversupply stress cases', () => {
     expect(results.every(r => r.tiers.carry === 0)).toBe(true)
     const ret = investorReturns(results)
     near(ret.total, F3.totals.toLP, 'to investors')
+    assertTotals('oversupply_50', results, F3.totals)
     expect(ret.irrPct).toBe(F3.irrPct)
     expect(ret.multiple).toBe(F3.multiple)
   })
@@ -190,6 +201,8 @@ describe('F4: Balanced, Demand-led, Oversupply 75%', () => {
       })
       const ret = investorReturns(results)
       near(ret.total, e.totalToLP, 'total to investors')
+      assertTotals(e.scenario, results, { fee: e.totalFee, pref: e.totalPref, roc: e.totalRoc, toLP: e.totalToLP })
+      near(results.reduce((s, r) => s + r.tiers.carry, 0), e.totalCarry, 'total carry')
       expect(ret.multiple).toBe(e.multiple)
       expect(ret.irrPct).toBe(e.irrPct)
     })
@@ -367,9 +380,10 @@ describe('distribute: other paths', () => {
 describe('validateCashTerms', () => {
   const ok: CashTermsInput = { ...PACK_TERMS, dayCount: '30_360', catchupRate: 1, prefCompounds: false, prefBasis: 'unreturned' }
 
-  it('accepts the pack terms', () => {
+  it('accepts the pack terms, and a 60/40 recipient split', () => {
     expect(validateCashTerms(ok)).toBeNull()
     expect(validateCashTerms(PACK_TERMS)).toBeNull()
+    expect(validateCashTerms({ ...ok, recipients: [{ lpEntityId: 'm', pct: 60 }, { lpEntityId: 'n', pct: 40 }] })).toBeNull()
   })
 
   it.each<[string, Partial<CashTermsInput>, RegExp]>([
@@ -385,7 +399,96 @@ describe('validateCashTerms', () => {
     ['a carry rate of 1', { carryRate: 1 }, /profit share/],
     ['no recipient', { recipients: [] }, /receives/],
     ['recipients not totalling 100', { recipients: [{ lpEntityId: 'm', pct: 60 }] }, /total 100/],
+    ['a recipient pct above 100 offset by a negative one', { recipients: [{ lpEntityId: 'm', pct: 150 }, { lpEntityId: 'n', pct: -50 }] }, /at most 100/],
+    ['a NaN recipient pct', { recipients: [{ lpEntityId: 'm', pct: NaN }, { lpEntityId: 'n', pct: 100 }] }, /at most 100/],
   ])('rejects %s', (_, over, message) => {
     expect(validateCashTerms({ ...ok, ...over })).toMatch(message)
+  })
+})
+
+describe('regressions from review', () => {
+  const FOUR: CashWaterfallTerms['recipients'] = [
+    { lpEntityId: 'g1', pct: 30 }, { lpEntityId: 'g2', pct: 30 }, { lpEntityId: 'g3', pct: 30 }, { lpEntityId: 'g4', pct: 10 },
+  ]
+
+  it('recipient split: a 2-cent manager take across 30/30/30/10 conserves the cents, no negative line', () => {
+    const terms: CashWaterfallTerms = { ...PACK_TERMS, prefRate: 0, recipients: FOUR }
+    const [, r] = runPeriodic([100, 0.07], [{ lpEntityId: LP, amount: 100 }], terms)
+    expect(r.tiers.carry).toBe(0.02)
+    expect(r.carryLines.every(l => l.amount >= 0)).toBe(true)
+    expect(sumC(r.carryLines)).toBe(2)
+    assertIdentity(r, 0.07)
+  })
+
+  it('recipient split: over 100 random amounts the carry lines always sum to carry + manager ROC share', () => {
+    let seed = 42
+    const rand = () => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648
+    const sets = [FOUR, [{ lpEntityId: 'g1', pct: 33 }, { lpEntityId: 'g2', pct: 33 }, { lpEntityId: 'g3', pct: 33 }, { lpEntityId: 'g4', pct: 1 }]]
+    for (let k = 0; k < 100; k++) {
+      const terms: CashWaterfallTerms = { ...PACK_TERMS, prefRate: 0, rocLpShare: 0.8, recipients: sets[k % 2] }
+      const D = Math.round(rand() * 50_000) / 100
+      const [r] = runPeriodic([D], [{ lpEntityId: LP, amount: 100 }], terms)
+      expect(sumC(r.carryLines)).toBe(c(r.tiers.carry) + c(r.tiers.managerRocShare))
+      expect(r.carryLines.every(l => l.amount > 0)).toBe(true)
+    }
+  })
+
+  describe('30_360 is 30E/360, additive across any split of a period', () => {
+    const t30: CashWaterfallTerms = { ...PACK_TERMS, dayCount: '30_360' }
+    const t365: CashWaterfallTerms = { ...PACK_TERMS, dayCount: 'act_365' }
+    const A: WaterfallEvent = { kind: 'contribution', date: '2027-01-01', lpEntityId: 'A', amount: 4_500 }
+    const B: WaterfallEvent = { kind: 'contribution', date: '2027-01-31', lpEntityId: 'B', amount: 1_000 }
+    const owedA = (s: ReturnType<typeof replay>) => {
+      const a = s.investors.find(i => i.lpEntityId === 'A')!
+      return a.prefAccrued - a.prefPaid
+    }
+
+    it('month-end legs that crossed the 31st no longer gain or lose a day', () => {
+      expect(yearFraction('2027-02-28', '2027-03-31', '30_360') * 360).toBeCloseTo(32, 9)
+      expect(yearFraction('2027-01-15', '2027-03-31', '30_360') * 360).toBeCloseTo(75, 9)
+      expect(yearFraction('2027-03-30', '2027-03-31', '30_360')).toBe(0)
+      expect(yearFraction('2027-01-01', '2028-01-01', '30_360')).toBe(1)
+    })
+
+    for (const [name, terms, expected] of [['30_360', t30, 30], ['act_365', t365, 4_500 * 0.08 * 31 / 365]] as const) {
+      it(`${name}: B contributing on 2027-01-31, or an intermediate accrual, leaves A's pref to 2027-02-01 unchanged`, () => {
+        const alone = owedA(replay([A], terms, '2027-02-01'))
+        const withB = owedA(replay([A, B], terms, '2027-02-01'))
+        const stepped = owedA(accrue(accrue(replay([A], terms, '2027-01-01'), '2027-01-31', terms), '2027-02-01', terms))
+        expect(alone).toBeCloseTo(expected, 9)
+        expect(withB).toBeCloseTo(alone, 9)
+        expect(stepped).toBeCloseTo(alone, 9)
+      })
+
+      it(`${name}: twelve month-end accruals on $1,000,000 at 8% total exactly 80,000.00`, () => {
+        const ends = ['2027-01-31', '2027-02-28', '2027-03-31', '2027-04-30', '2027-05-31', '2027-06-30',
+          '2027-07-31', '2027-08-31', '2027-09-30', '2027-10-31', '2027-11-30', '2027-12-31']
+        let s = contribute(emptyState('2026-12-31'), { kind: 'contribution', date: '2026-12-31', lpEntityId: LP, amount: 1_000_000 })
+        for (const d of ends) s = accrue(s, d, terms)
+        expect(roundCents(s.investors[0].prefAccrued)).toBe(80_000)
+        // The reviewer's case: monthly zero distributions through the ledger carry exactly 80,000 forward.
+        const rows = prefLedger([
+          { kind: 'contribution', date: '2026-12-31', lpEntityId: LP, amount: 1_000_000 },
+          ...ends.map(date => ({ kind: 'distribution' as const, date, amount: 0 })),
+        ], terms)
+        expect(rows[rows.length - 1].carriedForward).toBe(80_000)
+      })
+    }
+  })
+
+  it('contribute rejects a zero or negative amount', () => {
+    const s = emptyState('2027-01-01')
+    expect(() => contribute(s, { kind: 'contribution', date: '2027-01-01', lpEntityId: LP, amount: -500 })).toThrow(/positive/)
+    expect(() => contribute(s, { kind: 'contribution', date: '2027-01-01', lpEntityId: LP, amount: 0 })).toThrow(/positive/)
+  })
+
+  it('pref ledger per-investor carried forward ties to the row total', () => {
+    const events: WaterfallEvent[] = [
+      ...['a', 'b', 'c'].map(id => ({ kind: 'contribution' as const, date: '2027-01-01', lpEntityId: id, amount: 1 })),
+      { kind: 'distribution', date: '2027-02-01', amount: 0, periodFraction: 0.0625 },
+    ]
+    const row = prefLedger(events, PACK_TERMS).at(-1)!
+    expect(c(row.carriedForward)).toBeGreaterThan(0)
+    expect(row.perInvestor!.reduce((s, i) => s + c(i.carriedForward), 0)).toBe(c(row.carriedForward))
   })
 })
