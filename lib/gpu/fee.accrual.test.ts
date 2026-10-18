@@ -22,7 +22,7 @@ const persistEntry = vi.fn(async (_a: unknown, _f: string, group: string, _u: un
 vi.mock('@/lib/accounting/persist', () => ({ persistEntry: (...a: any[]) => (persistEntry as any)(...a) }))
 const postIntercompanyCharge = vi.fn(async (_a: unknown, args: any) => {
   const id = `ic-${s.m.tables.intercompany_transactions.length + 1}`
-  s.m.tables.intercompany_transactions.push({ id, fund_id: 'f', from_vehicle_id: args.payer.vehicleId, to_vehicle_id: args.payee.vehicleId, kind: args.kind, status: 'accrued', memo: args.memo, amount: args.amount })
+  s.m.tables.intercompany_transactions.push({ id, fund_id: 'f', from_vehicle_id: args.payer.vehicleId, to_vehicle_id: args.payee.vehicleId, kind: args.kind, status: 'accrued', memo: args.memo, amount: args.amount, source_ref: args.sourceRef ?? null })
   book('GPU I', { entryDate: args.chargeDate, sourceRef: `intercompany:${id}`, sourceType: 'intercompany', postings: [{ accountId: 'fee', amount: args.amount }, { accountId: 'ic-pay', amount: -args.amount }] })
   book('ManCo', { entryDate: args.chargeDate, sourceRef: `intercompany:${id}`, sourceType: 'intercompany', postings: [{ accountId: 'ic-rec', amount: args.amount }, { accountId: 'mc-income', amount: -args.amount }] })
   return { id }
@@ -158,7 +158,8 @@ describe('accrueGrossRevenueFee with a payee management company: intercompany', 
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ entryId: 'ic-1', delta: 5_000 })
     const args = postIntercompanyCharge.mock.calls[0][1] as any
     expect(args).toMatchObject({ kind: 'management_fee', amount: 5_000, chargeDate: '2027-01-31', payer: { vehicleId: 'v1', name: 'GPU I' }, payee: { vehicleId: 'mc', name: 'ManCo' } })
-    expect(args.memo).toContain('[gpu-fee:v1:2027-01]')
+    expect(args.sourceRef).toBe('gpu-fee:v1:2027-01')
+    expect(args.memo).not.toContain('gpu-fee:')
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
     expect(postIntercompanyCharge).toHaveBeenCalledTimes(1)
   })

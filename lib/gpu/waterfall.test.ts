@@ -540,6 +540,17 @@ describe('R8: unspent contingency returned before the tiers', () => {
     expect(next.tiers.prefDue).toBe(94_840 + 106_840)
   })
 
+  it('contingency plus pref due above D: $100, all contingency, against $80 of pref due on $1,000', () => {
+    let st = contribute(emptyState('2027-01-01'), { kind: 'contribution', date: '2027-01-01', lpEntityId: LP, amount: 1_000 })
+    st = accrue(st, '2028-01-01', PACK_TERMS, 1)
+    const r = distribute(st, 100, '2028-01-01', PACK_TERMS, 0, { contingencyReturn: 100 })
+    assertIdentity(r, 100)
+    expect(r.tiers).toMatchObject({ contingencyReturn: 100, prefDue: 80, preferred: 0, prefCarriedForward: 80, returnOfCapital: 0, managerRocShare: 0, profitToLP: 0, carry: 0, unreturnedAfter: 900 })
+    for (const v of Object.values(r.tiers)) expect(v).toBeGreaterThanOrEqual(0)
+    expect(r.state.investors[0]).toMatchObject({ unreturned: 900, prefPaid: 0 })
+    expect(r.state.investors[0].prefAccrued).toBe(80)
+  })
+
   it('refuses a contingency above the distribution or below zero', () => {
     expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: 101 })).toThrow(/contingency/)
     expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: -1 })).toThrow(/contingency/)

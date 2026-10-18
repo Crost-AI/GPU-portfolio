@@ -75,7 +75,7 @@ export const grossRevenueFeeRef = (vehicleId: string, month: MonthKey) => `gpu-f
  *
  * Booking: with a payee management company, through the intercompany register so it nets to the
  * fee (bookIntercompanyFee): a fee charge (SPV Dr 5000 / Cr 2900-<manco>; manco Dr 1900-<spv> /
- * Cr fee income) tagged with the month's ref, re-issued net or rebated when the fee falls. Without
+ * Cr fee income) raised under the month's `source_ref`, re-issued net or rebated when it falls. Without
  * a payee: Dr 5000 / Cr 2100 Due to manager, and the reverse for a reduction.
  *
  * `entryId` is the SPV's entry, or the intercompany charge's id when an increase is charged.
@@ -125,7 +125,7 @@ export async function accrueGrossRevenueFee(
       .range(from, to))
     revenue = roundCents(-(await postingsOn(admin, monthEntries.map(e => e.id), revenueIds)))
 
-    const charges = await monthCharges(admin, fundId, vehicleId, ref)
+    const charges = terms.payeeVehicleId ? await monthCharges(admin, fundId, vehicleId, terms.payeeVehicleId, ref) : []
     const refs = [ref, ...charges.map(c => `intercompany:${c.id}`)]
     const feeEntries = await fetchAllRowsIn<{ id: string }>(refs, (chunk, from, to) => (admin as any)
       .from('journal_entries').select('id')
@@ -141,7 +141,7 @@ export async function accrueGrossRevenueFee(
   if (delta === 0) return { delta: 0 }
 
   const memo = `Management fee, ${roundCents(terms.annualRate * 100)}% of ${month} gross revenue`
-  if (terms.payeeVehicleId) return bookIntercompanyFee(admin, fundId, group, userId, vehicleId, terms.payeeVehicleId, end, delta, `${memo} [${ref}]`, ref)
+  if (terms.payeeVehicleId) return bookIntercompanyFee(admin, fundId, group, userId, vehicleId, terms.payeeVehicleId, end, delta, memo, ref)
 
   const dueToManager = chart.find(a => a.code === '2100')
   if (!dueToManager) return { error: `${group}'s chart has no 2100 Due to manager account` }
@@ -172,16 +172,21 @@ async function postingsOn(admin: SupabaseClient, entryIds: string[], accountIds:
 interface MonthCharge { id: string; kind: string; status: string; amount: number }
 
 /**
- * The month's live charges: fees the SPV owes the manco and rebates the manco owes the SPV, each
- * tagged with the month's ref in its memo. Their SPV-side entries are what is already booked.
+ * The month's live charges between the SPV and its payee: fees the SPV owes the manco and rebates
+ * the manco owes the SPV, each raised by the true-up under the month's `source_ref`. Their
+ * SPV-side entries are what is already booked. Keyed on the system column and both counterparties,
+ * never the memo: a charge raised by hand is neither counted nor voided here, whatever it says.
  */
-async function monthCharges(admin: SupabaseClient, fundId: string, vehicleId: string, ref: string): Promise<MonthCharge[]> {
-  const read = (side: 'from_vehicle_id' | 'to_vehicle_id', kind: string) => fetchAllRows<MonthCharge>((from, to) => (admin as any)
+async function monthCharges(admin: SupabaseClient, fundId: string, vehicleId: string, payeeVehicleId: string, ref: string): Promise<MonthCharge[]> {
+  const read = (kind: string, payer: string, payee: string) => fetchAllRows<MonthCharge>((from, to) => (admin as any)
     .from('intercompany_transactions').select('id, kind, status, amount')
-    .eq('fund_id', fundId).eq(side, vehicleId).eq('kind', kind).neq('status', 'void')
-    .like('memo', `%[${ref}]%`)
+    .eq('fund_id', fundId).eq('source_ref', ref).eq('kind', kind)
+    .eq('from_vehicle_id', payer).eq('to_vehicle_id', payee).neq('status', 'void')
     .range(from, to))
-  const [fees, rebates] = await Promise.all([read('from_vehicle_id', 'management_fee'), read('to_vehicle_id', 'management_fee_rebate')])
+  const [fees, rebates] = await Promise.all([
+    read('management_fee', vehicleId, payeeVehicleId),
+    read('management_fee_rebate', payeeVehicleId, vehicleId),
+  ])
   return [...fees, ...rebates]
 }
 
@@ -207,7 +212,7 @@ async function bookIntercompanyFee(
     const fee = amount > 0
     const res = await postIntercompanyCharge(admin, {
       fundId, userId, kind: fee ? 'management_fee' : 'management_fee_rebate', chargeDate: date, amount: Math.abs(amount),
-      memo: fee ? memo : `${memo} — rebate`, payer: fee ? spv : manco, payee: fee ? manco : spv,
+      memo: fee ? memo : `${memo} — rebate`, payer: fee ? spv : manco, payee: fee ? manco : spv, sourceRef: ref,
     })
     return 'error' in res ? { error: res.error } : { entryId: res.id, delta }
   }
@@ -215,7 +220,7 @@ async function bookIntercompanyFee(
 
   let unsettled: MonthCharge[]
   try {
-    unsettled = (await monthCharges(admin, fundId, vehicleId, ref)).filter(c => c.kind === 'management_fee' && c.status === 'accrued')
+    unsettled = (await monthCharges(admin, fundId, vehicleId, payeeVehicleId, ref)).filter(c => c.kind === 'management_fee' && c.status === 'accrued')
   } catch (e) {
     return { error: `The month's fee charges could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
   }

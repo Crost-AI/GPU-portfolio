@@ -90,6 +90,14 @@ alter table public.intercompany_transactions
   add constraint intercompany_transactions_kind_check
   check (kind in ('management_fee', 'expense_reimbursement', 'allocated_cost', 'loan_advance', 'loan_repayment', 'other', 'management_fee_rebate'));
 
+-- Which system process raised a charge, e.g. gpu-fee:<vehicle>:<YYYY-MM> for a GPU SPV's monthly
+-- fee. The fee true-up finds its own charges by this, never by the memo, which a person can edit.
+-- Null on every charge raised by hand.
+alter table public.intercompany_transactions
+  add column if not exists source_ref text;
+create index if not exists intercompany_transactions_source_ref
+  on public.intercompany_transactions (fund_id, source_ref) where source_ref is not null;
+
 -- 5. A distribution's third entry: the profit share realised at declaration (see column above).
 --    The register functions link, publish and clean up all three entries together. Restated in
 --    full from 20261006174407 / 20261006164431; the only changes are the third id in each linked

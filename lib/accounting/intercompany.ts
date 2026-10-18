@@ -388,6 +388,9 @@ export interface PostChargeArgs {
    * so a second issue of the same invoice is refused at the insert, before anything is posted.
    */
   partnershipInvoiceId?: string | null
+  /** The system process that raised the charge (e.g. `gpu-fee:<vehicle>:<YYYY-MM>`), so it can find
+   *  its own charges without reading the memo. Absent for a charge raised by hand. */
+  sourceRef?: string | null
 }
 
 /**
@@ -422,6 +425,7 @@ export async function postIntercompanyCharge(
       status: 'accrued',
       created_by: args.userId,
       partnership_invoice_id: args.partnershipInvoiceId ?? null,
+      ...(args.sourceRef ? { source_ref: args.sourceRef } : {}),
     })
     .select('id')
     .single()

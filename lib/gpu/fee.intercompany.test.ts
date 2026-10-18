@@ -5,7 +5,7 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 // netting to the fee, so settlement moves the net fee in cash and leaves no balance behind.
 
 const s = vi.hoisted(() => ({ m: null as any, n: 0 }))
-const VEHICLES: Record<string, string> = { 'GPU I': 'v1', ManCo: 'mc' }
+const VEHICLES: Record<string, string> = { 'GPU I': 'v1', ManCo: 'mc', 'ManCo II': 'mc2' }
 vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleIdByName: async (_a: unknown, _f: string, name: string) => VEHICLES[name] ?? null,
   vehicleNameById: async (_a: unknown, _f: string, id: string) => Object.keys(VEHICLES).find(k => VEHICLES[k] === id) ?? null,
@@ -24,18 +24,19 @@ vi.mock('@/lib/accounting/persist', () => ({
 }))
 
 import { accrueGrossRevenueFee } from './fee'
-import { settleIntercompanyCharge } from '@/lib/accounting/intercompany'
+import { postIntercompanyCharge, settleIntercompanyCharge } from '@/lib/accounting/intercompany'
 
 const acct = (vehicle_id: string, id: string, code: string, type: string, subtype: string) => ({ id, fund_id: 'f', vehicle_id, code, name: code, type, subtype })
 
 beforeEach(() => {
   s.n = 0
   s.m = memoryAdmin({
-    fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'GPU I', kind: 'gpu_spv' }, { id: 'mc', fund_id: 'f', name: 'ManCo', kind: 'manco' }],
+    fund_vehicles: [{ id: 'v1', fund_id: 'f', name: 'GPU I', kind: 'gpu_spv' }, { id: 'mc', fund_id: 'f', name: 'ManCo', kind: 'manco' }, { id: 'mc2', fund_id: 'f', name: 'ManCo II', kind: 'manco' }],
     chart_of_accounts: [
       acct('v1', 'cash', '1000', 'asset', 'cash'), acct('v1', 'rev', '4000', 'income', 'rental_revenue'),
       acct('v1', 'fee', '5000', 'expense', 'management_fee'), acct('v1', 'dtm', '2100', 'liability', 'due_to_gp'),
       acct('mc', 'mc-cash', '1000', 'asset', 'cash'), acct('mc', 'mc-income', '4000', 'income', 'management_fee_income'),
+      acct('mc2', 'mc2-cash', '1000', 'asset', 'cash'), acct('mc2', 'mc2-income', '4000', 'income', 'management_fee_income'),
     ],
     journal_entries: [{ id: 'e-rev', fund_id: 'f', vehicle_id: 'v1', book: 'actual', status: 'posted', entry_date: '2027-01-15', source_type: 'income', source_ref: null }],
     journal_postings: [
@@ -105,5 +106,33 @@ describe('a fee reduction through the intercompany register', () => {
     expect(b['v1:1000']).toBe(80_000 - 5_000 + 1_000)
     expect(b['mc:1000']).toBe(4_000)
     expect(ic(b).every(v => v === 0)).toBe(true)
+  })
+})
+
+describe('the true-up finds only its own charges', () => {
+  it('a hand-raised charge tagged in its memo, or one to another counterparty, is neither counted nor voided', async () => {
+    const spv = { vehicleId: 'v1', name: 'GPU I' }
+    // Same counterparties, the fee tag pasted into the memo, but raised by hand (no source_ref).
+    const byHand = await postIntercompanyCharge(s.m.admin, {
+      fundId: 'f', userId: 'u', kind: 'management_fee', chargeDate: '2027-01-31', amount: 700,
+      memo: 'Extra fee [gpu-fee:v1:2027-01]', payer: spv, payee: { vehicleId: 'mc', name: 'ManCo' },
+    })
+    // The fee's source_ref, but owed to a different management company.
+    const elsewhere = await postIntercompanyCharge(s.m.admin, {
+      fundId: 'f', userId: 'u', kind: 'management_fee', chargeDate: '2027-01-31', amount: 300,
+      memo: 'Fee', payer: spv, payee: { vehicleId: 'mc2', name: 'ManCo II' }, sourceRef: 'gpu-fee:v1:2027-01',
+    })
+    if ('error' in byHand || 'error' in elsewhere) throw new Error('setup')
+
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 })
+    reverseRevenue(20_000)
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: -1_000 })
+
+    const status = (id: string) => s.m.tables.intercompany_transactions.find((c: any) => c.id === id).status
+    expect(status(byHand.id)).toBe('accrued')
+    expect(status(elsewhere.id)).toBe('accrued')
+    const fees = s.m.tables.intercompany_transactions.filter((c: any) => c.source_ref === 'gpu-fee:v1:2027-01' && c.to_vehicle_id === 'mc')
+    expect(fees.map((c: any) => [c.status, c.amount])).toEqual([['void', 5_000], ['accrued', 4_000]])
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
   })
 })
