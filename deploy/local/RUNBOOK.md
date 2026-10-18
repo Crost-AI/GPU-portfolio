@@ -106,9 +106,30 @@ curl -X PUT http://localhost:8000/auth/v1/admin/users/<user-id> \
   -H "Content-Type: application/json" -d @- <<< '{"password":"..."}'
 ```
 
-The branded templates in `supabase/templates/*.html` are not wired in, so GoTrue's defaults are
-used. GoTrue loads templates from URLs (`GOTRUE_MAILER_TEMPLATES_MAGIC_LINK=https://...` and so on),
-so to use them, serve the files somewhere GoTrue can fetch and add those variables to `auth`.
+The emails are the branded templates in `supabase/templates/*.html`, which carry the 6-digit code
+(`{{ .Token }}`) the app's sign-in, confirmation and reset screens ask for. GoTrue loads templates
+only from URLs, so the `mail-templates` service (busybox `httpd`, internal network only, no host
+port) serves a copy of that directory baked into its image, and `auth` points
+`GOTRUE_MAILER_TEMPLATES_*` at `http://mail-templates:8080/<name>.html`; the subjects are
+`GOTRUE_MAILER_SUBJECTS_*` beside them. The copy is baked in, not bind-mounted, because Dokploy
+re-clones the checkout on every deploy and a running container would keep serving the deleted one.
+
+GoTrue fetches each template type when it first sends that kind of email, keeps it for up to 10
+minutes (`GOTRUE_MAILER_TEMPLATE_MAX_AGE`), then re-fetches lazily; after a failed re-fetch it keeps
+the last good copy and tries again on a later send. Only a type it has never fetched goes out as
+GoTrue's built-in default, a link with no code, which the app's screens cannot use, and a type that
+fell back to it stays on it for up to 10 minutes after `mail-templates` recovers. So when an email
+arrives without a code, check `dc ps mail-templates` first. An `unhealthy` one also blocks `auth` from starting, and through
+it `migrate` and the app.
+
+To change a template, edit it, then `dc up -d --build`: the new image recreates `mail-templates`
+(`dc up -d` alone keeps the old image), and the new text reaches mail within about 10 minutes by
+itself. `dc restart auth` makes it immediate, but only while `dc ps mail-templates` says healthy:
+restarting GoTrue with no reachable source drops its cached copies and turns every email into the
+link-only default.
+
+A deploy that changes `auth`'s environment recreates GoTrue, so `/auth/v1` answers 502 for the few
+seconds it takes to come back healthy.
 
 ## Crons
 

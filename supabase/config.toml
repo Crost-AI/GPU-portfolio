@@ -241,7 +241,7 @@ otp_expiry = 600
 # content_path = "./supabase/templates/invite.html"
 #
 # [auth.email.template.magic_link]
-# subject = "Your sign-in link"
+# subject = "Your sign-in code"
 # content_path = "./supabase/templates/magic_link.html"
 #
 # [auth.email.template.recovery]
