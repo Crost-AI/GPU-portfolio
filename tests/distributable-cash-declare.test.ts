@@ -291,6 +291,48 @@ describe('declareDistribution: distributable_cash', () => {
   })
 })
 
+describe('distributable_cash: declared cash and contingency, end to end', () => {
+  it('refuses stated cash that does not reconcile to the lines, even with no carry lines and no cash object', async () => {
+    s.postings = [at('lp', -CAPITAL, 'capital_call', '2027-01-01')]
+    const { m, rpc } = admin()
+    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+      requestKey: 'pre-carry', distributionDate: '2027-06-30', lines: [{ lpEntityId: 'lp', amount: 100 }], available: 1_000, reserve: 0,
+    })
+    expect(out).toEqual({ error: 'The available cash less the reserve must equal the distribution declared' })
+    expect(s.entries).toEqual([])
+    expect(m.tables.distributions).toEqual([])
+    expect(rpc).not.toHaveBeenCalled()
+    // The same declaration with cash that reconciles goes through, and the reserve is kept.
+    const ok = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+      requestKey: 'pre-carry-ok', distributionDate: '2027-06-30', lines: [{ lpEntityId: 'lp', amount: 100 }], available: 1_000, reserve: 900,
+    })
+    expect(ok).not.toHaveProperty('error')
+    expect(m.tables.distributions[0].reserve_amount).toBe(900)
+  })
+
+  it('declare a contingency return, then preview: 900 unreturned and no manager share (prefRate 0, rocLpShare 0.8)', async () => {
+    s.postings = [at('lp', -1_000, 'capital_call', '2027-01-01')]
+    const { m } = admin({ ...cashTerms, pref_rate: 0, roc_lp_share: 0.8 })
+    const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2027-02-01', 'waterfall', { available: 100, reserve: 0, contingencyReturn: 100 })
+    if ('error' in p) throw new Error(p.error)
+    expect(p.carryLines).toEqual([])
+    const declared = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+      requestKey: 'contingency', distributionDate: '2027-02-01', lines: p.lines, carryLines: p.carryLines,
+      splitMethod: 'waterfall', tiers: p.tiers, available: p.available, reserve: p.reserve, cash: p.cash,
+    })
+    expect(declared).not.toHaveProperty('error')
+    expect(m.tables.distributions[0]).toMatchObject({ status: 'declared', wf_contingency_return: 100 })
+    s.postings.push(at('lp', 100, 'distribution', '2027-02-01'))
+
+    const next = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2027-06-30', 'waterfall', { available: 50, reserve: 0 })
+    if ('error' in next) throw new Error(next.error)
+    expect(next.stateBefore.contributedCapital - next.stateBefore.returnedCapital).toBe(900)
+    expect(next.stateBefore.gpCarryPaid).toBe(0)
+    // This distribution's own ROC flow still gives the manager its 20%.
+    expect(next.cash).toMatchObject({ unreturnedAfter: 860, managerRocShare: 10 })
+  })
+})
+
 describe('listDistributions: distributable_cash', () => {
   it('returns the reserve and the frozen cash tiers; a fund row gets reserve null and no cash', async () => {
     const lines = (lp: number, carry: number) => [

@@ -335,21 +335,30 @@ function cashCarryMismatch(
   for (const id of Array.from(perRecipient.keys())) {
     if (!recipientIds.has(id)) return 'Carry lines can only go to the vehicle\'s profit-share recipients'
   }
-  // The waterfall runs on what is actually being declared. A stated available/reserve must agree
-  // with it, or the check would be made against a different distribution.
-  if (input.available != null || input.reserve != null) {
-    const available = Number(input.available)
-    const reserve = Number(input.reserve)
-    if (!Number.isFinite(available) || !Number.isFinite(reserve) || reserve < 0 || reserve >= available || roundCents(available - reserve) !== declaredTotal) {
-      return 'The available cash less the reserve must equal the distribution declared'
-    }
-  }
+  // The waterfall runs on what is actually being declared (cashAmountMismatch has held any stated
+  // available/reserve to it already).
   const total = declaredTotal
   const h = loadWaterfallHistory(postings, recipientIds, input.distributionDate, contingencyByDate)
   const split = splitDistribution({
     total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,
   })
   return roundCents(split.tiers.toGP) === carryTotal ? null : 'The carry lines do not match the waterfall'
+}
+
+/**
+ * Why a distributable-cash declaration's stated cash does not reconcile to its lines, or null. A
+ * stated available or reserve must both be valid and leave exactly the total declared (LP lines
+ * plus carry lines): the reserve becomes the next declaration's default and is restated on the
+ * register, so it cannot be a figure that describes some other distribution.
+ */
+function cashAmountMismatch(input: DeclareDistributionInput, declaredTotal: number): string | null {
+  const available = Number(input.available)
+  const reserve = Number(input.reserve)
+  if (input.available == null || input.reserve == null || !Number.isFinite(available) || !Number.isFinite(reserve) ||
+      reserve < 0 || reserve >= available || roundCents(available - reserve) !== declaredTotal) {
+    return 'The available cash less the reserve must equal the distribution declared'
+  }
+  return null
 }
 
 /**
@@ -451,14 +460,19 @@ export async function declareDistribution(
     // share must realise it here, or the recipient's capital goes negative by what it was paid
     // and the investors' stays overstated. Worked out before anything is written.
     let realised: Map<string, number> | null = null
-    if (perRecipient.size > 0 || cash) {
+    const statesCash = input.available != null || input.reserve != null
+    if (perRecipient.size > 0 || cash || statesCash) {
       let terms: VehicleCarryTerms
       try {
         terms = await loadCarryTerms(admin, fundId, group)
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) }
       }
-      if (terms.kind === 'distributable_cash') {
+      // The stated cash must reconcile to the lines whatever else the request carries: a
+      // carry-free declaration is held to it as much as one paying a profit share.
+      const unreconciled = terms.kind === 'distributable_cash' && statesCash ? cashAmountMismatch(input, declaredTotal) : null
+      if (unreconciled) return { error: unreconciled }
+      if (terms.kind === 'distributable_cash' && (perRecipient.size > 0 || cash)) {
         const [{ postings }, contingencyByDate] = await Promise.all([
           loadCapitalPostings(admin, fundId, group),
           loadContingencyByDate(admin, fundId, group),
