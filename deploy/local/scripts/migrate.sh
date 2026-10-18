@@ -90,8 +90,9 @@ check "no public bucket" "$(psql_db -tA -c "select count(*) from storage.buckets
 
 # GET /rest/v1/funds through Kong with the service key. With MIGRATE_CHECK_URL (from the environment
 # or .env: where Kong answers from here, behind a proxy the public URL), from this host; otherwise from inside the app
-# container, which shares Kong's network (localhost:8000 there is Kong); the key goes in through
-# `-e SERVICE_KEY`, not on the docker command line. `notify pgrst` is asynchronous: until
+# container, which shares Kong's network (localhost:8000 there is Kong). The key is on no command
+# line: `-e SERVICE_KEY` into the container, and curl reads its headers from stdin (-K -) in both
+# paths. `notify pgrst` is asynchronous: until
 # PostgREST has reloaded, a new table answers 404, so any answer but 200 is retried a few times.
 # No app to ask from is a skip, not a FAIL, and so is no answer at all (000) from MIGRATE_CHECK_URL,
 # which may not be reachable from here. From the app container it is a FAIL: there, localhost:8000
@@ -100,12 +101,21 @@ SERVICE_KEY="$(env_get SERVICE_ROLE_KEY)"; export SERVICE_KEY
 check_url="${MIGRATE_CHECK_URL:-$(env_get MIGRATE_CHECK_URL)}"
 funds() {
   if [[ -n "$check_url" ]]; then
-    curl -s -o /dev/null -w '%{http_code}' "$check_url/rest/v1/funds?select=id&limit=1" \
-      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" || true
+    curl -s -K - <<EOF || true
+url = "$check_url/rest/v1/funds?select=id&limit=1"
+output = "/dev/null"
+write-out = "%{http_code}"
+header = "apikey: $SERVICE_KEY"
+header = "Authorization: Bearer $SERVICE_KEY"
+EOF
   else
-    dc exec -T -e SERVICE_KEY app sh -c 'curl -s -o /dev/null -w "%{http_code}" \
-      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \
-      "http://localhost:8000/rest/v1/funds?select=id&limit=1"' || true
+    dc exec -T -e SERVICE_KEY app sh -c 'curl -s -K - <<EOF
+url = "http://localhost:8000/rest/v1/funds?select=id&limit=1"
+output = "/dev/null"
+write-out = "%{http_code}"
+header = "apikey: $SERVICE_KEY"
+header = "Authorization: Bearer $SERVICE_KEY"
+EOF' || true
   fi
 }
 where="${check_url:-the app container}"

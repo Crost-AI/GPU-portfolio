@@ -48,7 +48,9 @@ What each step does:
   request. Once db, auth and storage are healthy, the one-shot `migrate` service applies the
   migrations (below) and exits. The app waits for it to exit 0, and for Kong, auth and storage; the
   scheduler waits for the app. So every `up` migrates first: files already applied are skipped,
-  and if one fails the app is not started (`dc logs migrate` says which).
+  and if one fails (`dc logs migrate` says which), an `up` that does not recreate the app leaves
+  the old app running, while one that does (any `--build` with a code or migration change, i.e.
+  every Dokploy deploy) leaves it down.
 - **migrate** (`scripts/migrate-inner.sh`, in the db's image, with psql over the network) applies
   `supabase/migrations/*.sql` in filename order, each file in one transaction with its history row
   in `supabase_migrations.schema_migrations`. One file carries its own `begin`/`commit`
@@ -60,7 +62,7 @@ What each step does:
     `migrate.sh --cli` runs `supabase db push` instead; both read the same history table.
   - Only `supabase/migrations` is mounted into it. `supabase/pending-deploy/` is never applied:
     those files wait for a release to ship first (see CLAUDE.md).
-- **migrate.sh** runs that same service by hand (`dc run --rm migrate`), then checks `btree_gist`,
+- **migrate.sh** runs that same service by hand (`dc run --rm -T migrate`), then checks `btree_gist`,
   the signup hook, the Data API grants, the 8 private storage buckets the app uses (printing every
   bucket's size limit) and `GET /rest/v1/funds` with the service key. That last one goes to
   `MIGRATE_CHECK_URL` from this host when it is set (in the environment or `.env`), and otherwise
