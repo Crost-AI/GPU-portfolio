@@ -30,6 +30,10 @@ import { runWaterfall, type WaterfallState, type WaterfallTerms } from './waterf
 import { preferredTarget, type DatedContribution, type VehicleCarryTerms } from './carry'
 import { allocateAmount } from './allocation'
 import { roundCents } from './ledger'
+import {
+  distribute, replay, toWaterfallState, validateCashTerms,
+  type CashWaterfallTerms, type WaterfallEvent,
+} from '@/lib/gpu/waterfall'
 
 /** One partner's economics as at the distribution date, from the capital account. */
 export interface PartnerEconomics {
@@ -61,6 +65,18 @@ export interface WaterfallTiers {
   profitToLP: number
   toLP: number
   toGP: number
+  /** distributable_cash only: unspent contingency returned ahead of the tiers (R8). */
+  contingencyReturn?: number
+}
+
+/** What a distributable-cash waterfall adds to the tiers, for the register and the notice. */
+export interface CashSplitExtras {
+  prefDue: number
+  prefCarriedForward: number
+  unreturnedAfter: number
+  profitToLP: number
+  managerRocShare: number
+  contingencyReturn: number
 }
 
 export interface DistributionSplit {
@@ -73,6 +89,8 @@ export interface DistributionSplit {
   stateBefore: WaterfallState
   stateAfter: WaterfallState
   warnings: string[]
+  /** Present when the vehicle's terms are distributable_cash and the split ran through them. */
+  cash?: CashSplitExtras
 }
 
 export const ZERO_TIERS: WaterfallTiers = {
@@ -153,6 +171,8 @@ export interface SplitInput {
   asOf: string
   /** The GP's carry actually paid to date, for the reconciliation warning. Optional. */
   carryPaidToDate?: number
+  /** distributable_cash only: unspent contingency inside `total`, returned before the tiers (R8). */
+  contingencyReturn?: number
 }
 
 /**
@@ -162,6 +182,7 @@ export interface SplitInput {
  * every partner, method 'pro_rata' — so a vehicle that never set terms is unchanged.
  */
 export function splitDistribution(input: SplitInput): DistributionSplit {
+  if (input.terms.kind === 'distributable_cash') return splitDistributableCash(input)
   const total = roundCents(input.total)
   const { terms } = input
   const warnings: string[] = []
@@ -248,12 +269,124 @@ export function splitDistribution(input: SplitInput): DistributionSplit {
   }
 }
 
+/** A vehicle's stored terms as the distributable-cash engine takes them. */
+export function cashWaterfallTerms(terms: VehicleCarryTerms): CashWaterfallTerms {
+  return {
+    prefRate: terms.prefRate,
+    dayCount: terms.prefDayCount ?? '30_360',
+    rocLpShare: terms.rocLpShare ?? 1,
+    carryRate: terms.carryRate,
+    recipients: terms.recipients,
+  }
+}
+
+/**
+ * The engine's events from the declaration history: each investor's contributions (they must name
+ * the investor) and the prior fund-wide totals, on or before `asOf`. The engine orders them.
+ */
+export function cashWaterfallEvents(contributions: DatedContribution[], priors: PriorDistribution[], asOf: string): WaterfallEvent[] {
+  return [
+    ...contributions.filter(c => c.amount > 0 && c.date <= asOf && c.lpEntityId)
+      .map(c => ({ kind: 'contribution' as const, date: c.date, lpEntityId: c.lpEntityId as string, amount: c.amount })),
+    ...priors.filter(p => p.amount > 0 && p.date <= asOf).map(p => ({ kind: 'distribution' as const, date: p.date, amount: p.amount })),
+  ]
+}
+
+/**
+ * A GPU SPV's distribution through the distributable-cash waterfall (lib/gpu/waterfall.ts).
+ *
+ * The replay is the engine's: each investor's contributions and every prior fund-wide total, in
+ * date order (a contribution before a distribution on the same date), then this distribution. The
+ * shape returned is the fund waterfall's, with `catchUp` 0 and the extras on `cash`.
+ *
+ * When the replay cannot run as configured (invalid terms, a stored `periodic` day count, a
+ * contribution with no investor named, no investor at all), the split falls back to pro-rata by
+ * capital balance and says why, rather than guessing at tiers.
+ */
+function splitDistributableCash(input: SplitInput): DistributionSplit {
+  const { terms } = input
+  const total = roundCents(input.total)
+  const fallback = (why: string): DistributionSplit => {
+    const split = splitDistribution({ ...input, terms: { ...terms, kind: 'none' } })
+    return { ...split, warnings: [`${why} The distribution is split pro-rata by capital balance instead.`, ...split.warnings] }
+  }
+
+  const cashTerms = cashWaterfallTerms(terms)
+  const invalid = validateCashTerms({ ...cashTerms, catchupRate: terms.catchupRate, prefCompounds: terms.prefCompounds, prefBasis: terms.prefBasis })
+  if (invalid) return fallback(`The distributable-cash terms are not valid: ${invalid}`)
+  if (cashTerms.dayCount === 'periodic') return fallback('A periodic day count is for scenarios, not for dated distributions.')
+
+  const live = input.contributions.filter(c => c.amount > 0 && c.date <= input.asOf)
+  if (live.some(c => !c.lpEntityId)) return fallback('A contribution has no investor named, so the per-investor waterfall cannot be replayed.')
+
+  const warnings: string[] = []
+  const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
+  for (const p of input.partners) {
+    if (recipientIds.has(p.lpEntityId) && p.contributed > 0) {
+      warnings.push(`${p.lpEntityId} receives the profit share and has also contributed capital; the waterfall treats it as a recipient only. Edit its line if it should share as an investor.`)
+    }
+  }
+  const investorIds = new Set(live.map(c => c.lpEntityId))
+  for (const p of input.partners) {
+    if (!recipientIds.has(p.lpEntityId) && !investorIds.has(p.lpEntityId) && p.ending > 0) {
+      warnings.push(`${p.lpEntityId} holds capital but made no contribution, so the waterfall leaves it out. Edit its line if it should share.`)
+    }
+  }
+
+  const events = cashWaterfallEvents(live, input.priors, input.asOf)
+
+  let before, result
+  try {
+    before = replay(events, cashTerms, input.asOf)
+    result = distribute(before, total, input.asOf, cashTerms, undefined, { contingencyReturn: input.contingencyReturn })
+  } catch (e) {
+    return fallback(`The waterfall could not be replayed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  const t = result.tiers
+  const stateBefore = toWaterfallState(before)
+  if (input.carryPaidToDate != null && Math.abs(input.carryPaidToDate - stateBefore.gpCarryPaid) > 0.01) {
+    warnings.push(
+      `The waterfall implies ${stateBefore.gpCarryPaid.toFixed(2)} of profit share paid to date from prior distributions, ` +
+      `but the books show ${input.carryPaidToDate.toFixed(2)}. Earlier distributions were split differently; review before declaring.`,
+    )
+  }
+
+  return {
+    method: 'waterfall',
+    lines: result.lines.filter(l => l.amount > 0).map(l => ({ lpEntityId: l.lpEntityId, amount: l.amount })),
+    carryLines: result.carryLines,
+    tiers: {
+      returnOfCapital: t.returnOfCapital,
+      preferred: t.preferred,
+      catchUp: 0,
+      carry: t.carry,
+      profitToLP: t.profitToLP,
+      toLP: t.toLP,
+      toGP: t.toGP,
+      contingencyReturn: t.contingencyReturn,
+    },
+    stateBefore,
+    stateAfter: toWaterfallState(result.state),
+    warnings,
+    cash: {
+      prefDue: t.prefDue,
+      prefCarriedForward: t.prefCarriedForward,
+      unreturnedAfter: t.unreturnedAfter,
+      profitToLP: t.profitToLP,
+      managerRocShare: t.managerRocShare,
+      contingencyReturn: t.contingencyReturn,
+    },
+  }
+}
+
 /**
  * The tax character the waterfall suggests: what came back as capital is return of capital, and
  * everything else is gain. Income cannot be told apart here — the close knows what the fund
  * earned, a distribution only knows what it paid — so it is left for the GP to move.
  */
 export function suggestedCharacter(tiers: WaterfallTiers, total: number): { returnOfCapital: number; realizedGain: number; income: number } {
-  const roc = roundCents(Math.min(tiers.returnOfCapital, total))
+  // Returned contingency is capital coming back (R8), whatever tier it came through.
+  const roc = roundCents(Math.min(tiers.returnOfCapital + (tiers.contingencyReturn ?? 0), total))
   return { returnOfCapital: roc, realizedGain: roundCents(total - roc), income: 0 }
 }

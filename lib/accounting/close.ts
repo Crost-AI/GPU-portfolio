@@ -1546,6 +1546,10 @@ export async function accrueCarry(
     return { error: `Could not read the carry terms: ${(error as any)?.message ?? String(error)}` }
   }
   if (terms.kind === 'none' || terms.carryRate <= 0) return {}
+  // A GPU SPV's profit share is booked only when a distribution is declared (Karl, R4: investor
+  // statements show PAID profit share only), as a realised reallocation alongside the
+  // carry_distribution (declareDistribution). Nothing unrealised is accrued at the close.
+  if (terms.kind === 'distributable_cash') return {}
   if (terms.recipients.length === 0) {
     return { error: `${group} has carry terms but no recipient set to receive the carry.` }
   }

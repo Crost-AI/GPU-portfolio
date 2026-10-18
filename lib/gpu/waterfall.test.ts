@@ -23,13 +23,14 @@ function near(actual: number, expected: number, label: string) {
 /** Plan §3.4 step 5, exactly: the tiers, and every line, add back to D to the cent. */
 function assertIdentity(r: CashDistribution, D: number) {
   const t = r.tiers
-  expect(c(t.preferred) + c(t.returnOfCapital) + c(t.managerRocShare) + c(t.profitToLP) + c(t.carry)).toBe(c(D))
+  expect(c(t.contingencyReturn) + c(t.preferred) + c(t.returnOfCapital) + c(t.managerRocShare) + c(t.profitToLP) + c(t.carry)).toBe(c(D))
   expect(sumC(r.lines) + sumC(r.carryLines)).toBe(c(D))
   expect(c(t.toLP) + c(t.toGP)).toBe(c(D))
   expect(r.lines.reduce((s, l) => s + c(l.preferred), 0)).toBe(c(t.preferred))
   expect(r.lines.reduce((s, l) => s + c(l.roc), 0)).toBe(c(t.returnOfCapital))
   expect(r.lines.reduce((s, l) => s + c(l.profit), 0)).toBe(c(t.profitToLP))
-  for (const l of r.lines) expect(c(l.amount)).toBe(c(l.preferred) + c(l.roc) + c(l.profit))
+  expect(r.lines.reduce((s, l) => s + c(l.contingencyReturn), 0)).toBe(c(t.contingencyReturn))
+  for (const l of r.lines) expect(c(l.amount)).toBe(c(l.contingencyReturn) + c(l.preferred) + c(l.roc) + c(l.profit))
   expect(sumC(r.carryLines)).toBe(c(t.toGP))
 }
 
@@ -490,5 +491,61 @@ describe('regressions from review', () => {
     const row = prefLedger(events, PACK_TERMS).at(-1)!
     expect(c(row.carriedForward)).toBeGreaterThan(0)
     expect(row.perInvestor!.reduce((s, i) => s + c(i.carriedForward), 0)).toBe(c(row.carriedForward))
+  })
+})
+
+describe('R8: unspent contingency returned before the tiers', () => {
+  const start = () => contribute(emptyState(F8.contributionDate), { kind: 'contribution', date: F8.contributionDate, lpEntityId: LP, amount: CAPITAL })
+
+  it('a zero contingency return leaves F1 byte-identical, through replay too', () => {
+    const plain = runPeriodic(F1.distributableCents)
+    let state = start()
+    F1.distributableCents.forEach((D, k) => {
+      const r = distribute(state, D, F8.distributionDates[k], PACK_TERMS, 1, { contingencyReturn: 0 })
+      expect(r).toEqual(plain[k])
+      state = r.state
+    })
+  })
+
+  it('$130,500 returned at Y0 + 1 day: unreturned 1,305,000, Y1 pref 104,400, no carry', () => {
+    const r0 = distribute(start(), 130_500, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: 130_500 })
+    assertIdentity(r0, 130_500)
+    expect(r0.tiers).toMatchObject({ contingencyReturn: 130_500, preferred: 0, returnOfCapital: 0, carry: 0, toGP: 0, unreturnedAfter: 1_305_000, toLP: 130_500 })
+    expect(r0.carryLines).toEqual([])
+    const r1 = distribute(r0.state, F1.distributableCents[0], F8.distributionDates[0], PACK_TERMS, 1)
+    assertIdentity(r1, F1.distributableCents[0])
+    expect(r1.tiers.preferred).toBe(104_400)
+  })
+
+  it('caps at the capital unreturned; the excess runs through the tiers', () => {
+    const [y1, y2, y3] = runPeriodic(F1.distributableCents.slice(0, 3))
+    expect(y2.tiers.unreturnedAfter).toBe(132_578.96)
+    const r = distribute(y2.state, 200_000, F8.distributionDates[2], PACK_TERMS, 0, { contingencyReturn: 200_000 })
+    assertIdentity(r, 200_000)
+    expect(r.tiers.contingencyReturn).toBe(132_578.96)
+    expect(r.tiers.unreturnedAfter).toBe(0)
+    expect(r.tiers.returnOfCapital).toBe(0)
+    expect(r.tiers.carry).toBe(roundCents((200_000 - 132_578.96) * 0.3))
+    expect(y1.tiers.contingencyReturn + y3.tiers.contingencyReturn).toBe(0)
+  })
+
+  it('refuses a contingency above the distribution or below zero', () => {
+    expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: 101 })).toThrow(/contingency/)
+    expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: -1 })).toThrow(/contingency/)
+  })
+
+  it('two investors: cents by unreturned capital, tied to the tier, and replay reproduces it', () => {
+    const events: WaterfallEvent[] = [
+      ...F6.investors.map(i => ({ kind: 'contribution' as const, date: F8.contributionDate, ...i })),
+      { kind: 'distribution', date: '2027-01-02', amount: 130_500.01, periodFraction: 0, contingencyReturn: 130_500.01 },
+      { kind: 'distribution', date: F8.distributionDates[0], amount: F1.distributableCents[0], periodFraction: 1 },
+    ]
+    let state = replay(events.slice(0, 2), PACK_TERMS, F8.contributionDate)
+    const r = distribute(state, 130_500.01, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: 130_500.01 })
+    assertIdentity(r, 130_500.01)
+    expect(r.lines.map(l => l.contingencyReturn)).toEqual([90_909.1, 39_590.91])
+    state = r.state
+    const y1 = distribute(state, F1.distributableCents[0], F8.distributionDates[0], PACK_TERMS, 1)
+    expect(replay(events, PACK_TERMS, F8.distributionDates[0])).toEqual(y1.state)
   })
 })

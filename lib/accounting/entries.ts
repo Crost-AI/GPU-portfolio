@@ -331,6 +331,30 @@ export function buildCarryEntry(
 }
 
 /**
+ * The profit share realised when a distributable-cash distribution is declared (lib/gpu): Dr each
+ * investor's capital by the share it bears, Cr each recipient's by exactly its carry line. Unlike
+ * `buildCarryEntry` the credits are given, not split by percent, because they must equal what the
+ * carry_distribution pays each recipient to the cent. Same source type, so the roll-forward files
+ * it on the carried-interest line.
+ */
+export function buildRealisedCarryEntry(
+  base: Base,
+  perLpBorne: Map<string, number>,
+  perRecipient: Map<string, number>,
+  capMap: CapitalAccountMap,
+  currency = 'USD',
+): JournalEntry {
+  const postings: Posting[] = []
+  for (const [lpEntityId, amt] of Array.from(perLpBorne.entries())) {
+    if (amt) postings.push(lpDebit(capMap, lpEntityId, amt, currency))
+  }
+  for (const [lpEntityId, amt] of Array.from(perRecipient.entries())) {
+    if (amt) postings.push(lpDebit(capMap, lpEntityId, negate(roundCents(amt)), currency))
+  }
+  return finalize(base, 'carried_interest', postings)
+}
+
+/**
  * The GP/associate side of an equity-method markup: book, on the associate's OWN books, its share
  * of ONE line of the fund's performance (an unrealized gain, a realized gain, carried interest,
  * fees, …) — allocated to its members and marked onto its stake in the fund (Investment in Fund,

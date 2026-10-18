@@ -28,7 +28,11 @@ export async function GET(req: NextRequest) {
 //   preview: { total, asOf?, method?: 'waterfall' | 'pro_rata' }
 //            → the split, writing nothing. Through the waterfall when the vehicle has carry
 //              terms (LP lines + carry lines + the tier breakdown), else pro-rata by capital.
-//   declare: { distributionDate, description?, lines, carryLines?, splitMethod?, tiers?, kind?, character? }
+//            A distributable_cash vehicle (GPU SPV) takes { available, reserve, contingencyReturn? }
+//            instead of total: reserve is required (>= 0, < available) and the split distributes
+//            available − reserve. The reply adds available, reserve, distributable, lastReserve, cash.
+//   declare: { distributionDate, description?, lines, carryLines?, splitMethod?, tiers?, kind?, character?,
+//              available?, reserve?, cash? }
 //            → Dr each partner's capital, Cr 2300 Distributions payable; carry as its own entry
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -45,12 +49,20 @@ export async function POST(req: NextRequest) {
 
   if (body?.action === 'preview') {
     const total = Number(body?.total)
-    if (!Number.isFinite(total) || total <= 0) return NextResponse.json({ error: 'A positive total is required' }, { status: 400 })
+    // A cash-waterfall vehicle sends available + reserve instead; previewDistribution checks those.
+    const cashInputs = body?.available != null || body?.reserve != null
+    if (!cashInputs && (!Number.isFinite(total) || total <= 0)) return NextResponse.json({ error: 'A positive total is required' }, { status: 400 })
     const asOf = typeof body?.asOf === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.asOf)
       ? body.asOf
       : new Date().toISOString().slice(0, 10)
     const method = body?.method === 'pro_rata' ? 'pro_rata' : 'waterfall'
-    return NextResponse.json(await previewDistribution(admin, gate.fundId, group, total, asOf, method))
+    const preview = await previewDistribution(admin, gate.fundId, group, total, asOf, method, {
+      available: body?.available == null ? undefined : Number(body.available),
+      reserve: body?.reserve == null ? undefined : Number(body.reserve),
+      contingencyReturn: body?.contingencyReturn == null ? undefined : Number(body.contingencyReturn),
+    })
+    if ('error' in preview) return NextResponse.json({ error: preview.error }, { status: 400 })
+    return NextResponse.json(preview)
   }
 
   if (body?.action === 'declare') {
@@ -59,6 +71,7 @@ export async function POST(req: NextRequest) {
     // not — declareDistribution refuses anything that doesn't sum to the declared total.
     const c = body?.character
     const t = body?.tiers
+    const k = body?.cash
     const result = await declareDistribution(admin, gate.fundId, group, user.id, {
       requestKey: typeof body.requestKey === 'string' ? body.requestKey.slice(0, 100) : undefined,
       distributionDate: String(body?.distributionDate ?? ''),
@@ -75,6 +88,19 @@ export async function POST(req: NextRequest) {
             profitToLP: Number(t.profitToLP ?? 0),
             toLP: Number(t.toLP ?? 0),
             toGP: Number(t.toGP ?? 0),
+            ...(t.contingencyReturn != null ? { contingencyReturn: Number(t.contingencyReturn) } : {}),
+          }
+        : null,
+      available: body?.available == null ? undefined : Number(body.available),
+      reserve: body?.reserve == null ? undefined : Number(body.reserve),
+      cash: k && typeof k === 'object'
+        ? {
+            prefDue: Number(k.prefDue ?? 0),
+            prefCarriedForward: Number(k.prefCarriedForward ?? 0),
+            unreturnedAfter: Number(k.unreturnedAfter ?? 0),
+            profitToLP: Number(k.profitToLP ?? 0),
+            managerRocShare: Number(k.managerRocShare ?? 0),
+            contingencyReturn: Number(k.contingencyReturn ?? body?.contingencyReturn ?? 0),
           }
         : null,
       kind: body?.kind,

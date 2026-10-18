@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { TABLE_RULES } from '@/lib/access/table-domains'
 
 // ── GPU fleet (P1) ── The same guardrail as tax-data-api-grants.test.ts, for the fleet register.
 //
@@ -18,6 +19,8 @@ const SERVICE_ROLE_ONLY = [
   'gpu_asset_events',
   'datacenter_contracts',
   'gpu_fleet_settings',
+  // ── GPU fleet (P2) ── fee terms: read by the accounting-gated fee-terms route and by the close.
+  'vehicle_fee_terms',
 ]
 
 function migrationFiles(): { name: string; sql: string }[] {
@@ -101,5 +104,11 @@ describe('fleet entries are booked once', () => {
   it('a partial unique index covers the gpu-asset: and gpu-dep: source refs', () => {
     const sql = readFileSync(join(MIGRATIONS, '20261019110000_gpu_assets.sql'), 'utf8')
     expect(sql).toMatch(/create unique index if not exists journal_entries_gpu_fleet_once\s+on public\.journal_entries \(fund_id, vehicle_id, book, source_ref\)\s+where \(source_ref like 'gpu-asset:%' or source_ref like 'gpu-dep:%'\) and status <> 'void';/)
+  })
+})
+
+describe('the registry agrees', () => {
+  it.each(SERVICE_ROLE_ONLY)('%s is a service-scope table in TABLE_RULES', table => {
+    expect(TABLE_RULES[table]?.scope).toBe('service')
   })
 })

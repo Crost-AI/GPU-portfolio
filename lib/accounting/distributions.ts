@@ -23,22 +23,24 @@ import { ensureVehicleAccounts } from './provision-accounts'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { allocateAmount } from './allocation'
+import { allocateAmount, apportionCents } from './allocation'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 import { DISTRIBUTION_PAYABLE_CODE } from './chart'
-import { buildDistributionDeclarationEntry } from './entries'
+import { buildDistributionDeclarationEntry, buildRealisedCarryEntry } from './entries'
 import { loadPostedLedger, loadEntityNames } from './load'
 import { loadCapitalPostings } from './capital-source'
-import { computeCapitalAccounts, bucketForSourceType } from './capital-account'
+import { computeCapitalAccounts, bucketForSourceType, type CapitalPosting } from './capital-account'
 import { vehicleIdByName } from './vehicle-id'
-import { loadCarryTerms, type DatedContribution } from './carry'
+import { loadCarryTerms, type DatedContribution, type VehicleCarryTerms } from './carry'
 import { reconcileSettlements, registerStatus, type LineStatus, type RegisterStatus, type Settlement } from './settlement'
 import { loadSettlements } from './capital-calls'
 import {
   splitDistribution,
   suggestedCharacter,
   ZERO_TIERS,
+  type CashSplitExtras,
   type DistributionSplit,
+  type PartnerEconomics,
   type PriorDistribution,
   type SplitMethod,
   type WaterfallTiers,
@@ -73,6 +75,12 @@ export interface DeclareDistributionInput {
   kind?: DistributionKind
   /** Return of capital / realized gain / income. Omitted or all-zero leaves it uncharacterised. */
   character?: DistributionCharacter
+  /** distributable_cash: the cash available before the reserve, as previewed. */
+  available?: number
+  /** distributable_cash: the working-capital reserve held back. Becomes the next default. */
+  reserve?: number
+  /** distributable_cash: the preview's tier extras, frozen on the register for the notice. */
+  cash?: CashSplitExtras | null
 }
 
 /**
@@ -101,33 +109,35 @@ export interface DistributionPreview extends DistributionSplit {
   names: Record<string, string>
   /** What the waterfall suggests for the K-1 character. Editable before declaring. */
   suggestedCharacter: DistributionCharacter
-  /** The carry terms in force, so the UI can say what it applied. */
-  terms: { kind: string; carryRate: number; prefRate: number; recipients: string[] }
+  /** The carry terms in force, so the UI can say what it applied. The three distributable-cash
+   *  fields are present only for that kind. */
+  terms: {
+    kind: string; carryRate: number; prefRate: number; recipients: string[]
+    prefBasis?: string; prefDayCount?: string; rocLpShare?: number
+  }
+  /** distributable_cash only: cash available, the reserve held back, and what that leaves. */
+  available?: number
+  reserve?: number
+  distributable?: number
+  /** distributable_cash only: the newest declared distribution's reserve, as the form's default. */
+  lastReserve?: number | null
+}
+
+export interface WaterfallHistory {
+  partners: PartnerEconomics[]
+  /** Dated contributions, recipients excluded (as the close excludes them), each naming its investor. */
+  contributions: DatedContribution[]
+  /** Every prior distribution as a fund-wide total per date: LP distributions and carry paid both left. */
+  priors: PriorDistribution[]
+  carryPaidToDate: number
 }
 
 /**
- * How a fund-wide distribution of `total` would be split on `asOf`, writing nothing.
- *
- * `method` 'pro_rata' forces the capital-balance split even when carry terms exist — the escape
- * hatch for a distribution the LPA treats specially. Default: the waterfall when terms exist.
+ * The history a distribution split replays, from the capital postings: each partner's economics as
+ * at `asOf`, the dated contributions, and the prior distribution totals. Shared by the preview and
+ * the pref ledger, so both read the same history.
  */
-export async function previewDistribution(
-  admin: SupabaseClient,
-  fundId: string,
-  group: string,
-  total: number,
-  asOf: string,
-  method: 'waterfall' | 'pro_rata' = 'waterfall',
-): Promise<DistributionPreview> {
-  // From whichever producer the vehicle uses: the ledger, or a tracking vehicle's positions.
-  const [{ postings: capitalPostings }, terms, names] = await Promise.all([
-    loadCapitalPostings(admin, fundId, group),
-    loadCarryTerms(admin, fundId, group),
-    loadEntityNames(admin, fundId, group),
-  ])
-  const effectiveTerms = method === 'pro_rata' ? { ...terms, kind: 'none' as const } : terms
-  const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
-
+export function loadWaterfallHistory(capitalPostings: CapitalPosting[], recipientIds: Set<string>, asOf: string): WaterfallHistory {
   const accounts = computeCapitalAccounts(capitalPostings, { end: asOf })
   const partners = Array.from(accounts.entries()).map(([lpEntityId, a]) => ({
     lpEntityId,
@@ -139,7 +149,7 @@ export async function previewDistribution(
   // Dated LP contributions for the hurdle — recipients excluded, as the close excludes them.
   const contributions: DatedContribution[] = capitalPostings
     .filter(p => p.lpEntityId && !recipientIds.has(p.lpEntityId) && bucketForSourceType(p.sourceType) === 'contributions')
-    .map(p => ({ date: p.entryDate ?? asOf, amount: roundCents(-p.amount) }))
+    .map(p => ({ date: p.entryDate ?? asOf, amount: roundCents(-p.amount), lpEntityId: p.lpEntityId as string }))
     .filter(c => c.amount > 0)
 
   // Every prior distribution, as a fund-wide total per date: LP distributions and carry paid
@@ -157,6 +167,86 @@ export async function previewDistribution(
     if (isCarry && recipientIds.has(p.lpEntityId)) carryPaidToDate = roundCents(carryPaidToDate + p.amount)
   }
   const priors: PriorDistribution[] = Array.from(priorByDate.entries()).map(([date, amount]) => ({ date, amount }))
+  return { partners, contributions, priors, carryPaidToDate }
+}
+
+export interface CashPreviewOptions {
+  /** distributable_cash: cash available to distribute, before the reserve. Required for that kind. */
+  available?: number
+  /** distributable_cash: working-capital reserve held back. Required for that kind; >= 0, < available. */
+  reserve?: number
+  /** distributable_cash: unspent contingency inside the distribution, returned before the tiers (R8). */
+  contingencyReturn?: number
+}
+
+/** A distributable-cash vehicle's distribution amount, or why the inputs cannot make one. */
+function cashDistributable(opts: CashPreviewOptions): { total: number } | { error: string } {
+  const available = Number(opts.available)
+  const reserve = Number(opts.reserve)
+  if (opts.available == null || !Number.isFinite(available) || available <= 0) {
+    return { error: 'A positive available cash amount is required for a distributable-cash waterfall' }
+  }
+  if (opts.reserve == null || !Number.isFinite(reserve) || reserve < 0 || reserve >= available) {
+    return { error: 'A reserve of at least 0 and less than the available cash is required' }
+  }
+  const total = roundCents(available - reserve)
+  const contingency = Number(opts.contingencyReturn ?? 0)
+  if (!Number.isFinite(contingency) || contingency < 0 || contingency > total) {
+    return { error: 'The contingency returned must be at least 0 and at most the amount distributed' }
+  }
+  return { total }
+}
+
+/** The newest declared distribution's reserve, or null — the declaration form's default. */
+async function lastReserve(admin: SupabaseClient, fundId: string, group: string): Promise<number | null> {
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  if (!vehicleId) return null
+  const { data, error } = await (admin as any)
+    .from('distributions')
+    .select('reserve_amount')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'declared')
+    .order('distribution_date', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`distributions read failed: ${error.message}`)
+  return data?.reserve_amount == null ? null : Number(data.reserve_amount)
+}
+
+/**
+ * How a fund-wide distribution of `total` would be split on `asOf`, writing nothing.
+ *
+ * `method` 'pro_rata' forces the capital-balance split even when carry terms exist — the escape
+ * hatch for a distribution the LPA treats specially. Default: the waterfall when terms exist.
+ *
+ * A distributable_cash vehicle (a GPU SPV) does not take `total`: it takes the cash `available`
+ * and a required `reserve`, and distributes the difference (Karl, Q5).
+ */
+export async function previewDistribution(
+  admin: SupabaseClient,
+  fundId: string,
+  group: string,
+  total: number,
+  asOf: string,
+  method: 'waterfall' | 'pro_rata' = 'waterfall',
+  opts: CashPreviewOptions = {},
+): Promise<DistributionPreview | { error: string }> {
+  // From whichever producer the vehicle uses: the ledger, or a tracking vehicle's positions.
+  const [{ postings: capitalPostings }, terms, names] = await Promise.all([
+    loadCapitalPostings(admin, fundId, group),
+    loadCarryTerms(admin, fundId, group),
+    loadEntityNames(admin, fundId, group),
+  ])
+  const isCash = terms.kind === 'distributable_cash'
+  if (isCash) {
+    const amount = cashDistributable(opts)
+    if ('error' in amount) return amount
+    total = amount.total
+  } else if (!Number.isFinite(total) || total <= 0) {
+    return { error: 'A positive total is required' }
+  }
+  const effectiveTerms = method === 'pro_rata' ? { ...terms, kind: 'none' as const } : terms
+  const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
+  const { partners, contributions, priors, carryPaidToDate } = loadWaterfallHistory(capitalPostings, recipientIds, asOf)
 
   const split = splitDistribution({
     total,
@@ -166,10 +256,11 @@ export async function previewDistribution(
     priors,
     asOf,
     carryPaidToDate: recipientIds.size > 0 ? carryPaidToDate : undefined,
+    ...(isCash ? { contingencyReturn: Number(opts.contingencyReturn ?? 0) } : {}),
   })
 
   const nameOf = (id: string) => names.get(id) ?? id
-  return {
+  const preview: DistributionPreview = {
     ...split,
     // Warnings name entity ids; say the partner's name instead.
     warnings: split.warnings.map(w => Array.from(names.entries()).reduce((s, [id, n]) => s.split(id).join(n), w)),
@@ -182,6 +273,46 @@ export async function previewDistribution(
       recipients: effectiveTerms.recipients.map(r => nameOf(r.lpEntityId)),
     },
   }
+  if (!isCash) return preview
+  return {
+    ...preview,
+    available: roundCents(Number(opts.available)),
+    reserve: roundCents(Number(opts.reserve)),
+    distributable: total,
+    lastReserve: await lastReserve(admin, fundId, group),
+    terms: { ...preview.terms, prefBasis: terms.prefBasis, prefDayCount: terms.prefDayCount, rocLpShare: terms.rocLpShare },
+  }
+}
+
+/**
+ * The profit share REALISED by a distributable-cash declaration: Dr each investor's capital,
+ * Cr each recipient's, so the carry_distribution that pays the recipient nets its account to zero
+ * and each investor's statement shows the profit share it bore. A GPU SPV accrues no carry at the
+ * close (Karl, R4: statements show PAID profit share only), so this is the only place it is booked.
+ *
+ * The investors bear it on the same basis as the profit split: contributed capital, cents placed
+ * with apportionCents over investors sorted by id. It ties to the carry lines to the cent.
+ */
+async function realisedCarryPlan(
+  admin: SupabaseClient,
+  fundId: string,
+  group: string,
+  terms: VehicleCarryTerms,
+  perRecipient: Map<string, number>,
+  asOf: string,
+): Promise<{ perLp: Map<string, number> } | { error: string }> {
+  const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
+  const { postings } = await loadCapitalPostings(admin, fundId, group)
+  const contributed = new Map<string, number>()
+  for (const c of loadWaterfallHistory(postings, recipientIds, asOf).contributions) {
+    if (c.date > asOf) continue
+    contributed.set(c.lpEntityId as string, roundCents((contributed.get(c.lpEntityId as string) ?? 0) + c.amount))
+  }
+  const ids = Array.from(contributed.keys()).sort((a, b) => a.localeCompare(b))
+  if (ids.length === 0) return { error: 'No investor has contributed, so the profit share cannot be borne by anyone' }
+  const total = Math.round(roundCents(Array.from(perRecipient.values()).reduce((s, v) => s + v, 0)) * 100)
+  const parts = apportionCents(total, ids.map(id => Math.round(contributed.get(id)! * 100)))
+  return { perLp: new Map(ids.map((id, i) => [id, parts[i] / 100] as [string, number]).filter(([, v]) => v > 0)) }
 }
 
 function cleanLines(lines: DistributionLineInput[] | undefined): Map<string, number> {
@@ -206,7 +337,7 @@ export async function declareDistribution(
   group: string,
   userId: string | null,
   input: DeclareDistributionInput,
-): Promise<{ entryId: string; carryEntryId: string | null; distributionId: string } | { error: string }> {
+): Promise<{ entryId: string; carryEntryId: string | null; carryRealizedEntryId: string | null; distributionId: string } | { error: string }> {
 
   if (!validCapitalAmounts([...(input.lines ?? []), ...(input.carryLines ?? [])])) return { error: 'Distribution amounts must be finite nonnegative amounts in cents' }
   const perLp = cleanLines(input.lines)
@@ -230,6 +361,10 @@ export async function declareDistribution(
   const kind: DistributionKind = isDistributionKind(input.kind) ? input.kind : 'cash'
   const splitMethod: SplitMethod = input.splitMethod === 'waterfall' || input.splitMethod === 'pro_rata' ? input.splitMethod : 'manual'
   const tiers = splitMethod === 'waterfall' && input.tiers ? input.tiers : null
+  const cash = splitMethod === 'waterfall' && input.cash ? input.cash : null
+  if (input.reserve != null && !(Number.isFinite(Number(input.reserve)) && Number(input.reserve) >= 0)) {
+    return { error: 'The reserve must be a finite amount of at least 0' }
+  }
 
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   // Refuse before anything is written, for the reason spelled out in issueCapitalCall: a null
@@ -238,14 +373,33 @@ export async function declareDistribution(
   if (!vehicleId) return { error: `"${group}" is not in this fund's vehicle registry, so a distribution cannot be recorded against it` }
   const requestKey = capitalOperationKey(input)
   const { data: prior, error: priorError } = await admin.from('distributions' as any)
-    .select('id, status, journal_entry_id, carry_journal_entry_id, distribution_lines(id)').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('request_key', requestKey).maybeSingle()
+    .select('id, status, journal_entry_id, carry_journal_entry_id, carry_realized_journal_entry_id, distribution_lines(id)').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('request_key', requestKey).maybeSingle()
   if (priorError) return { error: priorError.message }
   const previous = prior as any
-  if (previous?.status === 'declared') return { distributionId: previous.id, entryId: previous.journal_entry_id, carryEntryId: previous.carry_journal_entry_id }
+  if (previous?.status === 'declared') return { distributionId: previous.id, entryId: previous.journal_entry_id, carryEntryId: previous.carry_journal_entry_id, carryRealizedEntryId: previous.carry_realized_journal_entry_id ?? null }
   let entryId: string | null = previous?.journal_entry_id ?? null
   let carryEntryId: string | null = previous?.carry_journal_entry_id ?? null
+  let carryRealizedEntryId: string | null = previous?.carry_realized_journal_entry_id ?? null
   let distributionId: string = previous?.id
   if (!previous) {
+    // A distributable-cash vehicle accrues no carry at the close (Karl, R4), so paying a profit
+    // share must realise it here, or the recipient's capital goes negative by what it was paid
+    // and the investors' stays overstated. Worked out before anything is written.
+    let realised: Map<string, number> | null = null
+    if (perRecipient.size > 0) {
+      let terms: VehicleCarryTerms
+      try {
+        terms = await loadCarryTerms(admin, fundId, group)
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
+      }
+      if (terms.kind === 'distributable_cash') {
+        const plan = await realisedCarryPlan(admin, fundId, group, terms, perRecipient, input.distributionDate)
+        if ('error' in plan) return plan
+        realised = plan.perLp
+      }
+    }
+
     await ensureVehicleAccounts(admin, fundId, group)
     const codes = await accountIdByCode(admin, fundId, group)
     const payableId = codes.get(DISTRIBUTION_PAYABLE_CODE)
@@ -253,7 +407,7 @@ export async function declareDistribution(
       return { error: `The chart is missing account ${DISTRIBUTION_PAYABLE_CODE} Distributions payable — add it under the entity's Admin → Chart of accounts.` }
     }
 
-    const capMap = await ensureCapitalAccounts(admin, fundId, group, [...Array.from(perLp.keys()), ...Array.from(perRecipient.keys())])
+    const capMap = await ensureCapitalAccounts(admin, fundId, group, Array.from(new Set([...Array.from(perLp.keys()), ...Array.from(perRecipient.keys()), ...Array.from(realised?.keys() ?? [])])))
     const base = { fundId, entryDate: input.distributionDate }
 
     // Posted, like a call issuance: declaring is the event. The SETTLEMENT is what arrives as a
@@ -279,7 +433,18 @@ export async function declareDistribution(
       carryEntryId = result.entryId
     }
 
-
+    if (realised && realised.size > 0) {
+      const entry = buildRealisedCarryEntry(
+        { ...base, memo: `${input.description || 'Distribution'} — profit share realised` },
+        realised, perRecipient, capMap,
+      )
+      const result = await persistEntry(admin, fundId, group, userId, entry, 'draft')
+      if ('error' in result) {
+        const { error: cleanupError } = await admin.rpc('discard_unregistered_capital_drafts' as any, { p_fund_id: fundId, p_vehicle_id: vehicleId, p_entry_ids: [entryId, carryEntryId].filter(Boolean) })
+        return { error: `${result.error}${cleanupError ? `; draft cleanup failed: ${cleanupError.message}` : ''}` }
+      }
+      carryRealizedEntryId = result.entryId
+    }
 
     // The register, written in the same shape as issueCapitalCall's.
     const { data: row, error: regErr } = await (admin as any)
@@ -299,6 +464,15 @@ export async function declareDistribution(
         wf_preferred: tiers?.preferred ?? null,
         wf_catch_up: tiers?.catchUp ?? null,
         wf_carry: tiers?.carry ?? null,
+        // distributable_cash only; absent keys leave every other vehicle's row as it was written.
+        ...(carryRealizedEntryId ? { carry_realized_journal_entry_id: carryRealizedEntryId } : {}),
+        ...(cash ? {
+          wf_contingency_return: cash.contingencyReturn,
+          wf_profit_lp: cash.profitToLP,
+          wf_pref_carried_forward: cash.prefCarriedForward,
+          wf_unreturned_after: cash.unreturnedAfter,
+        } : {}),
+        ...(input.reserve != null ? { reserve_amount: roundCents(Number(input.reserve)) } : {}),
         kind,
         char_return_of_capital: character.returnOfCapital,
         char_realized_gain: character.realizedGain,
@@ -308,7 +482,7 @@ export async function declareDistribution(
       .select('id')
       .single()
     if (regErr) {
-      const { error: cleanupError } = await admin.rpc('discard_unregistered_capital_drafts' as any, { p_fund_id: fundId, p_vehicle_id: vehicleId, p_entry_ids: Array.from(new Set([entryId, carryEntryId].filter(Boolean))) })
+      const { error: cleanupError } = await admin.rpc('discard_unregistered_capital_drafts' as any, { p_fund_id: fundId, p_vehicle_id: vehicleId, p_entry_ids: Array.from(new Set([entryId, carryEntryId, carryRealizedEntryId].filter(Boolean))) })
       return { error: `${regErr.message}${cleanupError ? `; draft cleanup failed: ${cleanupError.message}` : ''}` }
     }
     distributionId = (row as any).id
@@ -320,10 +494,10 @@ export async function declareDistribution(
   ]
   const { error: finalizeError } = await admin.rpc('complete_capital_operation' as any, {
     p_fund_id: fundId, p_vehicle_id: vehicleId, p_kind: 'distribution', p_register_id: distributionId,
-    p_entry_ids: Array.from(new Set([entryId, carryEntryId].filter(Boolean))), p_lines: lineRows,
+    p_entry_ids: Array.from(new Set([entryId, carryEntryId, carryRealizedEntryId].filter(Boolean))), p_lines: lineRows,
   })
   if (finalizeError) return { error: `Distribution remains a draft: ${finalizeError.message}` }
-  return { entryId: entryId ?? carryEntryId ?? '', carryEntryId, distributionId }
+  return { entryId: entryId ?? carryEntryId ?? '', carryEntryId, carryRealizedEntryId, distributionId }
 }
 
 export interface DeclaredDistributionLine {
@@ -356,8 +530,11 @@ export interface DeclaredDistribution extends RegisterStatus {
   lpTotal: number
   carryTotal: number
   splitMethod: SplitMethod
-  /** The waterfall tiers, when the split was one. Null for pro-rata and hand-typed lines. */
-  tiers: WaterfallTiers | null
+  /** The waterfall tiers, when the split was one. Null for pro-rata and hand-typed lines.
+   *  `cash` is present when it was a distributable-cash waterfall (frozen at declaration). */
+  tiers: (WaterfallTiers & { cash?: CashSplitExtras }) | null
+  /** distributable_cash: the reserve held back when it was declared; null otherwise. */
+  reserve: number | null
   /** K-1 box 19 form. */
   kind: DistributionKind
   /** The three buckets as declared. All zero = never characterised, which is not the same as nil. */
@@ -388,7 +565,7 @@ export async function listDistributions(
   const [{ data: rows }, names, settlements, reviews] = await Promise.all([
     (admin as any)
       .from('distributions')
-      .select('id, distribution_date, description, status, journal_entry_id, carry_journal_entry_id, split_method, wf_return_of_capital, wf_preferred, wf_catch_up, wf_carry, kind, char_return_of_capital, char_realized_gain, char_income, distribution_lines(id, lp_entity_id, amount, role, notice_document_id, settled_amount, settled_on)')
+      .select('id, distribution_date, description, status, journal_entry_id, carry_journal_entry_id, split_method, wf_return_of_capital, wf_preferred, wf_catch_up, wf_carry, wf_contingency_return, wf_profit_lp, wf_pref_carried_forward, wf_unreturned_after, reserve_amount, kind, char_return_of_capital, char_realized_gain, char_income, distribution_lines(id, lp_entity_id, amount, role, notice_document_id, settled_amount, settled_on)')
       .eq('fund_id', fundId)
       .eq('vehicle_id', vehicleId)
       .order('distribution_date', { ascending: false })
@@ -434,7 +611,7 @@ export async function listDistributions(
     const total = roundCents(rawLines.reduce((s: number, l: any) => s + l.amount, 0))
     const carryTotal = roundCents(rawLines.filter((l: any) => l.role === 'carry').reduce((s: number, l: any) => s + l.amount, 0))
     const splitMethod: SplitMethod = d.split_method === 'waterfall' || d.split_method === 'pro_rata' ? d.split_method : 'manual'
-    const tiers: WaterfallTiers | null = splitMethod === 'waterfall' && d.wf_return_of_capital != null
+    const tiers: DeclaredDistribution['tiers'] = splitMethod === 'waterfall' && d.wf_return_of_capital != null
       ? {
           ...ZERO_TIERS,
           returnOfCapital: Number(d.wf_return_of_capital ?? 0),
@@ -444,6 +621,7 @@ export async function listDistributions(
           profitToLP: roundCents(total - carryTotal - Number(d.wf_return_of_capital ?? 0) - Number(d.wf_preferred ?? 0)),
           toLP: roundCents(total - carryTotal),
           toGP: carryTotal,
+          ...(d.wf_unreturned_after != null ? cashTiersOf(d, carryTotal) : {}),
         }
       : null
     return {
@@ -457,6 +635,7 @@ export async function listDistributions(
       carryTotal,
       splitMethod,
       tiers,
+      reserve: d.reserve_amount == null ? null : Number(d.reserve_amount),
       kind: isDistributionKind(d.kind) ? d.kind : 'cash',
       character,
       characterised: !isUncharacterised(character),
@@ -464,4 +643,23 @@ export async function listDistributions(
       ...registerStatus(rawLines, null, today),
     }
   })
+}
+
+/** A distributable-cash row's frozen tiers: the profit split as declared, and the extras. */
+function cashTiersOf(d: any, carryTotal: number): Partial<WaterfallTiers> & { cash: CashSplitExtras } {
+  const contingencyReturn = Number(d.wf_contingency_return ?? 0)
+  const profitToLP = Number(d.wf_profit_lp ?? 0)
+  const prefCarriedForward = Number(d.wf_pref_carried_forward ?? 0)
+  return {
+    profitToLP,
+    contingencyReturn,
+    cash: {
+      prefDue: roundCents(Number(d.wf_preferred ?? 0) + prefCarriedForward),
+      prefCarriedForward,
+      unreturnedAfter: Number(d.wf_unreturned_after),
+      profitToLP,
+      managerRocShare: roundCents(carryTotal - Number(d.wf_carry ?? 0)),
+      contingencyReturn,
+    },
+  }
 }
