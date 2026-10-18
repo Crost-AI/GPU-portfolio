@@ -151,7 +151,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/fleet/ops/import': { domain: 'fleet' },
   'api/fleet/ops/earnings': { domain: 'fleet' },
   'api/fleet/ops/payouts': { domain: 'fleet' },
-  'api/fleet/kpis': { domain: 'fleet' },
+  // GET reads the KPIs; POST publishes them to the fleet company's metrics.
+  'api/fleet/kpis': { domain: 'fleet', level: { GET: 'read', POST: 'write' } },
   // ── Management company ─────────────────────────────────────────────────────
   // The firm's own operating entity, on its own books. A separate domain from `accounting`
   // because a manco ledger carries firm payroll and partner compensation, and — unlike a K-1,

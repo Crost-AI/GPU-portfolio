@@ -41,6 +41,7 @@ import { fundCurrency } from './currency'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 // ── GPU fleet (P3) ──
 import { gpuOpsCloseIssues } from '@/lib/gpu/ops/close-checks'
+import { publishFleetKpis } from '@/lib/gpu/metrics-publish'
 import { allocateAmountCumulatively } from './allocation'
 import { postingsInPeriod } from './statements'
 import { computeCapitalAccounts, bucketForSourceType, emptyAccount, type CapitalAccount } from './capital-account'
@@ -1135,18 +1136,44 @@ export async function closeThrough(
 
   const windows = monthWindows(preview.start, preview.end)
   const closed: { id: string; label: string; netIncome: number }[] = []
+  // ── GPU fleet (P3) ── the months whose close succeeded, for publishClosedFleetMonths below.
+  const closedMonths: string[] = []
 
   for (const w of windows) {
     const result = await closePeriodWithAllocation(admin, fundId, group, userId, w.start, w.end, w.label)
     if ('error' in result) {
+      await publishClosedFleetMonths(admin, fundId, group, userId, closedMonths)
       return closed.length > 0
         ? { error: `Closed ${closed.map(c => c.label).join(', ')}, then failed on ${w.label}: ${result.error}` }
         : { error: `${w.label}: ${result.error}` }
     }
     closed.push({ id: result.id, label: w.label, netIncome: result.netIncome })
+    closedMonths.push(w.start.slice(0, 7))
   }
 
+  await publishClosedFleetMonths(admin, fundId, group, userId, closedMonths)
   return { closed }
+}
+
+// ── GPU fleet (P3) ──
+/**
+ * After a close, publish each month that actually closed to a GPU SPV's fleet company (its KPIs as
+ * metrics). Best effort: a failure is logged and never fails or undoes the close; publishing again
+ * (POST /api/fleet/kpis) repairs it. Any other vehicle returns before reading anything else.
+ */
+async function publishClosedFleetMonths(
+  admin: SupabaseClient, fundId: string, group: string, userId: string | null, months: string[],
+): Promise<void> {
+  if (months.length === 0 || !userId) return
+  try {
+    if ((await vehicleKindByName(admin, fundId, group)) !== 'gpu_spv') return
+    for (const month of months) {
+      const result = await publishFleetKpis(admin, fundId, group, month, userId)
+      if ('error' in result) console.error(`[closeThrough] publishing fleet KPIs for ${group} ${month} failed:`, result.error)
+    }
+  } catch (e) {
+    console.error(`[closeThrough] publishing fleet KPIs for ${group} failed:`, e)
+  }
 }
 
 /**

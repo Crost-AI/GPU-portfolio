@@ -3,20 +3,20 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
-import { seedCompanyFromDefaults } from '@/lib/metrics/seed-default-metrics'
+import { listedHoldingType, seedCompanyFromDefaults, templateKindFor } from '@/lib/metrics/seed-default-metrics'
 
 // The fund's default metric profile, seen from ONE company: which defaults it already tracks,
 // which it has opted out of, and which are still available to seed. Powers the company page's
 // "Fund defaults" panel (seed-on-demand + per-company opt-out).
 
 async function resolveCompanyFund(admin: ReturnType<typeof createAdminClient>, companyId: string, fundId: string) {
-  const { data: company } = await admin.from('companies').select('fund_id').eq('id', companyId).maybeSingle()
+  const { data: company } = await (admin as any).from('companies').select('fund_id, holding_type').eq('id', companyId).maybeSingle()
   if (!company) return { error: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
   if (company.fund_id !== fundId) return { error: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
-  return { ok: true as const }
+  return { ok: true as const, holdingType: company.holding_type as string | null }
 }
 
-export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -28,9 +28,15 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
 
   const check = await resolveCompanyFund(admin, params.id, gate.fundId)
   if (check.error) return check.error
+  // ── GPU fleet (P3) ── The templates of this company's own kind (the ones its seed would copy):
+  // 'company' for a portfolio company, 'gpu_fleet' for a GPU SPV's fleet company. ?holding_type=
+  // asks for one kind explicitly.
+  const param = req.nextUrl.searchParams.get('holding_type')
+  const holdingType = param == null ? templateKindFor(check.holdingType) : listedHoldingType(param)
+  if (!holdingType) return NextResponse.json({ error: "holding_type must be 'company' or 'gpu_fleet'" }, { status: 400 })
 
   const [{ data: defaults, error }, { data: metrics }, { data: exclusions }] = await Promise.all([
-    (admin as any).from('default_metrics').select('*').eq('fund_id', gate.fundId).eq('is_active', true).order('display_order'),
+    (admin as any).from('default_metrics').select('*').eq('fund_id', gate.fundId).eq('is_active', true).eq('holding_type', holdingType).order('display_order'),
     admin.from('metrics').select('slug').eq('company_id', params.id),
     (admin as any).from('default_metric_exclusions').select('default_metric_id').eq('company_id', params.id),
   ])

@@ -3,13 +3,13 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
-import { applyDefaultsToAllCompanies } from '@/lib/metrics/seed-default-metrics'
+import { applyDefaultsToAllCompanies, listedHoldingType } from '@/lib/metrics/seed-default-metrics'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 
 // The fund-wide default metric profile. Admin-only: it writes into every company, so the
 // question is "may this person configure the fund?", not a per-domain grant.
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -18,10 +18,16 @@ export async function GET() {
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
 
+  // ── GPU fleet (P3) ── 'company' templates unless ?holding_type=gpu_fleet asks for the fleet's, so
+  // Settings and the Add-company form never list the gpu-* templates.
+  const holdingType = listedHoldingType(req.nextUrl.searchParams.get('holding_type'))
+  if (!holdingType) return NextResponse.json({ error: "holding_type must be 'company' or 'gpu_fleet'" }, { status: 400 })
+
   const { data, error } = await (admin as any)
     .from('default_metrics')
     .select('*')
     .eq('fund_id', gate.fundId)
+    .eq('holding_type', holdingType)
     .order('display_order')
 
   if (error) return dbError(error, 'default-metrics')
