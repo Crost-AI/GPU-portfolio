@@ -23,7 +23,7 @@ vi.mock('@/lib/access/effective', async orig => ({
 }))
 vi.mock('@/lib/accounting/load', async orig => ({ ...(await orig<any>()), loadEntityNames: async () => new Map([['a', 'Alpha LP'], ['b', 'Beta LP']]) }))
 
-import { PUT as putTerms } from '@/app/api/accounting/waterfall-terms/route'
+import { GET as getTerms, PUT as putTerms } from '@/app/api/accounting/waterfall-terms/route'
 import { GET as getFee, PUT as putFee } from '@/app/api/accounting/fee-terms/route'
 import { GET as getLedger } from '@/app/api/accounting/pref-ledger/route'
 import { POST as postDistribution } from '@/app/api/accounting/distributions/route'
@@ -85,6 +85,24 @@ describe('PUT /api/accounting/waterfall-terms: distributable_cash', () => {
     const row = s.m.tables.vehicle_waterfall_terms[0]
     for (const k of ['pref_basis', 'pref_day_count', 'roc_lp_share']) expect(row).not.toHaveProperty(k)
     expect(row.pref_compounds).toBe(true)
+  })
+})
+
+describe('GET /api/accounting/waterfall-terms', () => {
+  const terms = async () => (await (await getTerms(req('/api/accounting/waterfall-terms?group=GPU%20I'))).json()).terms
+
+  it('a european row reads the three distributable-cash fields at their defaults', async () => {
+    s.m.tables.vehicle_waterfall_terms.push({ fund_id: 'f', vehicle_id: 'v1', kind: 'european', carry_rate: 0.2, pref_rate: 0.08, catchup_rate: 1, pref_compounds: true, gp_entity_id: 'mgr' })
+    expect(await terms()).toMatchObject({ kind: 'european', prefBasis: 'contributed', prefDayCount: '30_360', rocLpShare: 1 })
+  })
+
+  it('a distributable_cash row reads its own', async () => {
+    s.m.tables.vehicle_waterfall_terms.push({ ...cashRow, pref_day_count: 'act_365', roc_lp_share: 0.9 })
+    expect(await terms()).toMatchObject({ kind: 'distributable_cash', prefBasis: 'unreturned', prefDayCount: 'act_365', rocLpShare: 0.9 })
+  })
+
+  it('no row reads as no carry, with the defaults', async () => {
+    expect(await terms()).toMatchObject({ kind: 'none', prefBasis: 'contributed', prefDayCount: '30_360', rocLpShare: 1 })
   })
 })
 
