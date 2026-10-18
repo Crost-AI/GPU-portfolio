@@ -301,7 +301,8 @@ export function distribute(
   // 1. Preferred return: the vehicle's exact owed balance, rounded once, apportioned by what each owes.
   const owed = inv.map(i => i.prefAccrued - i.prefPaid)
   const prefDue = Math.max(0, cents(owed.reduce((a, b) => a + b, 0)))
-  const preferred = Math.min(D, prefDue)
+  // Out of what is left after the contingency: it is part of D, not on top of it.
+  const preferred = Math.min(D - contingency, prefDue)
   const prefLines = apportionCents(preferred, owed.map(o => Math.max(0, o)))
   const prefCarriedForward = prefDue - preferred
 

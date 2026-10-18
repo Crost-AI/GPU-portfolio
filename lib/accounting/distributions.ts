@@ -303,9 +303,16 @@ function cashCarryMismatch(
   for (const id of Array.from(perRecipient.keys())) {
     if (!recipientIds.has(id)) return 'Carry lines can only go to the vehicle\'s profit-share recipients'
   }
-  const total = input.available != null && input.reserve != null
-    ? roundCents(Number(input.available) - Number(input.reserve))
-    : declaredTotal
+  // The waterfall runs on what is actually being declared. A stated available/reserve must agree
+  // with it, or the check would be made against a different distribution.
+  if (input.available != null || input.reserve != null) {
+    const available = Number(input.available)
+    const reserve = Number(input.reserve)
+    if (!Number.isFinite(available) || !Number.isFinite(reserve) || reserve < 0 || reserve >= available || roundCents(available - reserve) !== declaredTotal) {
+      return 'The available cash less the reserve must equal the distribution declared'
+    }
+  }
+  const total = declaredTotal
   const h = loadWaterfallHistory(postings, recipientIds, input.distributionDate)
   const split = splitDistribution({
     total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,

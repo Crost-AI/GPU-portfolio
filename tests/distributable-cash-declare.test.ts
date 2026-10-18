@@ -206,13 +206,14 @@ describe('declareDistribution: distributable_cash', () => {
   it.each<[string, (i: any) => any]>([
     ['carry lines to someone who is not a recipient', i => ({ ...i, carryLines: [{ lpEntityId: 'lp2', amount: i.carryLines[0].amount }] })],
     ['carry lines that do not total the waterfall', i => ({ ...i, carryLines: [{ lpEntityId: 'mgr', amount: roundTo(i.carryLines[0].amount + 0.01) }] })],
+    ['an available less reserve that is not the distribution declared', i => ({ ...i, reserve: roundTo(i.reserve + 100) })],
     ['carry lines on a distribution the waterfall gives no carry', i => ({ ...i, distributionDate: F8.distributionDates[0], available: 1_000, reserve: 0, lines: [{ lpEntityId: 'lp', amount: 990 }], carryLines: [{ lpEntityId: 'mgr', amount: 10 }] })],
   ])('refuses %s before writing anything', async (_, edit) => {
     s.postings = postingsBefore(2, engineF1())
     const { m, rpc } = admin()
     const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', edit(await y3Input(m, 'bad')))
     expect(out).toHaveProperty('error')
-    expect((out as any).error).toMatch(/recipients|do not match the waterfall/)
+    expect((out as any).error).toMatch(/recipients|do not match the waterfall|less the reserve/)
     expect(s.entries).toEqual([])
     expect(m.tables.distributions).toEqual([])
     expect(rpc).not.toHaveBeenCalled()

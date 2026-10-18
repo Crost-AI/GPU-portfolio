@@ -529,6 +529,17 @@ describe('R8: unspent contingency returned before the tiers', () => {
     expect(y1.tiers.contingencyReturn + y3.tiers.contingencyReturn).toBe(0)
   })
 
+  it('pref is paid only from what is left after the contingency, never past D', () => {
+    // A year of pref (114,840) is due; 120,000 is distributed, 100,000 of it contingency.
+    const r = distribute(start(), 120_000, F8.distributionDates[0], PACK_TERMS, 1, { contingencyReturn: 100_000 })
+    assertIdentity(r, 120_000)
+    expect(r.tiers).toMatchObject({ contingencyReturn: 100_000, prefDue: 114_840, preferred: 20_000, prefCarriedForward: 94_840, returnOfCapital: 0, unreturnedAfter: CAPITAL - 100_000 })
+    expect(r.state.investors[0].unreturned).toBe(CAPITAL - 100_000)
+    // The shortfall carries into the next year on the reduced base: 94,840 + 8% of 1,335,500.
+    const next = distribute(r.state, 0, F8.distributionDates[1], PACK_TERMS, 1)
+    expect(next.tiers.prefDue).toBe(94_840 + 106_840)
+  })
+
   it('refuses a contingency above the distribution or below zero', () => {
     expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: 101 })).toThrow(/contingency/)
     expect(() => distribute(start(), 100, '2027-01-02', PACK_TERMS, 0, { contingencyReturn: -1 })).toThrow(/contingency/)
