@@ -9,10 +9,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from '@/lib/accounting/ledger'
 import { vehicleIdByName, vehicleNameById } from '@/lib/accounting/vehicle-id'
 import { persistEntry } from '@/lib/accounting/persist'
-import {
-  buildPayeeEntry, buildPayerEntry, ensureIntercompanyAccounts, postIntercompanyCharge, resolveSideAccounts, unwindIntercompanyEntry,
-} from '@/lib/accounting/intercompany'
-import type { JournalEntry } from '@/lib/accounting/types'
+import { postIntercompanyCharge, voidUnsettledCharge } from '@/lib/accounting/intercompany'
 import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { firstDay, lastDay, type MonthKey } from '@/lib/forecast/months'
 
@@ -76,11 +73,10 @@ export const grossRevenueFeeRef = (vehicleId: string, month: MonthKey) => `gpu-f
  * The basis is POSTED postings on accounts whose subtype is in `revenueSubtypes`, dated in the
  * month. A disposal (4500) and interest (4100) carry other subtypes, so they never enter it.
  *
- * Booking: with a payee management company, an increase is an intercompany management-fee charge
- * (SPV Dr 5000 / Cr 2900-<manco>; manco Dr 1900-<spv> / Cr fee income), tagged with the month's
- * ref in its memo. The charge register requires a positive amount, so a reduction posts the mirror
- * pair directly, both under the month's ref. Without a payee: Dr 5000 / Cr 2100 Due to manager,
- * and the reverse for a reduction.
+ * Booking: with a payee management company, through the intercompany register so it nets to the
+ * fee (bookIntercompanyFee): a fee charge (SPV Dr 5000 / Cr 2900-<manco>; manco Dr 1900-<spv> /
+ * Cr fee income) tagged with the month's ref, re-issued net or rebated when the fee falls. Without
+ * a payee: Dr 5000 / Cr 2100 Due to manager, and the reverse for a reduction.
  *
  * `entryId` is the SPV's entry, or the intercompany charge's id when an increase is charged.
  */
@@ -129,11 +125,7 @@ export async function accrueGrossRevenueFee(
       .range(from, to))
     revenue = roundCents(-(await postingsOn(admin, monthEntries.map(e => e.id), revenueIds)))
 
-    const charges = await fetchAllRows<{ id: string }>((from, to) => (admin as any)
-      .from('intercompany_transactions').select('id')
-      .eq('fund_id', fundId).eq('from_vehicle_id', vehicleId).eq('kind', 'management_fee').neq('status', 'void')
-      .like('memo', `%[${ref}]%`)
-      .range(from, to))
+    const charges = await monthCharges(admin, fundId, vehicleId, ref)
     const refs = [ref, ...charges.map(c => `intercompany:${c.id}`)]
     const feeEntries = await fetchAllRowsIn<{ id: string }>(refs, (chunk, from, to) => (admin as any)
       .from('journal_entries').select('id')
@@ -176,41 +168,61 @@ async function postingsOn(admin: SupabaseClient, entryIds: string[], accountIds:
   return rows.reduce((t, p) => t + Number(p.amount), 0)
 }
 
+/** A live intercompany charge carrying a month's fee ref: the fee itself, or a rebate of it. */
+interface MonthCharge { id: string; kind: string; status: string; amount: number }
+
+/**
+ * The month's live charges: fees the SPV owes the manco and rebates the manco owes the SPV, each
+ * tagged with the month's ref in its memo. Their SPV-side entries are what is already booked.
+ */
+async function monthCharges(admin: SupabaseClient, fundId: string, vehicleId: string, ref: string): Promise<MonthCharge[]> {
+  const read = (side: 'from_vehicle_id' | 'to_vehicle_id', kind: string) => fetchAllRows<MonthCharge>((from, to) => (admin as any)
+    .from('intercompany_transactions').select('id, kind, status, amount')
+    .eq('fund_id', fundId).eq(side, vehicleId).eq('kind', kind).neq('status', 'void')
+    .like('memo', `%[${ref}]%`)
+    .range(from, to))
+  const [fees, rebates] = await Promise.all([read('from_vehicle_id', 'management_fee'), read('to_vehicle_id', 'management_fee_rebate')])
+  return [...fees, ...rebates]
+}
+
+/**
+ * Book a fee change to the payee management company so the charge register nets to the fee, as
+ * the ledger does:
+ *   - an increase is a further management-fee charge;
+ *   - a reduction with fee charges still unsettled voids them (both books) and re-issues what is
+ *     left as one charge, so the cash that moves at settlement is the net fee;
+ *   - a reduction once the fee is paid is a rebate the manco owes back (manco Dr fee income /
+ *     Cr due to SPV; SPV Dr due from manco / Cr 5000), settled like any charge.
+ */
 async function bookIntercompanyFee(
   admin: SupabaseClient, fundId: string, group: string, userId: string | null, vehicleId: string,
   payeeVehicleId: string, date: string, delta: number, memo: string, ref: string,
 ): Promise<{ entryId?: string; delta: number } | { error: string }> {
   const payeeName = await vehicleNameById(admin, fundId, payeeVehicleId)
   if (!payeeName) return { error: 'The fee payee is not a vehicle in this fund' }
-  if (delta > 0) {
-    const charge = await postIntercompanyCharge(admin, {
-      fundId, userId, kind: 'management_fee', chargeDate: date, amount: delta, memo,
-      payer: { vehicleId, name: group }, payee: { vehicleId: payeeVehicleId, name: payeeName },
+  const spv = { vehicleId, name: group }
+  const manco = { vehicleId: payeeVehicleId, name: payeeName }
+  const charge = async (amount: number): Promise<{ entryId?: string; delta: number } | { error: string }> => {
+    if (amount === 0) return { delta }
+    const fee = amount > 0
+    const res = await postIntercompanyCharge(admin, {
+      fundId, userId, kind: fee ? 'management_fee' : 'management_fee_rebate', chargeDate: date, amount: Math.abs(amount),
+      memo: fee ? memo : `${memo} — rebate`, payer: fee ? spv : manco, payee: fee ? manco : spv,
     })
-    return 'error' in charge ? { error: charge.error } : { entryId: charge.id, delta }
+    return 'error' in res ? { error: res.error } : { entryId: res.id, delta }
   }
-  // A reduction: the charge's mirror on both books, SPV first, unwound if the manco's fails.
+  if (delta > 0) return charge(delta)
+
+  let unsettled: MonthCharge[]
   try {
-    const payerIc = await ensureIntercompanyAccounts(admin, fundId, group, { vehicleId: payeeVehicleId, name: payeeName })
-    const payeeIc = await ensureIntercompanyAccounts(admin, fundId, payeeName, { vehicleId, name: group })
-    const payer = await resolveSideAccounts(admin, fundId, group, 'management_fee', 'payer', payerIc.payableAccountId)
-    const payee = await resolveSideAccounts(admin, fundId, payeeName, 'management_fee', 'payee', payeeIc.receivableAccountId)
-    if ('error' in payer) return payer
-    if ('error' in payee) return payee
-    const input = { fundId, kind: 'management_fee' as const, chargeDate: date, amount: -delta, memo: `${memo} — reduction`, chargeId: ref }
-    const mirror = (e: JournalEntry): JournalEntry => ({
-      ...e, sourceRef: ref,
-      postings: e.postings.map(p => ({ ...p, amount: roundCents(-p.amount) })),
-    })
-    const spv = await persistEntry(admin, fundId, group, userId, mirror(buildPayerEntry(input, payer)))
-    if ('error' in spv) return { error: spv.error }
-    const manco = await persistEntry(admin, fundId, payeeName, userId, mirror(buildPayeeEntry(input, payee)))
-    if ('error' in manco) {
-      const left = await unwindIntercompanyEntry(admin, fundId, spv.entryId)
-      return { error: `${payeeName}: ${manco.error}${left ? `. ${left}` : ''}` }
-    }
-    return { entryId: spv.entryId, delta }
+    unsettled = (await monthCharges(admin, fundId, vehicleId, ref)).filter(c => c.kind === 'management_fee' && c.status === 'accrued')
   } catch (e) {
-    return { error: (e as Error).message }
+    return { error: `The month's fee charges could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
   }
+  if (unsettled.length === 0) return charge(delta)
+  for (const c of unsettled) {
+    const voided = await voidUnsettledCharge(admin, fundId, c.id)
+    if ('error' in voided) return voided
+  }
+  return charge(roundCents(unsettled.reduce((t, c) => t + Number(c.amount), 0) + delta))
 }

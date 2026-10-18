@@ -38,6 +38,9 @@ import type { JournalEntry } from './types'
 export const INTERCOMPANY_KINDS = [
   'management_fee', 'expense_reimbursement', 'allocated_cost',
   'loan_advance', 'loan_repayment', 'other',
+  // The management company handing back part of a fee already charged (a GPU SPV's fee true-up
+  // when revenue is reversed after the fee was paid): payer and payee swap.
+  'management_fee_rebate',
 ] as const
 
 export type IntercompanyKind = (typeof INTERCOMPANY_KINDS)[number]
@@ -49,6 +52,7 @@ export const INTERCOMPANY_KIND_LABELS: Record<IntercompanyKind, string> = {
   loan_advance: 'Advance',
   loan_repayment: 'Advance repaid',
   other: 'Other charge',
+  management_fee_rebate: 'Management fee rebate',
 }
 
 /**
@@ -58,7 +62,7 @@ export const INTERCOMPANY_KIND_LABELS: Record<IntercompanyKind, string> = {
  * row, because that is what actually happened).
  */
 const ACCRUING_KINDS: IntercompanyKind[] = [
-  'management_fee', 'expense_reimbursement', 'allocated_cost', 'other',
+  'management_fee', 'expense_reimbursement', 'allocated_cost', 'other', 'management_fee_rebate',
 ]
 
 export function isAccruingKind(kind: IntercompanyKind): boolean {
@@ -83,6 +87,8 @@ const INCOME_SUBTYPES: Record<IntercompanyKind, string[]> = {
   expense_reimbursement: ['reimbursement_income', 'other_income'],
   allocated_cost: ['reimbursement_income', 'other_income'],
   other: ['other_income', 'reimbursement_income'],
+  // The payee of a rebate is the vehicle that paid the fee: what it gains is its fee expense back.
+  management_fee_rebate: ['management_fee'],
   // Cash kinds never touch the P&L: lending money is not income to the lender.
   loan_advance: [],
   loan_repayment: [],
@@ -93,6 +99,8 @@ const EXPENSE_SUBTYPES: Record<IntercompanyKind, string[]> = {
   expense_reimbursement: ['partnership_expense', 'operating_expense', 'office'],
   allocated_cost: ['partnership_expense', 'operating_expense', 'office'],
   other: ['partnership_expense', 'operating_expense', 'office'],
+  // The payer of a rebate is the management company: what it gives up is fee income it booked.
+  management_fee_rebate: ['management_fee_income'],
   loan_advance: [],
   loan_repayment: [],
 }
@@ -320,6 +328,42 @@ export async function resolveSideAccounts(
     }
   }
   return { intercompanyAccountId, cashAccountId: cash, pnlAccountId: pnl }
+}
+
+/**
+ * Void an ACCRUED charge and both of its entries — a charge that has to be re-issued at another
+ * amount before any cash moved (a GPU SPV's fee true-up when revenue is reversed). The entries are
+ * voided as the journal voids one, with the allocations they generated, payer first. A settled
+ * charge, or one with a settlement entry linked, is refused: what has been paid is undone by a
+ * rebate, not by voiding history. Returns what is left when a step fails, so nothing half-voided
+ * passes silently.
+ */
+export async function voidUnsettledCharge(admin: SupabaseClient, fundId: string, chargeId: string): Promise<{ ok: true } | { error: string }> {
+  const { data, error } = await admin.from('intercompany_transactions' as any)
+    .select('status, from_entry_id, to_entry_id, from_settlement_entry_id, to_settlement_entry_id')
+    .eq('id', chargeId).eq('fund_id', fundId).maybeSingle()
+  if (error) return { error: `The charge could not be read: ${error.message}` }
+  const row = data as any
+  if (!row) return { error: 'Charge not found' }
+  if (row.status !== 'accrued' || row.from_settlement_entry_id || row.to_settlement_entry_id) {
+    return { error: `Charge ${chargeId} is ${row.status === 'accrued' ? 'part-settled' : row.status}; it can only be rebated, not voided.` }
+  }
+  const { setGeneratedAllocationStatus } = await import('./continuous-allocation')
+  const done: string[] = []
+  for (const entryId of [row.from_entry_id, row.to_entry_id].filter(Boolean) as string[]) {
+    const allocation = await setGeneratedAllocationStatus(admin, fundId, entryId, 'void')
+    const { error: voidErr } = allocation.error
+      ? { error: { message: allocation.error } }
+      : await admin.from('journal_entries' as any).update({ status: 'void', posted_at: null }).eq('id', entryId).eq('fund_id', fundId)
+    if (voidErr) {
+      return { error: `Entry ${entryId} of charge ${chargeId} could not be voided (${voidErr.message})${done.length ? `; ${done.join(', ')} already voided` : ''}.` }
+    }
+    done.push(entryId)
+  }
+  const { error: rowErr } = await admin.from('intercompany_transactions' as any)
+    .update({ status: 'void' }).eq('id', chargeId).eq('fund_id', fundId).eq('status', 'accrued')
+  if (rowErr) return { error: `Charge ${chargeId}'s entries were voided but the charge was not (${rowErr.message}).` }
+  return { ok: true }
 }
 
 // ── Posting ───────────────────────────────────────────────────────────────────────────────────

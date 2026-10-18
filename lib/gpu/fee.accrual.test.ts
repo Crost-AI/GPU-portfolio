@@ -162,28 +162,4 @@ describe('accrueGrossRevenueFee with a payee management company: intercompany', 
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
     expect(postIntercompanyCharge).toHaveBeenCalledTimes(1)
   })
-
-  it('a reduction posts the mirror pair on both books, each balanced, then holds', async () => {
-    seed('mc')
-    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
-    reverseRevenue(20_000)
-    const out = await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
-    expect(out).toMatchObject({ delta: -1_000 })
-    const [spv, manco] = s.m.tables.journal_entries.filter((e: any) => e.source_ref === 'gpu-fee:v1:2027-01')
-    expect(entryPostings(spv.id)).toEqual([['fee', -1_000], ['ic-pay', 1_000]])
-    expect(entryPostings(manco.id)).toEqual([['ic-rec', -1_000], ['mc-income', 1_000]])
-    expect(manco.vehicle_id).toBe('mc')
-    expect(balanced(spv.id) && balanced(manco.id)).toBe(true)
-    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
-  })
-
-  it("unwinds the SPV's side when the manco's reduction cannot post", async () => {
-    seed('mc')
-    await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
-    reverseRevenue(20_000)
-    s.failGroup = 'ManCo'
-    const out = await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')
-    expect(out).toEqual({ error: 'ManCo: closed period' })
-    expect(unwindIntercompanyEntry).toHaveBeenCalledWith(expect.anything(), 'f', expect.stringMatching(/^fee-/))
-  })
 })

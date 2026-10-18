@@ -82,6 +82,14 @@ create policy "vehicle_fee_terms service role"
   on public.vehicle_fee_terms for all to service_role
   using (true) with check (true);
 
+-- 4b. A management fee rebate: the management company handing back part of a fee already charged
+--     (a GPU SPV's fee true-up after revenue is reversed). Additive; an older release never writes it.
+alter table public.intercompany_transactions
+  drop constraint if exists intercompany_transactions_kind_check;
+alter table public.intercompany_transactions
+  add constraint intercompany_transactions_kind_check
+  check (kind in ('management_fee', 'expense_reimbursement', 'allocated_cost', 'loan_advance', 'loan_repayment', 'other', 'management_fee_rebate'));
+
 -- 5. A distribution's third entry: the profit share realised at declaration (see column above).
 --    The register functions link, publish and clean up all three entries together. Restated in
 --    full from 20261006174407 / 20261006164431; the only changes are the third id in each linked
