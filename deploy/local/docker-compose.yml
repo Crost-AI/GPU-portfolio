@@ -59,6 +59,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      mail-templates:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
       interval: 5s
@@ -109,6 +111,35 @@ services:
       GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
       GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
       GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+      # The app signs in, confirms and resets with a 6-digit code (verifyOtp), so GoTrue must send
+      # supabase/templates (which carry {{ .Token }}), not its link-only defaults.
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://mail-templates:8080/magic_link.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://mail-templates:8080/recovery.html
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://mail-templates:8080/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_EMAIL_CHANGE: http://mail-templates:8080/email_change.html
+      GOTRUE_MAILER_TEMPLATES_INVITE: http://mail-templates:8080/invite.html
+      GOTRUE_MAILER_TEMPLATES_REAUTHENTICATION: http://mail-templates:8080/reauthentication.html
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: Your sign-in code
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: Reset your password
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: Confirm your email address
+      GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: Confirm your new email address
+      GOTRUE_MAILER_SUBJECTS_INVITE: You've been invited
+      GOTRUE_MAILER_SUBJECTS_REAUTHENTICATION: Your verification code
+
+  # Serves supabase/templates to GoTrue, which loads email templates only from URLs. Internal only:
+  # no host port, no Traefik route.
+  mail-templates:
+    image: busybox:1.37.0
+    restart: unless-stopped
+    labels: *labels
+    command: ["httpd", "-f", "-p", "8080", "-h", "/templates"]
+    volumes:
+      - ../../supabase/templates:/templates:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/magic_link.html"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   rest:
     image: postgrest/postgrest:v14.17

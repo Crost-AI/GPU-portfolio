@@ -14,7 +14,8 @@
 #    failing `mv`: a move that fails keeps both directories and exits 1.
 # 4. Kong's DNS TTLs, so services restarted by backup/restore (new IPs) are re-resolved in 5 s.
 # 5. The resolved compose config: the app waits for the `migrate` service, which mounts only
-#    supabase/migrations and its script; GoTrue's MFA and mailer settings.
+#    supabase/migrations and its script; GoTrue's MFA and mailer settings, and the mail-templates
+#    service that serves supabase/templates to it.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 real_docker="$(command -v docker)"
@@ -270,6 +271,14 @@ expect "auth: TOTP MFA enrol and verify on" \
   "$(cfg 's["auth"]["environment"]["GOTRUE_MFA_TOTP_ENROLL_ENABLED"], s["auth"]["environment"]["GOTRUE_MFA_TOTP_VERIFY_ENABLED"]')" "('true', 'true')"
 expect "auth: mailer autoconfirm off and no external hosts by default" \
   "$(cfg 's["auth"]["environment"]["GOTRUE_MAILER_AUTOCONFIRM"], s["auth"]["environment"]["GOTRUE_MAILER_EXTERNAL_HOSTS"]')" "('false', '')"
+expect "mail-templates: no host port; mounts exactly supabase/templates, read-only" \
+  "$(cfg '"ports" in s["mail-templates"], [(v["type"], v["source"].replace(sys.argv[3], ""), v["target"], v.get("read_only")) for v in s["mail-templates"]["volumes"]]' "$(cd "$here/../.." && pwd)")" \
+  "(False, [('bind', '/supabase/templates', '/templates', True)])"
+expect "auth: waits for mail-templates to be healthy" "$(cfg 's["auth"]["depends_on"]["mail-templates"]["condition"]')" service_healthy
+# GoTrue falls back to its link-only default when a template URL fails, so each must name a real file.
+expect "auth: all six GOTRUE_MAILER_TEMPLATES_* point at mail-templates, at a file in supabase/templates" \
+  "$(cfg 'sorted((k[24:], bool(m) and __import__("os").path.isfile(sys.argv[3] + "/" + m[1])) for k, v in s["auth"]["environment"].items() if k.startswith("GOTRUE_MAILER_TEMPLATES_") for m in [__import__("re").fullmatch(r"http://mail-templates:8080/([a-z_]+[.]html)", v)])' "$(cd "$here/../.." && pwd)/supabase/templates")" \
+  "[('CONFIRMATION', True), ('EMAIL_CHANGE', True), ('INVITE', True), ('MAGIC_LINK', True), ('REAUTHENTICATION', True), ('RECOVERY', True)]"
 config MAILER_AUTOCONFIRM=true MAILER_EXTERNAL_HOSTS=cap.example.com
 expect "auth: MAILER_AUTOCONFIRM and MAILER_EXTERNAL_HOSTS from .env reach GoTrue" \
   "$(cfg 's["auth"]["environment"]["GOTRUE_MAILER_AUTOCONFIRM"], s["auth"]["environment"]["GOTRUE_MAILER_EXTERNAL_HOSTS"]')" "('true', 'cap.example.com')"
