@@ -30,7 +30,9 @@ export default function MagicLinkPage() {
     // Sign-in only — don't create accounts from this flow.
     const { error } = await supabase.auth.signInWithOtp({
       email: email.trim().toLowerCase(),
-      options: { shouldCreateUser: false },
+      // A tapped link lands on the server callback, which exchanges the code and moves on;
+      // without this GoTrue sends it back to this page, which only knows the 6-digit code.
+      options: { shouldCreateUser: false, emailRedirectTo: `${window.location.origin}/auth/callback?next=/` },
     })
     if (error) setError(error.message)
     else setSent(true)

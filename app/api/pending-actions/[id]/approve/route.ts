@@ -5,6 +5,7 @@ import { resolveBrowserPrincipal } from '@/lib/pending-actions/browser-principal
 import { approvePendingAction, PendingActionServiceError } from '@/lib/pending-actions/service'
 // Publishing notices renders each partner's PDF here, so this route ships Chromium (lib/pdf-routes.mjs).
 import { executePublishCallNotices } from '@/lib/pending-actions/call-notices-publish'
+import { publicOrigin } from '@/lib/public-origin'
 
 // Approving a staged company update runs the extraction pipeline (submit_company_update), and a
 // run (lib/agent/run-action.ts) applies up to a hundred steps in one approval.
@@ -40,7 +41,7 @@ export async function POST(req: Request, props: { params: Promise<{ id: string }
       confirmed: body?.confirmed === true,
       executors: { publish_call_notices: executePublishCallNotices },
       // A staged tool that calls back into the app (lp_send_item's attachment, lp_proposed_call_approve's notices).
-      origin: new URL(req.url).origin,
+      origin: publicOrigin(req),
     })
     expireTag('pending-actions-badge')
     return NextResponse.json({ ok: true, result: result.result, replayed: result.replayed })
