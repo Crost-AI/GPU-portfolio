@@ -52,7 +52,9 @@ for f in "$dir"/*.sql; do
     printf "values ('%s', '%s', array[\$%s\$" "$version" "$name" "$tag"
     cat "$f"
     printf '$%s$]) on conflict (version) do update\n' "$tag"
-    printf "set name = schema_migrations.name || ',' || excluded.name, statements = schema_migrations.statements || excluded.statements;\n"
+    # coalesce: a row the CLI recorded may have no name, and null || ',b' would stay null, so the
+    # next run would apply the second file again. ',b' reads as applied.
+    printf "set name = coalesce(schema_migrations.name, '') || ',' || excluded.name, statements = schema_migrations.statements || excluded.statements;\n"
   } | psql_db --single-transaction
   applied_n=$((applied_n + 1))
 done

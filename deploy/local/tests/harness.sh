@@ -131,6 +131,8 @@ for row in "null" "'a'"; do
   expect "a shared version recorded with name $row: applies _b, not _a" \
     "$(grep '^applying 20990101000001' "$tmp/first-file.out" | tr '\n' ' ')$(last first-file)" \
     "applying 20990101000001_b migrate: applied 2, already applied 1"
+  inner first-file-again >/dev/null
+  expect "...and a second run applies nothing" "$(last first-file-again)" "migrate: applied 0, already applied 3"
 done
 
 # migrate.sh: applies through the `migrate` service, then checks. Its other checks fail here (no
