@@ -8,20 +8,22 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { EmptyState } from '@/components/ui/empty-state'
+import { Metric } from '@/components/ui/metric'
 import { HeaderTable, PendingAction, ShellSection } from './parts'
 
 // ── GPU fleet (P5) ── Waterfall & distributions on a GPU SPV: preferred return on unreturned capital,
 // then return of capital, then the profit split. The terms and the manager's share are
 // `gp_economics`, so they render only for a caller who holds it.
 //
-// The manager's profit share is shown as PAID, per distribution (Karl's Q8). There is no accrued or
-// hypothetical figure on this page, and there must not be one.
+// The manager's profit share is shown as PAID, per distribution (Karl's Q8): what has settled
+// against the carry lines, beside what was declared. There is no accrued or hypothetical figure on
+// this page, and there must not be one.
 //
 // The history is the one region with data today: the existing distributions route, as it is. The
 // rest is the layout P5-3 wires to the pref ledger and the distributable-cash preview.
 
 /** The fields of GET /api/accounting/distributions this page reads (lib/accounting/distributions.ts). */
-interface HistoryRow {
+export interface HistoryRow {
   distributionId: string
   date: string
   description: string | null
@@ -29,6 +31,27 @@ interface HistoryRow {
   lpTotal: number
   carryTotal: number
   status: 'open' | 'partial' | 'settled'
+  lines: { role: 'lp' | 'carry'; amount: number; settled: number }[]
+}
+
+const cents = (n: number) => Math.round(n * 100) / 100
+
+/**
+ * The manager's profit share on one distribution: `declared` is what the carry lines say, `paid`
+ * what has settled against them. A declared-but-unwired distribution is paid 0 — `carryTotal` is
+ * the declared figure and must never be shown as paid.
+ */
+export function profitShare(row: Pick<HistoryRow, 'carryTotal' | 'lines'>): { paid: number; declared: number } {
+  const carry = (row.lines ?? []).filter(l => l.role === 'carry')
+  return { paid: cents(carry.reduce((t, l) => t + (l.settled ?? 0), 0)), declared: row.carryTotal }
+}
+
+/** Every distribution's profit share, summed: the cumulative tiles. */
+export function profitShareTotals(rows: Pick<HistoryRow, 'carryTotal' | 'lines'>[]): { paid: number; declared: number } {
+  return rows.reduce((t, r) => {
+    const p = profitShare(r)
+    return { paid: cents(t.paid + p.paid), declared: cents(t.declared + p.declared) }
+  }, { paid: 0, declared: 0 })
 }
 
 const STATUS_LABEL: Record<HistoryRow['status'], string> = { open: 'Unpaid', partial: 'Part paid', settled: 'Paid' }
@@ -110,6 +133,16 @@ export function WaterfallView(_props: { vehicle: string; vehicleId: string | nul
         ) : history.length === 0 ? (
           <EmptyState compact>No distributions declared yet.</EmptyState>
         ) : (
+          <div className="space-y-3">
+          {seesTerms && (() => {
+            const totals = profitShareTotals(history)
+            return (
+              <div className="grid grid-cols-2 gap-3">
+                <Metric label="Profit share paid" value={money(totals.paid)} sub="Settled to date, every distribution" />
+                <Metric label="Profit share declared" value={money(totals.declared)} sub="Declared to date, paid or not" />
+              </div>
+            )
+          })()}
           <div className="overflow-x-auto rounded-card border">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-muted-foreground">
@@ -118,6 +151,7 @@ export function WaterfallView(_props: { vehicle: string; vehicleId: string | nul
                   <th scope="col" className="px-3 py-2 text-left font-medium">Description</th>
                   <th scope="col" className="px-3 py-2 text-right font-medium">To investors</th>
                   {seesTerms && <th scope="col" className="px-3 py-2 text-right font-medium">Profit share paid</th>}
+                  {seesTerms && <th scope="col" className="px-3 py-2 text-right font-medium">Profit share declared</th>}
                   {seesTerms && <th scope="col" className="px-3 py-2 text-right font-medium">Total</th>}
                   <th scope="col" className="px-3 py-2 text-left font-medium">Status</th>
                 </tr>
@@ -128,13 +162,15 @@ export function WaterfallView(_props: { vehicle: string; vehicleId: string | nul
                     <td className="whitespace-nowrap px-3 py-2 tabular-nums">{d.date}</td>
                     <td className="px-3 py-2 text-muted-foreground">{d.description ?? '—'}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{money(d.lpTotal)}</td>
-                    {seesTerms && <td className="px-3 py-2 text-right tabular-nums">{money(d.carryTotal)}</td>}
+                    {seesTerms && <td className="px-3 py-2 text-right tabular-nums">{money(profitShare(d).paid)}</td>}
+                    {seesTerms && <td className="px-3 py-2 text-right tabular-nums">{money(profitShare(d).declared)}</td>}
                     {seesTerms && <td className="px-3 py-2 text-right tabular-nums">{money(d.total)}</td>}
                     <td className="px-3 py-2 text-muted-foreground">{STATUS_LABEL[d.status] ?? d.status}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
           </div>
         )}
       </ShellSection>
