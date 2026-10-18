@@ -117,6 +117,23 @@ describe('previewDistribution: distributable_cash', () => {
     expect(p.cash?.prefDue).toBe(Math.round((CAPITAL * 0.08 / 360 + 1_305_000 * 0.08 * 359 / 360) * 100) / 100)
   })
 
+  it('reads the whole contingency history: a contingency row beyond the first capped page still counts', async () => {
+    s.postings = [at('lp', -CAPITAL, 'capital_call', '2027-01-01'), at('lp', 130_500, 'distribution', '2027-01-02')]
+    const capped = (rows: any[]) => {
+      const m = memoryAdmin({ vehicle_waterfall_terms: [cashTerms], distributions: rows }, { maxRows: 1000 })
+      ;(m.admin as any).rpc = vi.fn(async () => ({ error: null }))
+      return m
+    }
+    // 1,200 declared distributions with zero contingency sort ahead of the one that returned 130,500.
+    const filler = Array.from({ length: 1_200 }, (_, i) => ({ id: `a-${String(i).padStart(4, '0')}`, fund_id: 'f', vehicle_id: 'v1', status: 'declared', distribution_date: '2026-06-30', wf_contingency_return: 0 }))
+    const contingency = { id: 'z-last', fund_id: 'f', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-01-02', wf_contingency_return: 130_500 }
+    const p = await previewDistribution(capped([...filler, contingency]).admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 700_000, reserve: 0 })
+    const alone = await previewDistribution(capped([contingency]).admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 700_000, reserve: 0 })
+    if ('error' in p || 'error' in alone) throw new Error('preview')
+    expect(p.cash).toEqual(alone.cash)
+    expect(p.cash?.unreturnedAfter).toBe(alone.cash?.unreturnedAfter)
+  })
+
   it('a register row from before the column (wf_contingency_return null) replays as no contingency', async () => {
     s.postings = [at('lp', -CAPITAL, 'capital_call', '2027-01-01'), at('lp', 130_500, 'distribution', '2027-01-02')]
     const preview = async (rows: any[]) => {

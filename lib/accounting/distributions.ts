@@ -27,7 +27,7 @@ import { allocateAmount, apportionCents } from './allocation'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 import { DISTRIBUTION_PAYABLE_CODE } from './chart'
 import { buildDistributionDeclarationEntry, buildRealisedCarryEntry } from './entries'
-import { loadPostedLedger, loadEntityNames } from './load'
+import { loadPostedLedger, loadEntityNames, fetchAllRows } from './load'
 import { loadCapitalPostings } from './capital-source'
 import { computeCapitalAccounts, bucketForSourceType, type CapitalPosting } from './capital-account'
 import { vehicleIdByName } from './vehicle-id'
@@ -188,12 +188,15 @@ export async function loadContingencyByDate(admin: SupabaseClient, fundId: strin
   const out = new Map<string, number>()
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return out
-  const { data, error } = await (admin as any)
+  // Paged: a register past PostgREST's row cap would otherwise drop contingency rows silently.
+  // Only rows that returned contingency are read, so the history stays short.
+  const rows = await fetchAllRows<{ distribution_date: string; wf_contingency_return: number }>((from, to) => (admin as any)
     .from('distributions')
-    .select('distribution_date, wf_contingency_return')
+    .select('id, distribution_date, wf_contingency_return')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'declared')
-  if (error) throw new Error(`distributions read failed: ${error.message}`)
-  for (const row of (data ?? []) as any[]) {
+    .not('wf_contingency_return', 'is', null)
+    .range(from, to))
+  for (const row of rows) {
     const amount = Number(row.wf_contingency_return ?? 0)
     if (amount > 0) out.set(row.distribution_date, roundCents((out.get(row.distribution_date) ?? 0) + amount))
   }
