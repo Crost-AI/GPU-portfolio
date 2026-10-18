@@ -32,8 +32,18 @@ describe('publicOrigin', () => {
     expect(publicOrigin(new Request('https://preview-abc.vercel.app/x'))).toBe('https://preview-abc.vercel.app')
   })
 
-  it("is the request's own origin when the configured value is not a URL", () => {
-    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'cap.example.com')
+  it("is the request's own origin under next dev, even with NEXT_PUBLIC_SITE_URL set (setup.ts writes it to .env.local)", () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://cap.example.com')
     expect(publicOrigin(new Request('http://localhost:3000/x'))).toBe('http://localhost:3000')
+    vi.stubEnv('NODE_ENV', 'production')
+    expect(publicOrigin(new Request('http://localhost:3000/x'))).toBe('https://cap.example.com')
+  })
+
+  it("is the request's own origin when the configured value is not a URL", () => {
+    for (const site of ['cap.example.com', 'localhost:3000', 'cap.example.com:443', 'ftp://cap.example.com']) {
+      vi.stubEnv('NEXT_PUBLIC_SITE_URL', site)
+      expect(publicOrigin(new Request('http://localhost:3000/x'))).toBe('http://localhost:3000')
+    }
   })
 })

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { codeLandingDestination, isRecoveryLanding } from '@/lib/auth/code-landing'
 
@@ -42,10 +43,14 @@ describe('codeLandingDestination', () => {
     expect(land({ mfaPending: true, hasFund: false })).toBe('/auth/mfa-verify?next=%2Fonboarding%3Fconfirmed%3Dtrue')
   })
 
-  it('regression: a user with recovery_sent_at set but no recovery intent lands on /, not the reset page', () => {
+  it('regression: a link with no recovery intent lands on /, not the reset page', () => {
     // The magic-link landing on prod: GoTrue had set recovery_sent_at, the link carried no recovery intent.
-    const user = { recovery_sent_at: '2026-10-18T22:11:51Z' }
-    expect(user.recovery_sent_at).toBeTruthy()
     expect(land({ recovery: isRecoveryLanding(null, null) })).toBe('/')
+  })
+
+  it('regression: /auth never reads recovery_sent_at (GoTrue sets it on magic-link sign-ins too)', () => {
+    const page = readFileSync(new URL('../app/auth/page.tsx', import.meta.url), 'utf8')
+    expect(page).toContain('isRecoveryLanding(')
+    expect(page).not.toMatch(/recovery_sent_at|recoverySentAt/)
   })
 })
