@@ -11,11 +11,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess, assertReadAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupOr400, resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { DEFAULT_FEE_REVENUE_SUBTYPES, FEE_BASES, FEE_FREQUENCIES, loadFeeTerms } from '@/lib/gpu/fee'
 import { MANCO_KIND } from '@/lib/vehicle-kinds'
-import { hasAccess, loadAccessContext } from '@/lib/access/effective'
+import { hasAccess } from '@/lib/access/effective'
 import { canSeeVehicle } from '@/lib/access/scope'
 import { dbError } from '@/lib/api-error'
 
@@ -46,8 +46,10 @@ export async function PUT(req: NextRequest) {
   if (gate instanceof NextResponse) return gate
 
   const body = await req.json().catch(() => ({}))
-  const group = await resolveGroupOr400(admin, gate, body?.group ?? req.nextUrl.searchParams.get('group'))
-  if (group instanceof NextResponse) return group
+  // The access context the entity check loads is the one the payee check reuses: one round trip.
+  const resolved = await resolveGroupWithAccess(admin, gate, body?.group ?? req.nextUrl.searchParams.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
   if (!vehicleId) return NextResponse.json({ error: `Unknown vehicle "${group}".` }, { status: 400 })
 
@@ -83,7 +85,6 @@ export async function PUT(req: NextRequest) {
   const payeeVehicleId = body?.payeeVehicleId || null
   if (payeeVehicleId) {
     if (payeeVehicleId === vehicleId) return NextResponse.json({ error: 'A vehicle cannot pay its fee to itself.' }, { status: 400 })
-    const access = await loadAccessContext(admin, gate.fundId, user.id, gate.role)
     if (!hasAccess(access, 'management_company', 'write') || !canSeeVehicle(access, payeeVehicleId)) {
       return NextResponse.json({ error: 'Booking the fee to a management company needs write access to that management company.' }, { status: 403 })
     }
