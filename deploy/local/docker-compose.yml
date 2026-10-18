@@ -128,13 +128,20 @@ services:
 
   # Serves supabase/templates to GoTrue, which loads email templates only from URLs. Internal only:
   # no host port, no Traefik route.
+  # Baked into an image, NOT bind-mounted: Dokploy deletes and re-clones the checkout on every
+  # deploy, and a running container keeps the old (now empty) directory, so from the second deploy
+  # it would serve 404s and GoTrue would fall back to its link-only emails. `up -d --build` rebuilds
+  # this, and a template change gives a new image, which recreates the container.
   mail-templates:
-    image: busybox:1.37.0
+    build:
+      context: ../../supabase/templates
+      dockerfile_inline: |
+        FROM busybox:1.37.0
+        COPY . /templates/
+    image: portfolio-local-mail-templates:latest
     restart: unless-stopped
     labels: *labels
     command: ["httpd", "-f", "-p", "8080", "-h", "/templates"]
-    volumes:
-      - ../../supabase/templates:/templates:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/magic_link.html"]
       interval: 5s

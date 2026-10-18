@@ -109,15 +109,21 @@ curl -X PUT http://localhost:8000/auth/v1/admin/users/<user-id> \
 The emails are the branded templates in `supabase/templates/*.html`, which carry the 6-digit code
 (`{{ .Token }}`) the app's sign-in, confirmation and reset screens ask for. GoTrue loads templates
 only from URLs, so the `mail-templates` service (busybox `httpd`, internal network only, no host
-port) serves that directory read-only, and `auth` points `GOTRUE_MAILER_TEMPLATES_*` at
-`http://mail-templates:8080/<name>.html`; the subjects are `GOTRUE_MAILER_SUBJECTS_*` beside them.
-If GoTrue cannot fetch a template it falls back to its own default, a link with no code, which the
-app's screens cannot use: check `dc ps mail-templates` first when an email arrives without a code.
+port) serves a copy of that directory baked into its image, and `auth` points
+`GOTRUE_MAILER_TEMPLATES_*` at `http://mail-templates:8080/<name>.html`; the subjects are
+`GOTRUE_MAILER_SUBJECTS_*` beside them. The copy is baked in, not bind-mounted, because Dokploy
+re-clones the checkout on every deploy and a running container would keep serving the deleted one.
 
-GoTrue fetches and caches the templates. The mount reads the checkout, so after editing a template
-(or deploying a new clone) run `dc up -d`; if the old text is still sent, `dc restart auth`. A
-deploy that changes `auth`'s environment recreates GoTrue, so `/auth/v1` answers 502 for the few
-seconds it takes to come back healthy.
+GoTrue fetches each template when it first sends that kind of email and keeps it for up to 10
+minutes. A type it has never fetched successfully goes out as GoTrue's own default, a link with no
+code, which the app's screens cannot use; after a failed re-fetch it keeps the last good copy. So
+when an email arrives without a code, check `dc ps mail-templates` first. An `unhealthy` one also
+blocks `auth` from starting, and with it `migrate` and the app.
+
+To change a template, edit it, then `dc up -d --build` (rebuilds the image and recreates
+`mail-templates`; `dc up -d` alone keeps the old image), then `dc restart auth` so GoTrue drops its
+cached copies at once instead of within 10 minutes. A deploy that changes `auth`'s environment
+recreates GoTrue, so `/auth/v1` answers 502 for the few seconds it takes to come back healthy.
 
 ## Crons
 
