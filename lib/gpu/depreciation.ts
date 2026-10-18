@@ -14,7 +14,7 @@ export interface CapexEvent {
 
 export interface DepreciableAsset {
   id: string
-  /** The cost depreciated from the in-service month: hardware cost (plus any capex not given as events). */
+  /** The cost depreciated from the in-service month: the hardware cost. */
   basis: number
   /** Capex depreciated PROSPECTIVELY from its month over the remaining life; see depreciationSchedule. */
   capex?: CapexEvent[]
@@ -49,15 +49,20 @@ export function defaultSalvage(hardwareCost: number): number {
  * The register row as a depreciable asset; null until it has an in-service date.
  *
  * `capex` are the asset's posted capex entries by month (assets.ts loadCapexEvents), each then
- * depreciated prospectively. Without them, `capitalized_costs` is treated as spent at in-service,
- * which is right only for costs booked before the first depreciation month.
+ * depreciated prospectively. `postedMonths` are the months whose depreciation is already on the
+ * books (loadPostedDepreciationMonths): a capex dated in or before one of them starts at the first
+ * month NOT yet posted, so a back-dated cost never recomputes a month the close already booked.
  */
-export function depreciableFromAsset(row: GpuAssetRow, capex?: CapexEvent[]): DepreciableAsset | null {
+export function depreciableFromAsset(
+  row: GpuAssetRow, capex: CapexEvent[] = [], postedMonths: ReadonlySet<MonthKey> = new Set(),
+): DepreciableAsset | null {
   if (!row.in_service_date) return null
+  let firstOpen = monthOf(row.in_service_date)
+  while (postedMonths.has(firstOpen)) firstOpen = addMonths(firstOpen, 1)
   return {
     id: row.id,
-    basis: capex ? Number(row.hardware_cost) : dollars(cents(Number(row.hardware_cost)) + cents(Number(row.capitalized_costs ?? 0))),
-    capex,
+    basis: Number(row.hardware_cost),
+    capex: capex.map(e => ({ month: e.month < firstOpen ? firstOpen : e.month, amount: e.amount })),
     salvage: Number(row.salvage_value),
     lifeMonths: row.useful_life_months,
     inServiceDate: row.in_service_date,

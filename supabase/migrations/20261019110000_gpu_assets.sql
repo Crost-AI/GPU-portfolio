@@ -1,8 +1,9 @@
 -- ── GPU fleet (P1b) ── The fleet register: server types, servers, their downtime/maintenance log,
 -- datacenter contracts, and per-vehicle fleet settings (design §2.3, decisions R8/Q7/Q9).
 --
--- Safe to apply before the code that uses it: new tables plus one partial index on journal_entries
--- over prefixes nothing writes yet, and every table is service-role only. Their sole reader is a /api/fleet route gated on the `fleet` domain and
+-- Safe to apply before the code that uses it: new tables, one partial index on journal_entries over
+-- prefixes nothing writes yet, and a new nullable accounting_schedules.source_ref with a partial
+-- index over a prefix nothing writes yet. Every new table is service-role only. Their sole reader is a /api/fleet route gated on the `fleet` domain and
 -- the `gpu_fleet` feature, using createAdminClient(), so (CLAUDE.md) a Data API grant to
 -- `authenticated` would hand the register to members that gate refuses. Pattern:
 -- 20260920122643_accounting_schedules.sql. tests/gpu-data-api-grants.test.ts pins it.
@@ -60,8 +61,9 @@ create table public.gpu_assets (
                              check (status in ('planned', 'ordered', 'in_service', 'offline', 'disposed')),
   gpu_count                integer not null check (gpu_count > 0),
   hardware_cost            numeric(20, 2) not null check (hardware_cost >= 0),
-  -- Shipping, installation and spares actually spent (decision R8/Q6); unspent contingency is ROC.
-  capitalized_costs        numeric(20, 2) not null default 0 check (capitalized_costs >= 0),
+  -- No capitalized_costs column: shipping, installation and spares (decision R8/Q6) are the posted
+  -- gpu-asset:<id>:capex:<key> entries, summed on read (lib/gpu/assets.ts), so no stored total can
+  -- drift from the ledger or lose a concurrent update.
   purchase_date            date,
   in_service_date          date,
   useful_life_months       integer not null default 60 check (useful_life_months > 0),
@@ -148,6 +150,15 @@ create policy "gpu_fleet_settings service role" on public.gpu_fleet_settings for
 create unique index if not exists journal_entries_gpu_fleet_once
   on public.journal_entries (fund_id, vehicle_id, book, source_ref)
   where (source_ref like 'gpu-asset:%' or source_ref like 'gpu-dep:%') and status <> 'void';
+
+-- Each fleet-created accrual or amortization schedule exists once. lib/gpu/opex.ts keys them
+-- fleet:<datacenter|insurance>:<contract or policy>:<start_date>, and a concurrent second insert gets
+-- 23505 and adopts the first row instead of creating a second required-for-close schedule. The
+-- column is new and nullable, so every existing schedule is null and outside the index.
+alter table public.accounting_schedules add column if not exists source_ref text;
+create unique index if not exists accounting_schedules_fleet_once
+  on public.accounting_schedules (fund_id, vehicle_id, source_ref)
+  where source_ref like 'fleet:%';
 
 comment on table public.gpu_assets is
   'GPU SPV fleet register: one row per server. Cost and accumulated depreciation live on per-asset ledger accounts 1600-<a>/1650-<a>.';

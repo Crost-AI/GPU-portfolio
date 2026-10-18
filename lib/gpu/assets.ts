@@ -6,14 +6,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { assetAccountCode } from '@/lib/accounting/chart'
-import { fetchAllRows } from '@/lib/accounting/load'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { persistEntry } from '@/lib/accounting/persist'
 import { reversalRef } from '@/lib/accounting/reversal'
+import type { JournalEntry } from '@/lib/accounting/types'
 import { defaultSalvage, type CapexEvent } from './depreciation'
 import { buildCapexEntry, buildPurchaseEntry, gpuSourceRef } from './entries'
 import {
   DEPRECIATION_CONVENTIONS, GPU_ASSET_STATUSES, TAX_METHODS,
-  type GpuAssetRow,
+  type GpuAsset, type GpuAssetRow,
 } from './types'
 
 export const COST_BASE = '1600'
@@ -44,7 +45,7 @@ export function parseAssetInput(body: any, partial: boolean): { value: AssetInpu
     if (!Number.isInteger(num(b.gpu_count)) || num(b.gpu_count) <= 0) return { error: 'gpu_count must be a positive whole number' }
     out.gpu_count = num(b.gpu_count)
   }
-  for (const k of ['hardware_cost', 'capitalized_costs', 'salvage_value', 'insurance_basis'] as const) {
+  for (const k of ['hardware_cost', 'salvage_value', 'insurance_basis'] as const) {
     if (!has(k) && !(k === 'hardware_cost' && !partial)) continue
     if (k === 'insurance_basis' && b[k] === null) { out[k] = null; continue }
     if (!Number.isFinite(num(b[k])) || num(b[k]) < 0) return { error: `${k} must be zero or more` }
@@ -97,10 +98,41 @@ export function parseAssetInput(body: any, partial: boolean): { value: AssetInpu
   return { value: out }
 }
 
-/** A vehicle's register, in a stable order (paged past PostgREST's 1,000-row cap). */
-export async function listAssets(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<GpuAssetRow[]> {
-  return fetchAllRows<GpuAssetRow>((f, t) => (admin as any).from('gpu_assets').select('*')
+/**
+ * A vehicle's register in a stable order (paged past PostgREST's 1,000-row cap), each row with its
+ * `capitalized_costs` summed from the posted capex entries rather than read from a stored total.
+ */
+export async function listAssets(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<GpuAsset[]> {
+  const rows = await fetchAllRows<GpuAssetRow>((f, t) => (admin as any).from('gpu_assets').select('*')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('created_at').range(f, t))
+  const totals = await capexTotalsByAsset(admin, fundId, vehicleId)
+  return rows.map(r => ({ ...r, capitalized_costs: (totals.get(r.id) ?? 0) / 100 }))
+}
+
+/** Posted capex per asset in cents, net of posted reversals: each entry's debit to its asset's 1600-<a>. */
+async function capexTotalsByAsset(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<Map<string, number>> {
+  const capex = await fetchAllRows<any>((f, t) => (admin as any).from('journal_entries').select('id, source_ref, journal_postings(account_id, amount)')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
+    .like('source_ref', 'gpu-asset:%:capex:%').range(f, t))
+  const out = new Map<string, number>()
+  if (!capex.length) return out
+  const reversals = await fetchAllRowsIn<any>(capex.map(e => reversalRef(e.id)), (chunk, f, t) => (admin as any).from('journal_entries')
+    .select('id, source_ref, journal_postings(account_id, amount)')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'posted')
+    .in('source_ref', chunk).range(f, t))
+  const { data: chart, error } = await (admin as any).from('chart_of_accounts').select('id, code')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).like('code', `${COST_BASE}-%`)
+  if (error) throw error
+  const codeOf = new Map<string, string>(((chart as any[]) ?? []).map(a => [a.id, a.code]))
+  const assetOf = new Map<string, string>(capex.map(e => [e.id, String(e.source_ref).split(':')[1]]))
+  for (const e of [...capex, ...reversals]) {
+    const assetId = assetOf.get(e.id) ?? assetOf.get(String(e.source_ref).slice('reversal:'.length))
+    if (!assetId) continue
+    const c = (e.journal_postings ?? []).filter((jp: any) => codeOf.get(jp.account_id) === assetAccountCode(COST_BASE, assetId))
+      .reduce((t: number, jp: any) => t + Math.round(Number(jp.amount) * 100), 0)
+    out.set(assetId, (out.get(assetId) ?? 0) + c)
+  }
+  return out
 }
 
 /** Account ids for `codes` in the vehicle's chart; throws naming any that are missing. */
@@ -141,17 +173,64 @@ export function otherVehicleError(ctx: Lifecycle, asset: Pick<GpuAssetRow, 'fund
   return asset.fund_id === ctx.fundId && asset.vehicle_id === ctx.vehicleId ? null : { error: 'This asset belongs to another entity' }
 }
 
+export const IN_PROGRESS = 'Another request is booking this entry right now. Try again in a moment.'
+
+/** A live (non-void) entry on the actual book, with its postings. */
+export interface LiveEntry {
+  id: string
+  status: string
+  entry_date: string
+  journal_postings: { account_id: string; amount: number }[]
+}
+
+/** The live entry on this vehicle's actual book carrying `sourceRef`, or null. */
+export async function liveEntryByRef(admin: SupabaseClient, ctx: Lifecycle, sourceRef: string): Promise<LiveEntry | null> {
+  const { data, error } = await (admin as any).from('journal_entries').select('id, status, entry_date, journal_postings(account_id, amount)')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('source_ref', sourceRef).neq('status', 'void')
+    .order('id').limit(1)
+  if (error) throw error
+  return ((data as any[]) ?? [])[0] ?? null
+}
+
+/** An entry's postings to one account, in dollars. */
+export function postedTo(e: LiveEntry, accountId: string): number {
+  return (e.journal_postings ?? []).filter(jp => jp.account_id === accountId).reduce((t, jp) => t + Math.round(Number(jp.amount) * 100), 0) / 100
+}
+
+/**
+ * Book `entry` once, keyed by its source_ref.
+ *
+ * An entry already carrying the ref is ADOPTED only when it is POSTED: that is what an earlier
+ * attempt booked before its register update failed. A DRAFT is another request still in flight
+ * (persistEntry writes a draft header, then the postings, then flips it to posted, and deletes the
+ * draft if anything fails), so the answer is "in progress" and the caller changes no register state.
+ */
+export async function bookOnce(
+  admin: SupabaseClient, ctx: Lifecycle, entry: JournalEntry,
+): Promise<{ booked: LiveEntry; adopted: boolean } | { error: string; inProgress?: true }> {
+  const settle = (found: LiveEntry | null) =>
+    found?.status === 'posted' ? { booked: found, adopted: true } : { error: IN_PROGRESS, inProgress: true as const }
+  const found = await liveEntryByRef(admin, ctx, entry.sourceRef!)
+  if (found) return settle(found)
+  const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
+  if ('entryId' in result) {
+    return {
+      adopted: false,
+      booked: { id: result.entryId, status: 'posted', entry_date: entry.entryDate, journal_postings: entry.postings.map(p => ({ account_id: p.accountId, amount: p.amount })) },
+    }
+  }
+  if (result.duplicateOf) return settle(await liveEntryByRef(admin, ctx, entry.sourceRef!))
+  return { error: result.error }
+}
+
 /**
  * Book the hardware purchase (Dr 1600-<a> / Cr 1000, or Cr 2000 when `invoiced`) and link it.
- * A planned asset becomes ordered.
- *
- * Recoverable: the entry commits before the register is updated, so if that update fails a retry
- * hits the once-only index on `gpu-asset:<id>:purchase`, and the entry already there is linked
- * instead of a second one being booked.
+ * A planned asset becomes ordered. A retry after a failed register update links the posted entry an
+ * earlier attempt booked (bookOnce); one that meets a draft in flight is refused as in progress.
  */
 export async function purchaseAsset(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, p: { entryDate: string; invoiced: boolean },
-): Promise<{ entryId: string } | { error: string }> {
+): Promise<{ entryId: string } | { error: string; inProgress?: true }> {
   const other = otherVehicleError(ctx, asset)
   if (other) return other
   if (asset.purchase_entry_id) return { error: 'This asset\u2019s purchase is already booked' }
@@ -162,23 +241,22 @@ export async function purchaseAsset(
     { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase \u2014 ${asset.name}` },
     { assetId: asset.id, amount: Number(asset.hardware_cost), costAccountId: accounts.cost, offsetAccountId: offset },
   )
-  const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
-  const entryId = 'entryId' in result ? result.entryId : result.duplicateOf
-  if (!entryId) return { error: (result as { error: string }).error }
+  const result = await bookOnce(admin, ctx, entry)
+  if ('error' in result) return result
   const { error } = await (admin as any).from('gpu_assets').update({
-    purchase_entry_id: entryId, purchase_date: asset.purchase_date ?? p.entryDate,
+    purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date,
     status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
   }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
   if (error) throw error
-  return { entryId }
+  return { entryId: result.booked.id }
 }
 
 const CAPEX_KEY = /^[A-Za-z0-9_-]{1,64}$/
 
 /**
  * The asset's posted capex by month: each `gpu-asset:<id>:capex:<key>` entry's debit to 1600-<a>,
- * and each posted reversal of one as a negative amount in the reversal's month. What the depreciable
- * basis (depreciableFromAsset) and `capitalized_costs` are both derived from.
+ * and each posted reversal of one as a negative amount in the reversal's month. The depreciable
+ * basis (depreciableFromAsset) and `capitalized_costs` are both derived from it; nothing stores a total.
  */
 export async function loadCapexEvents(
   admin: SupabaseClient, ctx: Lifecycle, assetId: string, costAccountId: string,
@@ -195,26 +273,28 @@ export async function loadCapexEvents(
     if (revError) throw revError
     rows.push(...((reversals as any[]) ?? []))
   }
-  return rows.map(r => ({
-    month: String(r.entry_date).slice(0, 7),
-    amount: (r.journal_postings ?? []).filter((jp: any) => jp.account_id === costAccountId)
-      .reduce((t: number, jp: any) => t + Math.round(Number(jp.amount) * 100), 0) / 100,
-  })).filter(e => e.amount !== 0).sort((x, y) => (x.month < y.month ? -1 : x.month > y.month ? 1 : 0))
+  return rows.map(r => ({ month: String(r.entry_date).slice(0, 7), amount: postedTo(r, costAccountId) }))
+    .filter(e => e.amount !== 0).sort((x, y) => (x.month < y.month ? -1 : x.month > y.month ? 1 : 0))
 }
 
 /**
- * `capitalized_costs` is DERIVED from the ledger, never incremented: Σ loadCapexEvents. Writes it to
- * the register and returns it, so a half-finished capitalization heals on the next call.
+ * Months whose depreciation is on the books: a posted `gpu-dep:<id>:<YYYY-MM>[...]` entry that has not
+ * itself been reversed (a corrected month posts under a suffixed ref).
  */
-export async function reconcileCapitalizedCosts(
-  admin: SupabaseClient, ctx: Lifecycle, assetId: string, costAccountId: string,
-): Promise<number> {
-  const events = await loadCapexEvents(admin, ctx, assetId, costAccountId)
-  const total = events.reduce((t, e) => t + Math.round(e.amount * 100), 0) / 100
-  const { error } = await (admin as any).from('gpu_assets')
-    .update({ capitalized_costs: total, updated_at: new Date().toISOString() }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', assetId)
+export async function loadPostedDepreciationMonths(admin: SupabaseClient, ctx: Lifecycle, assetId: string): Promise<Set<string>> {
+  const prefix = `gpu-dep:${assetId}:`
+  const { data, error } = await (admin as any).from('journal_entries').select('id, source_ref')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
+    .like('source_ref', `${prefix}%`).order('id')
   if (error) throw error
-  return total
+  const rows: { id: string; source_ref: string }[] = (data as any[]) ?? []
+  if (!rows.length) return new Set()
+  const { data: rev, error: revError } = await (admin as any).from('journal_entries').select('source_ref')
+    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
+    .in('source_ref', rows.map(r => reversalRef(r.id))).order('id')
+  if (revError) throw revError
+  const reversed = new Set(((rev as any[]) ?? []).map(r => String(r.source_ref).slice('reversal:'.length)))
+  return new Set(rows.filter(r => !reversed.has(r.id)).map(r => r.source_ref.slice(prefix.length, prefix.length + 7)))
 }
 
 /**
@@ -223,14 +303,14 @@ export async function reconcileCapitalizedCosts(
  * purchased asset that is not disposed of (ordered, in service or offline) takes capex.
  *
  * Idempotent per `key` (the caller's identity for this cost, e.g. the invoice number): the entry is
- * `gpu-asset:<id>:capex:<key>`, so a retry finds it (or hits the once-only index) rather than
- * booking the cost again, and a key already used for a different amount is refused. Either way
- * the register is then reconciled from the ledger.
+ * `gpu-asset:<id>:capex:<key>`, so a retry adopts the posted entry rather than booking the cost
+ * again (bookOnce), and a key already used for a different amount is refused. Nothing is written
+ * to the register: `capitalizedCosts` is the ledger's total, read back.
  */
 export async function capitalizeCost(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow,
   p: { key: string; entryDate: string; amount: number; invoiced: boolean; memo?: string },
-): Promise<{ entryId: string; capitalizedCosts: number } | { error: string }> {
+): Promise<{ entryId: string; capitalizedCosts: number } | { error: string; inProgress?: true }> {
   const other = otherVehicleError(ctx, asset)
   if (other) return other
   if (asset.status === 'disposed' || asset.disposal_entry_id) return { error: 'A disposed asset cannot take capitalized costs' }
@@ -238,30 +318,16 @@ export async function capitalizeCost(
   if (!CAPEX_KEY.test(p.key ?? '')) return { error: 'key must be 1\u201364 letters, digits, hyphens or underscores' }
   if (!(p.amount > 0)) return { error: 'amount must be more than zero' }
   const accounts = await ensureAssetAccounts(admin, ctx.fundId, ctx.group, ctx.vehicleId, asset)
-  const sourceRef = gpuSourceRef.capex(asset.id, p.key)
-
-  const { data: found, error: findError } = await (admin as any).from('journal_entries').select('id, journal_postings(account_id, amount)')
-    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('source_ref', sourceRef).neq('status', 'void')
-    .order('id').limit(1)
-  if (findError) throw findError
-  const existing = ((found as any[]) ?? [])[0]
-  let entryId: string
-  if (existing) {
-    const booked = (existing.journal_postings ?? []).filter((jp: any) => jp.account_id === accounts.cost)
-      .reduce((t: number, jp: any) => t + Math.round(Number(jp.amount) * 100), 0)
-    if (booked !== Math.round(p.amount * 100)) return { error: `Key ${p.key} already capitalized ${booked / 100} on this asset` }
-    entryId = existing.id
-  } else {
-    const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
-    const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!
-    const entry = buildCapexEntry(
-      { fundId: ctx.fundId, entryDate: p.entryDate, memo: p.memo ?? `Capitalized cost \u2014 ${asset.name}` },
-      { assetId: asset.id, key: p.key, amount: p.amount, costAccountId: accounts.cost, offsetAccountId: offset },
-    )
-    const result = await persistEntry(admin, ctx.fundId, ctx.group, ctx.userId, entry, 'posted')
-    const id = 'entryId' in result ? result.entryId : result.duplicateOf
-    if (!id) return { error: (result as { error: string }).error }
-    entryId = id
-  }
-  return { entryId, capitalizedCosts: await reconcileCapitalizedCosts(admin, ctx, asset.id, accounts.cost) }
+  const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
+  const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!
+  const entry = buildCapexEntry(
+    { fundId: ctx.fundId, entryDate: p.entryDate, memo: p.memo ?? `Capitalized cost \u2014 ${asset.name}` },
+    { assetId: asset.id, key: p.key, amount: p.amount, costAccountId: accounts.cost, offsetAccountId: offset },
+  )
+  const result = await bookOnce(admin, ctx, entry)
+  if ('error' in result) return result
+  const booked = postedTo(result.booked, accounts.cost)
+  if (result.adopted && Math.round(booked * 100) !== Math.round(p.amount * 100)) return { error: `Key ${p.key} already capitalized ${booked} on this asset` }
+  const events = await loadCapexEvents(admin, ctx, asset.id, accounts.cost)
+  return { entryId: result.booked.id, capitalizedCosts: events.reduce((t, e) => t + Math.round(e.amount * 100), 0) / 100 }
 }

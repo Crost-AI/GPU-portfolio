@@ -6,7 +6,7 @@ const cents = (n: number) => Math.round(n * 100)
 
 export interface ContingencyPosition {
   budget: number
-  /** Σ capitalized_costs across the vehicle's assets, disposed ones included (spent is spent). */
+  /** Σ capitalized_costs (listAssets derives it from the posted capex) across the vehicle's assets, disposed ones included. */
   spent: number
   /** What can be returned as ROC; never negative. */
   unspent: number

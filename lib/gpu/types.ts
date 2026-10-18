@@ -43,7 +43,6 @@ export interface GpuAssetRow {
   status: GpuAssetStatus
   gpu_count: number
   hardware_cost: number
-  capitalized_costs: number
   purchase_date: string | null
   in_service_date: string | null
   useful_life_months: number
@@ -60,6 +59,9 @@ export interface GpuAssetRow {
   disposal_entry_id: string | null
   notes: string | null
 }
+
+/** A register row with its capitalized costs, derived from the posted capex entries (listAssets). */
+export type GpuAsset = GpuAssetRow & { capitalized_costs: number }
 
 export interface GpuAssetEventRow {
   id: string

@@ -2,22 +2,35 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import type { JournalEntry } from '@/lib/accounting/types'
 
-// persistEntry stands in for the ledger: it refuses a repeated live source_ref the way the once-only
-// index does (naming the entry already there) and writes the entry as posted rows, so the disposal reads back exactly what the purchase and depreciation booked.
-const s = vi.hoisted(() => ({ m: null as any }))
+// persistEntry stands in for the ledger with its real lifecycle: a DRAFT header and its postings
+// first, then the flip to posted (or, on failure, the draft deleted). `s.between` runs once inside
+// that draft window, so a test can interleave a second request there; `s.failAfterDraft` makes this
+// request fail and delete its draft; `s.after` runs once after the flip. A repeated live source_ref
+// is refused the way the once-only index does, naming the entry already there.
+const s = vi.hoisted(() => ({ m: null as any, between: null as null | (() => Promise<void>), failAfterDraft: false, after: null as null | (() => void) }))
 vi.mock('@/lib/accounting/persist', () => ({
   persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: string, entry: JournalEntry) => {
     const t = s.m.tables
     const dup = entry.sourceRef && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
     const id = `je-${t.journal_entries.length + 1}`
-    t.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef, memo: entry.memo })
+    const header = { id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status: 'draft', entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef, memo: entry.memo }
+    t.journal_entries.push(header)
     for (const p of entry.postings) t.journal_postings.push({ id: `jp-${t.journal_postings.length + 1}`, journal_entry_id: id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', account_id: p.accountId, amount: p.amount, currency: 'USD', lp_entity_id: null })
+    if (s.between) { const run = s.between; s.between = null; await run() }
+    if (s.failAfterDraft) {
+      s.failAfterDraft = false
+      t.journal_entries.splice(t.journal_entries.indexOf(header), 1)
+      t.journal_postings = t.journal_postings.filter((p: any) => p.journal_entry_id !== id)
+      return { error: 'posting failed' }
+    }
+    header.status = 'posted'
+    if (s.after) { const run = s.after; s.after = null; run() }
     return { entryId: id }
   }),
 }))
 
-import { capitalizeCost, ensureAssetAccounts, parseAssetInput, purchaseAsset, reconcileCapitalizedCosts } from './assets'
+import { IN_PROGRESS, capitalizeCost, ensureAssetAccounts, listAssets, parseAssetInput, purchaseAsset } from './assets'
 import { disposeAsset } from './disposal'
 import { buildDepreciationEntry } from './entries'
 import { depreciableFromAsset, depreciationEntryDate, depreciationSchedule } from './depreciation'
@@ -29,6 +42,7 @@ const ASSET_ID = 'abcdef12-0000-4000-8000-000000000001'
 const ctx = { fundId: 'f', group: 'H200 SPV I', vehicleId: 'v-gpu', userId: 'u' }
 
 beforeEach(() => {
+  s.between = null; s.failAfterDraft = false; s.after = null
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] },
@@ -44,7 +58,7 @@ const created = (over: Partial<GpuAssetRow> = {}): GpuAssetRow => {
   if ('error' in parsed) throw new Error(parsed.error)
   const row = {
     id: ASSET_ID, fund_id: 'f', vehicle_id: 'v-gpu', asset_type_id: null, serials: [], vendor_id: null, status: 'planned',
-    capitalized_costs: 0, purchase_date: null, useful_life_months: 60, depreciation_convention: 'full_month', tax_method: 'book',
+    purchase_date: null, useful_life_months: 60, depreciation_convention: 'full_month', tax_method: 'book',
     tax_bonus_pct: 0, tax_life_years: null, insurance_basis: null, datacenter_contract_id: null, purchase_entry_id: null,
     disposed_on: null, disposal_proceeds: null, disposal_entry_id: null, notes: null, ...parsed.value, ...over,
   } as GpuAssetRow
@@ -52,6 +66,7 @@ const created = (over: Partial<GpuAssetRow> = {}): GpuAssetRow => {
   return row
 }
 const stored = () => s.m.tables.gpu_assets[0] as GpuAssetRow
+const capitalized = async () => (await listAssets(s.m.admin, 'f', 'v-gpu'))[0].capitalized_costs
 
 describe('parseAssetInput', () => {
   it('requires name, gpu_count and hardware_cost on create, and defaults salvage to 10%', () => {
@@ -94,10 +109,10 @@ describe('the asset lifecycle on the ledger', () => {
     expect(s.m.tables.journal_entries.map((e: any) => e.source_ref)).toEqual([
       `gpu-asset:${ASSET_ID}:purchase`, `gpu-asset:${ASSET_ID}:capex:ship-1`, `gpu-asset:${ASSET_ID}:capex:install-1`,
     ])
-    expect(stored().capitalized_costs).toBe(3_000)
+    expect(await capitalized()).toBe(3_000)
 
     // What the close will post month by month (P1b-2), here directly.
-    const schedule = depreciationSchedule(depreciableFromAsset(stored())!)
+    const schedule = depreciationSchedule(depreciableFromAsset(stored(), [{ month: '2027-01', amount: 3_000 }])!)
     for (const l of schedule) {
       await persistEntry(s.m.admin, 'f', ctx.group, 'u', buildDepreciationEntry({
         fundId: 'f', assetId: ASSET_ID, month: l.month, amount: l.amount, expenseAccountId: 'acc-5300', accumulatedAccountId: s.m.tables.chart_of_accounts.find((r: any) => r.code === '1650-abcdef12').id,
@@ -137,31 +152,48 @@ describe('the asset lifecycle on the ledger', () => {
     expect(stored().purchase_entry_id).toBe('je-1')
   })
 
-  it('capex whose register update fails books once on retry with the same key; the register equals the ledger', async () => {
+  it('capex that fails after the journal write books once on retry with the same key; capitalized costs equal the ledger', async () => {
     await purchased()
-    s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
+    s.after = () => s.m.failNext('journal_entries', 'select', 'canceling statement due to statement timeout')
     await expect(capitalizeCost(s.m.admin, ctx, stored(), { key: 'inv-77', entryDate: '2027-01-10', amount: 2_000, invoiced: false })).rejects.toBeTruthy()
-    expect(stored().capitalized_costs).toBe(0)
 
     expect(await capitalizeCost(s.m.admin, ctx, stored(), { key: 'inv-77', entryDate: '2027-01-10', amount: 2_000, invoiced: false })).toEqual({ entryId: 'je-2', capitalizedCosts: 2_000 })
     expect(s.m.tables.journal_entries.filter((e: any) => e.source_ref?.includes(':capex:'))).toHaveLength(1)
-    expect(stored().capitalized_costs).toBe(costBalance() - 335_000)
+    expect(await capitalized()).toBe(costBalance() - 335_000)
     expect(await capitalizeCost(s.m.admin, ctx, stored(), { key: 'inv-77', entryDate: '2027-01-10', amount: 2_500, invoiced: false })).toEqual({ error: 'Key inv-77 already capitalized 2000 on this asset' })
   })
 
-  it('derives capitalized_costs from the ledger: a stale row loses no update, and a reversal takes its cost back', async () => {
-    const stale = await purchased()
-    await capitalizeCost(s.m.admin, ctx, stale, { key: 'a', entryDate: '2027-01-10', amount: 2_000, invoiced: false })
-    expect((await capitalizeCost(s.m.admin, ctx, stale, { key: 'b', entryDate: '2027-01-11', amount: 1_000, invoiced: false }) as any).capitalizedCosts).toBe(3_000)
-    expect(stored().capitalized_costs).toBe(3_000)
+  it('capitalized costs are read from the ledger, so interleaved capex loses nothing and a reversal takes its cost back', async () => {
+    await purchased()
+    let inner: unknown
+    s.between = async () => { inner = await capitalizeCost(s.m.admin, ctx, stored(), { key: 'b', entryDate: '2027-01-11', amount: 1_000, invoiced: false }) }
+    expect(await capitalizeCost(s.m.admin, ctx, stored(), { key: 'a', entryDate: '2027-01-10', amount: 2_000, invoiced: false })).toEqual({ entryId: 'je-2', capitalizedCosts: 3_000 })
+    expect(inner).toEqual({ entryId: 'je-3', capitalizedCosts: 1_000 })
+    expect(await capitalized()).toBe(3_000)
+    expect(s.m.tables.gpu_assets[0]).not.toHaveProperty('capitalized_costs')
 
     const original = s.m.tables.journal_entries.find((e: any) => e.source_ref === `gpu-asset:${ASSET_ID}:capex:a`)
     await persistEntry(s.m.admin, 'f', ctx.group, 'u', {
       fundId: 'f', entryDate: '2027-02-01', sourceType: 'manual', sourceRef: `reversal:${original.id}`,
       postings: s.m.tables.journal_postings.filter((p: any) => p.journal_entry_id === original.id).map((p: any) => ({ accountId: p.account_id, amount: -p.amount, currency: 'USD' })),
     })
-    const costId = s.m.tables.chart_of_accounts.find((r: any) => r.code === '1600-abcdef12').id
-    expect(await reconcileCapitalizedCosts(s.m.admin, ctx, ASSET_ID, costId)).toBe(1_000)
+    expect(await capitalized()).toBe(1_000)
+  })
+
+  it('a request that meets another\'s draft is in progress and changes nothing (purchase, capex)', async () => {
+    created({ status: 'in_service' })
+    let second: unknown
+    s.between = async () => { second = await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false }) }
+    s.failAfterDraft = true
+    expect(await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })).toEqual({ error: 'posting failed' })
+    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(stored().purchase_entry_id).toBeNull()
+    expect(s.m.tables.journal_entries).toEqual([])
+
+    await purchaseAsset(s.m.admin, ctx, stored(), { entryDate: '2027-01-05', invoiced: false })
+    s.between = async () => { second = await capitalizeCost(s.m.admin, ctx, stored(), { key: 'k', entryDate: '2027-01-10', amount: 500, invoiced: false }) }
+    expect(await capitalizeCost(s.m.admin, ctx, stored(), { key: 'k', entryDate: '2027-01-10', amount: 500, invoiced: false })).toMatchObject({ capitalizedCosts: 500 })
+    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
   })
 
   it('takes capex only on a purchased asset that is not disposed of', async () => {
@@ -220,15 +252,34 @@ describe('the asset lifecycle on the ledger', () => {
     expect(await disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 1 })).toEqual({ error: 'Post depreciation for 2027-01 before disposing of this asset.' })
   })
 
-  it('a disposal whose register update fails is adopted on retry, not rebuilt from the cleared accounts', async () => {
+  it('a disposal whose register update fails is adopted on retry with the committed entry\'s date, proceeds and gain', async () => {
     const a = await purchased()
     await postDepreciation(['2027-01'])
     s.m.failNext('gpu_assets', 'update', 'canceling statement due to statement timeout')
     await expect(disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 300_000 })).rejects.toBeTruthy()
     expect(stored().status).toBe('in_service')
-    expect(await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 })).toEqual({ entryId: 'je-3', gain: -29_975 })
+    // The retry asks for different proceeds and a different date; the books say 300,000 on 2027-01-31.
+    expect(await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-02-15', proceeds: 310_000 })).toEqual({ entryId: 'je-3', gain: -29_975, disposedOn: '2027-01-31', proceeds: 300_000 })
     expect(s.m.tables.journal_entries.filter((e: any) => e.source_ref === `gpu-asset:${ASSET_ID}:disposal`)).toHaveLength(1)
-    expect(stored()).toMatchObject({ status: 'disposed', disposal_entry_id: 'je-3', disposed_on: '2027-01-31' })
+    expect(stored()).toMatchObject({ status: 'disposed', disposal_entry_id: 'je-3', disposed_on: '2027-01-31', disposal_proceeds: 300_000 })
+  })
+
+  it('a disposal that meets another\'s draft is in progress; if that one then fails, the asset is not disposed', async () => {
+    const a = await purchased()
+    await postDepreciation(['2027-01'])
+    let second: unknown
+    s.between = async () => { second = await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 }) }
+    s.failAfterDraft = true
+    expect(await disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 300_000 })).toEqual({ error: 'posting failed' })
+    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(stored()).toMatchObject({ status: 'in_service', disposal_entry_id: null })
+    expect(s.m.tables.journal_entries.some((e: any) => e.source_ref === `gpu-asset:${ASSET_ID}:disposal`)).toBe(false)
+
+    // And when the first one completes, the second learns nothing it did not book.
+    s.between = async () => { second = await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 }) }
+    expect(await disposeAsset(s.m.admin, ctx, stored(), { disposedOn: '2027-01-31', proceeds: 300_000 })).toMatchObject({ gain: -29_975 })
+    expect(second).toEqual({ error: IN_PROGRESS, inProgress: true })
+    expect(stored().status).toBe('disposed')
   })
 
   it('an asset of one entity cannot be purchased, capitalized or disposed of through another', async () => {
@@ -239,7 +290,8 @@ describe('the asset lifecycle on the ledger', () => {
     expect(await capitalizeCost(s.m.admin, otherCtx, a, { key: 'x', entryDate: '2027-01-10', amount: 1, invoiced: false })).toEqual(refusal)
     expect(await disposeAsset(s.m.admin, otherCtx, a, { disposedOn: '2027-06-30', proceeds: 1 })).toEqual(refusal)
     expect(s.m.tables.journal_entries).toHaveLength(1)
-    expect(stored()).toMatchObject({ vehicle_id: 'v-gpu', status: 'in_service', capitalized_costs: 0 })
+    expect(stored()).toMatchObject({ vehicle_id: 'v-gpu', status: 'in_service' })
+    expect(await capitalized()).toBe(0)
   })
 
   it('refuses to dispose of an asset whose purchase was never booked', async () => {

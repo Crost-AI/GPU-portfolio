@@ -87,6 +87,17 @@ describe('GPU fleet tables are not on the Data API', () => {
 })
 
 describe('fleet entries are booked once', () => {
+  it('fleet-created accounting schedules are keyed and unique on the fleet: prefix only', () => {
+    const sql = readFileSync(join(MIGRATIONS, '20261019110000_gpu_assets.sql'), 'utf8')
+    expect(sql).toContain('alter table public.accounting_schedules add column if not exists source_ref text;')
+    expect(sql).toMatch(/create unique index if not exists accounting_schedules_fleet_once\s+on public\.accounting_schedules \(fund_id, vehicle_id, source_ref\)\s+where source_ref like 'fleet:%';/)
+  })
+
+  it('gpu_assets stores no capitalized_costs total (derived from the posted capex)', () => {
+    const sql = readFileSync(join(MIGRATIONS, '20261019110000_gpu_assets.sql'), 'utf8')
+    expect(sql).not.toMatch(/capitalized_costs\s+numeric/)
+  })
+
   it('a partial unique index covers the gpu-asset: and gpu-dep: source refs', () => {
     const sql = readFileSync(join(MIGRATIONS, '20261019110000_gpu_assets.sql'), 'utf8')
     expect(sql).toMatch(/create unique index if not exists journal_entries_gpu_fleet_once\s+on public\.journal_entries \(fund_id, vehicle_id, book, source_ref\)\s+where \(source_ref like 'gpu-asset:%' or source_ref like 'gpu-dep:%'\) and status <> 'void';/)

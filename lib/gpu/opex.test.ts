@@ -50,10 +50,11 @@ describe('insurance prepaid (pure)', () => {
 describe('schedules the close proposes', () => {
   let m: ReturnType<typeof memoryAdmin>
   beforeEach(() => {
+    // accounting_schedules_fleet_once, as in the migration.
     m = memoryAdmin({
       fund_vehicles: [{ id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] }],
       datacenter_contracts: [{ ...CONTRACT }], accounting_schedules: [], accounting_schedule_lines: [], journal_entries: [],
-    })
+    }, { unique: [{ table: 'accounting_schedules', key: r => (String(r.source_ref ?? '').startsWith('fleet:') ? `${r.fund_id}|${r.vehicle_id}|${r.source_ref}` : null) }] })
   })
   const target = { fundId: 'f', vehicleId: 'v-gpu', userId: 'u', accounts: ACCOUNTS }
   const contract = () => m.tables.datacenter_contracts[0] as DatacenterContractRow
@@ -105,7 +106,7 @@ describe('schedules the close proposes', () => {
   })
 
   it('a double submit or a second first call creates no duplicate schedule', async () => {
-    const insurance = { name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 }
+    const insurance = { key: 'POL-2027', name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 }
     const first = await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)
     expect(await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance)).toEqual(first)
     // Two first calls that both read the contract before either linked a schedule.
@@ -113,6 +114,36 @@ describe('schedules the close proposes', () => {
     await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
     await ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30')
     expect(m.tables.accounting_schedules).toHaveLength(3)
+  })
+
+  it('concurrent double submits create each schedule exactly once (Promise.all)', async () => {
+    const insurance = { key: 'POL-2027', name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 }
+    const [a, b] = await Promise.all([
+      createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance),
+      createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, insurance),
+    ])
+    expect(a).toEqual(b)
+    expect(m.tables.accounting_schedules).toHaveLength(2)
+
+    const unlinked = { ...contract() }
+    const [x, y] = await Promise.all([
+      ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30'),
+      ensureDatacenterSchedule(m.admin, unlinked, target, '2027-06-30'),
+    ])
+    expect(x.scheduleId).toBe(y.scheduleId)
+    expect(m.tables.accounting_schedules.filter((r: any) => r.source_ref.startsWith('fleet:datacenter:'))).toHaveLength(1)
+    expect(m.tables.accounting_schedule_lines).toHaveLength(6)
+  })
+
+  it('a failed contract link, retried past an escalation, closes the stored open schedule (no double accrual)', async () => {
+    m.failNext('datacenter_contracts', 'update', 'canceling statement due to statement timeout')
+    await expect(ensureDatacenterSchedule(m.admin, contract(), target, '2027-06-30')).rejects.toBeTruthy()
+    expect(contract().schedule_id).toBeNull()
+    expect(rows()).toEqual([['2027-01-01', null, 10_280]])
+
+    await ensureDatacenterSchedule(m.admin, contract(), target, '2028-01-01')
+    expect(rows()).toEqual([['2027-01-01', '2027-12-31', 10_280], ['2028-01-01', null, 10_794]])
+    expect((await proposals('2028-01-01', '2028-01-31')).map(x => x.postings[0].amount)).toEqual([10_794])
   })
 
   it('a failed lines insert leaves no header behind', async () => {
@@ -127,7 +158,7 @@ describe('schedules the close proposes', () => {
   })
 
   it('amortizes an insurance premium through accounting_schedules: Dr 5200 / Cr 1500 monthly', async () => {
-    await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 })
+    await createInsuranceSchedules(m.admin, { ...target, accounts: PREPAID }, { key: 'POL-2027', name: 'Fleet insurance 2027', premium: 10_000, startDate: '2027-01-01', months: 12 })
     const mar = await proposals('2027-03-01', '2027-03-31')
     const dec = await proposals('2027-12-01', '2027-12-31')
     expect(mar.map(s => s.postings.map(p => [p.accountId, p.amount]))).toEqual([[['acc-5200', 833.33], ['acc-1500', -833.33]]])

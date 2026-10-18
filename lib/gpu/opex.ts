@@ -94,24 +94,46 @@ interface ScheduleTarget {
   accounts: { expense: string; offset: string }
 }
 
+/** The deterministic key of a fleet-created schedule (`accounting_schedules.source_ref`). */
+export const fleetScheduleRef = {
+  datacenter: (contractId: string, start: string) => `fleet:datacenter:${contractId}:${start}`,
+  insurance: (key: string, start: string) => `fleet:insurance:${key}:${start}`,
+}
+
+interface StoredSchedule { id: string; end_date: string | null }
+
+async function scheduleByRef(admin: SupabaseClient, t: ScheduleTarget, sourceRef: string): Promise<StoredSchedule | null> {
+  const { data, error } = await (admin as any).from('accounting_schedules').select('id, end_date')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('source_ref', sourceRef).order('id').limit(1)
+  if (error) throw error
+  return ((data as any[]) ?? [])[0] ?? null
+}
+
 /**
- * Insert one schedule and its two lines, or return the one already there for this vehicle, name and
- * start date, so a double submit or a retry never creates a second required-for-close accrual. If
- * the lines fail, the header is deleted rather than left active with nothing to post.
+ * Insert one schedule and its two lines under `sourceRef`, or return the row already there. The
+ * partial unique index accounting_schedules_fleet_once makes this exact under concurrency: the
+ * second of two simultaneous inserts gets 23505 and adopts the first's row, never a second
+ * required-for-close accrual. Returns the STORED end date, which the rollover ends from. If the
+ * lines fail, the header is deleted rather than left active with nothing to post.
  */
-async function insertSchedule(admin: SupabaseClient, t: ScheduleTarget, name: string, period: SchedulePeriod): Promise<string> {
-  const { data: existing, error: findError } = await (admin as any).from('accounting_schedules').select('id')
-    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('name', name).eq('start_date', period.start).eq('active', true)
-    .order('id').limit(1)
-  if (findError) throw findError
-  if (((existing as any[]) ?? []).length) return (existing as any[])[0].id
+async function insertSchedule(
+  admin: SupabaseClient, t: ScheduleTarget, name: string, period: SchedulePeriod, sourceRef: string,
+): Promise<StoredSchedule> {
+  const existing = await scheduleByRef(admin, t, sourceRef)
+  if (existing) return existing
 
   const { data, error } = await (admin as any).from('accounting_schedules').insert({
-    fund_id: t.fundId, vehicle_id: t.vehicleId, name, memo: name, source_type: 'partnership_expense',
+    fund_id: t.fundId, vehicle_id: t.vehicleId, name, memo: name, source_type: 'partnership_expense', source_ref: sourceRef,
     start_date: period.start, end_date: period.end, day_of_month: MONTH_END_DAY, required_for_close: true,
     active: true, created_by: t.userId,
   }).select('id').single()
-  if (error) throw error
+  if (error) {
+    if ((error as { code?: string }).code === '23505') {
+      const winner = await scheduleByRef(admin, t, sourceRef)
+      if (winner) return winner
+    }
+    throw error
+  }
   const { error: lineError } = await (admin as any).from('accounting_schedule_lines').insert([
     { schedule_id: data.id, account_id: t.accounts.expense, amount: period.amount, sort_order: 0 },
     { schedule_id: data.id, account_id: t.accounts.offset, amount: -period.amount, sort_order: 1 },
@@ -120,16 +142,17 @@ async function insertSchedule(admin: SupabaseClient, t: ScheduleTarget, name: st
     await (admin as any).from('accounting_schedules').delete().eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', data.id)
     throw lineError
   }
-  return data.id
+  return { id: data.id, end_date: period.end }
 }
 
 /**
  * Bring the contract's accrual schedules up to the escalation period containing `asOf`.
  *
- * Every period through `asOf` gets its own schedule, each ending the day before the NEXT escalation
- * (an intermediate year is never skipped or absorbed by its predecessor), and the contract links
- * the latest. Periods starting on or before the linked schedule's start are taken as already
- * there, so a contract set up late creates its whole history once, and a re-run creates nothing.
+ * Every period through `asOf` gets its own schedule (keyed by contract and start date), and each
+ * schedule's STORED end date is brought to the day before the next period starts, so an intermediate
+ * year is never skipped and a schedule left open by an earlier failed attempt is closed rather than
+ * accruing alongside its successor. Periods starting before the linked schedule are taken as done,
+ * a contract set up late creates its whole history once, and a re-run changes nothing.
  */
 export async function ensureDatacenterSchedule(
   admin: SupabaseClient,
@@ -139,21 +162,22 @@ export async function ensureDatacenterSchedule(
 ): Promise<{ scheduleId: string; created: number }> {
   if (contract.fund_id !== t.fundId || contract.vehicle_id !== t.vehicleId) throw new Error('This contract belongs to another entity')
   const periods = datacenterPeriods(contract, asOf)
-  let previous: { id: string; end_date: string | null } | null = null
-  let missing = periods
+  let todo = periods
 
   if (contract.schedule_id) {
     const { data: current, error } = await (admin as any).from('accounting_schedules')
-      .select('id, start_date, end_date').eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.schedule_id).maybeSingle()
+      .select('id, start_date').eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.schedule_id).maybeSingle()
     if (error) throw error
-    if (current) {
-      previous = current
-      missing = periods.filter(p => p.start > current.start_date)
-    }
+    if (current) todo = periods.filter(p => p.start >= current.start_date)
   }
-  if (!missing.length) return { scheduleId: previous!.id, created: 0 }
 
-  for (const period of missing) {
+  const name = `Datacenter \u2014 ${contract.facility}`
+  let created = 0
+  let previous: StoredSchedule | null = null
+  for (const period of todo) {
+    const before = await scheduleByRef(admin, t, fleetScheduleRef.datacenter(contract.id, period.start))
+    const row = before ?? await insertSchedule(admin, t, name, period, fleetScheduleRef.datacenter(contract.id, period.start))
+    if (!before) created++
     if (previous) {
       const end = dayBefore(period.start)
       if (!previous.end_date || previous.end_date > end) {
@@ -162,22 +186,29 @@ export async function ensureDatacenterSchedule(
         if (error) throw error
       }
     }
-    previous = { id: await insertSchedule(admin, t, `Datacenter \u2014 ${contract.facility}`, period), end_date: period.end }
+    previous = row
   }
 
-  const { error } = await (admin as any).from('datacenter_contracts')
-    .update({ schedule_id: previous!.id, updated_at: new Date().toISOString() }).eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.id)
-  if (error) throw error
-  return { scheduleId: previous!.id, created: missing.length }
+  if (previous && previous.id !== contract.schedule_id) {
+    const { error } = await (admin as any).from('datacenter_contracts')
+      .update({ schedule_id: previous.id, updated_at: new Date().toISOString() }).eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', contract.id)
+    if (error) throw error
+  }
+  return { scheduleId: previous?.id ?? contract.schedule_id!, created }
 }
 
-/** The prepaid premium's amortization schedules (Dr 5200 / Cr 1500); returns their ids in order. */
+/**
+ * The prepaid premium's amortization schedules (Dr 5200 / Cr 1500); returns their ids in order.
+ * `key` identifies the policy (e.g. its number), so a double submit adopts rather than duplicates.
+ */
 export async function createInsuranceSchedules(
   admin: SupabaseClient,
   t: ScheduleTarget,
-  p: { name: string; premium: number; startDate: string; months: number },
+  p: { key: string; name: string; premium: number; startDate: string; months: number },
 ): Promise<string[]> {
   const ids: string[] = []
-  for (const period of insurancePeriods(p.premium, p.startDate, p.months)) ids.push(await insertSchedule(admin, t, p.name, period))
+  for (const period of insurancePeriods(p.premium, p.startDate, p.months)) {
+    ids.push((await insertSchedule(admin, t, p.name, period, fleetScheduleRef.insurance(p.key, period.start))).id)
+  }
   return ids
 }

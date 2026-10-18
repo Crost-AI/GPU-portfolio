@@ -65,13 +65,23 @@ describe('rounding and conventions', () => {
 
 describe('depreciableFromAsset', () => {
   const row = {
-    id: 'a', hardware_cost: 335_000, capitalized_costs: 4_250.5, salvage_value: 33_500, useful_life_months: 60,
+    id: 'a', hardware_cost: 335_000, salvage_value: 33_500, useful_life_months: 60,
     in_service_date: '2027-01-15', depreciation_convention: 'full_month', disposed_on: null,
   } as unknown as GpuAssetRow
 
-  it('depreciates hardware plus capitalized costs (R8/Q6), and waits for an in-service date', () => {
-    expect(depreciableFromAsset(row)).toMatchObject({ basis: 339_250.5, salvage: 33_500, lifeMonths: 60 })
+  it('depreciates hardware from in-service and the posted capex as events; waits for an in-service date', () => {
+    expect(depreciableFromAsset(row, [{ month: '2027-01', amount: 4_250.5 }])).toMatchObject({ basis: 335_000, salvage: 33_500, lifeMonths: 60, capex: [{ month: '2027-01', amount: 4_250.5 }] })
     expect(depreciableFromAsset({ ...row, in_service_date: null })).toBeNull()
+  })
+
+  it('starts a back-dated capex at the first month not yet posted (X)', () => {
+    const posted = new Set(Array.from({ length: 12 }, (_, i) => `2027-${String(i + 1).padStart(2, '0')}`))
+    const a = depreciableFromAsset(row, [{ month: '2027-10', amount: 4_800 }], posted)!
+    expect(a.capex).toEqual([{ month: '2028-01', amount: 4_800 }])
+    const s = depreciationSchedule(a)
+    expect(s.slice(0, 12).every(l => l.amount === 5_025)).toBe(true)
+    expect(s[12]).toMatchObject({ month: '2028-01', amount: 5_125 })
+    expect(s.at(-1)!.accumulated).toBe(335_000 + 4_800 - 33_500)
   })
 })
 
@@ -99,10 +109,6 @@ describe('capex is depreciated prospectively (Q)', () => {
     expect(nbvAsOf(withCapex, '2028-01-31')).toBe(335_000 + 4_800 - 5_025 * 12 - 5_125)
   })
 
-  it('builds the events from the posted capex, not the register total', () => {
-    const row = { id: 'a', hardware_cost: 335_000, capitalized_costs: 4_800, salvage_value: 33_500, useful_life_months: 60, in_service_date: '2027-01-15', depreciation_convention: 'full_month', disposed_on: null } as unknown as GpuAssetRow
-    expect(depreciableFromAsset(row, [{ month: '2028-01', amount: 4_800 }])).toMatchObject({ basis: 335_000, capex: [{ month: '2028-01', amount: 4_800 }] })
-  })
 })
 
 describe('depreciationEntryDate', () => {
