@@ -1,8 +1,8 @@
 -- ── GPU fleet (P1b) ── The fleet register: server types, servers, their downtime/maintenance log,
 -- datacenter contracts, and per-vehicle fleet settings (design §2.3, decisions R8/Q7/Q9).
 --
--- Safe to apply before the code that uses it: new tables only, nothing reads them yet, and every
--- one is service-role only. Their sole reader is a /api/fleet route gated on the `fleet` domain and
+-- Safe to apply before the code that uses it: new tables plus one partial index on journal_entries
+-- over prefixes nothing writes yet, and every table is service-role only. Their sole reader is a /api/fleet route gated on the `fleet` domain and
 -- the `gpu_fleet` feature, using createAdminClient(), so (CLAUDE.md) a Data API grant to
 -- `authenticated` would hand the register to members that gate refuses. Pattern:
 -- 20260920122643_accounting_schedules.sql. tests/gpu-data-api-grants.test.ts pins it.
@@ -140,6 +140,14 @@ create policy "datacenter_contracts service role" on public.datacenter_contracts
 create policy "gpu_assets service role" on public.gpu_assets for all to service_role using (true) with check (true);
 create policy "gpu_asset_events service role" on public.gpu_asset_events for all to service_role using (true) with check (true);
 create policy "gpu_fleet_settings service role" on public.gpu_fleet_settings for all to service_role using (true) with check (true);
+
+-- Each fleet entry is booked once: a purchase, a capitalized cost, a month's depreciation, a disposal.
+-- persistEntry turns the 23505 into "already in the books", so a double click or a retried close
+-- cannot book it twice. Same shape as journal_entries_agent_allocation_once (20261013141500): only
+-- these namespaces. Safe on existing data: no release before this one writes either prefix.
+create unique index if not exists journal_entries_gpu_fleet_once
+  on public.journal_entries (fund_id, vehicle_id, book, source_ref)
+  where (source_ref like 'gpu-asset:%' or source_ref like 'gpu-dep:%') and status <> 'void';
 
 comment on table public.gpu_assets is
   'GPU SPV fleet register: one row per server. Cost and accumulated depreciation live on per-asset ledger accounts 1600-<a>/1650-<a>.';
