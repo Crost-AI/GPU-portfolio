@@ -21,8 +21,8 @@ dc() { docker compose -f deploy/local/docker-compose.yml --env-file deploy/local
 
 ```sh
 deploy/local/scripts/gen-keys.sh             # writes deploy/local/.env with fresh secrets
-dc --profile mail up -d --build              # builds the app image (several minutes), starts everything
-deploy/local/scripts/migrate.sh              # applies supabase/migrations, then checks the result
+dc --profile mail up -d --build              # builds the app image (several minutes), migrates, starts everything
+deploy/local/scripts/migrate.sh              # optional: checks the result (and applies anything new)
 deploy/local/scripts/bootstrap-admin.sh --email you@firm.com --fund "Your Fund"
 ```
 
@@ -45,22 +45,31 @@ What each step does:
   It never overwrites an existing `.env` unless you pass `--force`.
 - **up** starts db, then auth, rest and storage once db is healthy (GoTrue and storage-api create
   `auth.*` and `storage.*` on first boot). Kong starts at once; it resolves those services per
-  request. The app waits for Kong, auth and storage, and the scheduler for the app. The app answers
-  before migrations run, but every page errors until they are applied.
-- **migrate.sh** waits for db, auth and storage to be healthy, because the migrations reference
-  `auth.users` and `storage.buckets`. It then applies `supabase/migrations/*.sql` in filename order,
-  each file in one transaction with its history row in `supabase_migrations.schema_migrations`.
-  One file carries its own `begin`/`commit` (`20260714000001_commitment_events_snapshot_dedup.sql`),
-  so its history row commits separately, as with the CLI. Interrupted between the two, the next run
-  applies that file again. Last it checks `btree_gist`, the signup hook, the Data API grants, the 8
-  private storage buckets the app uses (printing every bucket's size limit) and
-  `GET /rest/v1/funds` with the service key.
-  - It uses psql inside the db container by default. `supabase db push` cannot install this repo
-    from empty: four versions are shared by two files each, and the CLI applies only the first of
-    each pair. Once the database is current, `migrate.sh --cli` runs `supabase db push` instead;
-    both read the same history table.
-  - `supabase/pending-deploy/` is never applied. Those files wait for a release to ship first
-    (see CLAUDE.md).
+  request. Once db, auth and storage are healthy, the one-shot `migrate` service applies the
+  migrations (below) and exits. The app waits for it to exit 0, and for Kong, auth and storage; the
+  scheduler waits for the app. So every `up` migrates first: files already applied are skipped,
+  and if one fails (`dc logs migrate` says which), an `up` that does not recreate the app leaves
+  the old app running, while one that does (any `--build` with a code or migration change, i.e.
+  every Dokploy deploy) leaves it down.
+- **migrate** (`scripts/migrate-inner.sh`, in the db's image, with psql over the network) applies
+  `supabase/migrations/*.sql` in filename order, each file in one transaction with its history row
+  in `supabase_migrations.schema_migrations`. One file carries its own `begin`/`commit`
+  (`20260714000001_commitment_events_snapshot_dedup.sql`), so its history row commits separately,
+  as with the CLI. Interrupted between the two, the next run applies that file again. Its last log
+  line is `migrate: applied N, already applied M`, or `migrate: FAILED on <file>`.
+  - `supabase db push` cannot install this repo from empty: four versions are shared by two files
+    each, and the CLI applies only the first of each pair. Once the database is current,
+    `migrate.sh --cli` runs `supabase db push` instead; both read the same history table.
+  - Only `supabase/migrations` is mounted into it. `supabase/pending-deploy/` is never applied:
+    those files wait for a release to ship first (see CLAUDE.md).
+- **migrate.sh** runs that same service by hand (`dc run --rm -T migrate`), then checks `btree_gist`,
+  the signup hook, the Data API grants, the 8 private storage buckets the app uses (printing every
+  bucket's size limit) and `GET /rest/v1/funds` with the service key. That last one goes to
+  `MIGRATE_CHECK_URL` from this host when it is set (in the environment or `.env`), and otherwise
+  runs from inside the app container. It prints `skip` instead of `FAIL` when the app is not
+  running, or when `MIGRATE_CHECK_URL` does not answer. Like any `dc run`, it starts db, auth and
+  storage if needed, and recreates them if the running containers no longer match the compose
+  file or `.env`.
 - **bootstrap-admin.sh** runs `npm run bootstrap` (`scripts/bootstrap-fund.ts`) inside the app
   container. That adds your email to `allowed_signups`, creates the confirmed account, creates the
   fund with you as `admin`, and prints an agent/MCP API key. Any other `npm run bootstrap` flag is
@@ -115,12 +124,18 @@ has every `crons` entry from `vercel.json` at the same schedule, in UTC as on Ve
 
 ```sh
 deploy/local/scripts/backup.sh                    # -> deploy/local/backups/<UTC time>/
-dc down -v && dc --profile mail up -d             # restore into a FRESH stack
+dc down -v                                        # restore into a FRESH stack
 deploy/local/scripts/restore.sh deploy/local/backups/<UTC time>
 ```
 
+`restore.sh` starts db, auth and storage itself. Don't `dc up -d` the empty stack first: that now
+runs the migrations, and if the backup is older than them, `restore.sh` refuses (below).
+
 The backup stops the app, the scheduler, PostgREST and Storage while it runs, so the database and
 the files describe the same moment, then starts them again. Schedule it for a quiet time.
+Starting the app again also re-runs the exited `migrate` container, which applies whatever is in
+`supabase/migrations` on disk. So run `backup.sh` (and `migrate.sh`) after `dc up`, not after a
+bare `git pull`: a failing new migration would leave the app stopped after the backup.
 
 Restarted services come back on new container IPs. Kong re-resolves them within 5 s
 (`KONG_DNS_VALID_TTL=5`, `KONG_DNS_STALE_TTL=0`, `KONG_DNS_NOT_FOUND_TTL=1` on the `kong` service).
@@ -140,11 +155,15 @@ A backup holds:
 - `extensions.sql`: the extensions to recreate first.
 - `storage.tgz`: the files.
 
-Restore replaces the data schemas and every file, and restarts the stack; no migrate is needed.
+Restore replaces the data schemas and every file, and restarts the stack. Its final `dc up -d`
+also runs the `migrate` service, which applies any migration newer than the backup before the app
+starts.
 Restore into fresh volumes, as above. Over a stack with newer migrations, `pg_restore` would
 replace only what the dump has: the newer tables would stay behind next to the older migration
-history, and the next `migrate.sh` would trip over them. So `restore.sh` refuses when `public`
-has relations the dump lacks, unless you pass `--force`. Steps 1–3 below change nothing that a
+history, and the next migrate would trip over them. So `restore.sh` refuses when `public`
+has relations the dump lacks, unless you pass `--force`. With `--force` over newer tables, the data
+restore completes, but the final `dc up -d`'s migrate then fails on the first newer `create table`
+and leaves the app down. Steps 1–3 below change nothing that a
 failure leaves broken; step 4 is where the old files are replaced:
 
 1. It reads both halves to the end, and checks that the storage volume has room for a second copy of the files, before touching anything.
@@ -160,14 +179,62 @@ writers stopped and prints the command to re-run, which is safe to repeat. Keep 
 
 ```sh
 git pull
-dc build app                          # NEXT_PUBLIC_* are compiled in: rebuild after changing them too
-deploy/local/scripts/migrate.sh       # applies only what is new
-dc up -d
+dc up -d --build                      # NEXT_PUBLIC_* are compiled in: rebuild after changing them too
+deploy/local/scripts/migrate.sh       # optional: the checks (migrate already ran, before the app)
 ```
 
 Take a backup first. To change a Supabase image version, edit `docker-compose.yml`. A Postgres
 **major** upgrade (17 → 18) cannot reuse the data volume: back up, `dc down -v`, change the image,
-`dc up -d`, then restore.
+then run `restore.sh` directly (as in "Backup and restore").
+
+## Deploy on Dokploy
+
+cap.kcgcomp.com runs this compose file under Dokploy, unchanged:
+
+- **Service**: a Compose service, provider GitHub, `Crost-AI/GPU-portfolio` @ `main`, compose path
+  `./deploy/local/docker-compose.yml`, autodeploy on. Each push to `main` re-clones the repo into
+  `/etc/dokploy/compose/<appName>/code` and runs
+  `docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
+- **Environment** (Dokploy's env editor, which it writes to `deploy/local/.env`): every key in
+  `.env.example`, secrets from `gen-keys.sh`, and:
+  - `SITE_URL` and `SUPABASE_PUBLIC_URL` both `https://<host>`; `ADDITIONAL_REDIRECT_URLS=https://<host>/**`.
+  - Real `SMTP_*` (no Mailpit profile).
+  - `APP_PORT=13000` and `KONG_HTTP_PORT=18000` (Dokploy's own UI holds 3000), `POSTGRES_HOST_PORT=54322`,
+    `BIND_ADDRESS=127.0.0.1`. Traefik reaches Kong over Docker's network, not these.
+  - `MIGRATE_CHECK_URL=https://<host>` (see Migrations) and `MAILER_EXTERNAL_HOSTS=<host>`.
+- **Domains**: all on service `kong`, no path strip: `/` → port 3000; `/auth/v1`, `/rest/v1` and
+  `/storage/v1` → port 8000 (container ports). The app runs in Kong's network namespace, so it
+  cannot join `dokploy-network`; Dokploy attaches that network and its Traefik labels to `kong` only.
+- **Migrations** run on every deploy: the `migrate` service applies what is new before the app
+  starts. Its last log line (`docker compose -p <appName> logs migrate`, or the service's logs in
+  Dokploy) is `migrate: applied N, already applied M`, or `migrate: FAILED on <file>`.
+  - Recommended: set Dokploy's custom command to the following, which starts with `compose`
+    because Dokploy supplies the leading `docker` (the half after `&&` is a plain shell command
+    and keeps its own):
+    `compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml run --rm -T migrate && docker compose -p <appName> --env-file deploy/local/.env -f ./deploy/local/docker-compose.yml up -d --build --remove-orphans`.
+    That second half runs outside Dokploy's `env -i`, so a `COMPOSE_PROJECT_NAME` in the Dokploy
+    process's environment would override `.env`: check once in the deploy log that both halves
+    name the same project. A failed migration then stops the deploy before anything is recreated, and the previous
+    release keeps serving; the second command's `up` re-runs migrate as a no-op. The trade-off:
+    during the build (about 4 minutes) the old app runs against the new schema, which is what the
+    repo's expand/contract convention expects (contract migrations wait in
+    `supabase/pending-deploy`, see CLAUDE.md).
+  - Fallback, Dokploy's default command: every push rebuilds the app, and Compose removes the old
+    app container before the dependency chain runs, so on a failed migration the new one is left
+    `Created`, nothing serves, and the deployment shows `error`. The failing file's transaction
+    rolled back and its version was not recorded, so fix forward: push a corrected migration, and
+    the next deploy applies it.
+  - Either way `app.depends_on.migrate` stays, so a plain local `up` migrates first too.
+  - `migrate.sh` by hand still works and adds the checks. The host's loopback does not reach Kong
+    from where Dokploy runs scripts, so its funds check uses `MIGRATE_CHECK_URL` from `.env`.
+- **Scripts** (`migrate.sh`, `backup.sh`, `restore.sh`, `bootstrap-admin.sh`): run them from
+  `/etc/dokploy/compose/<appName>/code`. Dokploy (v0.30.8) writes `COMPOSE_PROJECT_NAME="<appName>"`
+  (with `APP_NAME` and `DOCKER_CONFIG`) into `deploy/local/.env`, which they all pass to Compose,
+  so they already target the deployed project with nothing exported: check with `dc ps`. It writes
+  that file only at deploy time, into a clone it replaces on every deploy, so it (and this
+  targeting) exists only after the first deploy. From anywhere else,
+  `export COMPOSE_PROJECT_NAME=<appName>` first. Since the clone is replaced on every deploy, give
+  `backup.sh` a directory outside it.
 
 ## Row cap (PGRST_DB_MAX_ROWS)
 

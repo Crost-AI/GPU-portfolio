@@ -9,7 +9,11 @@
 # (no realtime, edge functions, imgproxy, analytics or pooler).
 #
 # Boot order: db healthy -> auth + storage healthy (each runs its own auth.* / storage.* schema
-# migrations on boot) -> scripts/migrate.sh applies supabase/migrations, which need both schemas.
+# migrations on boot) -> `migrate` (scripts/migrate-inner.sh) applies supabase/migrations, which
+# need both schemas -> the app starts only once migrate has exited 0. So `up` = deploy + migrate:
+# already-applied files are skipped, and a failed migration stops the app from being (re)started.
+# supabase/pending-deploy is never applied (not mounted). scripts/migrate.sh runs the same service
+# by hand and then checks the result.
 
 name: portfolio-local
 
@@ -72,12 +76,16 @@ services:
       # Mirrors supabase/config.toml [auth] / [auth.email].
       GOTRUE_DISABLE_SIGNUP: "false"
       GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
-      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: ${MAILER_AUTOCONFIRM:-false}
+      GOTRUE_MAILER_EXTERNAL_HOSTS: ${MAILER_EXTERNAL_HOSTS:-}
       GOTRUE_MAILER_SECURE_EMAIL_CHANGE_ENABLED: "true"
       GOTRUE_MAILER_OTP_EXP: 600
       GOTRUE_MAILER_OTP_LENGTH: 6
       GOTRUE_PASSWORD_MIN_LENGTH: 6
       GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      # The app ships TOTP MFA enrolment and verification: set, not left to GoTrue's defaults.
+      GOTRUE_MFA_TOTP_ENROLL_ENABLED: "true"
+      GOTRUE_MFA_TOTP_VERIFY_ENABLED: "true"
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
       GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
       GOTRUE_SECURITY_REFRESH_TOKEN_REUSE_INTERVAL: 10
@@ -207,6 +215,29 @@ services:
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
     entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
 
+  # One-shot: applies supabase/migrations, then exits. The app waits for it to exit 0.
+  migrate:
+    image: supabase/postgres:17.6.1.136   # the db's image, for psql: nothing extra to pull
+    restart: "no"
+    labels: *labels
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    # Only these two: supabase/pending-deploy must never be applied.
+    volumes:
+      - ../../supabase/migrations:/migrations:ro
+      - ./scripts/migrate-inner.sh:/usr/local/bin/migrate-inner.sh:ro
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGDATABASE: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint: ["bash", "/usr/local/bin/migrate-inner.sh"]
+
   app:
     build:
       context: ../..
@@ -229,6 +260,8 @@ services:
     # which the agent's self-requests to the PDF routes depend on. See RUNBOOK.md.
     network_mode: "service:kong"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       kong:
         condition: service_healthy
         restart: true
