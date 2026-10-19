@@ -249,6 +249,38 @@ describe('declare', () => {
     expect(await previewAction(zero.fetcher, { ...inputs, contingencyReturn: '' })).toMatchObject({ type: 'previewDone' })
   })
 
+  it('a fallback on a repeat preview drops the earlier waterfall preview: nothing old stays declarable', async () => {
+    // A no-carry waterfall preview with contingency 10,000 succeeds…
+    const WATERFALL = packPreview(400_000, 25_000, 10_000)
+    expect(WATERFALL.method).toBe('waterfall')
+    const start = filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' })
+    const first = fakeFetcher({ status: 200, body: WATERFALL })
+    let s = proposalReducer(proposalReducer(start, { type: 'previewStart' }), await previewAction(first.fetcher, start.inputs))
+    expect(canDeclare(s)).toBe(true)
+    // …then Preview again on the same inputs, and the terms or history now give the pro-rata fallback.
+    const fallback: CashPreview = { ...WATERFALL, method: 'pro_rata', cash: undefined, warnings: ['The waterfall could not be replayed.'] }
+    const again = fakeFetcher({ status: 200, body: fallback })
+    s = proposalReducer(s, { type: 'previewStart' })
+    s = proposalReducer(s, await previewAction(again.fetcher, s.inputs))
+    expect(s.error?.field).toBe('contingencyReturn')
+    expect(s.preview).toBeNull()
+    expect(canDeclare(s)).toBe(false)
+    expect(disabled(form(s), 'declare')).toBe(true)
+    const declare = fakeFetcher({ status: 200, body: {} })
+    expect(await declareAction(declare.fetcher, s)).toMatchObject({ type: 'refused' })
+    expect(declare.calls).toHaveLength(0)
+  })
+
+  it('so does any refused repeat preview; a refused declaration keeps its preview', async () => {
+    let s = previewed()
+    s = proposalReducer(proposalReducer(s, { type: 'previewStart' }), { type: 'refused', error: { text: 'Could not reach the server. Check the connection and try again.' } })
+    expect(s.preview).toBeNull()
+    expect(canDeclare(s)).toBe(false)
+    s = proposalReducer(proposalReducer(previewed(), { type: 'declareStart' }), { type: 'refused', error: { text: 'A valid distribution date is required' } })
+    expect(s.preview).not.toBeNull()
+    expect(canDeclare(s)).toBe(true)
+  })
+
   it('with neither, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
     // Pref and capital only, nothing returned from contingency: no carry line, so the route runs only the cash check.
     const NO_CARRY = packPreview(400_000, 25_000, 0)

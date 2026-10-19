@@ -85,8 +85,12 @@ export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalSt
     case 'editLine': return s.preview && linesEditable(s.preview) ? { ...s, edits: { ...(s.edits ?? {}), [a.lpEntityId]: a.value } } : s
     case 'declareStart': return { ...s, busy: 'declare', error: null }
     case 'declareDone': return { ...s, busy: null }
-    // A mismatch means the books moved under the preview: it can no longer be declared.
-    case 'refused': return { ...s, busy: null, error: a.error, stale: s.stale || !!a.error.previewAgain }
+    // A refused preview drops the one before it: the latest answer for these inputs is "no", and
+    // the earlier preview (say, a waterfall that has since fallen back to pro-rata) must not stay
+    // declarable. A refused declaration keeps its preview, stale if the books moved under it.
+    case 'refused': return s.busy === 'preview'
+      ? { ...s, busy: null, error: a.error, preview: null, previewAsOf: null, previewedFor: null, edits: null, stale: false }
+      : { ...s, busy: null, error: a.error, stale: s.stale || !!a.error.previewAgain }
   }
 }
 
