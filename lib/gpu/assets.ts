@@ -362,11 +362,15 @@ export async function purchaseAsset(
     }
     return result
   }
-  const { error } = await scoped((admin as any).from('gpu_assets').update({
+  const { data: linked, error } = await scoped((admin as any).from('gpu_assets').update({
     purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date,
     status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
-  }))
+  })).select('id')
   if (error) throw error
+  // Never a success with a booked entry and no register row to show it: say so, by entry.
+  if (!((linked as any[]) ?? []).length) {
+    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was removed from the register meanwhile. Void entry ${result.booked.id}, or restore the asset and book the purchase again to link it.` }
+  }
   return { entryId: result.booked.id }
 }
 

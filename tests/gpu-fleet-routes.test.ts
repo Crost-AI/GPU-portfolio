@@ -14,7 +14,7 @@ import { loadCloseEntrySuggestions } from '@/lib/accounting/close-suggestions'
  * kind check, the register and the lifecycle run for real over the memory admin.
  */
 
-const s = vi.hoisted(() => ({ m: null as any, access: null as any, between: null as null | (() => Promise<void>) }))
+const s = vi.hoisted(() => ({ m: null as any, access: null as any, between: null as null | (() => Promise<void>), beforeWrite: null as null | (() => Promise<void>), failBeforeWrite: false }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
 vi.mock('@/lib/api-helpers', () => ({
@@ -27,6 +27,9 @@ vi.mock('@/lib/accounting/http-vehicle', () => ({
 vi.mock('@/lib/accounting/persist', () => ({
   persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: string, entry: JournalEntry) => {
     const t = s.m.tables
+    // Before the first journal write: the window right after a purchase's claim.
+    if (s.beforeWrite) { const run = s.beforeWrite; s.beforeWrite = null; await run() }
+    if (s.failBeforeWrite) { s.failBeforeWrite = false; return { error: 'could not reach the database' } }
     const dup = t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
     const id = `je-${t.journal_entries.length + 1}`
@@ -63,6 +66,8 @@ const chart = (vehicleId: string, group: string, seeds: typeof GPU_SPV_CHART) =>
 beforeEach(() => {
   s.access = BOOKKEEPER
   s.between = null
+  s.beforeWrite = null
+  s.failBeforeWrite = false
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v-gpu', fund_id: 'f', name: 'H200 SPV I', kind: 'gpu_spv', aliases: [] },
@@ -189,6 +194,67 @@ describe('asset payloads', () => {
     const ctx = { fundId: 'f', group: 'H200 SPV I', vehicleId: 'v-gpu', userId: 'u' }
     expect(await purchaseAsset(s.m.admin, ctx, { ...stale }, { entryDate: '2027-01-05', invoiced: false })).toMatchObject({ inProgress: true })
     expect(s.m.tables.journal_entries.filter((e: any) => e.source_ref === `gpu-asset:${other}:purchase`)).toEqual([])
+  })
+
+  it('a claim cannot be released by the register: right after it, PATCH planned and DELETE are 409, and the purchase links its row', async () => {
+    const id = await createAsset()
+    let during: number[] = []
+    s.beforeWrite = async () => {
+      expect(s.m.tables.gpu_assets.find((a: any) => a.id === id).status).toBe('ordered')
+      expect(s.m.tables.journal_entries).toEqual([])
+      during = [
+        (await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'planned' }), params(id))).status,
+        (await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status,
+      ]
+    }
+    expect(await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))).toEqual({ status: 200, body: { entryId: 'je-1' } })
+    expect(during).toEqual([409, 409])
+    expect(s.m.tables.gpu_assets.filter((a: any) => a.id === id)).toEqual([expect.objectContaining({ status: 'ordered', purchase_entry_id: 'je-1' })])
+  })
+
+  it('status through PATCH is operational only, and applies only from the status read', async () => {
+    const id = await createAsset()
+    for (const status of ['ordered', 'in_service', 'offline']) {
+      expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status }), params(id))).status, `planned → ${status}`).toBe(409)
+    }
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'planned' }), params(id))).status).toBe(409)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'offline' }), params(id))).status).toBe(409)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'in_service' }), params(id))).status).toBe(200)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'offline' }), params(id))).status).toBe(200)
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'in_service' }), params(id))).status).toBe(200)
+    // A stale save: the row moved after this request read it, so its status predicate matches nothing.
+    const from = s.m.admin.from
+    s.m.admin.from = (t: string) => {
+      const q = from(t)
+      if (t !== 'gpu_assets') return q
+      const update = q.update.bind(q)
+      q.update = (v: any) => { s.m.tables.gpu_assets.find((a: any) => a.id === id).status = 'offline'; return update(v) }
+      return q
+    }
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'offline' }), params(id))).status).toBe(409)
+  })
+
+  it('a purchase that fails before writing gives its claim back; a claim left by a crash is completed by the retry', async () => {
+    const id = await createAsset()
+    s.failBeforeWrite = true
+    expect((await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).status).toBe(400)
+    const back = s.m.tables.gpu_assets.find((a: any) => a.id === id)
+    expect([back.status, back.purchase_entry_id ?? null]).toEqual(['planned', null])
+    expect(s.m.tables.journal_entries).toEqual([])
+
+    // A crash after the claim: ordered, unlinked, nothing booked. The retry books once and links.
+    s.m.tables.gpu_assets.find((a: any) => a.id === id).status = 'ordered'
+    expect(await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))).toEqual({ status: 200, body: { entryId: 'je-1' } })
+    expect(s.m.tables.journal_entries.filter((e: any) => e.source_ref === `gpu-asset:${id}:purchase`)).toHaveLength(1)
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ status: 'ordered', purchase_entry_id: 'je-1' })
+  })
+
+  it('a booked purchase whose register row vanished is a conflict naming the entry, never a success', async () => {
+    const id = await createAsset({ status: 'ordered' })
+    s.between = async () => { s.m.tables.gpu_assets = s.m.tables.gpu_assets.filter((a: any) => a.id !== id) }
+    const r = await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))
+    expect(r).toMatchObject({ status: 400, body: { error: expect.stringContaining('booked as entry je-1') } })
   })
 
   it('locks the in-service date and convention once depreciation is booked', async () => {

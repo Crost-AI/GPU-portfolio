@@ -67,9 +67,9 @@ describe('entity scope through the real resolver', () => {
   it('fails closed when the access context cannot be read (the real loader, a failing RPC)', async () => {
     s.access = 'real'
     const r = await create()
-    expect([401, 403, 404]).toContain(r.status)
+    expect(r.status).toBe(403)
     const bought = await purchase.POST(new NextRequest(`https://x.test/api/fleet/assets/${ASSET}/purchase`, { method: 'POST', body: JSON.stringify({ entryDate: '2027-01-05' }) }), { params: Promise.resolve({ id: ASSET }) })
-    expect([401, 403, 404]).toContain(bought.status)
+    expect(bought.status).toBe(403)
     expect(s.m.tables.gpu_assets).toHaveLength(1)
     expect(s.m.tables.journal_entries).toEqual([])
   })

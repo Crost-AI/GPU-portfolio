@@ -7,6 +7,9 @@ import type { GpuAssetRow } from '@/lib/gpu/types'
 
 type Params = { params: Promise<{ id: string }> }
 
+/** The status moves a person may make through PATCH. */
+const OPERATIONAL_MOVES: Record<string, string[]> = { ordered: ['in_service'], in_service: ['offline'], offline: ['in_service'] }
+
 export async function GET(_req: NextRequest, props: Params) {
   const { id } = await props.params
   const r = await fleetRowRequest<GpuAssetRow>('read', 'gpu_assets', id)
@@ -27,6 +30,12 @@ export async function PATCH(req: NextRequest, props: Params) {
   const row = r.row
   if (row.status === 'disposed') return NextResponse.json({ error: 'A disposed asset cannot be edited' }, { status: 409 })
   const v = parsed.value
+  // Status through the register is operational only. `ordered` is the purchase's claim (purchaseAsset)
+  // and `disposed` the disposal's (disposeAsset); nothing goes back to `planned` once it has left it,
+  // which would release a claim and reopen DELETE.
+  if (v.status !== undefined && v.status !== row.status && !(OPERATIONAL_MOVES[row.status] ?? []).includes(v.status)) {
+    return NextResponse.json({ error: `Status cannot change from ${row.status} to ${v.status} here: an asset is ordered by booking its purchase and disposed of by its disposal, and never returns to planned` }, { status: 409 })
+  }
   const costChange = v.hardware_cost !== undefined && v.hardware_cost !== Number(row.hardware_cost)
   const scheduleChange = (v.in_service_date !== undefined && v.in_service_date !== row.in_service_date)
     || (v.depreciation_convention !== undefined && v.depreciation_convention !== row.depreciation_convention)
@@ -48,10 +57,17 @@ export async function PATCH(req: NextRequest, props: Params) {
   let q = (r.req.admin as any).from('gpu_assets').update({ ...parsed.value, updated_at: new Date().toISOString() })
     .eq('fund_id', r.req.fundId).eq('vehicle_id', r.req.vehicleId).eq('id', id)
   if (costChange) q = q.eq('status', 'planned').is('purchase_entry_id', null).eq('hardware_cost', row.hardware_cost)
+  // A status in the payload applies only from the status this request read, so a stale form save
+  // cannot overwrite a purchase's claim (or anything else that moved the row meanwhile).
+  else if (v.status !== undefined) q = q.eq('status', row.status)
   const { data: saved, error } = await q.select('*')
   if (error) return NextResponse.json({ error: 'Could not save the asset' }, { status: 500 })
   const data = ((saved as any[]) ?? [])[0]
-  if (!data) return NextResponse.json({ error: 'The hardware cost can change only while the asset is planned and nothing is booked' }, { status: 409 })
+  if (!data) {
+    return NextResponse.json({ error: costChange
+      ? 'The hardware cost can change only while the asset is planned and nothing is booked'
+      : 'The asset changed while you were editing it (a purchase or another edit); reload it and try again' }, { status: 409 })
+  }
   return NextResponse.json({ ...data, capitalized_costs: await capitalizedCostsOf(r.req.admin, r.req.ctx, id) })
 }
 
