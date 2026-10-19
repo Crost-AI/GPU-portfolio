@@ -167,6 +167,11 @@ export interface ReturnsBlock {
   periods: PeriodRow[]
 }
 
+/**
+ * Everything the engine computes, the manager's profit share included. The raw result must not
+ * leave the server unredacted: a route answering a member without `gp_economics` sends
+ * `redactScenarioResult(result, false)`, or only the `report.ts` shapes built with `showCarry: false`.
+ */
 export interface FleetScenarioResult {
   /** The primary cadence: which `byCadence` block the vehicle actually distributes on. */
   cadence: Cadence
@@ -192,6 +197,44 @@ export interface FleetScenarioResult {
     managerCarry: number
     managerTotal: number
     byCadence: { annual: ReturnsBlock; quarterly?: ReturnsBlock; monthly?: ReturnsBlock }
+  }
+}
+
+type Hidden<T, K extends keyof T> = Omit<T, K> & { [P in K]: T[P] | null }
+type ManagerFigures = 'carry' | 'toManager' | 'managerRocShare'
+type RedactedBlock = Omit<ReturnsBlock, 'periods'> & { periods: Hidden<PeriodRow, ManagerFigures>[] }
+
+/** A result as a member may see it: each manager figure is a number, or null when hidden. */
+export type RedactedScenarioResult = Omit<FleetScenarioResult, 'waterfall' | 'returns'> & {
+  waterfall: Hidden<WaterfallRow, ManagerFigures>[]
+  returns: Omit<Hidden<FleetScenarioResult['returns'], 'managerCarry' | 'managerTotal'>, 'byCadence'> & {
+    byCadence: { annual: RedactedBlock; quarterly?: RedactedBlock; monthly?: RedactedBlock }
+  }
+}
+
+/**
+ * The result with the manager's profit share, total and return-of-capital share nulled when
+ * `showCarry` is false; NULL, never 0, as in `report.ts` (the `redactCarryEntry` precedent). The fee
+ * stays: it is an SPV expense. What the visible figures still imply is issue #72.
+ */
+export function redactScenarioResult(result: FleetScenarioResult, showCarry: boolean): RedactedScenarioResult {
+  if (showCarry) return result
+  const hide = <R extends PeriodRow | WaterfallRow>(r: R) => ({ ...r, carry: null, toManager: null, managerRocShare: null })
+  const block = (b: ReturnsBlock): RedactedBlock => ({ ...b, periods: b.periods.map(hide) })
+  const { annual, quarterly, monthly } = result.returns.byCadence
+  return {
+    ...result,
+    waterfall: result.waterfall.map(hide),
+    returns: {
+      ...result.returns,
+      managerCarry: null,
+      managerTotal: null,
+      byCadence: {
+        annual: block(annual),
+        ...(quarterly && { quarterly: block(quarterly) }),
+        ...(monthly && { monthly: block(monthly) }),
+      },
+    },
   }
 }
 
@@ -300,6 +343,35 @@ function periodAmounts(y: YearCash, n: number): { amount: number; contingency: n
   }))
 }
 
+/**
+ * What each period of a year actually pays investors, in cents; never negative. Negativity is
+ * decided per YEAR, as on the annual cadence: the even spread can leave Q1–Q3 short in a sale year
+ * whose sale, in Q4, more than covers them. A period pays as much as it can while leaving enough
+ * to cover the year's later shortfalls, so a short period is carried to a later one (the sale
+ * period absorbs it), and a contingency released in Q1 is held back to fund Q2–Q4's losses. The
+ * contingency is paid first out of what a period pays and never more; what operating losses
+ * consumed is not returned. Where every period is ≥ 0 this is `periodAmounts` unchanged.
+ */
+function payablePeriods(y: YearCash, n: number, year: number): { amount: number; contingency: number }[] {
+  const raw = periodAmounts(y, n)
+  const cumulative: number[] = []
+  raw.forEach((p, k) => cumulative.push((cumulative[k - 1] ?? 0) + p.amount))
+  if (cumulative[n - 1] < 0) {
+    throw new ScenarioInputError(`Year ${year} has negative distributable cash; this model has no reserve or capital call to fund it.`)
+  }
+  let paid = 0
+  let contingencyDue = 0
+  return raw.map((p, k) => {
+    const paidThrough = Math.max(0, Math.min(...cumulative.slice(k)))
+    const amount = paidThrough - paid
+    paid = paidThrough
+    contingencyDue += p.contingency
+    const contingency = Math.min(contingencyDue, amount)
+    contingencyDue -= contingency
+    return { amount, contingency }
+  })
+}
+
 function runCadence(
   cadence: Cadence,
   a: FleetAssumptions,
@@ -317,13 +389,10 @@ function runCadence(
 
   investorCash.forEach((yc, yi) => {
     const project = periodAmounts(projectCash[yi], n)
-    periodAmounts(yc, n).forEach((p, k) => {
+    payablePeriods(yc, n, yi + 1).forEach((p, k) => {
       const period = yi * n + k + 1
       const t = period / n
       const date = lastDay(addMonths(a.startMonth, period * months - 1))
-      if (p.amount < 0) {
-        throw new ScenarioInputError(`Year ${yi + 1} has negative distributable cash; this model has no reserve or capital call to fund it.`)
-      }
       const unreturnedStart = roundCents(sum(state.investors.map(i => i.unreturned)))
       const accrued = accrue(state, date, terms, 1 / n)
       const { state: afterReturn, returned } = returnContingency(accrued, p.contingency)

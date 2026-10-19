@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  CADENCE_LABELS, FleetRegisterUnavailableError, ScenarioInputError, resolveFleet, runFleetScenario,
+  CADENCE_LABELS, FleetRegisterUnavailableError, ScenarioInputError, redactScenarioResult, resolveFleet, runFleetScenario,
   type FleetAssumptions, type FleetScenarioResult, type PeriodRow, type WaterfallRow,
 } from './scenario'
 import {
@@ -325,10 +325,54 @@ describe('cadence (Karl Q4)', () => {
     expect(q.flows.slice(1).map(f => f.t)).toEqual(Array.from({ length: 20 }, (_, k) => (k + 1) / 4))
     expect(q.periods[0].date).toBe('2027-03-31')
     expect(q.periods[19].date).toBe('2031-12-31')
-    // Same cash, paid earlier: a higher IRR than the pack's 33.6%, the same pack total within $1.
+    // Same cash, paid earlier: a higher IRR than the pack's 33.6%. The total is NOT the pack's:
+    // capital comes back sooner, so less pref accrues (2,891,568.63 vs 2,906,575.87 annual).
     expect(q.investor.irr!).toBeGreaterThan(r.returns.byCadence.annual.investor.irr! + 0.001)
     expect(r.returns.investor.irr).toBe(r.returns.byCadence.annual.investor.irr)
     expect(pct1(r.returns.investor.irr)).toBe(33.6)
+  })
+})
+
+describe('negative distributable cash is decided per year, on every cadence', () => {
+  const cadences = ['annual', 'quarterly', 'monthly'] as const
+
+  it('Oversupply at 34%: a short sale year runs on every cadence with the same yearly totals', () => {
+    const annual = run('oversupply', { utilization: 0.34, cadence: 'annual' })
+    expect(annual.operating[5].operatingProfit).toBeLessThan(0)
+    near(annual.waterfall[4].distributable, 118_036, 'Y5 distributable')
+    for (const cadence of cadences) {
+      const r = run('oversupply', { utilization: 0.34, cadence })
+      const block = r.returns.byCadence[cadence]!
+      assertIdentity(block.periods, `oversupply 34% ${cadence}`)
+      block.periods.forEach(p => expect(p.distributable, `P${p.period}`).toBeGreaterThanOrEqual(0))
+      annual.waterfall.forEach(w => {
+        const ps = block.periods.filter(p => p.year === w.year)
+        expect(ps.reduce((s, p) => s + c(p.distributable), 0), `${cadence} Y${w.year}`).toBe(c(w.distributable))
+      })
+      // The short periods carry their shortfall to the sale period.
+      const y5 = block.periods.filter(p => p.year === 5)
+      expect(y5.slice(0, -1).every(p => p.distributable === 0)).toBe(true)
+      expect(y5[y5.length - 1].distributable).toBe(annual.waterfall[4].distributable)
+    }
+  })
+
+  it('a contingency return that covers an operating loss is paid net of it, on every cadence', () => {
+    const utilization = Object.fromEntries(PACK_SERVERS.map(s => [s, [0.05, 0.75, 0.75, 0.75, 0.75]]))
+    for (const cadence of cadences) {
+      const r = run('base', { cadence, utilization, capex: { contingencyPct: 0.1, contingencySpent: 0, returnYear: 1 } })
+      const y1 = r.returns.byCadence[cadence]!.periods.filter(p => p.year === 1)
+      // 130,500 unspent, less Y1's operating loss of 84,483.52 and fee of 3,245.58.
+      expect(y1[0]).toMatchObject({ distributable: 42_770.9, contingencyReturn: 42_770.9, preferred: 0, carry: 0 })
+      expect(y1.slice(1).every(p => p.distributable === 0)).toBe(true)
+      assertIdentity(r.returns.byCadence[cadence]!.periods, `base Y1 5% ${cadence}`)
+    }
+  })
+
+  it('a year the contingency cannot cover is refused with ScenarioInputError, never a plain Error', () => {
+    for (const cadence of cadences) {
+      expect(() => run('base', { cadence, utilization: 0.05, capex: { contingencyPct: 0.1, contingencySpent: 0, returnYear: 1 } }))
+        .toThrow(ScenarioInputError)
+    }
   })
 })
 
@@ -384,6 +428,22 @@ describe('R8: unspent contingency returned to investors', () => {
     expect(r.waterfall[4].fee).toBe(pack.waterfall[4].fee)
   })
 
+  it('Oversupply, return in Y4: the cap binds part-way, 27,284.35 returned, the excess goes to the split', () => {
+    const pack = run('oversupply')
+    const r = run('oversupply', { capex: { contingencyPct: 0.1, contingencySpent: 0, returnYear: 4 } })
+    const w4 = r.waterfall[3]
+    expect(w4.unreturnedStart).toBe(27_284.35)
+    expect(w4.contingencyReturn).toBe(27_284.35)
+    expect(w4.returnOfCapital).toBe(0)
+    expect(w4.preferred).toBe(pack.waterfall[3].preferred)
+    // 130,500 unspent − 27,284.35 to capital = 103,215.65 more in the split, plus the 27,284.35 the
+    // pack paid as ROC: 130,500 more, 70/30.
+    expect(c(w4.profitToLP) - c(pack.waterfall[3].profitToLP)).toBe(c(91_350))
+    expect(c(w4.carry) - c(pack.waterfall[3].carry)).toBe(c(39_150))
+    expect(w4.fee).toBe(pack.waterfall[3].fee)
+    assertIdentity(r.waterfall, 'oversupply R8 Y4')
+  })
+
   it('the pack (contingencySpent null) returns nothing, and overspend returns nothing', () => {
     for (const id of IDS) {
       const r = run(id)
@@ -423,6 +483,20 @@ describe('resolveFleet and inputs', () => {
     expect(r.waterfall).toEqual(run('base').waterfall)
   })
 
+  it('capitalized costs raise the depreciation basis, and an early sale is at that book value', () => {
+    const fleet = PACK_FLEET.map(f => ({ ...f, capitalizedCosts: 1_000 }))
+    const r = run('base', { assets: fleet })
+    // (1,305,000 + 3 × 1,000 − 130,500 salvage) / 5. Salvage, insurance and capital stay on hardware.
+    expect(r.operating[0].nbv).toBe(1_308_000)
+    expect(r.operating.slice(1).map(o => o.depreciation)).toEqual([235_500, 235_500, 235_500, 235_500, 235_500])
+    expect(r.operating[5].saleProceeds).toBe(PACK_INPUTS.salePrice)
+    expect(r.returns.capitalRaised).toBe(CAPITAL)
+    expect(r.operating[1].insurance).toBe(run('base').operating[1].insurance)
+    const early = run('base', { assets: fleet, saleYear: 3 })
+    expect(early.operating[3].nbv).toBe(601_500)
+    expect(early.operating[3].saleProceeds).toBe(601_500)
+  })
+
   it('overrides replace the vehicle terms', () => {
     const r = run('base', { overrides: { feeRate: 0, carryRate: 0.2 } })
     expect(r.waterfall.every(w => w.fee === 0)).toBe(true)
@@ -444,5 +518,42 @@ describe('resolveFleet and inputs', () => {
       .toThrow(ScenarioInputError)
     expect(() => run('base', { datacenter: { monthly: 1_000_000, escalator: 0, firstEscalationYear: 2, contingencyPct: 0 } }))
       .toThrow(ScenarioInputError)
+  })
+})
+
+describe('redactScenarioResult', () => {
+  it('nulls every manager figure, on every cadence, and changes nothing else', () => {
+    const r = run('oversupply_50', { cadence: 'quarterly', overrides: { rocLpShare: 0.9 } })
+    const before = structuredClone(r)
+    const h = redactScenarioResult(r, false)
+    expect(r).toEqual(before)
+    expect(h.returns.managerCarry).toBeNull()
+    expect(h.returns.managerTotal).toBeNull()
+    expect(h.returns.managerFees).toBe(r.returns.managerFees)
+    const manager = ['carry', 'toManager', 'managerRocShare']
+    const rest = <T extends object>(row: T) => Object.fromEntries(Object.entries(row).filter(([k]) => !manager.includes(k)))
+    h.waterfall.forEach((w, k) => {
+      expect(w).toMatchObject({ carry: null, toManager: null, managerRocShare: null })
+      expect(rest(w)).toEqual(rest(r.waterfall[k]))
+    })
+    expect(r.waterfall[4].managerRocShare).toBe(13_150.35)
+    expect(Object.keys(h.returns.byCadence)).toEqual(['annual', 'quarterly'])
+    for (const cadence of ['annual', 'quarterly'] as const) {
+      const shown = r.returns.byCadence[cadence]!
+      const hidden = h.returns.byCadence[cadence]!
+      expect(hidden.flows).toEqual(shown.flows)
+      expect(hidden.investor).toEqual(shown.investor)
+      hidden.periods.forEach((p, k) => {
+        expect(p).toMatchObject({ carry: null, toManager: null, managerRocShare: null })
+        expect(rest(p)).toEqual(rest(shown.periods[k]))
+      })
+    }
+    expect(h.operating).toEqual(r.operating)
+    expect(h.rates).toEqual(r.rates)
+  })
+
+  it('with showCarry the result is returned as is', () => {
+    const r = run('base')
+    expect(redactScenarioResult(r, true)).toBe(r)
   })
 })

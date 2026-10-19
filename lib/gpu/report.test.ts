@@ -127,6 +127,14 @@ describe('scenarioDetail', () => {
     expect(hidden.rates).toEqual(shown.rates)
     expect(hidden.investorFlows).toEqual(shown.investorFlows)
   })
+
+  it("without gp_economics: the manager's return-of-capital share is null too", () => {
+    const r = run('oversupply_50', { overrides: { rocLpShare: 0.9 } })
+    const shown = scenarioDetail(r, { showCarry: true })
+    const hidden = scenarioDetail(r, { showCarry: false })
+    expect(byKey(shown.waterfall, 'managerRocShare').values[4]).toBe(13_150.35)
+    assertRedaction(shown.waterfall, hidden.waterfall, ['managerRocShare', 'carry', 'toManager'])
+  })
 })
 
 describe('investorPosition', () => {
