@@ -85,6 +85,28 @@ export function canDeclare(s: ProposalState): boolean {
 
 const today = () => new Date().toLocaleDateString('en-CA')
 
+/** Preview: the inputs checked here first (a missing reserve never leaves the page), then the route. */
+export async function previewAction(fetcher: Fetcher, inputs: ProposalInputs): Promise<ProposalAction> {
+  const req = previewRequest(inputs)
+  if (!req.ok) return { type: 'refused', error: { text: req.error, field: req.field } }
+  const r = await send<CashPreview>(fetcher, waterfallPaths.distributions, 'POST', req.body)
+  if (!r.ok) return { type: 'refused', error: refusal(r) }
+  if (r.data.distributable == null) {
+    return { type: 'refused', error: { text: 'This vehicle\u2019s waterfall is not set to distributable cash, so it cannot be split from available cash and a reserve. Set the terms, or declare from Capital accounts.' } }
+  }
+  return { type: 'previewDone', preview: r.data, asOf: req.body.asOf }
+}
+
+/** Declare what was previewed, under the dialog's one request key. */
+export async function declareAction(fetcher: Fetcher, state: ProposalState): Promise<ProposalAction> {
+  if (!state.preview || !state.previewAsOf) return { type: 'refused', error: { text: 'Preview the distribution first.' } }
+  const req = declareRequest({ preview: state.preview, asOf: state.previewAsOf, description: state.inputs.description, requestKey: state.requestKey, edits: state.edits })
+  if (!req.ok) return { type: 'refused', error: { text: req.error } }
+  const r = await send(fetcher, waterfallPaths.distributions, 'POST', req.body)
+  if (!r.ok) return { type: 'refused', error: refusal(r) }
+  return { type: 'declareDone' }
+}
+
 /** The dialog, wired: the button that opens it, and the requests behind Preview and Declare. */
 export function ProposeDistributionDialog({ fetcher, lastReserve, seesCarry, allowed, money, onPreviewed, onDeclared }: {
   fetcher: Fetcher
@@ -105,29 +127,18 @@ export function ProposeDistributionDialog({ fetcher, lastReserve, seesCarry, all
   }
 
   async function preview() {
-    const req = previewRequest(state.inputs)
-    if (!req.ok) { dispatch({ type: 'refused', error: { text: req.error, field: req.field } }); return }
     dispatch({ type: 'previewStart' })
-    const r = await send<CashPreview>(fetcher, waterfallPaths.distributions, 'POST', req.body)
-    if (!r.ok) { dispatch({ type: 'refused', error: refusal(r) }); return }
-    if (r.data.distributable == null) {
-      dispatch({ type: 'refused', error: { text: 'This vehicle’s waterfall is not set to distributable cash, so it cannot be split from available cash and a reserve. Set the terms, or declare from Capital accounts.' } })
-      return
-    }
-    dispatch({ type: 'previewDone', preview: r.data, asOf: req.body.asOf })
-    onPreviewed(r.data.lastReserve)
+    const a = await previewAction(fetcher, state.inputs)
+    dispatch(a)
+    if (a.type === 'previewDone') onPreviewed(a.preview.lastReserve)
   }
 
   async function declare() {
-    if (!canDeclare(state) || !state.preview) return
-    const req = declareRequest({ preview: state.preview, asOf: state.previewAsOf!, description: state.inputs.description, requestKey: state.requestKey, edits: state.edits })
-    if (!req.ok) { dispatch({ type: 'refused', error: { text: req.error } }); return }
+    if (!canDeclare(state)) return
     dispatch({ type: 'declareStart' })
-    const r = await send(fetcher, waterfallPaths.distributions, 'POST', req.body)
-    if (!r.ok) { dispatch({ type: 'refused', error: refusal(r) }); return }
-    dispatch({ type: 'declareDone' })
-    setOpen(false)
-    onDeclared()
+    const a = await declareAction(fetcher, state)
+    dispatch(a)
+    if (a.type === 'declareDone') { setOpen(false); onDeclared() }
   }
 
   return (
