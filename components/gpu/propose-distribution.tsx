@@ -107,6 +107,12 @@ export async function previewAction(fetcher: Fetcher, inputs: ProposalInputs): P
   if (r.data.distributable == null) {
     return { type: 'refused', error: { text: 'This vehicle\u2019s waterfall is not set to distributable cash, so it cannot be split from available cash and a reserve. Set the terms, or declare from Capital accounts.' } }
   }
+  // Only the waterfall stores a contingency return (wf_contingency_return). A preview that fell back
+  // to pro-rata would declare it as an ordinary distribution, and later replays would treat that
+  // cash as preferred return, so it is not offered for declaration at all.
+  if (req.body.contingencyReturn > 0 && r.data.method !== 'waterfall') {
+    return { type: 'refused', error: { field: 'contingencyReturn', text: `A contingency return can only be declared through the waterfall, and this preview fell back to a pro-rata split${r.data.warnings[0] ? ` (${r.data.warnings[0]})` : ''}. Set the contingency returned to 0, or fix the waterfall terms and preview again.` } }
+  }
   return { type: 'previewDone', preview: r.data, asOf: req.body.asOf, key: JSON.stringify(req.body) }
 }
 

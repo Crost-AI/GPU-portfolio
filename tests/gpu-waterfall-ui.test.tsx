@@ -221,6 +221,34 @@ describe('declare', () => {
     expect(calls[0].body.cash.contingencyReturn).toBe(10_000)
   })
 
+  it('a contingency return on a preview that fell back to pro-rata is refused, never declared', async () => {
+    // The engine refuses a periodic day count for dated distributions and splits pro-rata instead.
+    const total = 375_000
+    const split = splitDistribution({
+      total, terms: { ...TERMS, prefDayCount: 'periodic' }, asOf: ASOF, contingencyReturn: 10_000, priors: [],
+      contributions: CONTRIBUTIONS,
+      partners: CONTRIBUTIONS.map(c => ({ lpEntityId: c.lpEntityId, contributed: c.amount, distributed: 0, ending: c.amount })),
+    })
+    expect(split.method).toBe('pro_rata')
+    expect(split.cash).toBeUndefined()
+    const fallback: CashPreview = {
+      ...split, names: {}, suggestedCharacter: suggestedCharacter(split.tiers, total),
+      terms: PREVIEW.terms, available: 400_000, reserve: 25_000, distributable: total, lastReserve: null,
+    }
+    const inputs = filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' }).inputs
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: fallback })
+    const a = await previewAction(fetcher, inputs)
+    expect(calls).toHaveLength(1)
+    expect(a).toMatchObject({ type: 'refused', error: { field: 'contingencyReturn' } })
+    const s = proposalReducer(proposalReducer(filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' }), { type: 'previewStart' }), a)
+    expect(s.preview).toBeNull()
+    expect(canDeclare(s)).toBe(false)
+    expect(form(s)).toContain('A contingency return can only be declared through the waterfall')
+    // With no contingency, the same fallback is a preview like any other.
+    const zero = fakeFetcher({ status: 200, body: fallback })
+    expect(await previewAction(zero.fetcher, { ...inputs, contingencyReturn: '' })).toMatchObject({ type: 'previewDone' })
+  })
+
   it('with neither, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
     // Pref and capital only, nothing returned from contingency: no carry line, so the route runs only the cash check.
     const NO_CARRY = packPreview(400_000, 25_000, 0)
