@@ -411,3 +411,29 @@ describe('the firm-wide overview\u2019s requests', () => {
   })
 })
 
+describe('load failures and the URL\u2019s vehicle (pinned in source: these run in effects a static render does not)', () => {
+  const src = (f: string) => readFileSync(path.join(process.cwd(), 'components', 'gpu', f), 'utf8')
+
+  it('the register keeps one error per list, so a good assets load never clears a types or contracts failure', () => {
+    const s = src('fleet-register.tsx')
+    expect(s).toContain('setTypesError(r.ok ? null : r.error)')
+    expect(s).toContain('setLoadError(a.ok ? null : a.error)')
+    expect(s).toContain('setContractsError(c.ok ? null : c.error)')
+    expect(s).not.toMatch(/setLoadError\([^)]*c\.error/)
+    expect(s).toMatch(/\{typesError && [\s\S]*?<ErrorAlert>/)
+    expect(s).toMatch(/\{contractsError && [\s\S]*?<ErrorAlert>/)
+  })
+
+  it('the asset page shows types and contracts failures inline and never reads them as No type or a dash', () => {
+    const s = src('asset-detail.tsx')
+    expect(s).toContain('setTypesError(r.ok ? null : r.error)')
+    expect(s).toContain('setContractsError(c.ok ? null : c.error)')
+    expect(s).toContain("typesError ? 'Type unavailable'")
+    expect(s).toContain("contractsError ? 'Unavailable'")
+  })
+
+  it('the asset page renders not found for an asset of another vehicle', () => {
+    const s = src('asset-detail.tsx')
+    expect(s).toMatch(/if \(asset\.vehicle_id !== vehicleId\) \{\s*return \(\s*<EmptyState/)
+  })
+})

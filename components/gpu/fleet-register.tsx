@@ -184,19 +184,26 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   const [assets, setAssets] = useState<GpuAsset[] | null>(null)
   const [types, setTypes] = useState<GpuAssetTypeRow[]>([])
   const [contracts, setContracts] = useState<DatacenterContractRow[] | null>(null)
+  // One error per list, so a later good load of one never clears another's failure.
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [contractsError, setContractsError] = useState<string | null>(null)
+  const [typesError, setTypesError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [dialog, setDialog] = useState<Dialog>(null)
 
   const fetchTypes = useCallback(() => listTypes(lf), [lf])
-  const applyTypes = (r: Awaited<ReturnType<typeof listTypes>>) => { if (r.ok) setTypes(r.data.assetTypes); else setLoadError(r.error) }
+  const applyTypes = (r: Awaited<ReturnType<typeof listTypes>>) => {
+    if (r.ok) setTypes(r.data.assetTypes)
+    setTypesError(r.ok ? null : r.error)
+  }
   const loadTypes = () => { void fetchTypes().then(applyTypes) }
 
   const fetchAll = useCallback(() => Promise.all([listAssets(lf), listContracts(lf)] as const), [lf])
   const apply = ([a, c]: Awaited<ReturnType<typeof fetchAll>>) => {
     if (a.ok) setAssets(a.data.assets)
     if (c.ok) setContracts(c.data.contracts)
-    setLoadError(!a.ok ? a.error : !c.ok ? c.error : null)
+    setLoadError(a.ok ? null : a.error)
+    setContractsError(c.ok ? null : c.error)
   }
   const load = () => { void fetchAll().then(apply) }
 
@@ -238,6 +245,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
         action={<GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="default" onClick={() => setDialog({ kind: 'add' })}><Plus className="mr-1 h-4 w-4" />Add asset</GatedButton>}
       >
         {actionError && <div className="mb-3"><ErrorAlert>{actionError}</ErrorAlert></div>}
+        {typesError && <div className="mb-3"><ErrorAlert>Could not load the GPU types, so the Type column is blank: {typesError}</ErrorAlert></div>}
         {assets === null ? (
           loadError ? null : <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
         ) : assets.length === 0 ? (
@@ -262,6 +270,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
         description="Each contract's monthly fee accrues on a schedule the close books from."
         action={<GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} onClick={() => setDialog({ kind: 'contract' })}><Plus className="mr-1 h-4 w-4" />Add contract</GatedButton>}
       >
+        {contractsError && <div className="mb-3"><ErrorAlert>Could not load the datacenter contracts: {contractsError}</ErrorAlert></div>}
         {contracts === null ? null : contracts.length === 0 ? (
           <EmptyState compact>No datacenter contracts yet.</EmptyState>
         ) : (

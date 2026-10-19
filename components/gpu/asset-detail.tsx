@@ -78,11 +78,18 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
   const [types, setTypes] = useState<GpuAssetTypeRow[]>([])
   const [contracts, setContracts] = useState<DatacenterContractRow[]>([])
   const [events, setEvents] = useState<GpuAssetEventRow[] | null>(null)
+  // One error per request, so each says what it failed to load and none clears another.
   const [error, setError] = useState<string | null>(null)
+  const [eventsError, setEventsError] = useState<string | null>(null)
+  const [contractsError, setContractsError] = useState<string | null>(null)
+  const [typesError, setTypesError] = useState<string | null>(null)
   const [dialog, setDialog] = useState<'edit' | 'capex' | null>(null)
 
   const fetchTypes = useCallback(() => listTypes(lf), [lf])
-  const applyTypes = (r: Awaited<ReturnType<typeof listTypes>>) => { if (r.ok) setTypes(r.data.assetTypes) }
+  const applyTypes = (r: Awaited<ReturnType<typeof listTypes>>) => {
+    if (r.ok) setTypes(r.data.assetTypes)
+    setTypesError(r.ok ? null : r.error)
+  }
   const loadTypes = useCallback(() => { void fetchTypes().then(applyTypes) }, [fetchTypes])
 
   const fetchAll = useCallback(
@@ -93,7 +100,9 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
     if (a.ok) setAsset(a.data)
     if (e.ok) setEvents(e.data.events)
     if (c.ok) setContracts(c.data.contracts)
-    setError(!a.ok ? a.error : !e.ok ? e.error : null)
+    setError(a.ok ? null : a.error)
+    setEventsError(e.ok ? null : e.error)
+    setContractsError(c.ok ? null : c.error)
   }
   const load = () => { void fetchAll().then(apply) }
 
@@ -110,13 +119,26 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
       : <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
   }
 
+  // The route resolves the asset's OWN vehicle, so an id from another GPU SPV would load here, inside
+  // this one's chrome. It is not this vehicle's asset: not found, like any other id.
+  if (asset.vehicle_id !== vehicleId) {
+    return (
+      <EmptyState action={vehicleId ? <Link href={`/funds/${vehicleId}/fleet`} className="text-sm underline">Back to the fleet register</Link> : undefined}>
+        This asset is not in this vehicle&rsquo;s register.
+      </EmptyState>
+    )
+  }
+
   const asOf = todayIso()
   const f = assetFigures(asset, asOf)
   const lines = assetSchedule(asset)
   const disposed = asset.status === 'disposed'
   const book = bookingGate(canWriteFleet, canBook)
-  const typeLabel = types.find(t => t.id === asset.asset_type_id)?.label ?? null
-  const contract = contracts.find(c => c.id === asset.datacenter_contract_id)?.facility ?? null
+  // A name that could not be loaded is said so, not shown as "No type" or a dash.
+  const typeLabel = !asset.asset_type_id ? 'No type'
+    : types.find(t => t.id === asset.asset_type_id)?.label ?? (typesError ? 'Type unavailable' : 'Unknown type')
+  const contract = !asset.datacenter_contract_id ? '—'
+    : contracts.find(c => c.id === asset.datacenter_contract_id)?.facility ?? (contractsError ? 'Unavailable' : 'Unknown contract')
 
   return (
     <div className="space-y-4">
@@ -126,6 +148,8 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
         </Link>
       )}
       {error && <ErrorAlert>{error}</ErrorAlert>}
+      {typesError && <ErrorAlert>Could not load the GPU types: {typesError}</ErrorAlert>}
+      {contractsError && <ErrorAlert>Could not load the datacenter contracts: {contractsError}</ErrorAlert>}
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
@@ -134,7 +158,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
             <StatusBadge status={asset.status} />
           </div>
           <p className="text-sm text-muted-foreground">
-            {typeLabel ?? 'No type'} &middot; <span className="tabular-nums">{asset.gpu_count}</span> GPUs
+            {typeLabel} &middot; <span className="tabular-nums">{asset.gpu_count}</span> GPUs
             {asset.serials.length > 0 && <> &middot; <span className="font-mono text-xs">{asset.serials.join(', ')}</span></>}
           </p>
         </div>
@@ -175,7 +199,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
               ['Tax method', asset.tax_method],
               ['Tax life', asset.tax_life_years ? `${asset.tax_life_years} years` : '—'],
               ['Insurance basis', asset.insurance_basis == null ? '—' : money(Number(asset.insurance_basis))],
-              ['Datacenter', contract ?? '—'],
+              ['Datacenter', contract],
             ] as const).map(([k, v]) => (
               <div key={k} className="contents">
                 <dt className="text-muted-foreground">{k}</dt>
@@ -227,6 +251,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
             </table>
           </div>
         )}
+        {eventsError && <div className="mb-3"><ErrorAlert>Could not load the events: {eventsError}</ErrorAlert></div>}
         {events && events.length === 0 && <p className="mb-3 text-sm text-muted-foreground">No events recorded yet.</p>}
         {!disposed && canWriteFleet && <EventRecorder fetcher={lf} asset={asset} onDone={load} />}
       </ShellSection>
