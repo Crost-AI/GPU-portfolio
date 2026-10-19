@@ -24,7 +24,7 @@ import { DistributionHistory, TierBreakdown } from '@/components/gpu/distributio
 import { FeeTermsForm } from '@/components/gpu/fee-terms-dialog'
 import { dayCountLabel } from '@/components/gpu/waterfall-terms-card'
 import {
-  PREVIEW_AGAIN, feeFormOf, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
+  PREVIEW_AGAIN, feeFormOf, linesEditable, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
   vehicleFetcher, type CashPreview, type Fetcher, type HistoryRow, type PrefLedgerRow,
 } from '@/components/gpu/waterfall-api'
 import { splitDistribution, suggestedCharacter, cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
@@ -182,17 +182,39 @@ describe('declare', () => {
     expect(calls[2].body.requestKey).toBe('key-1')
   })
 
-  it('an edited investor line declares a manual split, without tiers, and must still tie to available less reserve', async () => {
-    const [a, b] = PREVIEW.lines
-    let s = proposalReducer(previewed(), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
+  it('with a profit share the investor lines are locked: the route holds carry declarations to the waterfall to the cent', async () => {
+    expect(PREVIEW.carryLines.some(l => l.amount > 0)).toBe(true)
+    expect(linesEditable(PREVIEW)).toBe(false)
+    const [a] = PREVIEW.lines
+    const s = proposalReducer(previewed(), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
+    expect(s.edits).toBeNull()
+    const html = form(s)
+    expect(input(html, `wf-line-${a.lpEntityId}`)).toContain('readOnly=""')
+    expect(html).toContain('data-lines="locked"')
+    // Even if edits reached the action, it would not send them.
+    const { fetcher, calls } = fakeFetcher()
+    expect(await declareAction(fetcher, { ...previewed(), edits: { [a.lpEntityId]: '1' } })).toMatchObject({ type: 'refused' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('without one, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
+    // Pref and capital only: no profit, so no carry line, so the route runs only the cash check.
+    const NO_CARRY = packPreview(400_000, 25_000, 0)
+    expect(linesEditable(NO_CARRY)).toBe(true)
+    const [a, b] = NO_CARRY.lines
+    let s = proposalReducer(done(filled({ available: '400000', reserve: '25000', contingencyReturn: '' }), NO_CARRY), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
     const { fetcher, calls } = fakeFetcher()
     expect(await declareAction(fetcher, s)).toMatchObject({ type: 'refused' })
     expect(calls).toHaveLength(0)
     s = proposalReducer(s, { type: 'editLine', lpEntityId: b.lpEntityId, value: String(Math.round((b.amount - 100) * 100) / 100) })
     const ok = fakeFetcher({ status: 200, body: {} })
     expect(await declareAction(ok.fetcher, s)).toEqual({ type: 'declareDone' })
-    expect(ok.calls[0].body).toMatchObject({ splitMethod: 'manual', tiers: null, available: 2_000_000, reserve: 50_000 })
-    expect(ok.calls[0].body.cash).toBeUndefined()
+    const body = ok.calls[0].body
+    expect(body).toMatchObject({ splitMethod: 'manual', tiers: null, available: 400_000, reserve: 25_000 })
+    expect(body.cash).toBeUndefined()
+    // What the route then checks (cashAmountMismatch): no positive carry line, and the lines total available − reserve.
+    expect(body.carryLines.filter((l: { amount: number }) => l.amount > 0)).toEqual([])
+    expect(body.lines.reduce((t: number, l: { amount: number }) => t + Math.round(l.amount * 100), 0)).toBe(37_500_000)
     expect(form(s)).toContain('will be declared as a manual split')
   })
 })

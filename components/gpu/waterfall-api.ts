@@ -158,9 +158,20 @@ export function previewRequest(inputs: ProposalInputs): PreviewRequest {
 }
 
 /**
- * The declaration body from an unmodified preview. `edited` investor amounts make it a manual
- * split, as on the capital-accounts page: no tiers, no character, nothing frozen from the
- * waterfall — but the cash and reserve still stated, so the server still holds the lines to them.
+ * Can the investor lines be typed over? Only when the preview pays no profit share. The route
+ * holds any declaration with a carry line to the waterfall, every investor line to the cent
+ * (declareDistribution → cashCarryMismatch, whatever the split method), so an edited split with a
+ * profit share is always refused; the form locks the lines rather than offer it.
+ */
+export function linesEditable(p: Pick<CashPreview, 'carryLines'>): boolean {
+  return !p.carryLines.some(l => l.amount > 0)
+}
+
+/**
+ * The declaration body from an unmodified preview. `edited` investor amounts (allowed only where
+ * `linesEditable`) make it a manual split, as on the capital-accounts page: no tiers, no character,
+ * nothing frozen from the waterfall — but the cash and reserve still stated, so the route still
+ * holds the lines to available − reserve.
  */
 export function declareRequest(args: {
   preview: CashPreview
@@ -171,6 +182,9 @@ export function declareRequest(args: {
 }): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
   const { preview, asOf, requestKey, edits } = args
   const manual = edits != null
+  if (manual && !linesEditable(preview)) {
+    return { ok: false, error: 'These amounts are set by the waterfall and cannot be edited. To change them, change the cash, reserve or contingency and preview again.' }
+  }
   // As previewed: a waterfall, or the pro-rata fallback the preview's warnings explain.
   const waterfall = !manual && preview.method === 'waterfall'
   const lines = manual
