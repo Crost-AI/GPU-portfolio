@@ -33,6 +33,8 @@ interface FleetState {
   assets: AssetState[]
   /** Assets whose purchase is posted but not linked from the register (the claim/recovery window). */
   unlinked: GpuAssetRow[]
+  /** Linked assets whose purchase was reversed by the cutoff while depreciation or capex remains. */
+  reversed: GpuAssetRow[]
   /** Every per-asset 1600-<a>/1650-<a> account id: only the fleet proposes entries on these. */
   assetAccountIds: Set<string>
 }
@@ -43,10 +45,17 @@ interface FleetState {
  */
 async function loadFleetState(admin: SupabaseClient, fundId: string, vehicleId: string, asOf: string): Promise<FleetState> {
   const ledger = await loadFleetLedger(admin, fundId, vehicleId, asOf)
-  const state: FleetState = { assets: [], unlinked: [], assetAccountIds: ledger.assetAccountIds }
+  const state: FleetState = { assets: [], unlinked: [], reversed: [], assetAccountIds: ledger.assetAccountIds }
   for (const l of ledger.assets) {
     if (!l.asset.purchase_entry_id) {
       if (l.purchase) state.unlinked.push(l.asset)
+      continue
+    }
+    // A purchase reversed by `asOf` is not a future purchase: an asset unwound that way must be
+    // unwound completely (its depreciation and capex too), or the books hold them for nothing.
+    if (l.purchaseReversed) {
+      const capexLeft = l.capex.reduce((t, e) => t + Math.round(e.amount * 100), 0) !== 0
+      if (l.posted.size || capexLeft) state.reversed.push(l.asset)
       continue
     }
     // Not yet bought as of `asOf` (its purchase is dated later): not part of this period's fleet.
@@ -146,7 +155,7 @@ export async function fleetCloseReview(
     // and only once its entry date (min(month end, disposal)) is on or before the period end.
     asset: s.asset, months: s.schedule.filter(l => depreciationEntryDate(l.month, s.asset.disposed_on) <= end && l.amount > 0 && !s.posted.has(l.month)).map(l => l.month),
   })).filter(x => x.months.length)
-  const flagged = new Set([...missing.map(x => x.asset.id), ...state.unlinked.map(a => a.id)])
+  const flagged = new Set([...missing.map(x => x.asset.id), ...state.unlinked.map(a => a.id), ...state.reversed.map(a => a.id)])
   const nbv = state.assets.filter(s => !flagged.has(s.asset.id)).map(s => {
     const { cost, accumulated } = assetBalances(ledger.accounts, ledger.postings, s.asset.id)
     return { asset: s.asset, ledger: Math.round((cost - accumulated) * 100) / 100, register: s.registerNbv(end) }
@@ -156,6 +165,7 @@ export async function fleetCloseReview(
   const depreciationProblems = [
     ...missing.map(x => `depreciation is not posted through ${end} for ${x.asset.name} (${x.months.join(', ')})`),
     ...state.unlinked.map(a => `${a.name}'s purchase is booked but not linked to the register; retry the purchase`),
+    ...state.reversed.map(a => `${a.name}'s purchase was reversed but its depreciation or capex remains; reverse those too, or book the purchase again`),
   ]
   const blockers: string[] = []
   if (depreciationProblems.length) blockers.push(`GPU fleet: ${depreciationProblems.join('; ')}. Post the proposed depreciation entries (and link any booked purchase) first.`)
@@ -169,7 +179,7 @@ export async function fleetCloseReview(
         key: 'fleet_depreciation', section: 'GPU fleet', label: 'Depreciation posted through period end',
         status: depreciationProblems.length ? 'blocked' : 'passed',
         detail: depreciationProblems.length ? blockers[0] : `Depreciation is posted through ${end} for all ${state.assets.length} in-service asset${state.assets.length === 1 ? '' : 's'}.`,
-        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })), unlinked: state.unlinked.map(a => a.id) },
+        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })), unlinked: state.unlinked.map(a => a.id), reversed: state.reversed.map(a => a.id) },
       },
       {
         key: 'fleet_nbv', section: 'GPU fleet', label: 'Fleet net book value ties to the register',

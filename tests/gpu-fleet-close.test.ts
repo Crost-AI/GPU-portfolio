@@ -176,6 +176,18 @@ describe('fleet close review', () => {
     expect(r.fleetChecks![0]).toMatchObject({ status: 'blocked', evidence: { unlinked: [C] } })
   })
 
+  it('a purchase reversed while its depreciation remains blocks (it is not a future purchase)', async () => {
+    const pA = m.tables.journal_entries.find((e: any) => e.source_ref === `gpu-asset:${A}:purchase`)!
+    depreciate(A, '2027-01', 5_025)
+    for (const month of ['2027-01', '2027-02']) depreciate(B, month, 6_150)
+    reverse(pA.id, '2027-02-05')
+    const feb = await checkReadiness(m.admin as any, 'f', GPU, '2027-02-01', '2027-02-28')
+    expect(feb.blockers.join(' ')).toMatch(/H200 #1's purchase was reversed but its depreciation or capex remains/)
+    expect(feb.fleetChecks![0]).toMatchObject({ status: 'blocked', evidence: { reversed: [A] } })
+    // January's close predates the reversal and is unaffected.
+    expect((await readiness()).fleetChecks!.map(c => c.status)).toEqual(['passed', 'passed'])
+  })
+
   it('an asset bought after the period end is not part of that period (a later purchase does not block an earlier close)', async () => {
     m.tables.journal_entries.find((e: any) => e.source_ref === `gpu-asset:${B}:purchase`)!.entry_date = '2027-02-05'
     depreciate(A, '2027-01', 5_025)
