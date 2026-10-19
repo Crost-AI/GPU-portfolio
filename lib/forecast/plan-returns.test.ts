@@ -150,6 +150,24 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     expect(Math.round(r.lp.dpi! * 1000) / 1000).toBe(1.374)
   })
 
+  it("leaves the manager's historical take out of the investors' flows (zero pref, 30% split)", () => {
+    // $100 in, $200 out before the plan: $100 back as capital, the $100 profit split 70/30 — the
+    // investors had $170, so DPI 1.7, not 2.0.
+    const r = planReturns({
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
+      otherFlows: m({}), invested: m({}), proceeds: m({}), terminalNav: 0, waterfallKind: 'distributable_cash',
+      cashWaterfall: {
+        terms: { ...PACK_TERMS, prefRate: 0, dayCount: '30_360' },
+        history: [
+          { kind: 'contribution', date: '2026-01-01', lpEntityId: 'lp1', amount: 100 },
+          { kind: 'distribution', date: '2026-06-30', amount: 200 },
+        ],
+      },
+    })
+    expect(r.lp.dpi).toBeCloseTo(1.7, 12)
+    expect(r.lp.tvpi).toBeCloseTo(1.7, 12)
+  })
+
   it('pays a released contingency before the tiers, as the engine does (R8)', () => {
     const terms = { ...PACK_TERMS, dayCount: '30_360' as const }
     const history = [{ kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: 1_000_000 }]

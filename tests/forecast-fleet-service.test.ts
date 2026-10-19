@@ -175,6 +175,14 @@ describe("a pitch plan's opening: the capital raised and the fleet bought", () =
     const bal = balances(detail.entries)
     expect(bal('1600')).toBe(0)
     expect(bal('1650')).toBe(0)
+    // Net book value through the plan: at each plan year's end, 1600 − 1650 is the engine's NBV.
+    const engine = runFleetScenario(FLEET, PACK_FLEET, PACK_SCENARIO_TERMS)
+    const fleetMonth = (k: number) => { const [y, mm] = firstPlanMonth.split('-').map(Number); const t = y * 12 + mm - 1 + k; return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}` }
+    for (const y of [1, 2, 3, 4]) {
+      const end = fleetMonth(12 * y - 1)
+      const nbv = balances(detail.entries.filter(e => e.date.slice(0, 7) <= end))
+      expect(Math.round((nbv('1600') + nbv('1650')) * 100), `Y${y}`).toBe(Math.round(engine.operating[y].nbv * 100))
+    }
     // The raise pays for the fleet and the contingency exactly: the opening nets to no cash.
     const opening = [raise, ...bought].flatMap(e => e.postings).filter(p => p.accountId === 'acct-1000').reduce((s, p) => s + p.amount, 0)
     expect(opening).toBe(0)
@@ -220,6 +228,10 @@ describe('copying a fleet plan', () => {
     const inserted = copy ?? b.inserted.find((r: any) => r.name === 'Copy')
     expect(inserted.fleet).toEqual(FLEET)
     expect(inserted.capital).toEqual({ policy: { calls: { reserve: 7 } } })
+    // The copy compiles the fleet's flows like its source: rental revenue from the first plan month.
+    const save = b.rpc.mock.calls.find(c => c[0] === 'forecast_save' && c[1].p_plan_id === inserted.id)!
+    expect(save[1].p_rule_upserts.every((r: any) => r.method === 'linked_fleet')).toBe(true)
+    expect(save[1].p_entries.some((e: any) => e.account_id === 'acct-4000' && e.entry_date.startsWith(firstPlanMonth))).toBe(true)
   })
 })
 
