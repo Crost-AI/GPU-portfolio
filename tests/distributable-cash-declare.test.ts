@@ -304,6 +304,56 @@ describe('declareDistribution: distributable_cash', () => {
     expect(m.tables.distributions[0]).toMatchObject({ wf_preferred: F1.y3Cents.pref, wf_return_of_capital: F1.y3Cents.roc, wf_carry: F1.y3Cents.carry, wf_catch_up: 0 })
   })
 
+  describe('a carry-free waterfall declaration (QA round 4)', () => {
+    // Two investors on 2028-01-01, the year-one distribution: pref and ROC only, no carry lines.
+    async function y1() {
+      s.postings = [at('a', -1_000_000, 'capital_call', '2027-01-01'), at('b', -435_500, 'capital_call', '2027-01-01')]
+      const { m, rpc } = admin()
+      const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 700_000, reserve: 0 })
+      if ('error' in p) throw new Error(p.error)
+      expect(p.carryLines).toEqual([])
+      const base = { distributionDate: '2028-01-01', lines: p.lines, splitMethod: 'waterfall' as const, tiers: p.tiers, available: 700_000, reserve: 0 }
+      return { m, rpc, p, base }
+    }
+
+    it('no cash object and a line moved a -> b: 400 WATERFALL_MISMATCH, nothing written', async () => {
+      const { m, rpc, base } = await y1()
+      const [a, b] = base.lines
+      const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', { ...base, requestKey: 'moved', lines: [{ ...a, amount: roundTo(a.amount - 100) }, { ...b, amount: roundTo(b.amount + 100) }] })
+      expect(out).toEqual({ error: 'The investor lines do not match the waterfall', code: 'WATERFALL_MISMATCH' })
+      expect(s.entries).toEqual([])
+      expect(m.tables.distributions).toEqual([])
+      expect(rpc).not.toHaveBeenCalled()
+    })
+
+    it('no cash object, exact lines, body tiers.preferred = 1: declared, with the server\'s pref frozen', async () => {
+      const { m, p, base } = await y1()
+      const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', { ...base, requestKey: 'exact', tiers: { ...base.tiers, preferred: 1 } })
+      expect(out).not.toHaveProperty('error')
+      expect(m.tables.distributions[0].wf_preferred).toBe(p.tiers.preferred)
+      expect(p.tiers.preferred).toBe(114_840)
+    })
+
+    it('no available, reserve or cash on a waterfall declaration: 400 RESERVE_REQUIRED', async () => {
+      const { m, base } = await y1()
+      const { available: _a, reserve: _r, ...bare } = base
+      expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', { ...bare, requestKey: 'bare' }))
+        .toEqual({ error: 'A waterfall distribution needs the available cash and reserve it was previewed with', code: 'RESERVE_REQUIRED' })
+      expect(s.entries).toEqual([])
+    })
+
+    it("'manual' is still the escape hatch: edited lines declared, no tiers frozen", async () => {
+      const { m, base } = await y1()
+      const [a, b] = base.lines
+      const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+        requestKey: 'manual', distributionDate: '2028-01-01', splitMethod: 'manual', tiers: base.tiers,
+        lines: [{ ...a, amount: roundTo(a.amount - 100) }, { ...b, amount: roundTo(b.amount + 100) }],
+      })
+      expect(out).not.toHaveProperty('error')
+      expect(m.tables.distributions[0]).toMatchObject({ split_method: 'manual', wf_preferred: null, wf_return_of_capital: null, wf_carry: null })
+    })
+  })
+
   it.each<[string, (i: any) => any]>([
     ['carry lines to someone who is not a recipient', i => ({ ...i, carryLines: [{ lpEntityId: 'lp2', amount: i.carryLines[0].amount }] })],
     ['carry lines that do not total the waterfall', i => ({ ...i, carryLines: [{ lpEntityId: 'mgr', amount: roundTo(i.carryLines[0].amount + 0.01) }] })],

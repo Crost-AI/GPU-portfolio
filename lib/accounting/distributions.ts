@@ -489,7 +489,8 @@ export async function declareDistribution(
     let serverCash: CashSplitExtras | null = null
     let serverTiers: WaterfallTiers | null = null
     const statesCash = input.available != null || input.reserve != null
-    if (perRecipient.size > 0 || cash || statesCash) {
+    const isWaterfall = splitMethod === 'waterfall'
+    if (perRecipient.size > 0 || cash || statesCash || isWaterfall) {
       let terms: VehicleCarryTerms
       try {
         terms = await loadCarryTerms(admin, fundId, group)
@@ -498,9 +499,15 @@ export async function declareDistribution(
       }
       // The stated cash must reconcile to the lines whatever else the request carries: a
       // carry-free declaration is held to it as much as one paying a profit share.
+      // A distributable-cash declaration that calls itself a waterfall is held to the waterfall, every
+      // time: it cannot be re-run without the cash it was previewed with, so stating none is refused.
+      // 'manual' is the escape hatch: no guard, no tiers frozen.
+      if (terms.kind === 'distributable_cash' && isWaterfall && !statesCash) {
+        return { error: 'A waterfall distribution needs the available cash and reserve it was previewed with', code: 'RESERVE_REQUIRED' }
+      }
       const unreconciled = terms.kind === 'distributable_cash' && statesCash ? cashAmountMismatch(input, declaredTotal) : null
       if (unreconciled) return unreconciled
-      if (terms.kind === 'distributable_cash' && (perRecipient.size > 0 || cash)) {
+      if (terms.kind === 'distributable_cash' && (isWaterfall || perRecipient.size > 0 || cash)) {
         let postings: CapitalPosting[]
         let contingencyByDate: Map<string, number>
         try {
@@ -515,7 +522,7 @@ export async function declareDistribution(
         if ('error' in checked) return checked
         // What the register freezes for the notice is the server's own waterfall, not the
         // request's: the body's cash is accepted for compatibility and ignored here.
-        if (splitMethod === 'waterfall') {
+        if (isWaterfall) {
           serverCash = checked.cash ?? null
           serverTiers = checked.tiers
         }
