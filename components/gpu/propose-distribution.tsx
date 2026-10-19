@@ -268,7 +268,7 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
 
       {isWaterfall ? (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold">By tier</h3>
+          <h3 className="text-base font-semibold">By tier</h3>
           <table className="w-full text-sm">
             <tbody>
               {tierRows.map(([label, n, key]) => (
@@ -298,7 +298,7 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
       )}
 
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">To each investor</h3>
+        <h3 className="text-base font-semibold">To each investor</h3>
         <div className="space-y-1.5">
           {p.lines.map(l => (
             <div key={l.lpEntityId} className="flex items-center justify-between gap-3 text-sm" data-line={l.lpEntityId}>
@@ -318,7 +318,7 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
 
       {seesCarry && p.carryLines.length > 0 && (
         <div className="space-y-2" data-region="carry-lines">
-          <h3 className="text-sm font-semibold">Manager profit share</h3>
+          <h3 className="text-base font-semibold">Manager profit share</h3>
           {p.carryLines.map(l => (
             <div key={l.lpEntityId} className="flex items-baseline justify-between gap-3 text-sm">
               <span>{p.names[l.lpEntityId] ?? l.lpEntityId}</span>

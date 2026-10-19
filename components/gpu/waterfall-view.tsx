@@ -59,16 +59,20 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
   // first row, the same `reserve_amount` the preview reports as `lastReserve`), until a preview says.
   const [previewedReserve, setPreviewedReserve] = useState<number | null | undefined>(undefined)
 
-  const loadBooks = useCallback(async () => {
-    const [h, l] = await Promise.all([
+  // Bumped after a declaration: the history and the ledger are read again.
+  const [booksVersion, setBooksVersion] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([
       send<HistoryRow[]>(fetcher, waterfallPaths.distributions),
       send<PrefLedgerRow[]>(fetcher, waterfallPaths.prefLedger),
-    ])
-    setHistory(h.ok ? { state: 'ok', data: Array.isArray(h.data) ? h.data : [] } : { state: 'error', error: h.error, status: h.status })
-    setLedger(l.ok ? { state: 'ok', data: Array.isArray(l.data) ? l.data : [] } : { state: 'error', error: l.error, status: l.status })
-  }, [fetcher])
-
-  useEffect(() => { void loadBooks() }, [loadBooks])
+    ]).then(([h, l]) => {
+      if (cancelled) return
+      setHistory(h.ok ? { state: 'ok', data: Array.isArray(h.data) ? h.data : [] } : { state: 'error', error: h.error, status: h.status })
+      setLedger(l.ok ? { state: 'ok', data: Array.isArray(l.data) ? l.data : [] } : { state: 'error', error: l.error, status: l.status })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, booksVersion])
 
   useEffect(() => {
     if (!seesTerms) return
@@ -148,7 +152,7 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
             allowed={canDeclare}
             money={money}
             onPreviewed={setPreviewedReserve}
-            onDeclared={() => { setPreviewedReserve(undefined); void loadBooks() }}
+            onDeclared={() => { setPreviewedReserve(undefined); setBooksVersion(n => n + 1) }}
           />
         )}
       >
