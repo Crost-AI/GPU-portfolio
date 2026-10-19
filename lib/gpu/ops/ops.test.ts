@@ -893,17 +893,38 @@ describe('round 5: stale snapshots, owned cleanup, completion links', () => {
     await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
     await stage(line('H200 #1', 9000, 900))
     const old = byAsset('a-1', 'posted')
-    // Another request claims the predecessor just before this one does.
+    // Another request claims the predecessor just before this one's posted -> reversing CAS, then
+    // puts it back (its own post failed) before this one re-reads it: the CAS is lost, the row reads
+    // posted again, and no other row stands for the period. That is "in progress", not "replaced".
     s.beforeWrite = (table, op, payload) => {
       if (table === 'gpu_earnings' && op === 'update' && payload?.status === 'reversing') {
-        Object.assign(old, { status: 'reversing', claim_token: 'other', claimed_at: new Date().toISOString() })
+        old.status = 'reversing'
+        queueMicrotask(() => { old.status = 'posted' })
         s.beforeWrite = null
       }
     }
     const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
     expect(r).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
     expect((r as any).error).not.toMatch(/replaced/)
+    expect(old.status).toBe('posted')
     expect(entriesWith('reversal:')).toEqual([])
+  })
+
+  it('Codex r6 / Claude L1: a reversed_by link that fails on the evidence path is retried; the row is finished only after it', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const old = byAsset('a-1', 'posted')
+    s.m.tables.journal_entries.push({ id: 'je-rev', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-30', source_ref: `reversal:${old.journal_entry_id}` })
+    Object.assign(old, { status: 'reversing', claim_token: 'dead', claimed_at: ago(180_000) })
+    s.m.failNext('journal_entries', 'update', 'link write failed')
+    await expect(postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })).rejects.toThrow('link write failed')
+    // Not finished: still reversing under the old claim, so the next attempt repeats the link.
+    expect(old).toMatchObject({ status: 'reversing', claim_token: 'dead' })
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ reversed: [{ id: old.id, reversalId: 'je-rev' }] })
+    expect(old.status).toBe('reversed')
+    expect(s.m.tables.journal_entries.find((e: any) => e.id === old.journal_entry_id).reversed_by).toBe('je-rev')
   })
 
   it('Claude N3: a settle lost to a request that finished the row with OUR entry is success', async () => {
