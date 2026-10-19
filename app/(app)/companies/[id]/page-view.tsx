@@ -173,9 +173,11 @@ export function CompanyPageView({
             />
           )}
 
-          <div id="updates">
-            <CompanyUpdates companyId={company.id} />
-          </div>
+          {panels.updates && (
+            <div id="updates">
+              <CompanyUpdates companyId={company.id} />
+            </div>
+          )}
 
           <CompanyDocuments
             companyId={company.id}

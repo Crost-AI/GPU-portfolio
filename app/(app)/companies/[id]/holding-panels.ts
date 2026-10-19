@@ -16,6 +16,8 @@ export interface HoldingPanels {
   companyProfile: boolean
   /** The fund-of-funds register (FundHoldingDetail), with its position-over-time chart. */
   register: boolean
+  /** Reporting updates captured from the company's emails. Those attach only to companies. */
+  updates: boolean
   /** Watched wallets. */
   wallets: boolean
   /** The price feed it marks from — a listed company's ticker, or a token's. */
@@ -31,6 +33,7 @@ export function holdingPanels(kind: HoldingKind | null | undefined): HoldingPane
     metricCharts: k === 'company' || k === 'fund',
     companyProfile: k === 'company',
     register: k === 'fund',
+    updates: k === 'company',
     wallets: k === 'crypto',
     priceFeed: k !== 'fund',
     units: k === 'crypto',

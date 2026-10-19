@@ -22,7 +22,8 @@ const render = (role: 'admin' | 'member', props: Record<string, unknown> = {}) =
 describe('a fund holding\'s register', () => {
   it('offers one Add menu to someone who can write, and no always-open form', () => {
     const html = render('admin')
-    expect(html).toContain('Fund register')
+    expect(html).toContain('aria-label="Fund register"')
+    expect(html).not.toContain('>Fund register</h2>')
     expect(html).toMatch(/aria-haspopup="menu"[^>]*>.*Add/)
     expect(html).not.toContain('id="ev-date"')
     expect(html).not.toContain('id="nav-date"')
@@ -31,7 +32,7 @@ describe('a fund holding\'s register', () => {
 
   it('offers no Add to a read-only member', () => {
     const html = render('member')
-    expect(html).toContain('Fund register')
+    expect(html).toContain('aria-label="Fund register"')
     expect(html).not.toContain('aria-haspopup="menu"')
   })
 })
