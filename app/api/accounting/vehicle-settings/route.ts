@@ -7,6 +7,9 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { dbError } from '@/lib/api-error'
 
+// ── GPU fleet (P2) ── how often a GPU SPV distributes (Karl, Q4); P5's distribution form reads it.
+const DISTRIBUTION_CADENCES = ['monthly', 'quarterly', 'annual', 'ad_hoc'] as const
+
 // Per-vehicle operational settings that aren't part of the books.
 //
 // Wire instructions for capital-call notices. Kept on the VEHICLE rather than on each call — an
@@ -30,18 +33,20 @@ export async function GET(req: NextRequest) {
     .select(cols)
     .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId)
     .maybeSingle()
-  let res = await q('wire_instructions, call_notice_days, call_notice_basis')
-  // Before the notice-period columns are pushed, the wire instructions still answer.
+  let res = await q('wire_instructions, call_notice_days, call_notice_basis, distribution_cadence')
+  // Before a newer column is pushed, the older settings still answer.
+  if (res.error) res = await q('wire_instructions, call_notice_days, call_notice_basis')
   if (res.error) res = await q('wire_instructions')
   const data = res.data as any
   return NextResponse.json({
     wireInstructions: data?.wire_instructions ?? '',
     callNoticeDays: data?.call_notice_days ?? null,
     callNoticeBasis: data?.call_notice_basis ?? null,
+    distributionCadence: data?.distribution_cadence ?? 'quarterly',
   })
 }
 
-// PATCH — { wireInstructions?, callNoticeDays?, callNoticeBasis? }
+// PATCH — { wireInstructions?, callNoticeDays?, callNoticeBasis?, distributionCadence? }
 export async function PATCH(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()
@@ -72,8 +77,14 @@ export async function PATCH(req: NextRequest) {
     }
     row.call_notice_basis = body.callNoticeBasis
   }
+  if (body?.distributionCadence !== undefined) {
+    if (!(DISTRIBUTION_CADENCES as readonly unknown[]).includes(body.distributionCadence)) {
+      return NextResponse.json({ error: `distributionCadence must be one of ${DISTRIBUTION_CADENCES.join(', ')}` }, { status: 400 })
+    }
+    row.distribution_cadence = body.distributionCadence
+  }
   if (Object.keys(row).length === 3) {
-    return NextResponse.json({ error: 'Send wireInstructions, callNoticeDays or callNoticeBasis' }, { status: 400 })
+    return NextResponse.json({ error: 'Send wireInstructions, callNoticeDays, callNoticeBasis or distributionCadence' }, { status: 400 })
   }
 
   // Upsert: a vehicle that has never had accounting settings has no row yet.

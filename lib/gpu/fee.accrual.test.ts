@@ -112,6 +112,25 @@ describe('accrueGrossRevenueFee without a payee: Dr 5000 / Cr 2100', () => {
   })
 })
 
+describe('what counts as fee already booked', () => {
+  it('revenue counts only POSTED entries; booked fee counts every live entry under the ref, a draft included', async () => {
+    // seed() carries a 7,000 DRAFT revenue entry in January: it is not in the basis (5% of 100,000).
+    seed(null)
+    // A draft fee entry under the month's ref: the true-up's own entry not yet posted. It counts as
+    // booked, so the true-up does not raise a second 5,000 beside it; posting it brings the books there.
+    s.m.tables.journal_entries.push({ id: 'fee-draft', fund_id: 'f', vehicle_id: 'v1', book: 'actual', status: 'draft', entry_date: '2027-01-31', source_type: 'management_fee', source_ref: 'gpu-fee:v1:2027-01' })
+    s.m.tables.journal_postings.push(
+      { journal_entry_id: 'fee-draft', book: 'actual', fund_id: 'f', account_id: 'fee', amount: 5_000 },
+      { journal_entry_id: 'fee-draft', book: 'actual', fund_id: 'f', account_id: 'dtm', amount: -5_000 },
+    )
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toEqual({ delta: 0 })
+    expect(persistEntry).not.toHaveBeenCalled()
+    // A VOID one does not count.
+    s.m.tables.journal_entries.find((e: any) => e.id === 'fee-draft').status = 'void'
+    expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 })
+  })
+})
+
 describe('accrueGrossRevenueFee on a busy month', () => {
   it('reads the complete basis and the complete booked sum: > 1000 postings, > 200 entries each side', async () => {
     // PostgREST's max_rows, so a read that does not page is visibly short.

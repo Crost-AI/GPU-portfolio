@@ -74,8 +74,10 @@ export function assertUserRefAllowed(ref: unknown, opts: { allowRoundTrip?: bool
  * `gpu-asset:`/`gpu-dep:` entry as its own, so its lines must be the ones the lifecycle wrote. Other
  * system drafts (a bank-drafted capital call, a close suggestion) are meant to be corrected by hand.
  */
+// ── GPU fleet (P2) ── the fee true-up reads the amounts under its `gpu-fee:` ref as fee already
+// booked, so a draft there must be the one the true-up wrote, too.
 export const EDIT_LOCKED_PREFIXES = [
-  'gpu-asset:', 'gpu-dep:',
+  'gpu-asset:', 'gpu-dep:', 'gpu-fee:',
   // GPU fleet (P3): an operations row or a payout is completed from the entry under its ref.
   'marketplace:', 'marketplace-payout:',
 ] as const

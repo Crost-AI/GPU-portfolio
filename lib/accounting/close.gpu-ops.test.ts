@@ -103,6 +103,18 @@ describe('checkReadiness: GPU operations', () => {
     expect(aug.blockers.join(' ')).not.toMatch(/being matched/)
   })
 
+  it('a GPU SPV that books revenue by hand (no operations rows at all) is not held to the subledger tie', async () => {
+    m.tables.journal_entries.push({ id: 'je-m', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-15' })
+    const post = (code: string, amount: number) => ({ journal_entry_id: 'je-m', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: `acc-${code}`, amount, currency: 'USD' })
+    m.tables.journal_postings.push(post('1000', 90), post('5150', 10), post('4000', -100))
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers.join(' ')).not.toMatch(/does not tie/)
+    // The moment the subledger is in use, the same hand-booked revenue is a blocker.
+    m.tables.gpu_earnings.push(row({ id: 'e-1', status: 'ignored' }))
+    const after = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(after.blockers).toContainEqual(expect.stringMatching(/^GPU revenue does not tie/))
+  })
+
   it('turns a failed read into a blocker', async () => {
     m.failNext('gpu_earnings', 'select', 'timeout')
     const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
