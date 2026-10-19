@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { useState } from 'react'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -406,34 +407,66 @@ describe('Capitalize a cost', () => {
     expect(calls[0]).toMatchObject({ path: '/api/fleet/assets/h200/capex', body: { amount: 12_000, entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false } })
   })
 
-  it('the real dialog takes one key per opening: whileOpen mounts its body on open, and not while closed', () => {
-    // Each static render is a fresh mount, exactly what reopening the dialog is (whileOpen unmounts
-    // the body on close). The submitter, and so the key, is made once per mount.
-    let n = 0
-    const newKey = () => `key-${++n}`
-    const render = (open: boolean) => renderToStaticMarkup(
-      <CurrencyProvider currency="USD">
-        <CapexDialog open={open} onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} asset={PACK[0]} newKey={newKey} />
-      </CurrencyProvider>,
-    )
-    render(false)
-    expect(n).toBe(0)
-    render(true)
-    expect(n).toBe(1)
-    render(true)
-    expect(n).toBe(2)
+  // Each static render is a fresh mount, exactly what reopening the dialog is: whileOpen unmounts the
+  // body on close and mounts it again on open, and the submitter (so the key) lives for one mount.
+  const renderCapex = (open: boolean, newKey?: () => string) => renderToStaticMarkup(
+    <CurrencyProvider currency="USD">
+      <CapexDialog open={open} onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} asset={PACK[0]} newKey={newKey} />
+    </CurrencyProvider>,
+  )
+
+  it('the real dialog makes two distinct keys across two openings, and none while closed (default crypto key)', () => {
+    const spy = vi.spyOn(globalThis.crypto, 'randomUUID')
+    try {
+      renderCapex(false)
+      expect(spy).not.toHaveBeenCalled()
+      renderCapex(true)
+      renderCapex(true)
+      const keys = spy.mock.results.map(r => r.value as string)
+      expect(keys).toHaveLength(2)
+      expect(new Set(keys).size).toBe(2)
+      expect(keys.every(k => /^[A-Za-z0-9_-]{1,64}$/.test(k))).toBe(true) // the route's CAPEX_KEY
+    } finally {
+      spy.mockRestore()
+    }
   })
 
-  it('a probe through the same whileOpen and hook sees the key held for the mount and renewed on the next', () => {
+  it('the key survives re-renders within one opening (typing in the form must not mint a new key)', () => {
+    // A render-phase state update re-runs the component in the same mount, as each keystroke does.
+    const seen: string[] = []
     let n = 0
     const Probe = whileOpen(function Probe(p: { open: boolean; onOpenChange: () => void; fetcher: Fetcher; onDone: () => void }) {
+      const [renders, setRenders] = useState(0)
       const s = useCapexSubmitter(p.fetcher, 'h200', () => `key-${++n}`)
-      return <i>{s.key()}|{s.key()}</i>
+      seen.push(s.key())
+      if (renders < 2) setRenders(renders + 1)
+      return null
     })
-    const props = { onOpenChange: () => {}, fetcher: (async () => new Response('{}')) as Fetcher, onDone: () => {} }
-    expect(renderToStaticMarkup(<Probe open={false} {...props} />)).toBe('')
-    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-1|key-1</i>')
-    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-2|key-2</i>')
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} />)
+    expect(seen).toEqual(['key-1', 'key-1', 'key-1'])
+  })
+
+  it('within one opening, a retry after a 409 sends the same key the opening made', async () => {
+    // The dialog's own hook, mounted by the same whileOpen, with its submitter taken out of the mount so
+    // the test can submit twice as the dialog's Capitalize button does.
+    let held: ReturnType<typeof useCapexSubmitter> | null = null
+    let n = 0
+    const { fetcher, calls } = fakeFetcher(
+      { status: 409, body: { error: 'This cost is being booked by another request', inProgress: true } },
+      { status: 200, body: { entryId: 'je' } },
+    )
+    const Probe = whileOpen(function Probe(p: { open: boolean; onOpenChange: () => void; fetcher: Fetcher; onDone: () => void }) {
+      held = useCapexSubmitter(p.fetcher, 'h200', () => `key-${++n}`)
+      return null
+    })
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={fetcher} onDone={() => {}} />)
+    const form = { amount: '12,000', entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false }
+    expect((await held!.submit(form)).ok).toBe(false)
+    expect((await held!.submit(form)).ok).toBe(true)
+    expect(calls.map(c => c.body.key)).toEqual(['key-1', 'key-1'])
+    // A second opening is a new mount, so a new cost with a new key.
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={fetcher} onDone={() => {}} />)
+    expect(held!.key()).toBe('key-2')
   })
 })
 
