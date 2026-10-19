@@ -15,6 +15,8 @@ const money = (c: number) => (c / 100).toFixed(2)
  *     cent) — revenue reached the ledger outside the subledger, or the reverse;
  *   - blocker: an unmatched row (revenue entered against no server, so it can never post);
  *   - warning: a staged row (revenue entered but not posted);
+ *   - blocker: a row being posted or reversed, or a payout being matched (an in-flight or abandoned
+ *     claim: the books may or may not hold its entry);
  *   - warning: 1150 at `end` ≠ posted net − matched payouts.
  */
 export async function gpuOpsCloseIssues(
@@ -24,8 +26,8 @@ export async function gpuOpsCloseIssues(
   const warnings: string[] = []
 
   const [rows, ledger] = await Promise.all([
-    fetchAllRows<{ status: string; gross: number; marketplace_fee: number }>((f, t) => (admin as any).from('gpu_earnings')
-      .select('id, status, gross, marketplace_fee').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
+    fetchAllRows<{ status: string; gross: number; marketplace_fee: number; asset_ref: string; period_start: string; period_end: string }>((f, t) => (admin as any).from('gpu_earnings')
+      .select('id, status, gross, marketplace_fee, asset_ref, period_start, period_end').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
       .gte('period_end', start).lte('period_end', end).range(f, t)),
     loadPostedLedger(admin, fundId, group, end),
   ])
@@ -50,6 +52,18 @@ export async function gpuOpsCloseIssues(
   if (unmatched) {
     blockers.push(`${unmatched} GPU operations row${unmatched === 1 ? '' : 's'} in this span match${unmatched === 1 ? 'es' : ''} no server. Correct the asset name and enter it again, or ignore the row, on the Revenue page.`)
   }
+  // A post or reversal in flight (or abandoned, until its claim expires): its entry may or may not
+  // be on the books, so neither tie above can be trusted for that row.
+  for (const r of rows.filter(r => r.status === 'posting' || r.status === 'reversing')) {
+    blockers.push(`GPU revenue for ${r.asset_ref} ${r.period_start}..${r.period_end} is ${r.status === 'posting' ? 'being posted' : 'being reversed'}: retry the post, or wait for the claim to expire, before closing.`)
+  }
+  const matching = await fetchAllRows<{ payout_date: string; amount: number; reference: string | null }>((f, t) => (admin as any).from('gpu_payouts')
+    .select('id, payout_date, amount, reference').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'matching')
+    .gte('payout_date', start).lte('payout_date', end).range(f, t))
+  for (const p of matching) {
+    blockers.push(`The marketplace payout of ${Number(p.amount).toFixed(2)} on ${p.payout_date}${p.reference ? ` (${p.reference})` : ''} is being matched: retry the match, or wait for the claim to expire, before closing.`)
+  }
+
   const staged = rows.filter(r => r.status === 'staged').length
   if (staged) {
     warnings.push(`${staged} GPU operations row${staged === 1 ? ' is' : 's are'} entered but not posted in this span: that revenue is not in the books yet.`)

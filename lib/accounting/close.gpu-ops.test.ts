@@ -60,6 +60,21 @@ describe('checkReadiness: GPU operations', () => {
     expect(r.warnings.filter(w => /GPU operations/.test(w))).toEqual(['1 GPU operations row is entered but not posted in this span: that revenue is not in the books yet.'])
   })
 
+  // Review r2 (#90): an in-flight or abandoned claim is not invisible to the close.
+  it('a row being posted with no entry yet, a row being reversed, and a payout being matched are blockers', async () => {
+    m.tables.gpu_earnings.push(
+      row({ id: 'e-1', status: 'posting', claim_token: 't', claimed_at: new Date().toISOString() }),
+      row({ id: 'e-2', asset_id: 'a-2', asset_ref: 'H200 #2', status: 'reversing', journal_entry_id: null }),
+    )
+    m.tables.gpu_payouts.push({ id: 'p-1', fund_id: 'f', vehicle_id: 'v-gpu', payout_date: '2026-09-28', amount: 90, reference: 'PO-1', status: 'matching' })
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers).toEqual(expect.arrayContaining([
+      'GPU revenue for H200 #1 2026-09-01..2026-09-30 is being posted: retry the post, or wait for the claim to expire, before closing.',
+      'GPU revenue for H200 #2 2026-09-01..2026-09-30 is being reversed: retry the post, or wait for the claim to expire, before closing.',
+      'The marketplace payout of 90.00 on 2026-09-28 (PO-1) is being matched: retry the match, or wait for the claim to expire, before closing.',
+    ]))
+  })
+
   it('turns a failed read into a blocker', async () => {
     m.failNext('gpu_earnings', 'select', 'timeout')
     const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')

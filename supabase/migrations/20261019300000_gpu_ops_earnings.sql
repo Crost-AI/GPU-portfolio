@@ -59,6 +59,11 @@ create table public.gpu_earnings (
   -- A correction to a posted row: posting it reverses the superseded row's entry first.
   supersedes_id     uuid references public.gpu_earnings(id) on delete set null,
   journal_entry_id  uuid references public.journal_entries(id) on delete set null,
+  -- The owner of a 'posting' / 'reversing' claim and when it was taken. Only the holder of the token
+  -- completes or releases it; anyone may complete it from durable evidence (the booked entry), and a
+  -- claim older than CLAIM_LEASE_MS with no evidence may be taken over (lib/gpu/ops/claims.ts).
+  claim_token       uuid,
+  claimed_at        timestamptz,
   created_by        uuid,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
@@ -91,6 +96,9 @@ create table public.gpu_payouts (
   note                 text,
   bank_transaction_id  uuid references public.bank_transactions(id) on delete set null,
   journal_entry_id     uuid references public.journal_entries(id) on delete set null,
+  -- The owner of a 'matching' claim, as on gpu_earnings.
+  claim_token          uuid,
+  claimed_at           timestamptz,
   -- 'matching' claims the payout and its bank transaction before anything is booked (matchPayout).
   status               text not null default 'expected' check (status in ('expected', 'matching', 'matched')),
   created_by           uuid,

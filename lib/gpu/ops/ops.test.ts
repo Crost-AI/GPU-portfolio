@@ -6,11 +6,12 @@ import type { JournalEntry } from '@/lib/accounting/types'
 // posted period → record and match a payout → the close checks. persistEntry stands in with its
 // lifecycle (draft header, postings, flip to posted) and refuses a repeated live source_ref the way
 // journal_entries_gpu_ops_once does; linkInflowToEntry posts the draft and reconciles the bank row.
-const s = vi.hoisted(() => ({ m: null as any, persistError: null as string | null, during: null as null | (() => Promise<void>), afterLink: null as null | (() => void) }))
+const s = vi.hoisted(() => ({ m: null as any, persistError: null as string | null, during: null as null | (() => Promise<void>), afterLink: null as null | (() => void), throwOnRef: null as string | null, onRefuse: null as null | (() => void) }))
 vi.mock('@/lib/accounting/persist', async orig => ({
   ...(await orig<any>()),
   persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: string, entry: JournalEntry, status: 'draft' | 'posted' = 'posted') => {
     if (s.persistError) return { error: s.persistError }
+    if (s.throwOnRef && String(entry.sourceRef ?? '').startsWith(s.throwOnRef)) { s.throwOnRef = null; throw new Error('statement timeout') }
     const t = s.m.tables
     const dup = entry.sourceRef && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
@@ -27,7 +28,9 @@ vi.mock('@/lib/accounting/bank-match', async orig => ({
   linkInflowToEntry: vi.fn(async (_a: any, fundId: string, _g: string, txnId: string, entryId: string) => {
     const t = s.m.tables
     const e = t.journal_entries.find((x: any) => x.id === entryId && x.fund_id === fundId)
-    if (e.status === 'draft') e.status = 'posted'
+    // As postExistingEntryWithAllocation does: only a draft can be posted, so a second caller is refused.
+    if (e.status !== 'draft') { if (s.onRefuse) { const run = s.onRefuse; s.onRefuse = null; run() } return { error: 'Only a draft entry can be posted' } }
+    e.status = 'posted'
     Object.assign(t.bank_transactions.find((x: any) => x.id === txnId), { journal_entry_id: entryId, status: 'reconciled' })
     if (s.afterLink) { const run = s.afterLink; s.afterLink = null; run() }
     return { ok: true }
@@ -51,6 +54,8 @@ beforeEach(() => {
   s.persistError = null
   s.during = null
   s.afterLink = null
+  s.throwOnRef = null
+  s.onRefuse = null
   s.m = memoryAdmin({
     fund_vehicles: [
       { id: 'v-gpu', fund_id: 'f', name: G, kind: 'gpu_spv', aliases: [] },
@@ -335,12 +340,13 @@ describe('posting is claimed', () => {
     await expect(postEarnings(s.m.admin, 'f', G, 'u', [id])).rejects.toMatchObject({ message: 'connection reset' })
     expect(byAsset('a-1').status).toBe('posting')
 
-    // Someone edits the booked entry by hand: the retry refuses to adopt it, and the row goes back.
+    // Someone edits the booked entry by hand: the retry refuses to complete from it, and — not
+    // holding the claim — leaves the row exactly as it is.
     const booked = entriesWith('marketplace:')[0]
     const leg = s.m.tables.journal_postings.find((p: any) => p.journal_entry_id === booked.id && p.account_id === acc('4000'))
     leg.amount = -8000
     expect(await postEarnings(s.m.admin, 'f', G, 'u', [id])).toMatchObject({ error: expect.stringMatching(new RegExp(`Entry ${booked.id} .*gross 8000.*gross 8640`)) })
-    expect(byAsset('a-1').status).toBe('staged')
+    expect(byAsset('a-1').status).toBe('posting')
 
     leg.amount = -8640
     const r = await postEarnings(s.m.admin, 'f', G, 'u', [id])
@@ -472,5 +478,127 @@ describe('entering figures again after an ignore or a correction', () => {
     await postEarnings(s.m.admin, 'f', G, 'u', [undo.id], { confirmReversal: true })
     expect(entriesWith('reversal:')).toHaveLength(2)
     expect(await gpuOpsCloseIssues(s.m.admin, 'f', G, 'v-gpu', '2026-09-01', '2026-09-30')).toEqual({ blockers: [], warnings: [] })
+  })
+})
+
+// ── Review r2 (#90): owned, leased claims ──
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
+
+describe('claims are owned and leased', () => {
+  it('a second post while the first\u2019s entry is still a draft is refused without touching the claim; one entry, row ends posted', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const id = ids('staged')[0]
+    let second: any
+    let duringStatus: string | undefined
+    s.during = async () => {
+      const e = entriesWith('marketplace:')[0]
+      e.status = 'draft'
+      second = await postEarnings(s.m.admin, 'f', G, 'u', [id])
+      duringStatus = byAsset('a-1').status
+      e.status = 'posted'
+    }
+    const first = await postEarnings(s.m.admin, 'f', G, 'u', [id])
+    expect(second).toMatchObject({ error: expect.stringMatching(/being posted by another request/) })
+    expect(duringStatus).toBe('posting')
+    expect(first).toMatchObject({ posted: [{ id, entryId: expect.any(String) }] })
+    expect(entriesWith('marketplace:')).toHaveLength(1)
+    expect(byAsset('a-1')).toMatchObject({ status: 'posted', claim_token: null, claimed_at: null })
+  })
+
+  it('a post that finds the entry already booked under another\u2019s claim completes the row', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const id = ids('staged')[0]
+    let second: any
+    s.during = async () => { second = await postEarnings(s.m.admin, 'f', G, 'u', [id]) }
+    await postEarnings(s.m.admin, 'f', G, 'u', [id])
+    expect(second).toMatchObject({ posted: [{ id, entryId: entriesWith('marketplace:')[0].id }] })
+    expect(entriesWith('marketplace:')).toHaveLength(1)
+    expect(byAsset('a-1').status).toBe('posted')
+  })
+
+  it('a claim abandoned for 3 minutes with nothing booked is taken over and completed; a fresh one is left alone', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const row = byAsset('a-1')
+    Object.assign(row, { status: 'posting', claim_token: 'dead', claimed_at: ago(30_000) })
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', [row.id])).toMatchObject({ error: expect.stringMatching(/another request/) })
+    expect(row).toMatchObject({ status: 'posting', claim_token: 'dead' })
+
+    row.claimed_at = ago(180_000)
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', [row.id])).toMatchObject({ posted: [{ id: row.id }] })
+    expect(entriesWith('marketplace:')).toHaveLength(1)
+    expect(byAsset('a-1')).toMatchObject({ status: 'posted', claim_token: null })
+  })
+
+  it('a throw after posted \u2192 reversing puts both rows back; the retry completes', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged').id
+    s.throwOnRef = 'reversal:'
+    await expect(postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })).rejects.toThrow('statement timeout')
+    expect(earnings().map(e => [e.status, e.claim_token ?? null]).sort()).toEqual([['posted', null], ['staged', null]])
+    expect(entriesWith('reversal:')).toEqual([])
+
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })
+    expect(r).toMatchObject({ posted: [{ id: fix }], reversed: [{ reversalId: expect.any(String) }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(earnings().map(e => e.status).sort()).toEqual(['posted', 'reversed'])
+    expect(await gpuOpsCloseIssues(s.m.admin, 'f', G, 'v-gpu', '2026-09-01', '2026-09-30')).toEqual({ blockers: [], warnings: [] })
+  })
+
+  it('a reversing claim abandoned with no reversal booked is taken over and the reversal booked once', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    Object.assign(byAsset('a-1', 'posted'), { status: 'reversing', claim_token: 'dead', claimed_at: ago(180_000) })
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ posted: [{ entryId: expect.any(String) }], reversed: [{ reversalId: expect.any(String) }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(earnings().map(e => e.status).sort()).toEqual(['posted', 'reversed'])
+  })
+})
+
+describe('payout claims are owned and leased', () => {
+  async function abandoned(entryStatus: 'draft' | 'posted') {
+    await stage()
+    await ignoreEarnings(s.m.admin, 'f', G, [byAsset(null).id])
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    const recorded = await recordPayout(s.m.admin, 'f', G, 'u', { date: '2026-10-01', amount: 23_328 })
+    if ('error' in recorded) throw new Error(recorded.error)
+    const p = recorded.payout.id
+    s.m.tables.bank_transactions.push(inflowRow('t-1', '2026-10-03', 23_328))
+    // An earlier attempt claimed it, drafted (or posted) its entry, and then stopped.
+    s.m.tables.journal_entries.push({ id: 'je-x', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: entryStatus, entry_date: '2026-10-03', source_ref: `marketplace-payout:${p}` })
+    s.m.tables.journal_postings.push(
+      { journal_entry_id: 'je-x', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: acc('1000'), amount: 23_328, currency: 'USD' },
+      { journal_entry_id: 'je-x', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: acc('1150'), amount: -23_328, currency: 'USD' },
+    )
+    Object.assign(s.m.tables.gpu_payouts[0], { status: 'matching', bank_transaction_id: 't-1', journal_entry_id: 'je-x', claim_token: 'dead', claimed_at: ago(180_000) })
+    return p
+  }
+
+  it('two matches racing to take over an abandoned claim: one matches with both links intact, the other is refused', async () => {
+    const p = await abandoned('draft')
+    const results = await Promise.all([matchPayout(s.m.admin, 'f', G, 'u', p, 't-1'), matchPayout(s.m.admin, 'f', G, 'u', p, 't-1')])
+    expect(results.filter(r => 'entryId' in r)).toEqual([{ payoutId: p, entryId: 'je-x' }])
+    expect(results.find(r => 'error' in r)).toMatchObject({ error: expect.stringMatching(/another request/) })
+    expect(s.m.tables.gpu_payouts[0]).toMatchObject({ status: 'matched', bank_transaction_id: 't-1', journal_entry_id: 'je-x', claim_token: null })
+    expect(s.m.tables.bank_transactions[0]).toMatchObject({ status: 'reconciled', journal_entry_id: 'je-x' })
+    expect(entriesWith('marketplace-payout:')).toHaveLength(1)
+  })
+
+  it('a refused post (the other request posted the entry first) is not a failure: once the bank row is reconciled to it, the match completes', async () => {
+    const p = await abandoned('posted')
+    // The earlier request finishes reconciling while this one is being refused.
+    s.onRefuse = () => Object.assign(s.m.tables.bank_transactions[0], { status: 'reconciled', journal_entry_id: 'je-x' })
+    expect(await matchPayout(s.m.admin, 'f', G, 'u', p, 't-1')).toEqual({ payoutId: p, entryId: 'je-x' })
+    expect(s.m.tables.gpu_payouts[0]).toMatchObject({ status: 'matched', bank_transaction_id: 't-1', journal_entry_id: 'je-x' })
+  })
+
+  it('a refused post with the bank row still unreconciled is in progress: nothing is released', async () => {
+    const p = await abandoned('posted')
+    expect(await matchPayout(s.m.admin, 'f', G, 'u', p, 't-1')).toMatchObject({ error: expect.stringMatching(/another request/) })
+    expect(s.m.tables.gpu_payouts[0]).toMatchObject({ status: 'matching', bank_transaction_id: 't-1', journal_entry_id: 'je-x' })
+    expect(s.m.tables.journal_entries.find((e: any) => e.id === 'je-x')).toBeTruthy()
   })
 })

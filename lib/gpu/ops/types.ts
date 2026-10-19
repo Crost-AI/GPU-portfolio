@@ -35,6 +35,8 @@ export interface EarningRow {
   status: EarningStatus
   supersedes_id: string | null
   journal_entry_id: string | null
+  claim_token: string | null
+  claimed_at: string | null
 }
 
 export interface PayoutRow {
@@ -49,6 +51,8 @@ export interface PayoutRow {
   journal_entry_id: string | null
   /** 'matching' = claimed with its bank transaction, being booked (payouts.ts matchPayout). */
   status: 'expected' | 'matching' | 'matched'
+  claim_token: string | null
+  claimed_at: string | null
 }
 
 /** The 1150 marketplace receivable, 4000 rental revenue and 5150 processing fee of GPU_SPV_CHART. */
