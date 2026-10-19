@@ -10,7 +10,7 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import type { DatacenterContractRow, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { fleetPaths, listAssets, listContracts, listTypes, send, statusBody, type Fetcher } from './fleet-api'
 import {
-  MOVE_LABEL, bookingGate, disposedAsOf, fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+  MOVE_LABEL, bookingGate, disposedAsOf, fleetTotals, mayCountLaterPurchases, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
   type ValuedAsset,
 } from './fleet-math'
 import { AsOfControl, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
@@ -141,6 +141,11 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
         </table>
       </div>
       {asOf && <p className="text-caption text-muted-foreground" data-valuation-as-of={asOf}>Valued as of <span className="tabular-nums">{asOf}</span>, from the ledger. Planned and unbooked assets are not in the book or tax totals.</p>}
+      {mayCountLaterPurchases(asOf) && (
+        <p className="text-caption text-muted-foreground" data-earlier-date-caveat>
+          At a date before today, these totals may include an asset whose purchase was booked after that date: it is shown at its full basis, undepreciated.
+        </p>
+      )}
     </div>
   )
 }

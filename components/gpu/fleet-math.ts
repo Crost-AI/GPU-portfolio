@@ -66,15 +66,27 @@ export function addTotals(a: FleetTotals, b: FleetTotals): FleetTotals {
  * by then (disposedAsOf), off-the-books apart.
  */
 export function fleetTotals(assets: ValuedAsset[]): FleetTotals {
-  return assets.filter(a => !disposedAsOf(a)).reduce<FleetTotals>((t, a) => addTotals(t, isOffBooks(a)
-    ? { ...ZERO_TOTALS, assets: 1, gpus: a.gpu_count, planned: Number(a.basis) }
-    : {
-        assets: 1, gpus: a.gpu_count, basis: Number(a.basis), planned: 0,
-        accumulatedBook: Number(a.accumulated_book), nbvBook: Number(a.nbv_book),
-        accumulatedTax: Number(a.accumulated_tax), nbvTax: Number(a.nbv_tax),
-        inService: a.status === 'in_service' ? 1 : 0,
-      }), ZERO_TOTALS)
+  return assets.filter(a => !disposedAsOf(a)).reduce<FleetTotals>((t, a) => {
+    // Counts follow the status; only the money follows the on-books rule.
+    const counts = { assets: 1, gpus: a.gpu_count, inService: a.status === 'in_service' ? 1 : 0 }
+    return addTotals(t, isOffBooks(a)
+      ? { ...ZERO_TOTALS, ...counts, planned: Number(a.basis) }
+      : {
+          ...counts, basis: Number(a.basis), planned: 0,
+          accumulatedBook: Number(a.accumulated_book), nbvBook: Number(a.nbv_book),
+          accumulatedTax: Number(a.accumulated_tax), nbvTax: Number(a.nbv_tax),
+        })
+  }, ZERO_TOTALS)
 }
+
+/**
+ * Is the register valued as of a date before today? Then its totals may count an asset whose purchase
+ * was booked after that date: the route reports such an asset in the unbooked shape (nothing
+ * depreciated, NBV equal to basis), which the client cannot tell from one in service with no month end
+ * yet. TODO(gpu-P1 on_books_as_of): when the assets route reports whether each asset was on the books
+ * at the as-of date, count only those and drop this caption.
+ */
+export const mayCountLaterPurchases = (asOf: string | null, today: string = todayIso()) => !!asOf && asOf < today
 
 /** The status moves a person may make (the PATCH route's OPERATIONAL_MOVES); the rest are the lifecycle's. */
 export const STATUS_MOVES: Partial<Record<GpuAssetStatus, GpuAssetStatus[]>> = {

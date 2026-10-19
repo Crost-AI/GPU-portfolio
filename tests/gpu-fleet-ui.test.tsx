@@ -18,7 +18,7 @@ import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { CapexEventsTable, ValuationCard } from '@/components/gpu/asset-detail'
 import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
 import { ErrorAlert } from '@/components/gpu/fleet-ui'
-import { fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
+import { ZERO_TOTALS, fleetTotals, isOffBooks, mayCountLaterPurchases, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
@@ -187,6 +187,21 @@ describe('the fleet register', () => {
     expect(cell(html, 'plan', 'nbv_tax')).toBe('')
     expect(html).toMatch(/data-asset="plan"[\s\S]*?data-col="planned" data-value="335000"[^>]*>[^<]*<span[^>]*>Planned</)
     expect(html).toContain(`data-total="planned">${money(335_000)}`)
+  })
+
+  it('counts follow the status: an unbooked in-service asset counts in GPUs and in service, but adds 0 to book and tax', () => {
+    const running = asset({ id: 'run', status: 'in_service', purchase_entry_id: null, gpu_count: 8, basis: 400_000, nbv_book: 400_000, nbv_tax: 400_000 })
+    expect(fleetTotals([running])).toEqual({ ...ZERO_TOTALS, assets: 1, gpus: 8, inService: 1, planned: 400_000 })
+    expect(fleetTotals([...PACK, running])).toMatchObject({ gpus: 32, inService: 4, nbvBook: 1_081_950, nbvTax: 927_850, planned: 400_000 })
+  })
+
+  it('says, at a date before today, that the totals may include assets purchased later (until the route flags it)', () => {
+    expect(mayCountLaterPurchases('2026-03-31', '2026-10-19')).toBe(true)
+    expect(mayCountLaterPurchases('2026-10-19', '2026-10-19')).toBe(false)
+    expect(mayCountLaterPurchases(null)).toBe(false)
+    const past = register({ assets: PACK.map(p => ({ ...p, valuation_as_of: '2020-01-31' })) })
+    expect(past).toContain('data-earlier-date-caveat')
+    expect(register({ assets: PACK.map(p => ({ ...p, valuation_as_of: todayIso() })) })).not.toContain('data-earlier-date-caveat')
   })
 
   it('keeps an unbooked asset (not planned, purchase not linked) out too, captioned Unbooked', () => {
