@@ -826,3 +826,107 @@ describe('payout claims, round 3', () => {
     expect(entriesWith('marketplace-payout:')).toEqual([expect.objectContaining({ id: r.entryId, entry_date: '2026-10-03', status: 'posted' })])
   })
 })
+
+// ── Review r5 (#90) ──
+import { completeFromEvidence, renewClaim, takeOver } from './claims'
+
+describe('round 5: stale snapshots, owned cleanup, completion links', () => {
+  const scope = { fundId: 'f', vehicleId: 'v-gpu' }
+
+  it('Codex P1: a snapshot judged expired fails both takeover and completion once the holder renews', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const row = byAsset('a-1')
+    Object.assign(row, { status: 'posting', claim_token: 'T', claimed_at: ago(180_000) })
+    const snapshot = { ...row }
+    expect(await renewClaim(s.m.admin, 'gpu_earnings', scope, row.id, 'T')).toBe(true)
+    expect(await takeOver(s.m.admin, 'gpu_earnings', scope, snapshot)).toBeNull()
+    expect(await completeFromEvidence(s.m.admin, 'gpu_earnings', scope, snapshot, { status: 'posted' })).toBe(false)
+    expect(row).toMatchObject({ status: 'posting', claim_token: 'T' })
+  })
+
+  it('Codex P1, end to end: the holder renews between the recovery read and its completion: in progress, nothing moved', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const row = byAsset('a-1')
+    await postEarnings(s.m.admin, 'f', G, 'u', [row.id])
+    const entry = row.journal_entry_id
+    Object.assign(row, { status: 'posting', claim_token: 'T', claimed_at: ago(180_000), journal_entry_id: null })
+    s.beforeWrite = (table, op, payload) => {
+      if (table === 'gpu_earnings' && op === 'update' && payload?.status === 'posted') { row.claimed_at = new Date().toISOString(); s.beforeWrite = null }
+    }
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', [row.id])).toMatchObject({ error: expect.stringMatching(/another request/) })
+    expect(row).toMatchObject({ status: 'posting', claim_token: 'T' })
+    expect(entriesWith('marketplace:').map(e => e.id)).toEqual([entry])
+  })
+
+  it('Codex P2: payout draft cleanup happens while the claim is held; a new holder’s draft after the release survives', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    const recorded = await recordPayout(s.m.admin, 'f', G, 'u', { date: '2026-10-01', amount: 7776 })
+    if ('error' in recorded) throw new Error(recorded.error)
+    const p = recorded.payout.id
+    s.m.tables.bank_transactions.push(inflowRow('t-1', '2026-10-03', 7776))
+    const link = (await import('@/lib/accounting/bank-match')).linkInflowToEntry as any
+    link.mockImplementationOnce(async () => ({ error: 'That entry is dated 2026-10-03, inside a closed period — reopen it first.' }))
+    const order: string[] = []
+    s.beforeWrite = (table, op, payload, tables) => {
+      if (table === 'journal_entries' && op === 'delete') order.push('delete-draft')
+      if (table === 'gpu_payouts' && op === 'update' && payload?.status === 'expected') {
+        order.push('settle')
+        // A new match takes the payout the moment it is released, and drafts its own entry.
+        tables.journal_entries.push({ id: 'je-new', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'draft', entry_date: '2026-10-03', source_ref: `marketplace-payout:${p}` })
+      }
+    }
+    expect(await matchPayout(s.m.admin, 'f', G, 'u', p, 't-1')).toMatchObject({ error: expect.stringMatching(/closed period/) })
+    expect(order).toEqual(['delete-draft', 'settle'])
+    expect(s.m.tables.journal_entries.find((e: any) => e.id === 'je-new')).toBeTruthy()
+    expect(entriesWith('marketplace-payout:').map(e => e.id)).toEqual(['je-new'])
+    expect(s.m.tables.gpu_payouts[0]).toMatchObject({ status: 'expected', bank_transaction_id: null })
+  })
+
+  it('Claude N1: a reversal completed from evidence links reversed_by like the holder path', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const old = byAsset('a-1', 'posted')
+    // An earlier attempt booked the reversal and stopped before marking the row reversed.
+    s.m.tables.journal_entries.push({ id: 'je-rev', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-30', source_ref: `reversal:${old.journal_entry_id}` })
+    Object.assign(old, { status: 'reversing', claim_token: 'dead', claimed_at: ago(180_000) })
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ reversed: [{ id: old.id, reversalId: 'je-rev' }] })
+    expect(old.status).toBe('reversed')
+    expect(s.m.tables.journal_entries.find((e: any) => e.id === old.journal_entry_id).reversed_by).toBe('je-rev')
+    expect(entriesWith('reversal:')).toHaveLength(1)
+  })
+
+  it('Claude N2: losing the posted → reversing race answers in progress, not "replaced"', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const old = byAsset('a-1', 'posted')
+    // Another request claims the predecessor just before this one does.
+    s.beforeWrite = (table, op, payload) => {
+      if (table === 'gpu_earnings' && op === 'update' && payload?.status === 'reversing') {
+        Object.assign(old, { status: 'reversing', claim_token: 'other', claimed_at: new Date().toISOString() })
+        s.beforeWrite = null
+      }
+    }
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
+    expect((r as any).error).not.toMatch(/replaced/)
+    expect(entriesWith('reversal:')).toEqual([])
+  })
+
+  it('Claude N3: a settle lost to a request that finished the row with OUR entry is success', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    const row = byAsset('a-1')
+    s.beforeWrite = (table, op, payload) => {
+      if (table === 'gpu_earnings' && op === 'update' && payload?.status === 'posted' && payload.journal_entry_id) {
+        Object.assign(row, { status: 'posted', claim_token: null, claimed_at: null, journal_entry_id: payload.journal_entry_id })
+        row.claim_token = 'someone-else'
+        s.beforeWrite = null
+      }
+    }
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', [row.id])
+    expect(r).toMatchObject({ posted: [{ id: row.id, entryId: row.journal_entry_id }] })
+  })
+})
