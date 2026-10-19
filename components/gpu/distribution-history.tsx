@@ -8,7 +8,8 @@ import { HISTORY_CAP, historyScope, profitShare, profitShareTotals, type History
 
 // ── GPU fleet (P5) ── Every distribution declared, newest first, with what each tier took. The
 // manager's profit share is shown as PAID (what has settled against the carry lines) beside what
-// was declared (Karl, Q8); the manager's columns and figures need gp_economics.
+// was declared (Karl, Q8); the manager's columns and figures need gp_economics. The Total (what
+// was declared in all) is the brief's, shown to every lp_capital reader.
 
 const STATUS_LABEL: Record<HistoryRow['status'], string> = { open: 'Unpaid', partial: 'Part paid', settled: 'Paid' }
 const SPLIT_LABEL: Record<HistoryRow['splitMethod'], string> = { waterfall: 'Waterfall', pro_rata: 'Pro-rata by capital', manual: 'Manual split' }
@@ -55,7 +56,7 @@ export function DistributionHistory({ rows, seesCarry, money, initiallyOpen = []
   const toggle = (id: string) => setOpen(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const scope = historyScope(rows.length)
   const totals = profitShareTotals(rows)
-  const columns = 6 + (seesCarry ? 3 : 0)
+  const columns = 7 + (seesCarry ? 2 : 0)
   return (
     <div className="space-y-3">
       {seesCarry && (
@@ -78,9 +79,9 @@ export function DistributionHistory({ rows, seesCarry, money, initiallyOpen = []
               <th scope="col" className="px-3 py-2 text-left font-medium">Status</th>
               <th scope="col" className="px-3 py-2 text-right font-medium">Reserve</th>
               <th scope="col" className="px-3 py-2 text-right font-medium">To investors</th>
+              <th scope="col" className="px-3 py-2 text-right font-medium">Total</th>
               {seesCarry && <th scope="col" className="px-3 py-2 text-right font-medium">Profit share paid</th>}
               {seesCarry && <th scope="col" className="px-3 py-2 text-right font-medium">Profit share declared</th>}
-              {seesCarry && <th scope="col" className="px-3 py-2 text-right font-medium">Total</th>}
               <th scope="col" className="px-3 py-2"><span className="sr-only">Tiers</span></th>
             </tr>
           </thead>
@@ -96,9 +97,9 @@ export function DistributionHistory({ rows, seesCarry, money, initiallyOpen = []
                     <td className="px-3 py-2 text-muted-foreground">{STATUS_LABEL[d.status] ?? d.status}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{d.reserve == null ? '—' : money(d.reserve)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{money(d.lpTotal)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" data-figure="total">{money(d.total)}</td>
                     {seesCarry && <td className="px-3 py-2 text-right tabular-nums" data-figure="paid">{money(share.paid)}</td>}
                     {seesCarry && <td className="px-3 py-2 text-right tabular-nums" data-figure="declared">{money(share.declared)}</td>}
-                    {seesCarry && <td className="px-3 py-2 text-right tabular-nums">{money(d.total)}</td>}
                     <td className="px-3 py-2 text-right">
                       <button type="button" onClick={() => toggle(d.distributionId)} aria-expanded={isOpen}
                         className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">

@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { todayLocalIso } from '@/lib/local-date'
 import {
   declareRequest, initialInputs, linesEditable, previewIdentity, previewRequest, refusal, send, waterfallPaths,
   type CashPreview, type Fetcher, type ProposalField, type ProposalInputs,
@@ -89,12 +90,13 @@ export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalSt
   }
 }
 
-/** Declare only from a preview whose inputs have not changed since. */
+/** Declare only from a preview whose inputs have not changed since, and whose tiers add up. */
 export function canDeclare(s: ProposalState): boolean {
-  return s.preview != null && !s.stale && s.busy == null && s.previewedFor != null && s.previewedFor === previewKey(s.inputs)
+  if (s.preview == null || s.stale || s.busy != null || s.previewedFor == null || s.previewedFor !== previewKey(s.inputs)) return false
+  // The panel says "do not declare" when a waterfall preview's tiers miss available − reserve.
+  return s.preview.method !== 'waterfall' || previewIdentity(s.preview).holds
 }
 
-const today = () => new Date().toLocaleDateString('en-CA')
 
 /** Preview: the inputs checked here first (a missing reserve never leaves the page), then the route. */
 export async function previewAction(fetcher: Fetcher, inputs: ProposalInputs): Promise<ProposalAction> {
@@ -132,16 +134,22 @@ export function ProposeDistributionDialog({ fetcher, lastReserve, seesCarry, all
   onDeclared: () => void
 }) {
   const [open, setOpen] = useState(false)
+  // One per opening of the dialog, so a reply that lands after it closed is dropped.
+  const session = useRef(0)
   const [state, dispatch] = useReducer(proposalReducer, null, () => openProposal(null, '', ''))
 
   function start() {
-    dispatch({ type: 'reset', state: openProposal(lastReserve, today(), crypto.randomUUID()) })
+    session.current += 1
+    dispatch({ type: 'reset', state: openProposal(lastReserve, todayLocalIso(), crypto.randomUUID()) })
     setOpen(true)
   }
 
   async function preview() {
+    const mine = session.current
     dispatch({ type: 'previewStart' })
     const a = await previewAction(fetcher, state.inputs)
+    // Closed or reopened while the request was out: the reply belongs to a form that is gone.
+    if (mine !== session.current) return
     dispatch(a)
     if (a.type === 'previewDone') onPreviewed(a.preview.lastReserve)
   }
@@ -162,7 +170,7 @@ export function ProposeDistributionDialog({ fetcher, lastReserve, seesCarry, all
         </Button>
         {!allowed && <p className="text-caption text-muted-foreground">Needs write access to investors&rsquo; capital.</p>}
       </div>
-      <Dialog open={open} onOpenChange={o => { if (!o && state.busy !== 'declare') setOpen(false) }}>
+      <Dialog open={open} onOpenChange={o => { if (!o && state.busy !== 'declare') { session.current += 1; setOpen(false) } }}>
         <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Propose a distribution</DialogTitle>

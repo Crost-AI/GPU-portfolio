@@ -22,6 +22,7 @@ import {
 import { PrefLedgerTable, PrefLedgerUnavailable } from '@/components/gpu/pref-ledger-table'
 import { DistributionHistory, TierBreakdown } from '@/components/gpu/distribution-history'
 import { FeeTermsForm } from '@/components/gpu/fee-terms-dialog'
+import { PositionTiles } from '@/components/gpu/waterfall-position'
 import { dayCountLabel } from '@/components/gpu/waterfall-terms-card'
 import {
   PREVIEW_AGAIN, feeFormOf, linesEditable, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
@@ -199,10 +200,10 @@ describe('declare', () => {
 
   it('without one, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
     // Pref and capital only: no profit, so no carry line, so the route runs only the cash check.
-    const NO_CARRY = packPreview(400_000, 25_000, 0)
+    const NO_CARRY = packPreview(400_000, 25_000, 10_000)
     expect(linesEditable(NO_CARRY)).toBe(true)
     const [a, b] = NO_CARRY.lines
-    let s = proposalReducer(done(filled({ available: '400000', reserve: '25000', contingencyReturn: '' }), NO_CARRY), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
+    let s = proposalReducer(done(filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' }), NO_CARRY), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
     const { fetcher, calls } = fakeFetcher()
     expect(await declareAction(fetcher, s)).toMatchObject({ type: 'refused' })
     expect(calls).toHaveLength(0)
@@ -211,7 +212,9 @@ describe('declare', () => {
     expect(await declareAction(ok.fetcher, s)).toEqual({ type: 'declareDone' })
     const body = ok.calls[0].body
     expect(body).toMatchObject({ splitMethod: 'manual', tiers: null, available: 400_000, reserve: 25_000 })
-    expect(body.cash).toBeUndefined()
+    // The preview's cash block still goes, so the contingency returned reaches the route.
+    expect(body.cash).toEqual(NO_CARRY.cash)
+    expect(body.cash.contingencyReturn).toBe(10_000)
     // What the route then checks (cashAmountMismatch): no positive carry line, and the lines total available − reserve.
     expect(body.carryLines.filter((l: { amount: number }) => l.amount > 0)).toEqual([])
     expect(body.lines.reduce((t: number, l: { amount: number }) => t + Math.round(l.amount * 100), 0)).toBe(37_500_000)
@@ -367,7 +370,12 @@ describe('the preview’s identity', () => {
   it('a tampered tier breaks it, visibly', () => {
     const bad = { ...PREVIEW, tiers: { ...PREVIEW.tiers, preferred: PREVIEW.tiers.preferred + 0.01 } }
     expect(previewIdentity(bad).holds).toBe(false)
-    expect(form(done(filled(), bad))).toContain('data-identity="broken"')
+    const s = done(filled(), bad)
+    const html = form(s)
+    expect(html).toContain('data-identity="broken"')
+    // …and Declare is off: the panel says not to declare it.
+    expect(canDeclare(s)).toBe(false)
+    expect(disabled(html, 'declare')).toBe(true)
   })
 })
 
@@ -424,6 +432,7 @@ describe('the manager’s figures need gp_economics', () => {
   it('the history’s profit share columns and manager tiers render only with it', () => {
     const open = (gp: boolean) => renderToStaticMarkup(<DistributionHistory rows={HISTORY} seesCarry={gp} money={money} initiallyOpen={['d1']} />)
     const without = open(false)
+    expect(without).toContain(`data-figure="total">${money(1_950_000)}`)
     expect(without).not.toContain('Profit share paid')
     expect(without).not.toContain('data-tier="manager-profit-share"')
     expect(without).not.toContain('data-tier="unreturned-after"')
@@ -500,6 +509,13 @@ describe('the pref ledger', () => {
     expect(html).not.toContain('text-destructive')
   })
 
+  it('without per-investor lines there is no position, and the tiles say why', () => {
+    const bare = LEDGER.map(({ perInvestor: _drop, ...r }) => r)
+    expect(positionFromLedger(bare, [])).toBeNull()
+    const html = renderToStaticMarkup(<PositionTiles position={null} money={money} unavailable="The pref ledger has no per-investor lines" />)
+    expect(html.match(/The pref ledger has no per-investor lines/g)).toHaveLength(7)
+  })
+
   it('the position tiles come from the ledger and the history', () => {
     const p = positionFromLedger(LEDGER, [{ lpTotal: 20_000 }, { lpTotal: HISTORY[0].lpTotal }])!
     expect(p.contributed).toBe(1_435_500)
@@ -516,7 +532,7 @@ describe('the pref ledger', () => {
 
 describe('edit fee terms', () => {
   it('PUTs gross revenue, the rate as a fraction, frequency, the payee and the dates', async () => {
-    const r = feeTermsBody({ ratePct: '5', frequency: 'quarterly', payeeVehicleId: 'manco-1', effectiveFrom: '2026-01-01', effectiveTo: '' })
+    const r = feeTermsBody({ ratePct: '5', frequency: 'quarterly', payeeVehicleId: 'manco-1', effectiveFrom: '2026-01-01', effectiveTo: '', revenueSubtypes: null })
     expect(r).toEqual({ ok: true, body: { basis: 'gross_revenue', annualRate: 0.05, frequency: 'quarterly', payeeVehicleId: 'manco-1', effectiveFrom: '2026-01-01', effectiveTo: null } })
     const { fetcher, calls } = fakeFetcher({ status: 400, body: { error: 'effectiveFrom (YYYY-MM-DD) is required.' } })
     const sent = await send(vehicleFetcher('GPU SPV I', fetcher), '/api/accounting/fee-terms', 'PUT', r.ok && r.body)
@@ -528,7 +544,7 @@ describe('edit fee terms', () => {
   it('sends only values the route accepts: its exported basis and frequency lists, a rate in [0, 1), YYYY-MM-DD dates', () => {
     // The PUT's checks are inline in the route; these are the lists and rules it applies.
     for (const frequency of ['monthly', 'quarterly'] as const) {
-      const r = feeTermsBody({ ratePct: '5', frequency, payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '' })
+      const r = feeTermsBody({ ratePct: '5', frequency, payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '', revenueSubtypes: null })
       if (!r.ok) throw new Error(r.error)
       expect(FEE_BASES).toContain(r.body.basis)
       expect(FEE_FREQUENCIES).toContain(r.body.frequency)
@@ -539,8 +555,18 @@ describe('edit fee terms', () => {
     }
   })
 
+  it('saves the revenue subtypes back as read, so editing the rate keeps a custom fee base', () => {
+    const terms = { basis: 'gross_revenue', annualRate: 0.05, frequency: 'monthly', revenueSubtypes: ['rental_revenue', 'other_revenue'], payeeVehicleId: null, effectiveFrom: '2026-01-01', effectiveTo: null }
+    const f = { ...feeFormOf(terms), ratePct: '6' }
+    const r = feeTermsBody(f)
+    expect(r.ok && r.body).toMatchObject({ annualRate: 0.06, revenueSubtypes: ['rental_revenue', 'other_revenue'] })
+    // Read without a list (no terms yet): none sent, and the route applies its default.
+    const fresh = feeTermsBody({ ...feeFormOf(null), ratePct: '5', effectiveFrom: '2026-01-01' })
+    expect(fresh.ok && 'revenueSubtypes' in fresh.body).toBe(false)
+  })
+
   it('no payee is Due to manager (2100): null', () => {
-    const r = feeTermsBody({ ratePct: '2.5%', frequency: 'monthly', payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '2030-12-31' })
+    const r = feeTermsBody({ ratePct: '2.5%', frequency: 'monthly', payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '2030-12-31', revenueSubtypes: null })
     expect(r.ok && r.body).toMatchObject({ annualRate: 0.025, payeeVehicleId: null, effectiveTo: '2030-12-31' })
   })
 
@@ -550,7 +576,7 @@ describe('edit fee terms', () => {
 
   it('opens on the terms in force, and offers only the management companies as payees', () => {
     const f = feeFormOf({ basis: 'gross_revenue', annualRate: 0.05, frequency: 'monthly', payeeVehicleId: null, effectiveFrom: '2026-01-01', effectiveTo: null })
-    expect(f).toEqual({ ratePct: '5', frequency: 'monthly', payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '' })
+    expect(f).toEqual({ ratePct: '5', frequency: 'monthly', payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '', revenueSubtypes: null })
     const html = renderToStaticMarkup(<FeeTermsForm form={f} onChange={() => {}} mancos={[{ id: 'm1', name: 'Hemrock Manco' }]} error="The fee payee must be a management company in this fund." />)
     expect(html).toContain('Due to manager (2100)')
     expect(html).toContain('Hemrock Manco')

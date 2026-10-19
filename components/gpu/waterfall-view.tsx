@@ -107,7 +107,8 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
   const lastReserve = previewedReserve !== undefined ? previewedReserve : (rows?.[0]?.reserve ?? null)
   const positionWhy = ledger.state === 'loading' || history.state === 'loading'
     ? 'Loading'
-    : ledger.state === 'error' ? 'Needs the pref ledger' : history.state === 'error' ? 'Needs the distributions' : undefined
+    : ledger.state === 'error' ? 'Needs the pref ledger' : history.state === 'error' ? 'Needs the distributions'
+    : position == null ? 'The pref ledger has no per-investor lines' : undefined
 
   const spinner = <div className="flex justify-center p-6"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
 

@@ -94,6 +94,8 @@ export interface WaterfallTermsReply {
 export interface FeeTermsReply {
   terms: {
     basis: string; annualRate: number; frequency: string
+    /** The account subtypes the fee is charged on. No editor here, so it is sent back as read. */
+    revenueSubtypes?: string[]
     payeeVehicleId: string | null; effectiveFrom?: string; effectiveTo?: string | null
   } | null
 }
@@ -170,8 +172,9 @@ export function linesEditable(p: Pick<CashPreview, 'carryLines'>): boolean {
 /**
  * The declaration body from an unmodified preview. `edited` investor amounts (allowed only where
  * `linesEditable`) make it a manual split, as on the capital-accounts page: no tiers, no character,
- * nothing frozen from the waterfall — but the cash and reserve still stated, so the route still
- * holds the lines to available − reserve.
+ * nothing frozen from the waterfall — but the cash, the reserve and the preview's `cash` block
+ * (which carries the contingency returned, the only place the declare route reads it) still sent,
+ * so the route holds the lines to available − reserve and sees the contingency as previewed.
  */
 export function declareRequest(args: {
   preview: CashPreview
@@ -213,7 +216,7 @@ export function declareRequest(args: {
       available: preview.available,
       reserve: preview.reserve,
       contingencyReturn: preview.tiers.contingencyReturn ?? 0,
-      cash: waterfall ? preview.cash : undefined,
+      cash: preview.cash,
     },
   }
 }
@@ -341,6 +344,9 @@ export interface FeeForm {
   payeeVehicleId: string
   effectiveFrom: string
   effectiveTo: string
+  /** Carried from the terms as read, so saving the rate does not reset a custom list to the
+   *  route's default (an omitted list is replaced with DEFAULT_FEE_REVENUE_SUBTYPES). Null: none set. */
+  revenueSubtypes: string[] | null
 }
 
 export function feeFormOf(terms: FeeTermsReply['terms']): FeeForm {
@@ -350,6 +356,7 @@ export function feeFormOf(terms: FeeTermsReply['terms']): FeeForm {
     payeeVehicleId: terms?.payeeVehicleId ?? '',
     effectiveFrom: terms?.effectiveFrom ?? '',
     effectiveTo: terms?.effectiveTo ?? '',
+    revenueSubtypes: terms?.revenueSubtypes?.length ? [...terms.revenueSubtypes] : null,
   }
 }
 
@@ -369,6 +376,7 @@ export function feeTermsBody(f: FeeForm): { ok: true; body: Record<string, unkno
       payeeVehicleId: f.payeeVehicleId || null,
       effectiveFrom: f.effectiveFrom,
       effectiveTo: f.effectiveTo || null,
+      ...(f.revenueSubtypes ? { revenueSubtypes: f.revenueSubtypes } : {}),
     },
   }
 }
