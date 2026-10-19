@@ -13,7 +13,7 @@ export default async function AssetPage(props: { params: Promise<{ id: string; a
   return (
     <div className="pt-4 md:pt-8 pb-8 w-full">
       <FundSubpageChrome
-        title={`Asset ${assetId}`}
+        title="Asset"
         description="Specs, depreciation and net book value, listings, monthly revenue and utilization, events and documents"
         vehicle={vehicle}
         vehicleId={vehicleId}
