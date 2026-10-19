@@ -238,7 +238,7 @@ function cashDistributable(opts: CashPreviewOptions): { total: number } | CashRe
 }
 
 /** The newest declared distribution's reserve, or null — the declaration form's default. */
-async function lastReserve(admin: SupabaseClient, fundId: string, group: string): Promise<number | null> {
+export async function lastReserve(admin: SupabaseClient, fundId: string, group: string): Promise<number | null> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return null
   const { data, error } = await (admin as any)
