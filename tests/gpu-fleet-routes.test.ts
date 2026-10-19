@@ -410,6 +410,18 @@ describe('asset valuation as of a date (#95)', () => {
     expect(await value(id, '?as_of=2028-01-31')).toMatchObject({ accumulated_tax: 67_000 + 107_200 + 960, nbv_tax: 339_800 - 175_160 })
   })
 
+  it('capex incurred before the server enters service is taxed from the in-service date, across a year boundary', async () => {
+    // Bought and installed in December 2027 (1,000 of installation), in service 15 January 2028, macrs_5.
+    const id = await createAsset({ in_service_date: '2028-01-15', tax_method: 'macrs_5' })
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-12-05' }), params(id))
+    await capex.POST(send(`assets/${id}/capex`, 'POST', { key: 'INSTALL', entryDate: '2027-12-10', amount: 1_000 }), params(id))
+    for (const v of [await value(id, '?as_of=2027-12-31'), await listed(id, '2027-12-31')]) {
+      expect(v).toMatchObject({ basis: 336_000, accumulated_tax: 0, accumulated_book: 0 })
+    }
+    // 2028: 20% of the whole 336,000, hardware and installation placed in service together.
+    expect(await value(id, '?as_of=2028-12-31')).toMatchObject({ accumulated_tax: 67_200, nbv_tax: 268_800 })
+  })
+
   it('defaults to today and refuses an invalid date', async () => {
     const id = await createAsset()
     expect((await value(id)).valuation_as_of).toBe(new Date().toISOString().slice(0, 10))

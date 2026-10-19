@@ -39,8 +39,8 @@ export function parseAsOf(raw: string | null): string | null {
  *   - basis: hardware cost plus the capex posted by then; capex joins depreciation prospectively.
  *   - book: accumulated = basis − nbvAsOf on the remaining-life schedule (posted months as posted).
  *   - tax: the asset's tax method on independent tax inputs (the hardware and each capex its own tax
- *     asset from its own month), summed through the tax year containing `asOf`; tax_method 'book'
- *     reports the book figures.
+ *     asset from its own month, but never before the server entered service), summed through the tax
+ *     year containing `asOf`; tax_method 'book' reports the book figures.
  *   - nothing is depreciated before the purchase is recognised as of `asOf`; each charge counts from
  *     its entry date (min(month end, disposal)); on or after the disposal, both NBVs are 0.
  */
@@ -66,12 +66,17 @@ export async function valueAssets(
     let nbvTax = nbvBook
     if (a.tax_method !== 'book' && dep) {
       // Tax on independent inputs (no book postings, no salvage): the hardware placed in service on
-      // its in-service date, and each capex its own tax asset placed in service in its month, with the
-      // parent's method and class. A capex reversed by the date drops out with its reversal.
+      // its in-service date, and each capex its own tax asset with the parent's method and class,
+      // placed in service in its month, or with the hardware when it was incurred before the server
+      // entered service (installation, shipping). A capex reversed by the date drops out with its reversal.
       const reversed = new Set(l.capex.filter(e => e.reverses).map(e => e.reverses!))
+      const serviceStart = a.in_service_date!
       const pieces = [
-        { basis: Number(a.hardware_cost), inServiceDate: a.in_service_date! },
-        ...l.capex.filter(e => !e.reverses && !reversed.has(e.entry_id)).map(e => ({ basis: e.amount, inServiceDate: `${e.month}-01` })),
+        { basis: Number(a.hardware_cost), inServiceDate: serviceStart },
+        ...l.capex.filter(e => !e.reverses && !reversed.has(e.entry_id)).map(e => {
+          const own = `${e.month}-01`
+          return { basis: e.amount, inServiceDate: own > serviceStart ? own : serviceStart }
+        }),
       ]
       const year = Number(asOf.slice(0, 4))
       accTax = pieces.reduce((t, p) => t + taxDepreciationSchedule({
