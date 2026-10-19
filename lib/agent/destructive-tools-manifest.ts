@@ -301,4 +301,27 @@ export const DESTRUCTIVE_TOOL_MANIFEST: AgentToolMeta[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'merge_companies',
+    description:
+      'Merge two records of the same holding, e.g. a cost booked on the bank\'s payee name and a register on the fund\'s own name. ' +
+      'Every investment transaction of `from` moves to `into` with its journal entry re-derived on `into`\'s accounts (cash does not ' +
+      'move), its fund-register rows, notes, documents, updates, metrics and received K-1s move too, and its name and aliases become aliases ' +
+      'of `into`. `from` is then deleted; when its accounts still carry the voided entries the moves left, it is kept, empty, with ' +
+      'its accounts deactivated. A fund register can only move into a fund holding (set_holding_type first). Cannot be undone: ' +
+      'there is no un-merge, though each transaction can be moved back with move_investment.' + STAGED,
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    destructive: true,
+    inputSchema: {
+      type: 'object',
+      required: ['from', 'into'],
+      properties: {
+        from: { type: 'string', description: 'The record to merge away (name or id).' },
+        into: { type: 'string', description: 'The record that keeps its name and receives everything (name or id).' },
+      },
+      additionalProperties: false,
+    },
+  },
 ]

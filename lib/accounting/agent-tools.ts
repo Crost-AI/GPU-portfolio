@@ -47,6 +47,8 @@ import type { SupabaseClient as _Sb } from '@supabase/supabase-js'
 import type { JournalEntry, Posting } from './types'
 import { PORTFOLIO_TOOL_MANIFEST } from '@/lib/agent/portfolio-tools-manifest'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
+import { HOLDING_TOOL_MANIFEST } from '@/lib/agent/holding-tools-manifest'
+import { HOLDING_HANDLERS } from '@/lib/agent/holding-tools'
 import { DILIGENCE_TOOL_MANIFEST } from '@/lib/agent/diligence-tools-manifest'
 import { DILIGENCE_HANDLERS } from '@/lib/agent/diligence-tools'
 import { DEALS_TOOL_MANIFEST } from '@/lib/agent/deals-tools-manifest'
@@ -554,6 +556,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bindLedger(ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
   ...bindLedger(RECEIPT_TOOL_MANIFEST, RECEIPT_HANDLERS),
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
+  ...bind(HOLDING_TOOL_MANIFEST, HOLDING_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
   ...bind(LP_TOOL_MANIFEST, { ...LP_HANDLERS, ...LP_RECORD_HANDLERS }),

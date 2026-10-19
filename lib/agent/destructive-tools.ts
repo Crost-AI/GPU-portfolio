@@ -25,6 +25,7 @@ import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { deleteInactiveCompanyAccounts, readInactiveCompanyAccounts } from '@/lib/accounting/inactive-accounts-delete'
 import { deleteCompany } from '@/lib/companies/delete'
+import { mergeCompanies } from '@/lib/companies/merge'
 import { deleteFundHolding } from '@/lib/portfolio/fund-holding-delete'
 import { clearFundRegister, readRegisterRows } from '@/lib/portfolio/fund-register-clear'
 import { DILIGENCE_CASCADE_TABLES, deleteDiligenceDeal } from '@/lib/diligence/service'
@@ -223,6 +224,15 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
     const into = await resolveVehicleRow(ctx.admin, ctx.access, text(input?.into, 'into'))
     const merged = unwrap(await mergeVehicles(ctx.admin, { fundId: ctx.fundId, userId, access: ctx.access }, from.id, into.id))
     return { merged: { from, into }, vehicle: merged }
+  },
+
+  merge_companies: async (ctx: AgentToolContext, input: any) => {
+    const userId = requireUser(ctx.userId)
+    const from = await resolveCompany(ctx.admin, ctx.fundId, text(input?.from, 'from'), ctx.access)
+    const into = await resolveCompany(ctx.admin, ctx.fundId, text(input?.into, 'into'), ctx.access)
+    const scope = () => entityScopeFor(ctx.admin, ctx.access)
+    const { vehicleNames } = await scope()
+    return unwrap(await mergeCompanies(ctx.admin, { fundId: ctx.fundId, userId, vehicleNames }, from.id, into.id, scope))
   },
 }
 
@@ -479,6 +489,33 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
       summary: `Merge entity ${from.name} into ${into.name}; ${from.name} is deleted and becomes an alias of ${into.name}.` +
         (books > 0 ? ` WARNING: ${from.name}'s own books are deleted with it: ${entries ?? 0} journal entr${entries === 1 ? 'y' : 'ies'} and ${bank ?? 0} bank row(s).` : ''),
       impact: { from, into, deletedWithSource: { journalEntries: entries, chartAccounts: accounts, bankTransactions: bank } },
+    }
+  },
+
+  merge_companies: async (deps, input) => {
+    const from = await resolveCompany(deps.admin, deps.fundId, text(input.from, 'from'), deps.access)
+    const into = await resolveCompany(deps.admin, deps.fundId, text(input.into, 'into'), deps.access)
+    if (from.id === into.id) throw new Error('Choose two different records to merge.')
+    const where = { fund_id: deps.fundId, company_id: from.id }
+    const [transactions, events, navs, terms, notes, documents, metrics] = await Promise.all([
+      count(deps.admin, 'investment_transactions', where), count(deps.admin, 'fund_capital_events', where),
+      count(deps.admin, 'fund_nav_statements', where), count(deps.admin, 'fund_holding_terms', where),
+      count(deps.admin, 'company_notes', where), count(deps.admin, 'company_documents', where), count(deps.admin, 'metrics', where),
+    ])
+    const register = (events ?? 0) + (navs ?? 0) + (terms ?? 0)
+    const kind = (c: any) => (c.holding_type === 'fund' ? 'fund holding' : c.holding_type === 'crypto' ? 'digital asset' : 'company')
+    return {
+      pin: { from: from.id, into: into.id },
+      summary: `Merge ${kind(from)} ${from.name} into ${kind(into)} ${into.name}: move ${transactions ?? '?'} investment transaction(s) ` +
+        `(re-derived on ${into.name}'s accounts), ${register} fund-register row(s), ${notes ?? '?'} note(s) and ${documents ?? '?'} ` +
+        `document(s); ${from.name} becomes an alias of ${into.name} and is deleted, or kept empty if its accounts carry voided entries.` +
+        (metrics ? ` Its ${metrics} metric(s) move too, except any ${into.name} already tracks under the same name.` : '') +
+        (register && into.holding_type !== 'fund' ? ` ${into.name} is not a fund holding, so the merge will be refused.` : ''),
+      impact: {
+        from: { id: from.id, name: from.name, holdingType: from.holding_type ?? 'company' },
+        into: { id: into.id, name: into.name, holdingType: into.holding_type ?? 'company' },
+        investmentTransactions: transactions, capitalEvents: events, navStatements: navs, terms, notes, documents, metrics,
+      },
     }
   },
 }

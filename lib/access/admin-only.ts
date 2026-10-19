@@ -148,6 +148,7 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   diligence_delete_deal: { label: 'delete a diligence deal' },
   remove_member: { label: 'remove a team member' },
   merge_vehicles: { label: 'merge entities' },
+  merge_companies: { label: 'merge holdings' },
   unpost_entry: { label: 'unpost or reverse a posted entry' },
   reverse_entry: { label: 'unpost or reverse a posted entry' },
   void_entry: { label: HANDLER_CHECKED.voidPostedEntry },

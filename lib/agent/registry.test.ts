@@ -96,7 +96,7 @@ describe('agent tool registry', () => {
     expect(destructive.map(t => t.name).sort()).toEqual([
       'clear_fund_register', 'delete_company', 'delete_fund_holding', 'delete_inactive_company_accounts', 'delete_lp_positions',
       'diligence_delete_deal', 'lp_delete_commitment', 'lp_delete_entity', 'lp_delete_investor',
-      'lp_merge_investors', 'merge_vehicles', 'remove_member', 'reverse_entry', 'unpost_entry', 'void_entry',
+      'lp_merge_investors', 'merge_companies', 'merge_vehicles', 'remove_member', 'reverse_entry', 'unpost_entry', 'void_entry',
     ])
     for (const t of destructive) {
       expect(t.scope, t.name).toBe('write')

@@ -482,6 +482,15 @@ describe('the same access rules as the web', () => {
     ['diligence_delete_deal', 'api/diligence/[id]'],
     ['remove_member', 'api/settings/members/[id]'],
     ['merge_vehicles', 'api/vehicles'],
+    ['merge_companies', 'api/companies/[id]/investments/[txnId]'],
+
+    // A holding's name and kind, and a fund holding's register (lib/agent/holding-tools.ts).
+    ['update_company', 'api/companies/[id]'],
+    ['set_holding_type', 'api/companies/[id]'],
+    ['move_investment', 'api/companies/[id]/investments/[txnId]'],
+    ['set_fund_terms', 'api/portfolio/fund-holdings/[id]'],
+    ['record_fund_notice', 'api/portfolio/fund-holdings/[id]/events'],
+    ['record_nav_statement', 'api/portfolio/fund-holdings/[id]/nav'],
 
     // Uploads: the signed URL and the register step, each like the page's own pair of calls.
     ['diligence_document_upload_url', 'api/diligence/[id]/documents/upload-url'],
