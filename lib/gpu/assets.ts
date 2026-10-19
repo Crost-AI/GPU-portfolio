@@ -156,10 +156,15 @@ export async function capitalizedCostsOf(admin: SupabaseClient, ctx: Lifecycle, 
  * `capitalized_costs` summed from the posted capex entries rather than read from a stored total.
  */
 export async function listAssets(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<GpuAsset[]> {
-  const rows = await fetchAllRows<GpuAssetRow>((f, t) => (admin as any).from('gpu_assets').select('*')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('created_at').range(f, t))
+  const rows = await listAssetRows(admin, fundId, vehicleId)
   const totals = await capexTotalsByAsset(admin, fundId, vehicleId)
   return rows.map(r => ({ ...r, capitalized_costs: (totals.get(r.id) ?? 0) / 100 }))
+}
+
+/** A vehicle's register rows alone, in the same stable order (paged), for a caller that derives its own totals. */
+export async function listAssetRows(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<GpuAssetRow[]> {
+  return fetchAllRows<GpuAssetRow>((f, t) => (admin as any).from('gpu_assets').select('*')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).order('created_at').range(f, t))
 }
 
 /** Posted capex per asset in cents, net of posted reversals: each entry's debit to its asset's 1600-<a>. */

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { assetRefsError, listAssets, parseAssetInput } from '@/lib/gpu/assets'
+import { assetRefsError, listAssetRows, parseAssetInput } from '@/lib/gpu/assets'
 import { fleetRequest } from '@/lib/gpu/http'
 import { parseAsOf, valueAssets } from '@/lib/gpu/valuation'
 
@@ -15,7 +15,8 @@ export async function GET(req: NextRequest) {
   if (!asOf) return NextResponse.json({ error: 'as_of must be a date, YYYY-MM-DD' }, { status: 400 })
   const r = await fleetRequest('read', req.nextUrl.searchParams.get('group'))
   if (r instanceof NextResponse) return r
-  const rows = await listAssets(r.admin, r.fundId, r.vehicleId)
+  // The register rows once; the valuation reads the vehicle's ledger once and supplies capitalized_costs.
+  const rows = await listAssetRows(r.admin, r.fundId, r.vehicleId)
   const values = await valueAssets(r.admin, r.fundId, r.vehicleId, rows, asOf)
   return NextResponse.json({ assets: rows.map(row => ({ ...row, ...values.get(row.id) })) })
 }
