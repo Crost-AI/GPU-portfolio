@@ -285,7 +285,16 @@ describe('asset payloads', () => {
     s.m.tables.gpu_assets.find((a: any) => a.id === id).status = 'ordered'
     s.between = async () => { s.m.tables.gpu_assets = s.m.tables.gpu_assets.filter((a: any) => a.id !== id) }
     const r = await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))
-    expect(r).toMatchObject({ status: 400, body: { error: expect.stringContaining('booked as entry je-1') } })
+    expect(r).toMatchObject({ status: 409, body: { conflict: true, error: expect.stringContaining('booked as entry je-1') } })
+  })
+
+  it('an unclaimed asset may change status mid-booking without making the link miss', async () => {
+    const id = await createAsset({ status: 'in_service' })
+    s.between = async () => {
+      expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'offline' }), params(id))).status).toBe(200)
+    }
+    expect(await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))).toEqual({ status: 200, body: { entryId: 'je-1' } })
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ status: 'offline', purchase_entry_id: 'je-1' })
   })
 
   it('locks the in-service date and convention once depreciation is booked', async () => {

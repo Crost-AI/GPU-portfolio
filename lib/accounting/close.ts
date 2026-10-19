@@ -1,4 +1,5 @@
 import { loadResolvedCommitments } from './terms'
+import { fleetCloseReview, type FleetReviewCheck } from '@/lib/gpu/close-checks'
 // Period close — the ONE place where P&L is allocated to partners' capital.
 //
 // Expense/income/valuation entries are booked simply (Dr expense / Cr cash). They
@@ -70,7 +71,7 @@ import { loadStrandedCapital } from './pooled-capital-check'
 import { roundCents } from './ledger'
 import type { Account, JournalEntry, Posting } from './types'
 import { ACTUAL_BOOK } from './books'
-import { closesToOwnerEquity } from '@/lib/vehicle-kinds'
+import { closesToOwnerEquity, isGpuSpv } from '@/lib/vehicle-kinds'
 import { vehicleKindByName } from './vehicle-domain'
 import { ownerCloseEntries } from './close-owner'
 import { ownerNoun } from './vocab'
@@ -522,6 +523,8 @@ export interface CloseReadiness {
   /** Blocker text → the page that clears it (a quoted holding's page). Absent on older reviews. */
   blockerLinks?: Record<string, string>
   warnings: string[]
+  /** ── GPU fleet (P1) ── The fleet's review checks; present only for a GPU SPV. */
+  fleetChecks?: FleetReviewCheck[]
 }
 
 export interface CloseThroughPreview {
@@ -571,6 +574,8 @@ async function persistCloseReview(
       evidence: readiness.bank ?? {} },
     { key: 'allocation_completeness', section: 'Partner capital', label: 'Partner allocations complete', status: allocationCheck.status, detail: allocationCheck.detail, evidence: { unallocatedEarnings: unallocated } },
     { key: 'valuation_and_cutoff', section: 'Investments and cutoff', label: 'Valuation and cutoff review', status: readiness.warnings.length === 0 ? 'passed' : 'needs_review', detail: readiness.warnings.length === 0 ? 'No valuation or cutoff exceptions were reported.' : readiness.warnings.join(' '), evidence: { warnings: readiness.warnings } },
+    // ── GPU fleet (P1) ── depreciation posted and NBV tied (a GPU SPV only; see checkReadiness).
+    ...(readiness.fleetChecks ?? []),
   ] as const
   // PREPARED, not approved: approval is a second person's act (lib/accounting/close-approval.ts).
   const { data: review, error } = await admin.from('close_reviews' as any).upsert({
@@ -935,6 +940,19 @@ export async function checkReadiness(
   // rather than overruling it. See lib/portfolio/lots.ts.
   warnings.push(...await loadLotIssues(admin, fundId, group, end))
 
+  // ── GPU fleet (P1) ── Depreciation posted through the period end and fleet NBV tied to the
+  // register, for a GPU SPV only (lib/gpu/close-checks.ts). A fleet that could not be read is a
+  // blocker, not "nothing to check", like the holdings, quotes and wallets above.
+  let fleetChecks: FleetReviewCheck[] | undefined
+  if (isGpuSpv(kind) && vehicleId) {
+    try {
+      const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, end)
+      if (fleet) { blockers.push(...fleet.blockers); fleetChecks = fleet.checks }
+    } catch (e) {
+      blockers.push(`The GPU fleet could not be checked: ${(e as Error).message}. Try again before closing.`)
+    }
+  }
+
   if (bankRows.length > 0) {
     const total = roundCents(bankRows.reduce((s, t) => s + Number(t.amount), 0))
     blockers.push(
@@ -961,6 +979,7 @@ export async function checkReadiness(
     blockers,
     warnings,
     blockerLinks,
+    ...(fleetChecks ? { fleetChecks } : {}),
   }
 }
 

@@ -326,7 +326,7 @@ export async function bookOnce(
  */
 export async function purchaseAsset(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, p: { entryDate: string; invoiced: boolean },
-): Promise<{ entryId: string } | { error: string; inProgress?: true }> {
+): Promise<{ entryId: string } | { error: string; inProgress?: true; conflict?: true }> {
   const other = otherVehicleError(ctx, asset)
   if (other) return other
   if (asset.purchase_entry_id) return { error: 'This asset\u2019s purchase is already booked' }
@@ -337,6 +337,10 @@ export async function purchaseAsset(
     { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase \u2014 ${asset.name}` },
     { assetId: asset.id, amount: Number(asset.hardware_cost), costAccountId: accounts.cost, offsetAccountId: offset },
   )
+  // An ABANDONED claim (the process died after claiming, before booking) leaves the row ordered and
+  // unlinked with nothing in the books. It needs no separate release: calling purchase again books
+  // and links it (an ordered row needs no claim), and until then the row cannot be deleted or have
+  // its cost edited, which is the safe side.
   // CLAIM the row before anything is booked: planned → ordered, only while it is still planned,
   // unlinked and at the cost this request read. DELETE and a cost edit run under the same
   // predicate (assets/[id]/route.ts), so whichever lands first wins and the other changes nothing.
@@ -362,16 +366,18 @@ export async function purchaseAsset(
     }
     return result
   }
-  // The link is compare-and-set and touches only the link: still unlinked and in the status this
-  // purchase left it in (ordered when it claimed, else as read). It never rewrites status from the
-  // snapshot, so nothing that legitimately moved the row meanwhile is undone.
-  const { data: linked, error } = await scoped((admin as any).from('gpu_assets').update({
+  // The link is compare-and-set and touches only the link: still unlinked, and, when this purchase
+  // claimed the row, still ordered. An unclaimed row (already in service or offline) may change
+  // status meanwhile without making the link miss. It never rewrites status from the snapshot.
+  let link = scoped((admin as any).from('gpu_assets').update({
     purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date, updated_at: new Date().toISOString(),
-  })).eq('status', claimed ? 'ordered' : asset.status).is('purchase_entry_id', null).select('id')
+  })).is('purchase_entry_id', null)
+  if (claimed) link = link.eq('status', 'ordered')
+  const { data: linked, error } = await link.select('id')
   if (error) throw error
   // Never a success with a booked entry and no register row to show it: say so, by entry.
   if (!((linked as any[]) ?? []).length) {
-    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was changed or removed meanwhile, so it was not linked. Book the purchase again to link entry ${result.booked.id}, or void it.` }
+    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was changed or removed meanwhile, so it was not linked. Book the purchase again to link entry ${result.booked.id}, or void it.`, conflict: true }
   }
   return { entryId: result.booked.id }
 }
