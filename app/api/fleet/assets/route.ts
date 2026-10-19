@@ -5,6 +5,8 @@ import { fleetRequest } from '@/lib/gpu/http'
 // ── GPU fleet (P1) ── A GPU SPV's register (`fleet` domain). GET ?group= lists it in a stable order,
 // each row with its capitalized costs read from the ledger; POST adds a server.
 
+const CREATABLE_STATUSES: string[] = ['planned', 'in_service', 'offline']
+
 export async function GET(req: NextRequest) {
   const r = await fleetRequest('read', req.nextUrl.searchParams.get('group'))
   if (r instanceof NextResponse) return r
@@ -17,6 +19,12 @@ export async function POST(req: NextRequest) {
   if (r instanceof NextResponse) return r
   const parsed = parseAssetInput(body, false)
   if ('error' in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 })
+  // A new asset starts planned (the default), or in_service/offline for a fleet already running when
+  // it is registered. `ordered` is the purchase claim's state (purchaseAsset) and `disposed` the
+  // disposal's, so neither can be created by hand.
+  if (parsed.value.status !== undefined && !CREATABLE_STATUSES.includes(parsed.value.status)) {
+    return NextResponse.json({ error: `A new asset's status must be one of ${CREATABLE_STATUSES.join(', ')}; it becomes ordered by booking its purchase` }, { status: 400 })
+  }
   const refs = await assetRefsError(r.admin, r.ctx, parsed.value)
   if (refs) return NextResponse.json({ error: refs }, { status: 400 })
   const { data, error } = await (r.admin as any).from('gpu_assets')

@@ -33,6 +33,10 @@ export async function PATCH(req: NextRequest, props: Params) {
   // Status through the register is operational only. `ordered` is the purchase's claim (purchaseAsset)
   // and `disposed` the disposal's (disposeAsset); nothing goes back to `planned` once it has left it,
   // which would release a claim and reopen DELETE.
+  // The claim window (ordered, purchase not yet linked) is the purchase's: no status edit at all.
+  if (v.status !== undefined && row.status === 'ordered' && !row.purchase_entry_id) {
+    return NextResponse.json({ error: 'The purchase of this asset is being booked; its status can change once the purchase is linked' }, { status: 409 })
+  }
   if (v.status !== undefined && v.status !== row.status && !(OPERATIONAL_MOVES[row.status] ?? []).includes(v.status)) {
     return NextResponse.json({ error: `Status cannot change from ${row.status} to ${v.status} here: an asset is ordered by booking its purchase and disposed of by its disposal, and never returns to planned` }, { status: 409 })
   }
@@ -59,7 +63,10 @@ export async function PATCH(req: NextRequest, props: Params) {
   if (costChange) q = q.eq('status', 'planned').is('purchase_entry_id', null).eq('hardware_cost', row.hardware_cost)
   // A status in the payload applies only from the status this request read, so a stale form save
   // cannot overwrite a purchase's claim (or anything else that moved the row meanwhile).
-  else if (v.status !== undefined) q = q.eq('status', row.status)
+  else if (v.status !== undefined) {
+    q = q.eq('status', row.status)
+    if (row.status === 'ordered') q = q.not('purchase_entry_id', 'is', null)
+  }
   const { data: saved, error } = await q.select('*')
   if (error) return NextResponse.json({ error: 'Could not save the asset' }, { status: 500 })
   const data = ((saved as any[]) ?? [])[0]

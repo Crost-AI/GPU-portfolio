@@ -212,6 +212,36 @@ describe('asset payloads', () => {
     expect(s.m.tables.gpu_assets.filter((a: any) => a.id === id)).toEqual([expect.objectContaining({ status: 'ordered', purchase_entry_id: 'je-1' })])
   })
 
+  it('the claim window refuses every status edit and DELETE; a pre-draft failure gives the claim back so DELETE works again', async () => {
+    const id = await createAsset()
+    let during: number[] = []
+    s.beforeWrite = async () => {
+      during = [
+        (await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'ordered' }), params(id))).status,
+        (await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'in_service' }), params(id))).status,
+        (await asset.DELETE(send(`assets/${id}`, 'DELETE', {}), params(id))).status,
+      ]
+    }
+    expect((await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))).status).toBe(200)
+    expect(during).toEqual([409, 409, 409])
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === id)).toMatchObject({ status: 'ordered', purchase_entry_id: 'je-1' })
+    // Once linked, the operational move is allowed.
+    expect((await asset.PATCH(send(`assets/${id}`, 'PATCH', { status: 'in_service' }), params(id))).status).toBe(200)
+
+    const spare = await createAsset({ name: 'spare' })
+    s.failBeforeWrite = true
+    expect((await purchase.POST(send(`assets/${spare}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(spare))).status).toBe(400)
+    expect(s.m.tables.gpu_assets.find((a: any) => a.id === spare).status).toBe('planned')
+    expect((await asset.DELETE(send(`assets/${spare}`, 'DELETE', {}), params(spare))).status).toBe(200)
+  })
+
+  it('a new asset is planned, or in_service/offline for a running fleet; never created ordered or disposed', async () => {
+    const make = (status: string) => assets.POST(send('assets', 'POST', { group: 'H200 SPV I', name: `x-${status}`, gpu_count: 8, hardware_cost: 1, status }))
+    expect((await make('ordered')).status).toBe(400)
+    expect((await make('disposed')).status).toBe(400)
+    for (const status of ['planned', 'in_service', 'offline']) expect((await make(status)).status, status).toBe(201)
+  })
+
   it('status through PATCH is operational only, and applies only from the status read', async () => {
     const id = await createAsset()
     for (const status of ['ordered', 'in_service', 'offline']) {
@@ -251,7 +281,8 @@ describe('asset payloads', () => {
   })
 
   it('a booked purchase whose register row vanished is a conflict naming the entry, never a success', async () => {
-    const id = await createAsset({ status: 'ordered' })
+    const id = await createAsset()
+    s.m.tables.gpu_assets.find((a: any) => a.id === id).status = 'ordered'
     s.between = async () => { s.m.tables.gpu_assets = s.m.tables.gpu_assets.filter((a: any) => a.id !== id) }
     const r = await json(await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id)))
     expect(r).toMatchObject({ status: 400, body: { error: expect.stringContaining('booked as entry je-1') } })

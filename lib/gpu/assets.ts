@@ -362,14 +362,16 @@ export async function purchaseAsset(
     }
     return result
   }
+  // The link is compare-and-set and touches only the link: still unlinked and in the status this
+  // purchase left it in (ordered when it claimed, else as read). It never rewrites status from the
+  // snapshot, so nothing that legitimately moved the row meanwhile is undone.
   const { data: linked, error } = await scoped((admin as any).from('gpu_assets').update({
-    purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date,
-    status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
-  })).select('id')
+    purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date, updated_at: new Date().toISOString(),
+  })).eq('status', claimed ? 'ordered' : asset.status).is('purchase_entry_id', null).select('id')
   if (error) throw error
   // Never a success with a booked entry and no register row to show it: say so, by entry.
   if (!((linked as any[]) ?? []).length) {
-    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was removed from the register meanwhile. Void entry ${result.booked.id}, or restore the asset and book the purchase again to link it.` }
+    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was changed or removed meanwhile, so it was not linked. Book the purchase again to link entry ${result.booked.id}, or void it.` }
   }
   return { entryId: result.booked.id }
 }
