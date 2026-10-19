@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 
 /**
  * ── GPU fleet (P5) ── The fleet register, asset detail and the requests behind them (P5-2).
