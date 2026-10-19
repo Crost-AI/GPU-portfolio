@@ -59,13 +59,16 @@ export const waterfallPaths = {
 
 // ── Reply shapes ───────────────────────────────────────────────────────────────────────────────
 
-/** The distributable-cash preview: every field below is present for that kind (route header). */
+/**
+ * The distributable-cash preview: the four fields below are present for that kind (route header).
+ * `cash` is absent only when the terms could not be replayed and the split fell back to pro-rata,
+ * which the preview's `method` and warnings say.
+ */
 export type CashPreview = DistributionPreview & {
   available: number
   reserve: number
   distributable: number
   lastReserve: number | null
-  cash: NonNullable<DistributionPreview['cash']>
 }
 
 /** A row of GET /api/accounting/distributions, as this page reads it. */
@@ -168,6 +171,8 @@ export function declareRequest(args: {
 }): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
   const { preview, asOf, requestKey, edits } = args
   const manual = edits != null
+  // As previewed: a waterfall, or the pro-rata fallback the preview's warnings explain.
+  const waterfall = !manual && preview.method === 'waterfall'
   const lines = manual
     ? preview.lines.map(l => ({ lpEntityId: l.lpEntityId, amount: cents(parseAmount(edits[l.lpEntityId] ?? String(l.amount)) ?? 0) }))
     : preview.lines.map(l => ({ lpEntityId: l.lpEntityId, amount: l.amount }))
@@ -188,13 +193,13 @@ export function declareRequest(args: {
       description: args.description.trim() || null,
       lines: lines.filter(l => l.amount > 0),
       carryLines,
-      splitMethod: manual ? 'manual' : 'waterfall',
-      tiers: manual ? null : preview.tiers,
-      character: manual ? undefined : preview.suggestedCharacter,
+      splitMethod: manual ? 'manual' : preview.method,
+      tiers: waterfall ? preview.tiers : null,
+      character: waterfall ? preview.suggestedCharacter : undefined,
       available: preview.available,
       reserve: preview.reserve,
       contingencyReturn: preview.tiers.contingencyReturn ?? 0,
-      cash: manual ? undefined : preview.cash,
+      cash: waterfall ? preview.cash : undefined,
     },
   }
 }
@@ -213,7 +218,7 @@ export function refusal(r: { error: string; code?: string }): { text: string; fi
  * profit to investors + the manager's profit share + its return-of-capital share = available − reserve.
  */
 export function previewIdentity(p: Pick<CashPreview, 'tiers' | 'cash' | 'available' | 'reserve'>): { sum: number; target: number; holds: boolean } {
-  const parts = [p.tiers.contingencyReturn ?? 0, p.tiers.preferred, p.tiers.returnOfCapital, p.tiers.profitToLP, p.tiers.carry, p.cash.managerRocShare]
+  const parts = [p.tiers.contingencyReturn ?? 0, p.tiers.preferred, p.tiers.returnOfCapital, p.tiers.profitToLP, p.tiers.carry, p.cash?.managerRocShare ?? 0]
   const sum = parts.reduce((t, n) => t + toCents(n), 0)
   const target = toCents(p.available) - toCents(p.reserve)
   return { sum: sum / 100, target: target / 100, holds: sum === target }
