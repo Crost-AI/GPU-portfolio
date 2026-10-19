@@ -29,7 +29,7 @@ import {
   FleetAssumptionsError, fleetFromRegister, fleetMonthly, registerContingencySpent, scenarioTermsFor, validateFleetAssumptions,
   type FleetMonthly,
 } from '@/lib/gpu/fleet-forecast'
-import { runFleetScenario, ScenarioInputError, type FleetAssumptions, type FleetScenarioResult } from '@/lib/gpu/scenario'
+import { runFleetScenario, ScenarioInputError, type FleetAssumptions, type FleetScenarioResult, type ScenarioTerms } from '@/lib/gpu/scenario'
 import type { GpuAssetTypeRow } from '@/lib/gpu/types'
 import type { CashTiming } from './compile'
 import { monthlyConstruction, type MonthlyConstruction } from './construction-adapter'
@@ -129,6 +129,8 @@ export interface LinkedLoad {
 /** A plan's fleet scenario, as run: the assumptions with the register resolved, and the result. */
 export interface FleetLoad {
   assumptions: FleetAssumptions
+  /** The vehicle's terms the scenario ran on (before the plan's overrides, which the engine applies). */
+  terms: ScenarioTerms
   result: FleetScenarioResult
   monthly: FleetMonthly
 }
@@ -173,7 +175,7 @@ export async function loadFleet(
   warnings.push(...termWarnings)
   try {
     const result = runFleetScenario(a, fleet, terms)
-    return { fleet: { assumptions: a, result, monthly: fleetMonthly(a, result) }, warnings }
+    return { fleet: { assumptions: a, terms, result, monthly: fleetMonthly(a, result) }, warnings }
   } catch (e) {
     if (e instanceof ScenarioInputError) return { fleet: null, warnings: [...warnings, `The fleet scenario cannot be run: ${e.message}`] }
     throw e

@@ -39,7 +39,12 @@ import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntr
 import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco } from './linked'
+import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
+import { splitCashDistributions, type CashWaterfallInput } from './plan-returns'
+import { loadCapitalPostings } from '@/lib/accounting/capital-source'
+import { loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
+import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
+import type { CashWaterfallTerms } from '@/lib/gpu/waterfall'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
 import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
 import { FleetAssumptionsError, validateFleetAssumptions } from '@/lib/gpu/fleet-forecast'
@@ -329,9 +334,11 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
   const adj = validateAdjustments(plan.adjustments ?? NO_ADJUSTMENTS, v.accounts)
   const applied = applyAdjustments(result.built.entries, adj, { first: result.built.first, last: result.built.last }, v.currency)
   // Then the fund's capital management, on the plan's cash after everything else.
-  const cap = await capitalEntries(ctx, v, plan, applied.entries, { first: result.built.first, last: result.built.last }, result.ledgerPostings, result.isGpEntity)
+  const cash = await cashWaterfallFor(ctx, v, result.cutoff, result.fleet)
+  const cap = await capitalEntries(ctx, v, plan, applied.entries, { first: result.built.first, last: result.built.last }, result.ledgerPostings, result.isGpEntity, cash)
   return {
     ...result,
+    cashWaterfall: cash,
     built: { ...result.built, entries: cap.entries },
     generated: result.built.entries,
     capital: cap.capital,
@@ -379,7 +386,7 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
   // recorded (opening cash zero), which is what the warning should say.
   const noBooks = ledger.postings.length === 0 && !v.closedThrough
   const cutoffWarnings = noBooks ? [`No books are kept for ${v.name} here, so the plan starts from nothing recorded — calls fund what it spends from the first month`] : warnings
-  return { built, cutoff, ledgerPostings: ledger.postings, isGpEntity: !!drivers.gpShare, warnings: [...new Set([...cutoffWarnings, ...drivers.warnings, ...built.warnings])] }
+  return { built, cutoff, ledgerPostings: ledger.postings, isGpEntity: !!drivers.gpShare, fleet: drivers.fleet ?? null, warnings: [...new Set([...cutoffWarnings, ...drivers.warnings, ...built.warnings])] }
 }
 
 /**
@@ -388,9 +395,46 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
  * split each distribution through the waterfall, and book them. Not for a management company (no
  * partners' capital to call) or a GP entity (its calls and distributions are its share of the fund's).
  */
+/**
+ * A GPU SPV distributes its operating cash, not only exit proceeds (pivot plan §5.1): every cash
+ * movement outside capital is what its distribution policy pays out, above the reserve.
+ */
+const distributesOperatingCash = (v: VehicleCtx) => isGpuSpv(v.kind)
+
+/**
+ * A GPU SPV's distributable-cash waterfall for the forecast: the vehicle's terms (the fleet
+ * scenario's, overrides applied, when the vehicle has none yet) and its history on the books through
+ * the cutoff — contributions by investor, prior distributions with any contingency they returned. A
+ * pitch with nothing contributed yet assumes its scenario's capital raised, the month before Y1.
+ */
+async function cashWaterfallFor(ctx: ForecastServiceContext, v: VehicleCtx, cutoff: MonthKey, fleet: FleetLoad | null): Promise<CashWaterfallInput | null> {
+  if (!isGpuSpv(v.kind)) return null
+  const asOf = lastDay(cutoff)
+  const [carry, { postings }, contingencyByDate] = await Promise.all([
+    loadCarryTerms(ctx.admin, ctx.fundId, v.name),
+    loadCapitalPostings(ctx.admin, ctx.fundId, v.name, asOf),
+    loadContingencyByDate(ctx.admin, ctx.fundId, v.name),
+  ])
+  const h = loadWaterfallHistory(postings, new Set(carry.recipients.map(r => r.lpEntityId)), asOf, contingencyByDate)
+  const o = fleet?.assumptions.overrides ?? {}
+  const base: CashWaterfallTerms | null = carry.kind === 'distributable_cash' ? cashWaterfallTerms(carry) : fleet?.terms.waterfall ?? null
+  if (!base) return null
+  const terms: CashWaterfallTerms = {
+    ...base,
+    prefRate: o.prefRate ?? base.prefRate, carryRate: o.carryRate ?? base.carryRate, rocLpShare: o.rocLpShare ?? base.rocLpShare,
+    recipients: base.recipients.length ? base.recipients : fleet?.terms.waterfall.recipients ?? [],
+  }
+  return {
+    terms,
+    history: cashWaterfallEvents(h.contributions, h.priors, asOf),
+    assumedContribution: fleet ? { date: lastDay(addMonths(fleet.assumptions.startMonth, -1)), amount: fleet.result.returns.capitalRaised } : null,
+  }
+}
+
 async function capitalEntries(
   ctx: ForecastServiceContext, v: VehicleCtx, plan: any, entries: CompiledEntry[],
   window: { first: MonthKey; last: MonthKey }, ledgerPostings: Posting[], isGpEntity: boolean,
+  cash: CashWaterfallInput | null = null,
 ): Promise<{ entries: CompiledEntry[]; warnings: string[]; capital: CapitalSettings }> {
   // Calls and distributions typed into the cash statement before they were capital edits were kept
   // as hand entries ('cell-called-YYYY-MM', 'cell-distributed-YYYY-MM'): read them as month edits.
@@ -419,7 +463,7 @@ async function capitalEntries(
     if (!c) continue
     cashFlows.set(m, roundCents((cashFlows.get(m) ?? 0) + c))
     // Exit proceeds, and cash that belongs to the investors (an unused prepaid fee refunded), are paid out.
-    if (e.kind === 'proceeds' || e.distributable) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
+    if (e.kind === 'proceeds' || e.distributable || distributesOperatingCash(v)) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
   }
   // Cash in the bank when the plan's window opens — the books through the month before it (a
   // budget's window can start before the cutoff; a rolling forecast's starts just after it).
@@ -428,7 +472,9 @@ async function capitalEntries(
   const result = computeCapital({
     months, openingCash, cashFlows, proceeds, uncalled: model?.actuals.uncalledCapital ?? 0, settings,
   })
-  const split = splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
+  const split = cash
+    ? splitCashDistributions(result.distributions, result.calls, months, cash).byMonth
+    : splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
   // Who the carry goes to is the fund's setting (Allocation terms → Carry, "Carry accrues to"):
   // usually its GP entity, but any partner or associate vehicle, in any split.
   const carryTo = [...split.values()].some(s => s.carry > 0) ? await carryRecipientLabel(ctx, v.name) : ''
@@ -1605,7 +1651,7 @@ export async function getPlanReturns(
     const m = e.entryDate.slice(0, 7) as MonthKey
     const c = cashOf(e)
     if (!c) continue
-    const into = e.kind === 'investment' ? invested : e.kind === 'proceeds' || e.distributable ? proceeds : otherFlows
+    const into = e.kind === 'investment' ? invested : e.kind === 'proceeds' || e.distributable || distributesOperatingCash(v) ? proceeds : otherFlows
     into.set(m, roundCents((into.get(m) ?? 0) + c))
   }
   const opensAfter = lastDay(addMonths(built.first, -1))
@@ -1618,6 +1664,8 @@ export async function getPlanReturns(
   const common = {
     months, asOfMonth: compiled.cutoff, openingCash, uncalled: model.actuals.uncalledCapital ?? 0,
     settings: compiled.capital ?? safeCapital(row.capital), otherFlows, waterfall: model.actuals.waterfall,
+    // A GPU SPV: its distributable-cash waterfall, no terminal carry (lib/forecast/plan-returns.ts).
+    ...(compiled.cashWaterfall ? { waterfallKind: 'distributable_cash' as const, cashWaterfall: compiled.cashWaterfall } : {}),
   }
   const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) })
 
