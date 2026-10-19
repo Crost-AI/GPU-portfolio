@@ -602,6 +602,12 @@ export interface NonCashItem {
 }
 export interface StatementOfCashFlows {
   operating: CashFlowSection
+  /**
+   * A GPU SPV's equipment: purchases, capitalized costs and disposal proceeds. OPTIONAL and absent
+   * for every other kind, whose investment activity runs through operating (investment-company
+   * style), so their statement is byte-identical to before.
+   */
+  investing?: CashFlowSection
   financing: CashFlowSection
   netChange: number
   openingCash: number
@@ -650,6 +656,14 @@ function cashFlowLineFor(account: Account): { code: string; name: string } {
 }
 
 /**
+ * Investing activity, where a statement reports it (a GPU SPV): an entry that moves the equipment
+ * accounts — 1600 cost (purchases, capitalized costs) or 1650 accumulated depreciation (cleared on
+ * a disposal). Its whole cash movement is investing, the disposal's gain or loss included: the
+ * proceeds are what the sale brought in. Depreciation never moves cash, so it never appears.
+ */
+const INVESTING_SUBTYPES = new Set(['fixed_asset', 'accumulated_depreciation'])
+
+/**
  * Accounts whose movement makes a non-cash entry DISCLOSABLE — i.e. it was an
  * investing or financing transaction that simply bypassed the bank account.
  * A revaluation (unrealized ↔ income) is non-cash but is neither, so it is not
@@ -680,7 +694,9 @@ export function statementOfCashFlows(
   cashAccountId: string,
   postings: CashPosting[],
   accounts: Account[],
-  openingCash = 0
+  openingCash = 0,
+  /** Report an investing section for equipment (a GPU SPV). Off, the statement is as it always was. */
+  opts: { investing?: boolean } = {},
 ): StatementOfCashFlows {
   const acctById = new Map(accounts.map(a => [a.id, a]))
   const byEntry = new Map<string, CashPosting[]>()
@@ -691,8 +707,10 @@ export function statementOfCashFlows(
 
   // Presentation line ("code|name") → net cash attributed to it, plus its metadata.
   const byCounterAccount = new Map<string, number>()
-  const lineMeta = new Map<string, { code: string; name: string; financing: boolean }>()
+  const lineMeta = new Map<string, { code: string; name: string; financing: boolean; investing?: boolean }>()
   const nonCash: NonCashItem[] = []
+  const investingOn = opts.investing === true
+  const isInvesting = (legs: CashPosting[]) => investingOn && legs.some(l => INVESTING_SUBTYPES.has(acctById.get(l.accountId)?.subtype ?? ''))
 
   for (const legs of Array.from(byEntry.values())) {
     const cashAmount = r(legs.filter(l => l.accountId === cashAccountId).reduce((s, l) => s + l.amount, 0))
@@ -702,9 +720,11 @@ export function statementOfCashFlows(
       // an investment bought with borrowed money, a loan repaid by a partner
       // directly — ASC 230 requires it be disclosed, not silently omitted.
       const isAllocation = legs.some(l => acctById.get(l.accountId)?.subtype === 'undistributed_earnings')
+      // Equipment bought on credit is a non-cash investing transaction too (depreciation, which
+      // moves 1650 only, is not: it is no transaction with anyone).
       const disclosable = !isAllocation && legs.some(l => {
         const st = acctById.get(l.accountId)?.subtype
-        return !!st && NONCASH_DISCLOSABLE_SUBTYPES.has(st)
+        return !!st && (NONCASH_DISCLOSABLE_SUBTYPES.has(st) || (investingOn && st === 'fixed_asset'))
       })
       if (disclosable) {
         const first = legs[0]
@@ -724,6 +744,16 @@ export function statementOfCashFlows(
 
     const counter = legs.filter(l => l.accountId !== cashAccountId && l.amount !== 0)
     if (counter.length === 0) continue
+
+    if (isInvesting(legs)) {
+      const line = cashAmount < 0
+        ? { code: '1600', name: 'Purchases of equipment and capitalized costs' }
+        : { code: '1600', name: 'Proceeds from disposal of equipment' }
+      const key = `${line.code}|${line.name}|investing`
+      lineMeta.set(key, { ...line, financing: false, investing: true })
+      byCounterAccount.set(key, r((byCounterAccount.get(key) ?? 0) + cashAmount))
+      continue
+    }
 
     // Split the cash movement across its counter-legs in proportion to their size, so
     // a mixed principal-plus-interest payment lands partly in financing and partly in
@@ -758,14 +788,17 @@ export function statementOfCashFlows(
 
   const keys = Array.from(byCounterAccount.keys())
   const financingIds = keys.filter(k => lineMeta.get(k)?.financing)
-  const operatingIds = keys.filter(k => !lineMeta.get(k)?.financing)
+  const investingIds = keys.filter(k => lineMeta.get(k)?.investing)
+  const operatingIds = keys.filter(k => !lineMeta.get(k)?.financing && !lineMeta.get(k)?.investing)
 
   const financing = build('Financing activities', financingIds)
   const operating = build('Operating activities', operatingIds)
-  const netChange = r(operating.total + financing.total)
+  const investing = investingOn ? build('Investing activities', investingIds) : null
+  const netChange = r(operating.total + (investing?.total ?? 0) + financing.total)
   nonCash.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
   return {
     operating,
+    ...(investing ? { investing } : {}),
     financing,
     netChange,
     openingCash: r(openingCash),

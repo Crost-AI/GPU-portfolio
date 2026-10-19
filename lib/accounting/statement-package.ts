@@ -31,7 +31,7 @@ import { booksForBasis, basisFromParam, type StatementBasis } from './books'
 import { vehicleKindByName } from './vehicle-domain'
 import { closesToOwnerEquity, equityLabel } from './vocab'
 import { changesInMembersCapital } from './members-capital'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
 
 /** The JSON body the statements route returns — the on-screen statement set. */
 export interface StatementPayload {
@@ -305,6 +305,8 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
       ? statementOfCashFlows(
           data.cashAccount.id, inPeriodSourced, data.accounts,
           openingCashBalance(data.cashAccount.id, data.sourcedPostings, period.start),
+          // A GPU SPV reports its equipment as investing; every other kind is as it was.
+          { investing: isGpuSpv(data.kind) },
         )
       : null,
   }
