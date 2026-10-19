@@ -20,7 +20,10 @@ vi.mock('@/lib/accounting/persist', async orig => ({
     if (s.persistError) return { error: s.persistError }
     if (s.throwOnRef && String(entry.sourceRef ?? '').startsWith(s.throwOnRef)) { s.throwOnRef = null; throw new Error('statement timeout') }
     const t = s.m.tables
-    const dup = entry.sourceRef && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
+    // As production: journal_entries_gpu_ops_once makes marketplace: and marketplace-payout: refs
+    // unique; reversal: refs have NO uniqueness constraint, so a second reversal would be written.
+    const unique = /^marketplace(-payout)?:/.test(String(entry.sourceRef ?? ''))
+    const dup = unique && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
     const id = `je-${++s.serial}`
     t.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status, entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef, memo: entry.memo, reference: entry.reference ?? null })
@@ -338,6 +341,8 @@ const inflowRow = (id: string, txn_date: string, amount: number) => ({ id, fund_
 const entriesWith = (prefix: string) => (s.m.tables.journal_entries as any[]).filter(e => String(e.source_ref ?? '').startsWith(prefix))
 
 describe('posting is claimed', () => {
+  // Codex C1: reversal: refs have no database uniqueness (the stand-in above writes duplicates, as
+  // production would), so only the claims can keep the reversal single.
   it('two concurrent confirmed posts of one correction book exactly one reversal and one new entry', async () => {
     await stage(line('H200 #1', 8640, 864))
     await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
@@ -949,5 +954,41 @@ describe('round 5: stale snapshots, owned cleanup, completion links', () => {
     }
     const r = await postEarnings(s.m.admin, 'f', G, 'u', [row.id])
     expect(r).toMatchObject({ posted: [{ id: row.id, entryId: row.journal_entry_id }] })
+  })
+})
+
+describe('Codex C1 without a database key on reversal: refs', () => {
+  it('the stand-in writes a second reversal: entry when asked (so the tests below are not masked)', async () => {
+    const { persistEntry } = await import('@/lib/accounting/persist')
+    const e = { fundId: 'f', entryDate: '2026-09-30', sourceType: 'income', sourceRef: 'reversal:je-x', postings: [] } as any
+    await persistEntry(s.m.admin, 'f', G, 'u', e)
+    expect(await persistEntry(s.m.admin, 'f', G, 'u', e)).toMatchObject({ entryId: expect.any(String) })
+    expect(entriesWith('reversal:je-x')).toHaveLength(2)
+  })
+
+  it('three concurrent confirmed posts of one correction, each reaching the reversal step, book one reversal', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged').id
+    const results = await Promise.all([1, 2, 3].map(() => postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })))
+    expect(results.filter(r => 'reversed' in r)).toHaveLength(1)
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(entriesWith('marketplace:')).toHaveLength(2)
+    expect(await gpuOpsCloseIssues(s.m.admin, 'f', G, 'v-gpu', '2026-09-01', '2026-09-30')).toEqual({ blockers: [], warnings: [] })
+  })
+
+  it('a retry that resumes an abandoned correction while the predecessor is held by a live reversal books none', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged')
+    const old = byAsset('a-1', 'posted')
+    // Request A holds the predecessor and is about to insert its reversal; B takes over the
+    // correction's expired claim and reaches the reversal step at the same moment.
+    Object.assign(old, { status: 'reversing', claim_token: 'A', claimed_at: new Date().toISOString() })
+    Object.assign(fix, { status: 'posting', claim_token: 'A-fix', claimed_at: ago(180_000) })
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', [fix.id], { confirmReversal: true })).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
+    expect(entriesWith('reversal:')).toEqual([])
   })
 })
