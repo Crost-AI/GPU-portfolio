@@ -15,6 +15,11 @@
 export const RESERVED_SOURCE_REF_PREFIXES = [
   // GPU fleet
   'gpu-asset:', 'gpu-dep:', 'fleet:',
+  // ── GPU fleet (P2) ── the gross-revenue fee true-up counts every live `gpu-fee:<vehicle>:<YYYY-MM>`
+  // entry as fee already booked for that month (lib/gpu/fee.ts), so a typed one would shrink the fee.
+  // intercompany_transactions.source_ref carries the same value, but on the charge register, which
+  // no journal path writes.
+  'gpu-fee:',
   // Allocation, close, tax
   'allocation:', 'agent-allocation:', 'close:', 'tax:', 'schedule:', 'recurring:',
   // Intercompany

@@ -22,7 +22,13 @@ import { allocateAmount } from './allocation'
 import type { CapitalAccount } from './capital-account'
 import { vehicleIdByName } from './vehicle-id'
 
-export type CarryKind = 'none' | 'straight' | 'american' | 'european'
+// 'distributable_cash' is a GPU SPV's waterfall (lib/gpu/waterfall.ts): pref on unreturned capital,
+// then return of capital, then the split. It accrues no carry at the close (Karl, R4): the profit
+// share is realised only when a distribution is declared, so carryTarget is never called for it.
+export type CarryKind = 'none' | 'straight' | 'american' | 'european' | 'distributable_cash'
+
+export type PrefBasis = 'contributed' | 'unreturned'
+export type PrefDayCount = 'act_365' | '30_360' | 'periodic'
 
 export interface CarryRecipient {
   lpEntityId: string
@@ -41,6 +47,14 @@ export interface VehicleCarryTerms {
   /** Who receives the carry and in what split. Resolved from `carry_recipients`, or
    *  `[{ gpEntityId, 100 }]` when only the legacy field is set, else []. */
   recipients: CarryRecipient[]
+  // distributable_cash only. Optional so the fund kinds' terms read as before; loadCarryTerms
+  // and NO_CARRY always set them.
+  /** What the pref accrues on ('unreturned' for distributable_cash). Default 'contributed'. */
+  prefBasis?: PrefBasis
+  /** 30_360 is 30E/360. Default '30_360'. */
+  prefDayCount?: PrefDayCount
+  /** Investors' share of the return-of-capital flow. Default 1. */
+  rocLpShare?: number
 }
 
 export const NO_CARRY: VehicleCarryTerms = {
@@ -51,6 +65,9 @@ export const NO_CARRY: VehicleCarryTerms = {
   prefCompounds: true,
   gpEntityId: null,
   recipients: [],
+  prefBasis: 'contributed',
+  prefDayCount: '30_360',
+  rocLpShare: 1,
 }
 
 /** Resolve the carry recipients: the explicit list if present, else the legacy single GP at 100%. */
@@ -114,6 +131,8 @@ export function lpEconomicsFromAccounts(
 export interface DatedContribution {
   date: string
   amount: number
+  /** Who contributed. The distributable-cash waterfall needs it; the fund hurdle does not. */
+  lpEntityId?: string
 }
 
 /**
@@ -224,7 +243,7 @@ export async function loadCarryTerms(
 
   const { data, error } = await admin
     .from('vehicle_waterfall_terms' as any)
-    .select('kind, carry_rate, pref_rate, catchup_rate, pref_compounds, gp_entity_id, carry_recipients')
+    .select('kind, carry_rate, pref_rate, catchup_rate, pref_compounds, gp_entity_id, carry_recipients, pref_basis, pref_day_count, roc_lp_share')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .maybeSingle()
@@ -234,7 +253,7 @@ export async function loadCarryTerms(
   if (!data) return NO_CARRY
   const d = data as any
   const kind: CarryKind =
-    d.kind === 'straight' || d.kind === 'american' || d.kind === 'european' ? d.kind : 'none'
+    d.kind === 'straight' || d.kind === 'american' || d.kind === 'european' || d.kind === 'distributable_cash' ? d.kind : 'none'
 
   return {
     kind,
@@ -244,6 +263,9 @@ export async function loadCarryTerms(
     prefCompounds: d.pref_compounds !== false,
     gpEntityId: d.gp_entity_id ?? null,
     recipients: resolveCarryRecipients(d.carry_recipients, d.gp_entity_id ?? null),
+    prefBasis: d.pref_basis === 'unreturned' ? 'unreturned' : 'contributed',
+    prefDayCount: d.pref_day_count === 'act_365' || d.pref_day_count === 'periodic' ? d.pref_day_count : '30_360',
+    rocLpShare: d.roc_lp_share == null ? 1 : Number(d.roc_lp_share),
   }
 }
 

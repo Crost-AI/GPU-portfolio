@@ -2,6 +2,8 @@
 // previews a notice's figures can name these types without reaching headless Chromium
 // (lib/pdf-routes.mjs lists the routes that may).
 
+import { roundCents } from './ledger'
+
 export type NoticeKind = 'capital_call' | 'distribution'
 
 export interface NoticeData {
@@ -41,4 +43,42 @@ export interface NoticeData {
   share?: number | null
   /** A preview: marked DRAFT on every page, so it can never pass for a demand. */
   draft?: boolean
+}
+
+/** The frozen waterfall figures a distribution notice restates (the register's wf_* columns). */
+export interface NoticeTiers {
+  returnOfCapital: number
+  preferred: number
+  lpTotal: number
+  /** Present when the distribution went through a distributable-cash waterfall (a GPU SPV). */
+  cash?: { contingencyReturn: number; profitToLP: number; unreturnedAfter: number; prefCarriedForward: number }
+}
+
+/**
+ * The "of which" rows for one LP line of a distribution notice: the line's pro-rata share of each
+ * frozen tier. A fund's notice shows return of capital and the preferred return, as it always
+ * has. A GPU SPV's adds the profit share and the two balances an investor asks about next, the
+ * unreturned capital and the unpaid pref carried forward; pro-rata by the line is exact for a
+ * single-close SPV, where every investor holds the same share of each tier.
+ */
+export function distributionTierLines(tiers: NoticeTiers, lineAmount: number): { label: string; value: number }[] {
+  if (!(tiers.lpTotal > 0)) return []
+  const share = lineAmount / tiers.lpTotal
+  const of = (v: number) => roundCents(v * share)
+  if (!tiers.cash) {
+    const rows = [{ label: 'Of which return of capital', value: of(tiers.returnOfCapital) }]
+    if (tiers.preferred > 0) rows.push({ label: 'Of which preferred return', value: of(tiers.preferred) })
+    return rows
+  }
+  const c = tiers.cash
+  const rows: { label: string; value: number }[] = []
+  if (c.contingencyReturn > 0) rows.push({ label: 'Return of unspent contingency', value: of(c.contingencyReturn) })
+  rows.push(
+    { label: 'Preferred return', value: of(tiers.preferred) },
+    { label: 'Return of capital', value: of(tiers.returnOfCapital) },
+    { label: 'Profit share', value: of(c.profitToLP) },
+    { label: 'Unreturned capital after this distribution', value: of(c.unreturnedAfter) },
+    { label: 'Unpaid preferred return carried forward', value: of(c.prefCarriedForward) },
+  )
+  return rows
 }
