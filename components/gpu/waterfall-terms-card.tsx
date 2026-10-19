@@ -1,4 +1,3 @@
-import Link from 'next/link'
 import { ShellSection } from './parts'
 import { CADENCES, type Cadence, type FeeTermsReply, type WaterfallTermsReply } from './waterfall-api'
 
@@ -30,8 +29,12 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction, termsAction }: {
+export function TermsCard({ waterfall, waterfallError, waterfallLoading, fee, cadence, payeeName, feeAction, termsAction }: {
   waterfall: WaterfallTermsReply | null
+  /** The waterfall-terms read failed: say so, rather than "Not set". */
+  waterfallError?: string
+  /** The read is still out: say so, rather than "Not set". */
+  waterfallLoading?: boolean
   /** undefined: the caller cannot read the fee terms (accounting); null: the vehicle has none. */
   fee: FeeTermsReply['terms'] | undefined
   /** `value` null: the vehicle-settings route does not report the cadence. */
@@ -39,7 +42,7 @@ export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction, terms
   payeeName: (vehicleId: string) => string | null
   /** The Edit fee terms button, for a caller with accounting write. */
   feeAction?: React.ReactNode
-  /** The Edit terms button, for a caller who may change the waterfall here; else a link to the terms page. */
+  /** The Edit terms button or the link to the terms page (TermsAction). */
   termsAction?: React.ReactNode
 }) {
   const t = waterfall?.terms
@@ -48,7 +51,7 @@ export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction, terms
     <ShellSection
       title="Terms"
       description="How each distribution is split between investors and the manager."
-      action={termsAction ?? <Link href="/funds/allocation-terms" className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Edit terms</Link>}
+      action={termsAction}
     >
       <div className="grid gap-x-8 gap-y-4 md:grid-cols-2" data-region="terms">
         <dl className="text-sm">
@@ -64,7 +67,7 @@ export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction, terms
               </Row>
             </>
           ) : (
-            <Row label="Waterfall">Not set</Row>
+            <Row label="Waterfall">{waterfallError ? <span className="text-destructive">{waterfallError}</span> : waterfallLoading ? <span className="text-muted-foreground">Loading</span> : 'Not set'}</Row>
           )}
         </dl>
         <dl className="text-sm">

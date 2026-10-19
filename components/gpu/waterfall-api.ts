@@ -91,6 +91,21 @@ export interface WaterfallTermsReply {
   candidates: { lpEntityId: string; name: string; partnerClass?: string }[]
 }
 
+/** The waterfall-terms read, as the page holds it: a failed read is not "no terms". */
+export type TermsLoad =
+  | { state: 'loading' }
+  | { state: 'ok'; data: WaterfallTermsReply }
+  | { state: 'error'; error: string }
+
+/**
+ * May the page offer its distributable-cash editor? Only on terms it has actually read, and only
+ * when they are distributable_cash or the route's NO_CARRY (kind 'none': nothing set yet). Saving
+ * writes distributable_cash, so offering it over a failed read could overwrite, say, European terms.
+ */
+export function termsEditable(load: TermsLoad): boolean {
+  return load.state === 'ok' && (load.data.terms.kind === 'distributable_cash' || load.data.terms.kind === 'none')
+}
+
 export interface FeeTermsReply {
   terms: {
     basis: string; annualRate: number; frequency: string

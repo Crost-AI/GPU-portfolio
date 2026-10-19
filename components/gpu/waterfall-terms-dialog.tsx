@@ -1,14 +1,16 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { Loader2 } from 'lucide-react'
+import { useCanWrite } from '@/components/access-context'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
-  cashTermsBody, cashTermsFormOf, managerPct, send, waterfallPaths,
-  type CashTermsField, type CashTermsForm, type Fetcher, type WaterfallTermsReply,
+  cashTermsBody, cashTermsFormOf, managerPct, send, termsEditable, waterfallPaths,
+  type CashTermsField, type CashTermsForm, type Fetcher, type TermsLoad, type WaterfallTermsReply,
 } from './waterfall-api'
 
 // ── GPU fleet (P5) ── Edit a GPU SPV's distributable-cash waterfall: the preferred return (simple, on
@@ -18,6 +20,24 @@ import {
 // its own words.
 
 const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm'
+
+/**
+ * The terms card's action. The editor, for a caller with gp_economics write and accounting write,
+ * on terms the page has read and may replace (termsEditable); a link to the terms page otherwise;
+ * nothing while the read is pending or after it failed (the card shows why).
+ */
+export function TermsAction({ load, fetcher, onSaved }: { load: TermsLoad; fetcher: Fetcher; onSaved: () => void }) {
+  const writesGp = useCanWrite('gp_economics')
+  const writesBooks = useCanWrite('accounting')
+  const writes = writesGp && writesBooks
+  if (load.state !== 'ok') return null
+  if (writes && termsEditable(load)) return <WaterfallTermsDialog fetcher={fetcher} waterfall={load.data} onSaved={onSaved} />
+  return (
+    <Link href="/funds/allocation-terms" className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+      Terms page
+    </Link>
+  )
+}
 
 export function WaterfallTermsDialog({ fetcher, waterfall, onSaved }: {
   fetcher: Fetcher

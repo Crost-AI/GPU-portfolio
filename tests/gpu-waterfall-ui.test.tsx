@@ -23,15 +23,17 @@ import { PrefLedgerTable, PrefLedgerUnavailable } from '@/components/gpu/pref-le
 import { DistributionHistory, TierBreakdown } from '@/components/gpu/distribution-history'
 import { FeeTermsForm } from '@/components/gpu/fee-terms-dialog'
 import { PositionTiles } from '@/components/gpu/waterfall-position'
-import { CashTermsEditor } from '@/components/gpu/waterfall-terms-dialog'
+import { CashTermsEditor, TermsAction } from '@/components/gpu/waterfall-terms-dialog'
+import { TermsCard } from '@/components/gpu/waterfall-terms-card'
 import { dayCountLabel } from '@/components/gpu/waterfall-terms-card'
 import {
-  PREVIEW_AGAIN, feeFormOf, linesEditable, cashTermsBody, cashTermsFormOf, managerPct, type CashTermsForm, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
-  vehicleFetcher, type CashPreview, type Fetcher, type HistoryRow, type PrefLedgerRow,
+  PREVIEW_AGAIN, feeFormOf, linesEditable, cashTermsBody, cashTermsFormOf, managerPct, termsEditable, type CashTermsForm, type TermsLoad, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
+  vehicleFetcher, type CashPreview, type Fetcher, type HistoryRow, type PrefLedgerRow, type WaterfallTermsReply,
 } from '@/components/gpu/waterfall-api'
 import { splitDistribution, suggestedCharacter, cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import type { VehicleCarryTerms } from '@/lib/accounting/carry'
 import { prefLedger, validateCashTerms } from '@/lib/gpu/waterfall'
+import { NO_CARRY } from '@/lib/accounting/carry'
 import { FEE_BASES, FEE_FREQUENCIES } from '@/lib/gpu/fee'
 
 const money = (n: number) => formatCurrencyFull(n, 'USD')
@@ -460,6 +462,8 @@ describe('the manager’s figures need gp_economics', () => {
   it('the terms card renders only with it; declaring needs lp_capital write either way', () => {
     expect(page(false)).not.toContain('data-region="terms"')
     expect(page(true)).toContain('data-region="terms"')
+    // Before the read lands the card says so; it does not claim the vehicle has no terms.
+    expect(page(true)).not.toContain('Not set')
     expect(page(false)).not.toContain('Needs write access to investors')
   })
 
@@ -692,12 +696,43 @@ describe('edit the waterfall terms', () => {
     expect(html).toContain('role="alert"')
   })
 
+  // What the route's GET returns: the vehicle's terms, or NO_CARRY when none are set.
+  const read = (terms: WaterfallTermsReply['terms']): TermsLoad => ({ state: 'ok', data: { terms, candidates: [] } })
+  const CASH_READ = read({ kind: 'distributable_cash', carryRate: 0.3, prefRate: 0.08, recipients: [{ lpEntityId: 'mgr', pct: 100 }], prefDayCount: '30_360', rocLpShare: 1 })
+  const NONE_READ = read({ kind: NO_CARRY.kind, carryRate: NO_CARRY.carryRate, prefRate: NO_CARRY.prefRate, recipients: NO_CARRY.recipients })
+  const EUROPEAN_READ = read({ kind: 'european', carryRate: 0.2, prefRate: 0.08, recipients: [{ lpEntityId: 'mgr', pct: 100 }] })
+  const action = (load: TermsLoad, gp: boolean | 'write' = 'write', accounting: 'read' | 'write' = 'write') => renderToStaticMarkup(
+    <AccessProvider value={access(gp, accounting)}><TermsAction load={load} fetcher={fakeFetcher().fetcher} onSaved={() => {}} /></AccessProvider>,
+  )
+  const button = /data-action="edit-waterfall-terms"/
+
   it('the Edit terms button needs gp_economics write and accounting write', () => {
-    const button = /data-action="edit-waterfall-terms"/
-    expect(page(false)).not.toMatch(button)
-    expect(page(true)).not.toMatch(button)
-    expect(page('write', 'read')).not.toMatch(button)
-    expect(page('write')).toMatch(button)
+    expect(action(CASH_READ, true)).not.toMatch(button)
+    expect(action(CASH_READ, 'write', 'read')).not.toMatch(button)
+    expect(action(CASH_READ, 'write')).toMatch(button)
+    // Without the page's terms card (no gp_economics) there is nothing at all.
+    expect(page(false)).not.toContain('data-region="terms"')
+  })
+
+  it('is offered on distributable_cash terms and on NO_CARRY (none set yet), not on other kinds', () => {
+    expect(NO_CARRY.kind).toBe('none')
+    expect(action(NONE_READ)).toMatch(button)
+    expect(action(EUROPEAN_READ)).not.toMatch(button)
+    expect(action(EUROPEAN_READ)).toContain('/funds/allocation-terms')
+  })
+
+  it('a failed terms read renders the error and no button: a save would overwrite terms it never read', () => {
+    const failed: TermsLoad = { state: 'error', error: 'Could not reach the server. Check the connection and try again.' }
+    expect(termsEditable(failed)).toBe(false)
+    expect(action(failed)).toBe('')
+    expect(action({ state: 'loading' })).toBe('')
+    const card = renderToStaticMarkup(
+      <TermsCard waterfall={null} waterfallError={failed.error} fee={null} payeeName={() => null}
+        cadence={{ value: null, canEdit: false, onChange: () => {} }} termsAction={action(failed) || undefined} />,
+    )
+    expect(card).toContain(failed.error)
+    expect(card).not.toContain('Not set')
+    expect(card).not.toMatch(button)
   })
 })
 
