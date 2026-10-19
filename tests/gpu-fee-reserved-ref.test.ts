@@ -26,7 +26,7 @@ vi.mock('@/lib/accounting/persist', async orig => ({
   }),
 }))
 
-import { POST } from '@/app/api/accounting/journal/route'
+import { POST, PUT } from '@/app/api/accounting/journal/route'
 import { assertUserRefAllowed, isReservedSourceRef } from '@/lib/accounting/reserved-refs'
 import { accrueGrossRevenueFee } from '@/lib/gpu/fee'
 import { persistEntry } from '@/lib/accounting/persist'
@@ -68,5 +68,15 @@ describe('gpu-fee: is a reserved source_ref', () => {
     expect(persistEntry).not.toHaveBeenCalled()
 
     expect(await accrueGrossRevenueFee(s.m.admin, 'f', 'GPU I', 'u', '2027-01')).toMatchObject({ delta: 5_000 })
+  })
+
+  it('a gpu-fee: draft cannot be rewritten by hand (edit-locked like the fleet\'s own drafts)', async () => {
+    s.m.tables.journal_entries.push({ id: 'fee-draft', fund_id: 'f', vehicle_id: 'v1', book: 'actual', status: 'draft', entry_date: '2027-01-31', source_type: 'management_fee', source_ref: 'gpu-fee:v1:2027-01' })
+    const res = await PUT(new NextRequest('https://x.test/api/accounting/journal', {
+      method: 'PUT',
+      body: JSON.stringify({ group: 'GPU I', id: 'fee-draft', entryDate: '2027-01-31', postings: [{ accountId: 'fee', amount: 1 }, { accountId: 'dtm', amount: -1 }] }),
+    }))
+    expect(res.status).toBe(400)
+    expect(persistEntry).not.toHaveBeenCalled()
   })
 })
