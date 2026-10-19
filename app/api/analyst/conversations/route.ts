@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
+import { fleetCompanyDenied } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -73,15 +74,17 @@ export async function POST(req: NextRequest) {
 
   // Verify company belongs to fund if provided
   if (body.companyId) {
-    const { data: companyCheck } = await admin
+    const { data: companyCheck } = await (admin as any)
       .from('companies')
-      .select('fund_id')
+      .select('fund_id, holding_type')
       .eq('id', body.companyId)
       .maybeSingle()
     const scope = await loadEntityScopeForUser(admin, user.id)
     const visible = scope ? scope.companyIds : []
     if (!companyCheck || companyCheck.fund_id !== membership.fund_id
-      || (visible !== null && !visible.includes(body.companyId))) {
+      || (visible !== null && !visible.includes(body.companyId))
+      // ── GPU fleet (P3) ── a fleet company needs fleet read too (#91).
+      || !scope || fleetCompanyDenied(scope.access, companyCheck.holding_type)) {
       return NextResponse.json({ error: 'Invalid company' }, { status: 403 })
     }
   }
