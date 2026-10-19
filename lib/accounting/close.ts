@@ -1,4 +1,5 @@
 import { loadResolvedCommitments } from './terms'
+import { fleetCloseReview, type FleetReviewCheck } from '@/lib/gpu/close-checks'
 // Period close — the ONE place where P&L is allocated to partners' capital.
 //
 // Expense/income/valuation entries are booked simply (Dr expense / Cr cash). They
@@ -523,6 +524,8 @@ export interface CloseReadiness {
   /** Blocker text → the page that clears it (a quoted holding's page). Absent on older reviews. */
   blockerLinks?: Record<string, string>
   warnings: string[]
+  /** ── GPU fleet (P1) ── The fleet's review checks; present only for a GPU SPV. */
+  fleetChecks?: FleetReviewCheck[]
 }
 
 export interface CloseThroughPreview {
@@ -572,6 +575,8 @@ async function persistCloseReview(
       evidence: readiness.bank ?? {} },
     { key: 'allocation_completeness', section: 'Partner capital', label: 'Partner allocations complete', status: allocationCheck.status, detail: allocationCheck.detail, evidence: { unallocatedEarnings: unallocated } },
     { key: 'valuation_and_cutoff', section: 'Investments and cutoff', label: 'Valuation and cutoff review', status: readiness.warnings.length === 0 ? 'passed' : 'needs_review', detail: readiness.warnings.length === 0 ? 'No valuation or cutoff exceptions were reported.' : readiness.warnings.join(' '), evidence: { warnings: readiness.warnings } },
+    // ── GPU fleet (P1) ── depreciation posted and NBV tied (a GPU SPV only; see checkReadiness).
+    ...(readiness.fleetChecks ?? []),
   ] as const
   // PREPARED, not approved: approval is a second person's act (lib/accounting/close-approval.ts).
   const { data: review, error } = await admin.from('close_reviews' as any).upsert({
@@ -944,6 +949,10 @@ export async function checkReadiness(
     )
   }
 
+  // ── GPU fleet (P1) ── depreciation posted and fleet NBV tied, a GPU SPV only (lib/gpu/close-checks.ts).
+  const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, kind, start, end)
+  if (fleet) blockers.push(...fleet.blockers)
+
   return {
     draftEntries: {
       count: draftRows.length,
@@ -962,6 +971,7 @@ export async function checkReadiness(
     blockers,
     warnings,
     blockerLinks,
+    ...(fleet ? { fleetChecks: fleet.checks } : {}),
   }
 }
 

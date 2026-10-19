@@ -70,6 +70,9 @@ function macrs(basisCents: number, cls: 5 | 7): number[] {
  * the year placed in service takes none.
  */
 export function taxDepreciationSchedule(a: TaxDepreciableAsset): TaxYearLine[] {
+  // A non-book tax method runs on its own inputs, never the book postings or book capex events
+  // (decision Q7). The 'book' method IS the book schedule, so it keeps them: tax equals book.
+  if (a.taxMethod !== 'book') a = { ...a, posted: undefined, capex: [] }
   const basis = cents(a.basis)
   const start = yearOf(a.inServiceDate)
   let years: Map<number, number>
