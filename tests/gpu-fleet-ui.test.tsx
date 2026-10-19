@@ -14,7 +14,8 @@ import path from 'node:path'
 
 import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-context'
 import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
-import { DepreciationTable } from '@/components/gpu/asset-detail'
+import { DepreciationTable, trueUpIndex } from '@/components/gpu/asset-detail'
+import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
 import { ErrorAlert } from '@/components/gpu/fleet-ui'
 import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMoves, todayIso } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
@@ -307,8 +308,36 @@ describe('Capitalize a cost', () => {
     expect((await s.submit(form)).ok).toBe(true)
     expect(calls.map(c => c.body.key)).toEqual(['key-1', 'key-1'])
     expect(calls[0]).toMatchObject({ path: '/api/fleet/assets/h200/capex', body: { amount: 12_000, entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false } })
-    s.reset()
-    expect(s.key()).toBe('key-2')
+  })
+
+  it('the real dialog takes one key per opening: whileOpen mounts its body on open, and not while closed', () => {
+    // Each static render is a fresh mount, exactly what reopening the dialog is (whileOpen unmounts
+    // the body on close). The submitter, and so the key, is made once per mount.
+    let n = 0
+    const newKey = () => `key-${++n}`
+    const render = (open: boolean) => renderToStaticMarkup(
+      <CurrencyProvider currency="USD">
+        <CapexDialog open={open} onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} asset={PACK[0]} newKey={newKey} />
+      </CurrencyProvider>,
+    )
+    render(false)
+    expect(n).toBe(0)
+    render(true)
+    expect(n).toBe(1)
+    render(true)
+    expect(n).toBe(2)
+  })
+
+  it('a probe through the same whileOpen and hook sees the key held for the mount and renewed on the next', () => {
+    let n = 0
+    const Probe = whileOpen(function Probe(p: { open: boolean; onOpenChange: () => void; fetcher: Fetcher; onDone: () => void }) {
+      const s = useCapexSubmitter(p.fetcher, 'h200', () => `key-${++n}`)
+      return <i>{s.key()}|{s.key()}</i>
+    })
+    const props = { onOpenChange: () => {}, fetcher: (async () => new Response('{}')) as Fetcher, onDone: () => {} }
+    expect(renderToStaticMarkup(<Probe open={false} {...props} />)).toBe('')
+    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-1|key-1</i>')
+    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-2|key-2</i>')
   })
 })
 
@@ -382,7 +411,7 @@ describe('the asset’s depreciation schedule', () => {
   it('has 60 rows and ends at salvage, NBV 130,500 at month 60', () => {
     const lines = assetSchedule(fleet)
     expect(lines).toHaveLength(60)
-    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} /></CurrencyProvider>)
+    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} convention="full_month" lifeMonths={60} /></CurrencyProvider>)
     expect(html.match(/data-month="/g)).toHaveLength(60)
     expect(html).toMatch(/data-month="60"[\s\S]*?data-nbv="130500"/)
     expect(html).toMatch(/data-month="1"[\s\S]*?data-nbv="1285425"/)
@@ -398,8 +427,37 @@ describe('the asset’s depreciation schedule', () => {
     const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3 })
     const lines = assetSchedule(odd)
     expect(lines.map(l => l.amount)).toEqual([333.33, 333.33, 333.34])
-    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} /></CurrencyProvider>)
+    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} convention="full_month" lifeMonths={3} /></CurrencyProvider>)
     expect(html).toContain('final-month true-up')
+  })
+
+  const table = (a: GpuAsset) => renderToStaticMarkup(
+    <CurrencyProvider currency="USD"><DepreciationTable lines={assetSchedule(a)} convention={a.depreciation_convention} lifeMonths={a.useful_life_months} /></CurrencyProvider>,
+  )
+
+  it('mid_month: half months at both ends are the plan, not a true-up', () => {
+    const even = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3, depreciation_convention: 'mid_month' })
+    const lines = assetSchedule(even)
+    expect(lines.map(l => l.amount)).toEqual([166.67, 333.33, 333.33, 166.67])
+    expect(trueUpIndex(lines, 'mid_month', 3)).toBeNull()
+    expect(table(even)).not.toContain('final-month true-up')
+  })
+
+  it('mid_month: a last half month that differs from half a regular month is the true-up', () => {
+    const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 7, depreciation_convention: 'mid_month' })
+    const lines = assetSchedule(odd)
+    expect(lines).toHaveLength(8)
+    expect(lines[7].amount).toBe(71.41)
+    expect(trueUpIndex(lines, 'mid_month', 7)).toBe(7)
+    expect(table(odd)).toMatch(/data-month="8"[\s\S]*?final-month true-up/)
+  })
+
+  it('a schedule cut short by disposal has no true-up: its last line is the disposal month', () => {
+    const sold = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 7, status: 'disposed', disposed_on: '2026-03-15' })
+    const lines = assetSchedule(sold)
+    expect(lines).toHaveLength(3)
+    expect(trueUpIndex(lines, 'full_month', 7)).toBeNull()
+    expect(table(sold)).not.toContain('final-month true-up')
   })
 })
 

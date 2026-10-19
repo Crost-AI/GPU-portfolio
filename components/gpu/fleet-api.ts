@@ -189,14 +189,14 @@ export const disposeBody = (disposedOn: string, proceeds: string) => ({ disposed
 export interface CapexForm { amount: string; entryDate: string; memo: string; invoiced: boolean }
 
 /**
- * A capex submission with one idempotency key per dialog opening: every submit until `reset()` sends
- * the same key, so a retry after a timeout or a 409 books the cost once (the route's `key`).
+ * A capex submission with one idempotency key: every submit sends the same key, so a retry after a
+ * timeout or a 409 books the cost once (the route's `key`). The dialog makes one per opening
+ * (useCapexSubmitter, mounted by whileOpen), so a new opening is a new cost.
  */
 export function capexSubmitter(fetcher: Fetcher, assetId: string, newKey: () => string = () => crypto.randomUUID()) {
-  let key = newKey()
+  const key = newKey()
   return {
     key: () => key,
-    reset: () => { key = newKey() },
     submit: (f: CapexForm) => send<unknown>(fetcher, fleetPaths.capex(assetId), 'POST', {
       key, amount: num(f.amount), entryDate: f.entryDate, invoiced: f.invoiced, ...(blank(f.memo) ? {} : { memo: f.memo.trim() }),
     }),

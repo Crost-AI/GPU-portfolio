@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -24,7 +24,7 @@ interface Common { open: boolean; onOpenChange: (o: boolean) => void; fetcher: F
  * Mount a dialog's form only while it is open, so every opening starts from fresh state (a new
  * capex key, today's date, an empty form) without an effect resetting it.
  */
-function whileOpen<P extends Common>(Body: (p: P) => React.ReactElement | null) {
+export function whileOpen<P extends Common>(Body: (p: P) => React.ReactElement | null) {
   return function Gated(p: P) { return p.open ? <Body {...p} /> : null }
 }
 
@@ -224,9 +224,18 @@ export const DisposeDialog = whileOpen(function DisposeDialogBody({ open, onOpen
 })
 
 /** Capitalize a cost. One idempotency key per opening, so a retry books it once. */
-export const CapexDialog = whileOpen(function CapexDialogBody({ open, onOpenChange, fetcher, onDone, asset }: Common & { asset: GpuAsset }) {
-  // Created once per opening (the body mounts on open): every submit until it closes sends one key.
-  const submitter = useMemo(() => capexSubmitter(fetcher, asset.id), [fetcher, asset.id])
+/** One capex submitter, and so one key, for the life of the mounted dialog body: one per opening. */
+export function useCapexSubmitter(fetcher: Fetcher, assetId: string, newKey?: () => string) {
+  const [submitter] = useState(() => capexSubmitter(fetcher, assetId, newKey))
+  return submitter
+}
+
+export const CapexDialog = whileOpen(function CapexDialogBody({ open, onOpenChange, fetcher, onDone, asset, newKey }: Common & {
+  asset: GpuAsset
+  /** The key factory; crypto.randomUUID by default. */
+  newKey?: () => string
+}) {
+  const submitter = useCapexSubmitter(fetcher, asset.id, newKey)
   const [form, setForm] = useState<CapexForm>(() => ({ amount: '', entryDate: todayIso(), memo: '', invoiced: false }))
   return (
     <FormDialog

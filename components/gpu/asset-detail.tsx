@@ -12,6 +12,7 @@ import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAsset, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import type { DepreciationLine } from '@/lib/gpu/depreciation'
+import type { DepreciationConvention } from '@/lib/gpu/types'
 import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
 import { assetFigures, assetSchedule, bookingGate, offersBookedActions, todayIso } from './fleet-math'
 import { ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
@@ -24,11 +25,30 @@ import { ShellSection } from './parts'
 const th = 'whitespace-nowrap px-3 py-2 font-medium'
 const num = 'px-3 py-2 text-right tabular-nums'
 
+/**
+ * Is the last line a final-month true-up? Only on a full schedule (a disposal cuts it short and its
+ * last line is the disposal month, not the end of life), and only when the last charge differs from
+ * the plan's: a regular month under full_month, half of one under mid_month (whose first month is a
+ * half too, so the regular month is the second).
+ */
+export function trueUpIndex(lines: DepreciationLine[], convention: DepreciationConvention, lifeMonths: number): number | null {
+  const full = convention === 'mid_month' ? lifeMonths + 1 : lifeMonths
+  if (lines.length !== full || lines.length < 2) return null
+  const regular = Math.round((convention === 'mid_month' ? lines[1] : lines[0]).amount * 100)
+  const expected = convention === 'mid_month' ? Math.round(regular / 2) : regular
+  const last = lines.length - 1
+  return Math.round(lines[last].amount * 100) !== expected ? last : null
+}
+
 /** The book schedule, month by month. The last line takes whatever rounding is left (the true-up). */
-export function DepreciationTable({ lines }: { lines: DepreciationLine[] }) {
+export function DepreciationTable({ lines, convention, lifeMonths }: {
+  lines: DepreciationLine[]
+  convention: DepreciationConvention
+  lifeMonths: number
+}) {
   const currency = useCurrency()
   const money = (n: number) => formatCurrencyFull(n, currency)
-  const regular = lines.length > 1 ? lines[0].amount : null
+  const trueUp = trueUpIndex(lines, convention, lifeMonths)
   return (
     <div className="max-h-96 overflow-auto rounded-card border">
       <table className="w-full text-sm">
@@ -43,14 +63,13 @@ export function DepreciationTable({ lines }: { lines: DepreciationLine[] }) {
         </thead>
         <tbody>
           {lines.map((l, i) => {
-            const trueUp = i === lines.length - 1 && regular != null && l.amount !== regular
             return (
               <tr key={l.month} className="border-t" data-month={i + 1}>
                 <td className={`${num} text-muted-foreground`}>{i + 1}</td>
                 <td className="whitespace-nowrap px-3 py-2 tabular-nums">{l.month}</td>
                 <td className={num}>
                   {money(l.amount)}
-                  {trueUp && <span className="ml-1.5 text-caption text-muted-foreground">final-month true-up</span>}
+                  {trueUp === i && <span className="ml-1.5 text-caption text-muted-foreground">final-month true-up</span>}
                 </td>
                 <td className={num}>{money(l.accumulated)}</td>
                 <td className={num} data-nbv={l.nbv}>{money(l.nbv)}</td>
@@ -221,7 +240,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
       <ShellSection title="Depreciation schedule" description="Straight line to salvage on the hardware cost, month by month from the in-service month.">
         {lines.length === 0
           ? <EmptyState compact>{asset.in_service_date ? 'Nothing to depreciate.' : 'The schedule starts once the asset has an in-service date.'}</EmptyState>
-          : <DepreciationTable lines={lines} />}
+          : <DepreciationTable lines={lines} convention={asset.depreciation_convention} lifeMonths={asset.useful_life_months} />}
       </ShellSection>
 
       <ShellSection title="Events" description="Downtime is the uptime input (Q9): there is no monitoring feed, so record it here.">
