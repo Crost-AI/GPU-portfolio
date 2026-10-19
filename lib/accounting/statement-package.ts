@@ -32,6 +32,10 @@ import { vehicleKindByName } from './vehicle-domain'
 import { closesToOwnerEquity, equityLabel } from './vocab'
 import { changesInMembersCapital } from './members-capital'
 import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
+import { listAssets } from '@/lib/gpu/assets'
+import { fleetSchedule, type FleetScheduleRow } from '@/lib/gpu/fleet-schedule'
+import type { GpuAsset, GpuAssetTypeRow } from '@/lib/gpu/types'
+import { vehicleIdByName } from './vehicle-id'
 
 /** The JSON body the statements route returns — the on-screen statement set. */
 export interface StatementPayload {
@@ -53,6 +57,12 @@ export interface StatementPayload {
     performance: PerformanceTable
     valuationNote: ValuationBasisRow[]
   }
+  /**
+   * A GPU SPV's fleet schedule, in place of the schedule of investments: one row per server from
+   * its 1600-<a> / 1650-<a> balances, totalling 1600 − 1650. OPTIONAL and absent for every other
+   * kind, as `fof` is, so their packages are byte-identical.
+   */
+  fleetSchedule?: FleetScheduleRow[]
 }
 
 export interface StatementPackage {
@@ -115,6 +125,8 @@ export interface LedgerData {
   /** The vehicle's kind, for the words a statement uses (lib/accounting/vocab.ts). Null for a
    *  legacy vehicle with no registry row, which reads as a fund. */
   kind: string | null
+  /** A GPU SPV's register, for the fleet schedule's detail; absent for every other kind. */
+  fleet?: { assets: GpuAsset[]; types: GpuAssetTypeRow[] }
 }
 
 /** Min entryDate across postings, ignoring nulls. */
@@ -209,9 +221,22 @@ export async function loadLedgerData(
     observations = []
     levelWarning = 'Price feeds could not be read, so every position is shown at Level 3.'
   }
+  // A GPU SPV's register: who each 1600-<a> account is (type, GPUs, in service) on its fleet schedule.
+  let fleet: LedgerData['fleet']
+  if (isGpuSpv(kind)) {
+    const vehicleId = await vehicleIdByName(admin, fundId, group)
+    const [assets, types] = vehicleId
+      ? await Promise.all([
+          listAssets(admin, fundId, vehicleId),
+          fetchAllRows<GpuAssetTypeRow>((f, t) => (admin as any).from('gpu_asset_types').select('*').eq('fund_id', fundId).order('code').range(f, t)),
+        ])
+      : [[], []]
+    fleet = { assets, types }
+  }
   return {
     accounts, postings, capitalPostings, sourcedPostings, names,
     kind,
+    ...(fleet ? { fleet } : {}),
     fofRaw,
     feeds, observations, levelWarning,
     walletRows: walletRowsKept, balances, chainWarning,
@@ -301,6 +326,8 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
       : changesInPartnersCapital(capitalAccounts, data.names, gpEnding),
     // Absent for a fund holding no funds, so a non-FoF package is unchanged.
     ...(data.fofRaw ? { fof: fofExhibits(data.fofRaw, period.end) } : {}),
+    // Absent for every kind but a GPU SPV, likewise.
+    ...(isGpuSpv(data.kind) ? { fleetSchedule: fleetSchedule(data.accounts, cumulative, data.fleet?.assets ?? [], data.fleet?.types ?? []) } : {}),
     cashFlows: data.cashAccount
       ? statementOfCashFlows(
           data.cashAccount.id, inPeriodSourced, data.accounts,
