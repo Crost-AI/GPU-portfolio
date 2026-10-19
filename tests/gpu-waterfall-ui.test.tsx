@@ -30,6 +30,7 @@ import {
 import { splitDistribution, suggestedCharacter, cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import type { VehicleCarryTerms } from '@/lib/accounting/carry'
 import { prefLedger } from '@/lib/gpu/waterfall'
+import { FEE_BASES, FEE_FREQUENCIES } from '@/lib/gpu/fee'
 
 const money = (n: number) => formatCurrencyFull(n, 'USD')
 
@@ -468,6 +469,20 @@ describe('edit fee terms', () => {
     expect(calls[0].init?.method).toBe('PUT')
     expect(calls[0].body).toMatchObject({ basis: 'gross_revenue', annualRate: 0.05, group: 'GPU SPV I' })
     expect(sent).toEqual({ ok: false, status: 400, error: 'effectiveFrom (YYYY-MM-DD) is required.' })
+  })
+
+  it('sends only values the route accepts: its exported basis and frequency lists, a rate in [0, 1), YYYY-MM-DD dates', () => {
+    // The PUT's checks are inline in the route; these are the lists and rules it applies.
+    for (const frequency of ['monthly', 'quarterly'] as const) {
+      const r = feeTermsBody({ ratePct: '5', frequency, payeeVehicleId: '', effectiveFrom: '2026-01-01', effectiveTo: '' })
+      if (!r.ok) throw new Error(r.error)
+      expect(FEE_BASES).toContain(r.body.basis)
+      expect(FEE_FREQUENCIES).toContain(r.body.frequency)
+      expect(r.body.annualRate).toBeGreaterThanOrEqual(0)
+      expect(r.body.annualRate).toBeLessThan(1)
+      expect(r.body.effectiveFrom).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(Object.keys(r.body).sort()).toEqual(['annualRate', 'basis', 'effectiveFrom', 'effectiveTo', 'frequency', 'payeeVehicleId'])
+    }
   })
 
   it('no payee is Due to manager (2100): null', () => {
