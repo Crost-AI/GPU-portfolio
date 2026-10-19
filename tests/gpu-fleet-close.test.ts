@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import { GPU_SPV_CHART, DEFAULT_CHART } from '@/lib/accounting/chart'
-import { loadCloseEntrySuggestions } from '@/lib/accounting/close-suggestions'
+import { createSuggestedDrafts, loadCloseEntrySuggestions } from '@/lib/accounting/close-suggestions'
 import { checkReadiness } from '@/lib/accounting/close'
 
 /**
@@ -87,9 +87,9 @@ describe('fleet depreciation suggestions (basis fleet)', () => {
       [`gpu-dep:${B}:2027-03`, '2027-03-10', [6_150, -6_150]],
       [`gpu-dep:${A}:2027-03`, '2027-03-31', [5_025, -5_025]],
     ])
-    // April: nothing for B after its disposal. March, left unposted, comes back as a catch-up dated 1 April.
+    // April: nothing for B after its disposal, not even a catch-up of its March charge (that would be
+    // dated after the disposal). A's March, left unposted, comes back as a catch-up dated 1 April.
     expect((await suggest(GPU, '2027-04-01', '2027-04-30')).map(s => [s[0], s[1]])).toEqual([
-      [`gpu-dep:${B}:2027-03`, '2027-04-01'],
       [`gpu-dep:${A}:2027-03`, '2027-04-01'],
       [`gpu-dep:${A}:2027-04`, '2027-04-30'],
     ])
@@ -285,6 +285,45 @@ describe('fleet close review', () => {
     const closed = await checkReadiness(m.admin as any, 'f', GPU, '2027-07-01', '2027-07-31')
     expect(closed.fleetChecks!.map(c => c.status)).toEqual(['passed', 'passed'])
     expect(await suggest(GPU, '2027-07-01', '2027-07-31')).toEqual([])
+  })
+
+  it('a disposed asset whose disposal-month charge was voided after the disposal blocks instead of being re-proposed', async () => {
+    Object.assign(m.tables.gpu_assets.find((a: any) => a.id === B)!, { status: 'disposed', disposed_on: '2027-02-10', disposal_entry_id: 'x' })
+    for (const month of ['2027-01', '2027-02', '2027-03']) depreciate(A, month, 5_025)
+    depreciate(B, '2027-01', 6_150)
+    const feb = book('2027-02-10', `gpu-dep:${B}:2027-02`, [['5300', 6_150], [`1650-${B.slice(0, 8)}`, -6_150]])
+    m.tables.journal_entries.find((e: any) => e.id === feb)!.status = 'void'
+    const march = await checkReadiness(m.admin as any, 'f', GPU, '2027-03-01', '2027-03-31')
+    expect(march.blockers.join(' ')).toMatch(/B200 #1's 2027-02 depreciation is missing, but the asset was disposed of on 2027-02-10, so it cannot be booked in this period/)
+    expect(march.fleetChecks![0]).toMatchObject({ status: 'blocked', evidence: { unbookable: [{ assetId: B, month: '2027-02' }] } })
+    expect((await suggest(GPU, '2027-03-01', '2027-03-31')).map(x => x[0])).toEqual([])
+    // In the disposal's own period it is still proposed, dated the disposal.
+    expect((await suggest(GPU, '2027-02-01', '2027-02-28')).map(x => [x[0], x[1]])).toEqual([[`gpu-dep:${B}:2027-02`, '2027-02-10']])
+  })
+
+  it('a catch-up is never written into a closed period: drafts land in the open span, and a closed span is refused', async () => {
+    m.tables.gpu_assets = [{ ...asset(C, 'H200 #3', 335_000), in_service_date: '2027-06-10', purchase_entry_id: 'p-C' }]
+    m.tables.journal_entries = []
+    m.tables.journal_postings = []
+    m.tables.chart_of_accounts.push(account('v-gpu', GPU, `1600-${C.slice(0, 8)}`, 'asset', 'fixed_asset'), account('v-gpu', GPU, `1650-${C.slice(0, 8)}`, 'asset', 'accumulated_depreciation'))
+    book('2027-07-05', `gpu-asset:${C}:purchase`, [[`1600-${C.slice(0, 8)}`, 335_000], ['1000', -335_000]], { source_type: 'manual' })
+    m.tables.fiscal_periods = [{ id: 'fp-jun', fund_id: 'f', vehicle_id: 'v-gpu', period_start: '2027-06-01', period_end: '2027-06-30', status: 'closed' }]
+    m.tables.fund_settings = [{ fund_id: 'f', currency: 'USD' }]
+
+    const july = await loadCloseEntrySuggestions(m.admin, 'f', GPU, '2027-07-01', '2027-07-31')
+    const created = await createSuggestedDrafts(m.admin, 'f', GPU, 'u', '2027-07-01', '2027-07-31', july.map(x => x.id))
+    expect(created).toMatchObject({ created: expect.any(Array) })
+    const drafts = m.tables.journal_entries.filter((e: any) => String(e.source_ref).startsWith(`gpu-dep:${C}:`))
+    expect(drafts.map((e: any) => [e.source_ref, e.entry_date])).toEqual([[`gpu-dep:${C}:2027-06`, '2027-07-01'], [`gpu-dep:${C}:2027-07`, '2027-07-31']])
+    expect(drafts.every((e: any) => e.entry_date > '2027-06-30')).toBe(true)
+
+    // A span that starts inside the closed June: the catch-up would be dated 1 June, and the close's
+    // own posting guard refuses it rather than writing into the locked period.
+    m.tables.journal_entries = m.tables.journal_entries.filter((e: any) => !String(e.source_ref).startsWith('gpu-dep:'))
+    const june = await loadCloseEntrySuggestions(m.admin, 'f', GPU, '2027-06-01', '2027-07-31')
+    const refused = await createSuggestedDrafts(m.admin, 'f', GPU, 'u', '2027-06-01', '2027-07-31', june.map(x => x.id))
+    expect(refused).toMatchObject({ error: expect.stringMatching(/closed/i) })
+    expect(m.tables.journal_entries.filter((e: any) => String(e.source_ref).startsWith('gpu-dep:') && e.entry_date <= '2027-06-30')).toEqual([])
   })
 
   it('a VC entity has no fleet checks at all', async () => {

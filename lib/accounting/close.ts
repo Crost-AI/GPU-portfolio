@@ -949,7 +949,7 @@ export async function checkReadiness(
   }
 
   // ── GPU fleet (P1) ── depreciation posted and fleet NBV tied, a GPU SPV only (lib/gpu/close-checks.ts).
-  const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, kind, end)
+  const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, kind, start, end)
   if (fleet) blockers.push(...fleet.blockers)
 
   return {

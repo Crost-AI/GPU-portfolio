@@ -103,6 +103,9 @@ export async function loadFleetCloseSuggestions(
         const natural = depreciationEntryDate(line.month, s.asset.disposed_on)
         if (natural > end) continue
         const date = natural < start ? start : natural
+        // A catch-up would land after the disposal (its charge was voided once the asset was cleared):
+        // never proposed; the close check blocks on it instead (fleetCloseReview).
+        if (s.asset.disposed_on && date > s.asset.disposed_on) continue
         const refs = s.refs.get(line.month)
         if (s.posted.has(line.month) || refs?.live || line.amount <= 0) continue
         const sourceRef = refs?.reversed ? `${gpuSourceRef.depreciation(s.asset.id, line.month)}:r${refs.reversed}` : gpuSourceRef.depreciation(s.asset.id, line.month)
@@ -143,7 +146,7 @@ export interface FleetReviewCheck {
  * A fleet that cannot be read is a blocker, never "nothing to check".
  */
 export async function fleetCloseReview(
-  admin: SupabaseClient, fundId: string, group: string, vehicleId: string | null, kind: string | null, end: string,
+  admin: SupabaseClient, fundId: string, group: string, vehicleId: string | null, kind: string | null, start: string, end: string,
 ): Promise<{ blockers: string[]; checks: FleetReviewCheck[] } | null> {
   if (!isGpuSpv(kind) || !vehicleId) return null
   let state: FleetState
@@ -167,7 +170,14 @@ export async function fleetCloseReview(
   })
   const mismatched = nbv.filter(x => Math.abs(x.ledger - x.register) >= 0.005)
 
+  // A missing month of a disposed asset that this period could only catch up after the disposal date:
+  // not bookable here, so it gets its own message rather than "post the proposed entries".
+  const unbookable = missing.flatMap(x => x.asset.disposed_on
+    ? x.months.filter(m => { const d = depreciationEntryDate(m, x.asset.disposed_on); return (d < start ? start : d) > x.asset.disposed_on! })
+      .map(m => ({ asset: x.asset, month: m }))
+    : [])
   const depreciationProblems = [
+    ...unbookable.map(u => `${u.asset.name}'s ${u.month} depreciation is missing, but the asset was disposed of on ${u.asset.disposed_on}, so it cannot be booked in this period; reverse the disposal and book ${u.month}, or correct it in the period of the disposal`),
     ...missing.map(x => `depreciation is not posted through ${end} for ${x.asset.name} (${x.months.join(', ')})`),
     ...state.unlinked.map(a => `${a.name}'s purchase is booked but not linked to the register; retry the purchase`),
     ...state.reversed.map(a => `${a.name}'s purchase was reversed but its depreciation or capex remains; reverse those too, or book the purchase again`),
@@ -184,7 +194,7 @@ export async function fleetCloseReview(
         key: 'fleet_depreciation', section: 'GPU fleet', label: 'Depreciation posted through period end',
         status: depreciationProblems.length ? 'blocked' : 'passed',
         detail: depreciationProblems.length ? blockers[0] : `Depreciation is posted through ${end} for all ${state.assets.length} in-service asset${state.assets.length === 1 ? '' : 's'}.`,
-        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })), unlinked: state.unlinked.map(a => a.id), reversed: state.reversed.map(a => a.id) },
+        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })), unbookable: unbookable.map(u => ({ assetId: u.asset.id, month: u.month })), unlinked: state.unlinked.map(a => a.id), reversed: state.reversed.map(a => a.id) },
       },
       {
         key: 'fleet_nbv', section: 'GPU fleet', label: 'Fleet net book value ties to the register',
