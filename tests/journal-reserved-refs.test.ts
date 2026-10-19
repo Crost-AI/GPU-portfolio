@@ -51,7 +51,8 @@ describe('the reserved and exempt lists', () => {
     expect([...RESERVED_SOURCE_REF_PREFIXES]).toEqual(expect.arrayContaining(['gpu-asset:', 'gpu-dep:', 'fleet:', 'reversal:', 'close:', 'tax:', 'receipt:', 'schedule:', 'recurring:']))
     expect([...ROUND_TRIP_EXEMPT_PREFIXES]).toEqual(['txn:', 'qb:', 'adopted:', 'carta:'])
     expect(ROUND_TRIP_EXEMPT_PREFIXES.every(p => (RESERVED_SOURCE_REF_PREFIXES as readonly string[]).includes(p))).toBe(true)
-    expect([...EDIT_LOCKED_PREFIXES]).toEqual(['gpu-asset:', 'gpu-dep:'])
+    // GPU fleet (P3) adds its operations refs.
+    expect([...EDIT_LOCKED_PREFIXES]).toEqual(['gpu-asset:', 'gpu-dep:', 'marketplace:', 'marketplace-payout:'])
     for (const ref of FORBIDDEN) expect(assertUserRefAllowed(ref), ref).toMatch(/reserved/)
     for (const ref of ['txn:t1', 'qb:abc', 'adopted:e1', 'carta:x']) {
       expect(assertUserRefAllowed(ref), ref).toMatch(/reserved/)

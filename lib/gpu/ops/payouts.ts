@@ -7,9 +7,9 @@ import { linkInflowToEntry } from '@/lib/accounting/bank-match'
 import { fetchAllRows, fetchAllRowsIn, loadPostedLedger } from '@/lib/accounting/load'
 import { accountBalances, roundCents } from '@/lib/accounting/ledger'
 import { persistEntry } from '@/lib/accounting/persist'
-import { accountIdsByCode, liveEntryByRef, type Lifecycle } from '../assets'
+import { accountIdsByCode, liveEntryByRef, postedTo, type Lifecycle } from '../assets'
 import { buildPayoutEntry } from './entries'
-import { completeFromEvidence, settleClaim, takeClaim, takeOver } from './claims'
+import { completeFromEvidence, isStale, renewClaim, settleClaim, takeClaim, takeOver } from './claims'
 import { fleetVehicleId } from './import'
 import { CASH_CODE, RECEIVABLE_CODE, opsSourceRef, type PayoutRow } from './types'
 
@@ -128,71 +128,94 @@ export async function matchPayout(
   }
 
   const ref = opsSourceRef.payout(payout.id)
-  // The entry this payout is (being) booked under, if any: on the row, or under its ref.
-  const entryOf = async () => payout!.journal_entry_id ?? (await liveEntryByRef(admin, ctx, ref))?.id ?? null
-  const reconciledTo = (entryId: string | null) => !!entryId && txn!.status === 'reconciled' && txn!.journal_entry_id === entryId
+  const reconciledTo = (entryId: string | null | undefined) => !!entryId && txn!.status === 'reconciled' && txn!.journal_entry_id === entryId
+  const loadEntry = async () => liveEntryByRef(admin, ctx, ref)
 
   if (!token) {
-    // Another request's claim: complete it from the reconciled bank row, take it over once it has
-    // expired without one, or say it is in progress — never release it.
-    const entryId = await entryOf()
-    if (reconciledTo(entryId)) {
-      await completeFromEvidence(admin, PAYOUTS, scope, payout.id, 'matching', { status: 'matched', journal_entry_id: entryId })
-      return { payoutId: payout.id, entryId: entryId! }
+    // Another request's claim. Live: in progress, judge nothing. Expired: complete it when its bank
+    // row is reconciled to the payout's entry (conditional on the token observed with that), else
+    // take it over.
+    if (!isStale(payout)) return busy
+    const evidence = await loadEntry()
+    const entryId = payout.journal_entry_id ?? evidence?.id
+    if (evidence?.status === 'posted' && reconciledTo(entryId)) {
+      if (await completeFromEvidence(admin, PAYOUTS, scope, payout, { status: 'matched', journal_entry_id: entryId })) return { payoutId: payout.id, entryId: entryId! }
+      return busy
     }
     token = await takeOver(admin, PAYOUTS, scope, payout)
     if (!token) return busy
   }
 
   const mine = token
-  let created: string | undefined
-  let linked = false
+  // Release: settle FIRST, and only if that still held do anything to the ref this holder owns —
+  // remove a draft under it (never a posted entry). A posted entry keeps the claim (`keep`).
   const release = async (error: string) => {
-    if (created) await (admin as any).from('journal_entries').delete().eq('id', created).eq('fund_id', fundId).eq('status', 'draft')
-    await settleClaim(admin, PAYOUTS, scope, payout!.id, mine, { status: 'expected', bank_transaction_id: null, journal_entry_id: null })
+    if (await settleClaim(admin, PAYOUTS, scope, payout!.id, mine, { status: 'expected', bank_transaction_id: null, journal_entry_id: null })) {
+      const left = await loadEntry()
+      if (left?.status === 'draft') await (admin as any).from('journal_entries').delete().eq('id', left.id).eq('fund_id', fundId).eq('status', 'draft')
+    }
     return { error }
   }
+  const lostClaim = { error: 'This match lost its claim to another request; nothing more was booked. Try again shortly.' }
+  /** Unknown or partly done: release only when nothing under the ref is posted. */
+  const releaseIfUnbooked = async (error: string) => ((await loadEntry())?.status === 'posted' ? busy : release(error))
+
   let entryId: string
   try {
-    let existing = await entryOf()
+    // A posted entry the previous holder left unreconciled is linked as it is (linkInflowToEntry
+    // reconciles a posted target without posting it again).
+    let existing = await loadEntry()
+    // A draft left by an earlier attempt is reused only when it books this inflow: the same date
+    // and amount. Anything else is removed (this holder owns the ref) and built again.
+    if (existing?.status === 'draft') {
+      const cash = postedTo(existing, (await accountIdsByCode(admin, fundId, ctx.vehicleId, [CASH_CODE])).get(CASH_CODE)!)
+      if (existing.entry_date !== txn.txn_date || cents(cash) !== cents(payout.amount)) {
+        if (!(await renewClaim(admin, PAYOUTS, scope, payout.id, mine))) return lostClaim
+        await (admin as any).from('journal_entries').delete().eq('id', existing.id).eq('fund_id', fundId).eq('status', 'draft')
+        existing = null
+      }
+    }
     if (!existing) {
       const accounts = await accountIdsByCode(admin, fundId, ctx.vehicleId, [CASH_CODE, RECEIVABLE_CODE])
       const entry = buildPayoutEntry({
         fundId, payoutId: payout.id, entryDate: txn.txn_date, amount: Number(payout.amount), reference: payout.reference,
         cashAccountId: accounts.get(CASH_CODE)!, receivableAccountId: accounts.get(RECEIVABLE_CODE)!,
       })
+      if (!(await renewClaim(admin, PAYOUTS, scope, payout.id, mine))) return lostClaim
       const saved = await persistEntry(admin, fundId, group, userId, entry, 'draft')
-      if ('error' in saved) return release(saved.error)
-      existing = created = saved.entryId
-    }
-    entryId = existing
+      if ('error' in saved) return releaseIfUnbooked(saved.error)
+      entryId = saved.entryId
+    } else entryId = existing.id
     const { data: stored, error: storeError } = await (admin as any).from(PAYOUTS).update({ journal_entry_id: entryId, updated_at: new Date().toISOString() })
       .eq('fund_id', fundId).eq('id', payout.id).eq('claim_token', mine).select('id')
-    if (storeError) return release(storeError.message)
-    if (!((stored as any[]) ?? []).length) return busy
+    if (storeError) return releaseIfUnbooked(storeError.message)
+    if (!((stored as any[]) ?? []).length) return lostClaim
 
     if (!reconciledTo(entryId)) {
-      if (txn.status !== 'drafted' && txn.status !== 'unmatched') return release(`That bank transaction is ${txn.status}`)
+      if (txn.status !== 'drafted' && txn.status !== 'unmatched') return releaseIfUnbooked(`That bank transaction is ${txn.status}`)
+      if (!(await renewClaim(admin, PAYOUTS, scope, payout.id, mine))) return lostClaim
       const result = await linkInflowToEntry(admin, fundId, group, txnId, entryId, userId)
       if ('error' in result) {
-        // A concurrent post of the same entry ("Only a draft entry can be posted") is not a failure:
-        // if the bank row ended up reconciled to our entry, finish; if not, it is still in flight.
+        // Refused or failed: finished if the bank row ended up reconciled to our entry; in progress
+        // (claim kept) if the entry is posted; released only while it is still a draft.
         txn = await loadTxn()
-        if (reconciledTo(entryId)) linked = true
-        else {
-          const { data: e } = await (admin as any).from('journal_entries').select('status').eq('book', ACTUAL_BOOK).eq('fund_id', fundId).eq('id', entryId).maybeSingle()
-          if (e?.status === 'posted') return busy
-          return release(result.error)
-        }
-      } else linked = true
-    } else linked = true
+        if (!reconciledTo(entryId)) return releaseIfUnbooked(result.error)
+      }
+    }
   } catch (e) {
-    if (!linked) await release('').catch(() => undefined)
+    // Unknown outcome (linkInflowToEntry can throw after posting): keep the claim, the links and any
+    // draft. Nothing is released or deleted from here; once the claim expires the next match
+    // completes it from the reconciled bank row, or takes it over and reuses or rebuilds the draft.
     throw e
   }
-  // Booked and reconciled: a failure from here is finished by matching again (completion from evidence).
+  // Booked and reconciled. If the settle did not take, another request may have finished it with
+  // this same entry: that is success. Otherwise matching again completes it from the evidence.
   const finished = await settleClaim(admin, PAYOUTS, scope, payout.id, mine, { status: 'matched' }).catch(() => false)
-  if (!finished) return { error: 'The payment is booked and reconciled, but the payout could not be marked matched. Match it again to finish.' }
+  if (!finished) {
+    const now = await loadPayout().catch(() => null)
+    if (now?.status === 'matched' && now.journal_entry_id === entryId) return { payoutId: payout.id, entryId }
+    return { error: 'The payment is booked and reconciled, but the payout could not be marked matched. Match it again to finish.' }
+  }
   return { payoutId: payout.id, entryId }
 }
 

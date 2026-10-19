@@ -15,6 +15,9 @@
 export const RESERVED_SOURCE_REF_PREFIXES = [
   // GPU fleet
   'gpu-asset:', 'gpu-dep:', 'fleet:',
+  // GPU fleet (P3): an operations row's revenue entry and a marketplace payout's cash entry, which
+  // postEarnings and matchPayout find by ref and complete their rows from.
+  'marketplace:', 'marketplace-payout:',
   // Allocation, close, tax
   'allocation:', 'agent-allocation:', 'close:', 'tax:', 'schedule:', 'recurring:',
   // Intercompany
@@ -66,7 +69,11 @@ export function assertUserRefAllowed(ref: unknown, opts: { allowRoundTrip?: bool
  * `gpu-asset:`/`gpu-dep:` entry as its own, so its lines must be the ones the lifecycle wrote. Other
  * system drafts (a bank-drafted capital call, a close suggestion) are meant to be corrected by hand.
  */
-export const EDIT_LOCKED_PREFIXES = ['gpu-asset:', 'gpu-dep:'] as const
+export const EDIT_LOCKED_PREFIXES = [
+  'gpu-asset:', 'gpu-dep:',
+  // GPU fleet (P3): an operations row or a payout is completed from the entry under its ref.
+  'marketplace:', 'marketplace-payout:',
+] as const
 
 export function isEditLockedRef(ref: unknown): boolean {
   return typeof ref === 'string' && EDIT_LOCKED_PREFIXES.some(p => ref.startsWith(p))

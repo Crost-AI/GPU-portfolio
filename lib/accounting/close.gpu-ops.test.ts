@@ -69,10 +69,38 @@ describe('checkReadiness: GPU operations', () => {
     m.tables.gpu_payouts.push({ id: 'p-1', fund_id: 'f', vehicle_id: 'v-gpu', payout_date: '2026-09-28', amount: 90, reference: 'PO-1', status: 'matching' })
     const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
     expect(r.blockers).toEqual(expect.arrayContaining([
-      'GPU revenue for H200 #1 2026-09-01..2026-09-30 is being posted: retry the post, or wait for the claim to expire, before closing.',
-      'GPU revenue for H200 #2 2026-09-01..2026-09-30 is being reversed: retry the post, or wait for the claim to expire, before closing.',
-      'The marketplace payout of 90.00 on 2026-09-28 (PO-1) is being matched: retry the match, or wait for the claim to expire, before closing.',
+      'GPU revenue for H200 #1 2026-09-01..2026-09-30 is being posted: post again, or wait for the claim to expire, before closing.',
+      'GPU revenue for H200 #2 2026-09-01..2026-09-30 is being reversed: post again, or wait for the claim to expire, before closing.',
+      'The marketplace payout of 90.00 on 2026-09-28 (PO-1) is being matched: match again, or wait for the claim to expire, before closing.',
     ]))
+  })
+
+  // Review r3: the residual race is loud; a stuck draft is named; a payout blocks the month of its inflow.
+  it('a posted entry reversed twice is a blocker', async () => {
+    m.tables.gpu_earnings.push(row({ id: 'e-old', status: 'reversed', journal_entry_id: 'je-1' }))
+    m.tables.journal_entries.push(
+      { id: 'r-1', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-30', source_ref: 'reversal:je-1' },
+      { id: 'r-2', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-30', source_ref: 'reversal:je-1' },
+      { id: 'r-3', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'void', entry_date: '2026-09-30', source_ref: 'reversal:je-1' },
+    )
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers).toContainEqual('GPU revenue entry je-1 is reversed 2 times (entries r-1, r-2). Void all but one before closing.')
+  })
+
+  it('a claim that left a draft names it in the blocker', async () => {
+    m.tables.gpu_earnings.push(row({ id: 'e-1', status: 'posting', claim_token: 't', claimed_at: '2026-09-01T00:00:00Z' }))
+    m.tables.journal_entries.push({ id: 'je-left', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'draft', entry_date: '2026-09-30', source_ref: 'marketplace:e-1' })
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers).toContainEqual('GPU revenue for H200 #1 2026-09-01..2026-09-30 is being posted: void draft je-left or post it, then post again, before closing.')
+  })
+
+  it('G4: a payout dated 10-01 being matched to a 09-28 inflow blocks September', async () => {
+    m.tables.bank_transactions.push({ id: 't-1', fund_id: 'f', vehicle_id: 'v-gpu', txn_date: '2026-09-28', amount: 90, status: 'reconciled' })
+    m.tables.gpu_payouts.push({ id: 'p-1', fund_id: 'f', vehicle_id: 'v-gpu', payout_date: '2026-10-01', amount: 90, reference: null, status: 'matching', bank_transaction_id: 't-1' })
+    const sept = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(sept.blockers).toContainEqual(expect.stringMatching(/^The marketplace payout of 90\.00 on 2026-10-01 is being matched/))
+    const aug = await checkReadiness(m.admin, 'f', 'GPU I', '2026-08-01', '2026-08-31')
+    expect(aug.blockers.join(' ')).not.toMatch(/being matched/)
   })
 
   it('turns a failed read into a blocker', async () => {

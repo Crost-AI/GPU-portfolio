@@ -5,10 +5,17 @@
 //     now — where the row is still in the expected prior state. Proceed only if one row changed.
 //   - FINISH / RELEASE: a conditional update where claim_token is MY token. A request that does not
 //     hold the token never releases or clears anything.
-//   - A request that finds the row claimed by someone else does exactly one of: COMPLETE it from
-//     durable evidence (the entry it was booking is posted — safe for anyone, idempotent); TAKE IT
-//     OVER when there is no evidence and the claim is older than CLAIM_LEASE_MS (conditional on the
-//     old token); or answer "in progress".
+//   - FENCE: the holder renews its lease (claimed_at, conditional on its token) immediately before
+//     every journal write, and aborts before the insert when it has lost the token to a takeover.
+//   - A request that finds the row claimed by someone else and the claim still LIVE answers "in
+//     progress" and judges no evidence: the holder may still be inside persistEntry, whose posted
+//     entry can yet be discarded. Once the claim has EXPIRED it does exactly one of: COMPLETE it from
+//     the entry the holder was booking, now posted (conditional on the token it observed with that
+//     evidence); name a draft left under the ref, to post or void; or TAKE IT OVER (conditional on
+//     the old token) when nothing was booked.
+//
+// The residual race — a holder that pauses for longer than the lease between its fence and its
+// insert — is loud rather than silent: the close blocks on a second live entry under one ref.
 
 import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -66,9 +73,19 @@ export async function settleClaim(
   return update(admin, table, scope, id, q => q.eq('claim_token', token), { ...values, claim_token: null, claimed_at: null })
 }
 
-/** Complete someone else's claim from durable evidence: only while the row is still in `inProgress`. */
+/** The fence: renew MY lease right before a journal write. False = I lost the token; do not write. */
+export async function renewClaim(admin: SupabaseClient, table: ClaimTable, scope: ClaimScope, id: string, token: string): Promise<boolean> {
+  return update(admin, table, scope, id, q => q.eq('claim_token', token), { claimed_at: now() })
+}
+
+/**
+ * Complete an EXPIRED claim from durable evidence: only while the row is still in `inProgress` and
+ * still carries the token observed together with that evidence. False = someone else moved it.
+ */
 export async function completeFromEvidence(
-  admin: SupabaseClient, table: ClaimTable, scope: ClaimScope, id: string, inProgress: string, values: Record<string, unknown>,
+  admin: SupabaseClient, table: ClaimTable, scope: ClaimScope, row: ClaimedRow, values: Record<string, unknown>,
 ): Promise<boolean> {
-  return update(admin, table, scope, id, q => q.eq('status', inProgress), { ...values, claim_token: null, claimed_at: null })
+  return update(admin, table, scope, row.id,
+    q => (row.claim_token ? q.eq('claim_token', row.claim_token) : q.is('claim_token', null)).eq('status', row.status),
+    { ...values, claim_token: null, claimed_at: null })
 }

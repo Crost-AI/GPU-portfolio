@@ -83,6 +83,12 @@ create unique index gpu_earnings_one_staged
   on public.gpu_earnings (fund_id, vehicle_id, asset_id, period_start, period_end)
   where status = 'staged';
 
+-- One live correction per predecessor: two imports that both read the same posted row cannot both
+-- stage a row superseding it (the second gets 23505). An ignored correction frees the slot.
+create unique index gpu_earnings_one_successor
+  on public.gpu_earnings (supersedes_id)
+  where supersedes_id is not null and status <> 'ignored';
+
 create index gpu_earnings_vehicle_idx on public.gpu_earnings (fund_id, vehicle_id, period_end);
 
 -- A payout the marketplace sent (or will send), matched to a bank inflow: Dr 1000 / Cr 1150.
