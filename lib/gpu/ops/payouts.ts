@@ -66,13 +66,16 @@ export async function listPayouts(admin: SupabaseClient, fundId: string, group: 
 }
 
 /**
- * Match an expected payout to a bank inflow: draft `Dr 1000 / Cr 1150` dated the bank transaction,
- * then linkInflowToEntry posts it, retires the import's placeholder draft and marks the bank row
- * reconciled. The payout becomes `matched`.
+ * Match an expected payout to a bank inflow: `Dr 1000 / Cr 1150` dated the bank transaction, posted
+ * by linkInflowToEntry, which also retires the import's placeholder draft and marks the bank row
+ * reconciled. The inflow must equal the payout to the cent (the bank feed and 1000 then still agree);
+ * the date window only decides what is OFFERED.
  *
- * The inflow must equal the payout to the cent (the bank feed and 1000 then still agree). The date
- * window only decides what is OFFERED; a person may match outside it. A retry reuses the entry an
- * earlier attempt drafted (the once-only index keeps one per payout).
+ * Claim first: the payout flips expected → matching with the bank transaction on it, conditionally,
+ * and gpu_payouts_one_per_bank_txn lets one payout hold a transaction — so two payouts racing for one
+ * inflow cannot both book. Then the draft entry (its id stored on the payout), then the link, then
+ * `matched`. A payout left `matching` by a failed attempt is finished by matching it again to the same
+ * transaction: the entry is reused, and a link that already happened is not repeated.
  */
 export async function matchPayout(
   admin: SupabaseClient, fundId: string, group: string, userId: string | null, payoutId: string, txnId: string,
@@ -80,47 +83,66 @@ export async function matchPayout(
   const vehicle = await fleetVehicleId(admin, fundId, group)
   if ('error' in vehicle) return vehicle
   const ctx: Lifecycle = { fundId, group, vehicleId: vehicle.vehicleId, userId }
+  const payouts = () => (admin as any).from('gpu_payouts')
 
-  const { data: payout, error: payoutError } = await (admin as any).from('gpu_payouts').select('*')
+  const { data: payout, error: payoutError } = await payouts().select('*')
     .eq('fund_id', fundId).eq('vehicle_id', ctx.vehicleId).eq('id', payoutId).maybeSingle()
   if (payoutError) throw payoutError
   if (!payout) return { error: 'Payout not found' }
-  if (payout.status !== 'expected') return { error: 'This payout is already matched' }
+  if (payout.status === 'matched') return { error: 'This payout is already matched' }
+  if (payout.status === 'matching' && payout.bank_transaction_id !== txnId) return { error: 'This payout is being matched to another bank transaction' }
 
-  const { data: txn, error: txnError } = await (admin as any).from('bank_transactions').select('id, txn_date, amount, status')
+  const { data: txn, error: txnError } = await (admin as any).from('bank_transactions').select('id, txn_date, amount, status, journal_entry_id')
     .eq('fund_id', fundId).eq('vehicle_id', ctx.vehicleId).eq('id', txnId).maybeSingle()
   if (txnError) throw txnError
   if (!txn) return { error: 'Transaction not found' }
-  if (txn.status !== 'drafted' && txn.status !== 'unmatched') return { error: `That bank transaction is ${txn.status}` }
   if (cents(txn.amount) !== cents(payout.amount)) return { error: `The bank inflow (${Number(txn.amount).toFixed(2)}) is not the payout amount (${Number(payout.amount).toFixed(2)})` }
 
+  if (payout.status === 'expected') {
+    if (txn.status !== 'drafted' && txn.status !== 'unmatched') return { error: `That bank transaction is ${txn.status}` }
+    const { data: claimed, error: claimError } = await payouts().update({ status: 'matching', bank_transaction_id: txnId, updated_at: new Date().toISOString() })
+      .eq('fund_id', fundId).eq('vehicle_id', ctx.vehicleId).eq('id', payout.id).eq('status', 'expected').select('id')
+    if (claimError) {
+      if (claimError.code === '23505') return { error: 'That bank transaction is already matched, or being matched, to another payout' }
+      throw claimError
+    }
+    if (!((claimed as any[]) ?? []).length) return { error: 'This payout is being matched by another request. Try again shortly.' }
+  }
+  // From here the payout holds the transaction. A failure before the link hands it back.
+  const release = async (error: string, draftId?: string) => {
+    if (draftId) await (admin as any).from('journal_entries').delete().eq('id', draftId).eq('fund_id', fundId).eq('status', 'draft')
+    await payouts().update({ status: 'expected', bank_transaction_id: null, journal_entry_id: null, updated_at: new Date().toISOString() })
+      .eq('fund_id', fundId).eq('id', payout.id).eq('status', 'matching')
+    return { error }
+  }
+
   const ref = opsSourceRef.payout(payout.id)
-  let entryId: string
-  let created = false
-  const found = await liveEntryByRef(admin, ctx, ref)
-  if (found) entryId = found.id
-  else {
+  let entryId: string | undefined = payout.journal_entry_id ?? (await liveEntryByRef(admin, ctx, ref))?.id
+  let created: string | undefined
+  if (!entryId) {
     const accounts = await accountIdsByCode(admin, fundId, ctx.vehicleId, [CASH_CODE, RECEIVABLE_CODE])
     const entry = buildPayoutEntry({
       fundId, payoutId: payout.id, entryDate: txn.txn_date, amount: Number(payout.amount), reference: payout.reference,
       cashAccountId: accounts.get(CASH_CODE)!, receivableAccountId: accounts.get(RECEIVABLE_CODE)!,
     })
     const saved = await persistEntry(admin, fundId, group, userId, entry, 'draft')
-    if ('error' in saved) return { error: saved.error }
-    entryId = saved.entryId
-    created = true
+    if ('error' in saved) return release(saved.error)
+    entryId = created = saved.entryId
   }
+  const { error: linkError } = await payouts().update({ journal_entry_id: entryId, updated_at: new Date().toISOString() })
+    .eq('fund_id', fundId).eq('id', payout.id).eq('status', 'matching')
+  if (linkError) return release(linkError.message, created)
 
-  const linked = await linkInflowToEntry(admin, fundId, group, txnId, entryId, userId)
-  if ('error' in linked) {
-    // Leave no draft of ours behind to block the close.
-    if (created) await (admin as any).from('journal_entries').delete().eq('id', entryId).eq('fund_id', fundId).eq('status', 'draft')
-    return linked
+  // An earlier attempt may have linked and reconciled already; only the payout's own entry counts.
+  const alreadyLinked = txn.status === 'reconciled' && txn.journal_entry_id === entryId
+  if (!alreadyLinked) {
+    if (txn.status !== 'drafted' && txn.status !== 'unmatched') return release(`That bank transaction is ${txn.status}`, created)
+    const linked = await linkInflowToEntry(admin, fundId, group, txnId, entryId, userId)
+    if ('error' in linked) return release(linked.error, created)
   }
-  const { error } = await (admin as any).from('gpu_payouts').update({
-    status: 'matched', bank_transaction_id: txnId, journal_entry_id: entryId, updated_at: new Date().toISOString(),
-  }).eq('fund_id', fundId).eq('vehicle_id', ctx.vehicleId).eq('id', payout.id)
-  if (error) return { error: error.message }
+  const { error } = await payouts().update({ status: 'matched', updated_at: new Date().toISOString() })
+    .eq('fund_id', fundId).eq('vehicle_id', ctx.vehicleId).eq('id', payout.id)
+  if (error) return { error: `The payment is booked and reconciled, but the payout could not be marked matched (${error.message}). Match it again to finish.` }
   return { payoutId: payout.id, entryId }
 }
 

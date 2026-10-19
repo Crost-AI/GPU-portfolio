@@ -36,6 +36,30 @@ describe('checkReadiness: GPU operations', () => {
     expect(r.warnings).toContainEqual(expect.stringMatching(/entered but not posted/))
   })
 
+  // Through checkReadiness, not only the helper: which finding is a blocker and which a warning.
+  it('a posted row whose revenue does not tie to 4000 is a blocker; 1150 drift is a warning', async () => {
+    m.tables.gpu_earnings.push(row({ id: 'e-1', status: 'posted', journal_entry_id: 'je-1' }))
+    m.tables.journal_entries.push(
+      { id: 'je-1', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-30' },
+      { id: 'je-2', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-15' },
+    )
+    const post = (journal_entry_id: string, code: string, amount: number) => ({ journal_entry_id, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: `acc-${code}`, amount, currency: 'USD' })
+    // The subledger's own entry, and 50 of revenue booked to 4000 by hand.
+    m.tables.journal_postings.push(post('je-1', '1150', 90), post('je-1', '5150', 10), post('je-1', '4000', -100), post('je-2', '1150', 50), post('je-2', '4000', -50))
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers).toContainEqual(expect.stringMatching(/^GPU revenue does not tie: posted operations entries total 100\.00 gross, but 4000 Rental revenue shows 150\.00/))
+    expect(r.warnings).toContainEqual(expect.stringMatching(/^1150 Marketplace receivable is 140\.00 at 2026-09-30, but posted net revenue less matched payouts is 90\.00 \(difference 50\.00\)/))
+    expect(r.blockers.join(' ')).not.toMatch(/1150/)
+    expect(r.warnings.join(' ')).not.toMatch(/does not tie/)
+  })
+
+  it('an unmatched row is a blocker, not a warning; a staged row a warning, not a blocker', async () => {
+    m.tables.gpu_earnings.push(row({ id: 'e-1', asset_id: null, asset_ref: 'Ghost', status: 'unmatched' }), row({ id: 'e-2' }))
+    const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(r.blockers.filter(b => /GPU operations/.test(b))).toEqual(['1 GPU operations row in this span matches no server. Correct the asset name and enter it again, or ignore the row, on the Revenue page.'])
+    expect(r.warnings.filter(w => /GPU operations/.test(w))).toEqual(['1 GPU operations row is entered but not posted in this span: that revenue is not in the books yet.'])
+  })
+
   it('turns a failed read into a blocker', async () => {
     m.failNext('gpu_earnings', 'select', 'timeout')
     const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')

@@ -116,9 +116,11 @@ describe('operations entries are booked once', () => {
     expect(sql()).toMatch(/create unique index if not exists journal_entries_gpu_ops_once\s+on public\.journal_entries \(fund_id, vehicle_id, book, source_ref\)\s+where \(source_ref like 'marketplace:%' or source_ref like 'marketplace-payout:%'\) and status <> 'void';/)
   })
 
-  it('one staged row per asset-period, and a dedup hash unique per vehicle', () => {
+  it('one staged row per asset-period, a dedup hash unique per vehicle among live rows, one payout per bank row', () => {
     expect(sql()).toMatch(/create unique index gpu_earnings_one_staged\s+on public\.gpu_earnings \(fund_id, vehicle_id, asset_id, period_start, period_end\)\s+where status = 'staged';/)
-    expect(sql()).toContain('unique (fund_id, vehicle_id, dedup_hash)')
+    expect(sql()).toMatch(/create unique index gpu_earnings_live_hash\s+on public\.gpu_earnings \(fund_id, vehicle_id, dedup_hash\)\s+where status not in \('ignored', 'reversed'\);/)
+    expect(sql()).not.toContain('unique (fund_id, vehicle_id, dedup_hash)')
+    expect(sql()).toMatch(/create unique index gpu_payouts_one_per_bank_txn\s+on public\.gpu_payouts \(bank_transaction_id\)\s+where bank_transaction_id is not null;/)
   })
 
   it('ships manual and csv sources only, and no marketplace account tables (decision Q1)', () => {

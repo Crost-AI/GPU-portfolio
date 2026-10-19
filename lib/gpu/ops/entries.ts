@@ -20,7 +20,8 @@ function entry(base: { fundId: string; entryDate: string; memo: string; currency
 
 /**
  * One server's revenue for one period: Dr 1150 net, Dr 5150 fee, Cr 4000 gross, dated the period
- * end. Throws (assertBalanced) when gross − fee ≠ net, which the parser already refuses.
+ * end. Throws (assertBalanced) when gross − fee ≠ net, which the parser already refuses, and on a
+ * zero period (no postings): postEarnings never builds one for gross = fee = net = 0 (isZeroPeriod).
  */
 export function buildEarningsEntry(p: {
   fundId: string; earningId: string; assetName: string; periodStart: string; periodEnd: string

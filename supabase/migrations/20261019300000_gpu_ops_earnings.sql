@@ -50,17 +50,27 @@ create table public.gpu_earnings (
   currency          text not null default 'USD',
   dedup_hash        text not null,
   raw               jsonb,
+  -- 'posting' and 'reversing' are claims: postEarnings flips a row to them conditionally before it
+  -- books, so two requests cannot book the same row (or reverse the same entry) twice, and an
+  -- import never edits a row whose entry is being built. A 'posted' row with no journal_entry_id
+  -- is a zero-revenue period (gross = fee = net = 0): nothing to book.
   status            text not null default 'staged'
-                      check (status in ('staged', 'unmatched', 'posted', 'ignored', 'reversed')),
+                      check (status in ('staged', 'unmatched', 'posting', 'posted', 'ignored', 'reversing', 'reversed')),
   -- A correction to a posted row: posting it reverses the superseded row's entry first.
   supersedes_id     uuid references public.gpu_earnings(id) on delete set null,
   journal_entry_id  uuid references public.journal_entries(id) on delete set null,
   created_by        uuid,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
-  check (period_end >= period_start),
-  unique (fund_id, vehicle_id, dedup_hash)
+  check (period_end >= period_start)
 );
+
+-- The same row entered twice is one row — among LIVE rows. An ignored or reversed row no longer
+-- stands, so entering its figures again (re-staging an ignored row, or undoing a correction) must
+-- be possible: import.ts dedups against live rows only, and this index is the backstop.
+create unique index gpu_earnings_live_hash
+  on public.gpu_earnings (fund_id, vehicle_id, dedup_hash)
+  where status not in ('ignored', 'reversed');
 
 -- One OPEN row per asset-period: a second paste of the same asset-period with different figures
 -- updates the staged row instead of staging a second one (lib/gpu/ops/import.ts).
@@ -81,13 +91,19 @@ create table public.gpu_payouts (
   note                 text,
   bank_transaction_id  uuid references public.bank_transactions(id) on delete set null,
   journal_entry_id     uuid references public.journal_entries(id) on delete set null,
-  status               text not null default 'expected' check (status in ('expected', 'matched')),
+  -- 'matching' claims the payout and its bank transaction before anything is booked (matchPayout).
+  status               text not null default 'expected' check (status in ('expected', 'matching', 'matched')),
   created_by           uuid,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
 );
 
 create index gpu_payouts_vehicle_idx on public.gpu_payouts (fund_id, vehicle_id, status, payout_date);
+
+-- One payout per bank transaction: the claim a second match of the same inflow runs into.
+create unique index gpu_payouts_one_per_bank_txn
+  on public.gpu_payouts (bank_transaction_id)
+  where bank_transaction_id is not null;
 
 alter table public.gpu_import_runs enable row level security;
 alter table public.gpu_earnings enable row level security;

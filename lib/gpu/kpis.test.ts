@@ -64,3 +64,17 @@ describe('ltm', () => {
     expect(ltm(Array(12).fill(month))).toMatchObject({ grossRevenue: 12 * 8640, utilizationPct: 75 })
   })
 })
+
+// ── Review fixes (#90) ──
+describe('a staged correction replaces the posted row it supersedes', () => {
+  it('posted 75% + its staged 75% correction reads 75%, not 150%; posted-only keeps the original', () => {
+    const assets = [asset('1')]
+    const original = earning('1', { id: 'e-1' })
+    const fix = earning('1', { id: 'e-2', status: 'staged', supersedes_id: 'e-1', gross: 9000, net: 8136 })
+    const preview = computeKpis({ assets, earnings: [original, fix], month: '2026-09' })
+    expect(preview.fleet).toMatchObject({ utilizationPct: 75, rentedHours: 4320, grossRevenue: 9000, includesStaged: true })
+    expect(preview.byAsset['1']).toMatchObject({ utilizationPct: 75, grossRevenue: 9000 })
+    const posted = computeKpis({ assets, earnings: [original], month: '2026-09' })
+    expect(posted.fleet).toMatchObject({ utilizationPct: 75, grossRevenue: 8640, includesStaged: false })
+  })
+})

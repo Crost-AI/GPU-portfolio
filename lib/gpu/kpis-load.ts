@@ -22,7 +22,7 @@ export async function loadFleetKpis(
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).range(f, t)),
     fetchAllRows<any>((f, t) => (admin as any).from('gpu_asset_types').select('id, code').eq('fund_id', fundId).range(f, t)),
     fetchAllRows<KpiEarning>((f, t) => (admin as any).from('gpu_earnings')
-      .select('id, asset_id, period_end, status, gpu_hours_rented, gross, marketplace_fee, net, downtime_hours')
+      .select('id, supersedes_id, asset_id, period_end, status, gpu_hours_rented, gross, marketplace_fee, net, downtime_hours')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('status', opts.postedOnly ? ['posted'] : KPI_STATUSES)
       .gte('period_end', from).lte('period_end', to).range(f, t)),
   ])

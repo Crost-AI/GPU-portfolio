@@ -20,8 +20,11 @@ export async function fleetVehicleId(admin: SupabaseClient, fundId: string, grou
   return vehicleId ? { vehicleId } : { error: 'Vehicle not found' }
 }
 
-/** Servers that can earn: in service, or offline for part of a period. */
-const EARNING_STATUSES = ['in_service', 'offline']
+/**
+ * Servers that can earn: in service, offline for part of a period, or disposed of (its last
+ * periods still arrive after it leaves; match.ts refuses a period starting after disposed_on).
+ */
+const EARNING_STATUSES = ['in_service', 'offline', 'disposed']
 
 export type ImportInput = { rows: ManualRow[]; csv?: undefined; fileName?: string } | { csv: string; rows?: undefined; fileName?: string }
 
@@ -42,7 +45,8 @@ function figures(r: MatchedEarning) {
 /**
  * Stage rows from the entry form (`rows`) or a CSV paste (`csv`). Per row, against the vehicle's
  * existing entries:
- *   - the identical row (same hash) is already there, in any status → skipped, with the reason;
+ *   - the identical row (same hash) is already there and live (not ignored or reversed) → skipped,
+ *     with the reason;
  *   - the same server and period is STAGED with other figures → that row is updated in place;
  *   - the same server and period is POSTED with other figures → a new staged row that supersedes
  *     it (needsReview: posting it reverses the posted entry first);
@@ -61,20 +65,23 @@ export async function importEarnings(
   if (parsed.rows.length === 0) return { error: parsed.errors[0] ?? 'Nothing to import', errors: parsed.errors }
 
   const assets = await fetchAllRows<MatchAsset & { status: string }>((f, t) => (admin as any).from('gpu_assets')
-    .select('id, name, serials, gpu_count, status').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
+    .select('id, name, serials, gpu_count, status, disposed_on').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
     .in('status', EARNING_STATUSES).range(f, t))
   const matched = matchAssets(parsed.rows, assets)
 
   const existing = await fetchAllRows<Pick<EarningRow, 'id' | 'asset_id' | 'period_start' | 'period_end' | 'status' | 'dedup_hash'>>((f, t) => (admin as any)
     .from('gpu_earnings').select('id, asset_id, period_start, period_end, status, dedup_hash')
     .eq('fund_id', fundId).eq('vehicle_id', vehicleId).range(f, t))
-  const byHash = new Map(existing.map(e => [e.dedup_hash, e]))
+  // Live rows only: an ignored or reversed row no longer stands, so its figures may be entered again.
+  const byHash = new Map(existing.filter(e => e.status !== 'ignored' && e.status !== 'reversed').map(e => [e.dedup_hash, e]))
   const staged = new Map(existing.filter(e => e.status === 'staged' && e.asset_id).map(e => [periodKey(e.asset_id, e.period_start, e.period_end), e]))
   const posted = new Map(existing.filter(e => e.status === 'posted' && e.asset_id).map(e => [periodKey(e.asset_id, e.period_start, e.period_end), e]))
+  // A row being posted or reversed is claimed (post.ts): its figures are frozen until that finishes.
+  const claimed = new Map(existing.filter(e => (e.status === 'posting' || e.status === 'reversing') && e.asset_id).map(e => [periodKey(e.asset_id, e.period_start, e.period_end), e]))
 
   const result: ImportResult = { imported: 0, skipped: 0, matched: 0, needsReview: 0, skippedRows: [], errors: [...parsed.errors, ...matched.errors] }
   const inserts: Record<string, unknown>[] = []
-  const updates: { id: string; values: Record<string, unknown> }[] = []
+  const updates: { id: string; label: string; values: Record<string, unknown> }[] = []
   const occurrences = new Map<string, number>()
   let unmatched = 0
 
@@ -90,9 +97,13 @@ export async function importEarnings(
       continue
     }
     const k = periodKey(r.assetId, r.periodStart, r.periodEnd)
+    if (r.assetId && claimed.has(k)) {
+      result.errors.push(`${label(r)} is being posted right now. Enter it again once that finishes.`)
+      continue
+    }
     const open = r.assetId ? staged.get(k) : undefined
     if (open) {
-      updates.push({ id: open.id, values: { ...figures(r), dedup_hash: hash, updated_at: new Date().toISOString() } })
+      updates.push({ id: open.id, label: label(r), values: { ...figures(r), dedup_hash: hash, updated_at: new Date().toISOString() } })
       result.imported++
       result.matched++
       continue
@@ -125,11 +136,19 @@ export async function importEarnings(
     }
     out.push(...((data as EarningRow[]) ?? []))
   }
+  // In place, and only while the row is still STAGED: one a post has claimed in the meantime
+  // ('posting') keeps the figures its entry is being built from.
   for (const u of updates) {
     const { data, error } = await (admin as any).from('gpu_earnings').update({ ...u.values, run_id: runId })
       .eq('id', u.id).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'staged').select('*')
     if (error) return { error: error.message }
-    out.push(...((data as EarningRow[]) ?? []))
+    const rows = (data as EarningRow[]) ?? []
+    if (rows.length === 0) {
+      result.imported--
+      result.matched--
+      result.errors.push(`${u.label} was posted while this import ran. Enter it again to correct the posted figures.`)
+    }
+    out.push(...rows)
   }
   return { ...result, runId, staged: out }
 }

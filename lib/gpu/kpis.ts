@@ -15,6 +15,9 @@ export interface KpiAsset {
 }
 
 export interface KpiEarning {
+  id?: string
+  /** A staged correction names the posted row it replaces. */
+  supersedes_id?: string | null
   asset_id: string | null
   period_end: string
   status: string
@@ -132,8 +135,12 @@ export function computeKpis(input: { assets: KpiAsset[]; earnings: KpiEarning[];
     add(fleet, delta); add(bucket(byType, type), delta); add(bucket(byAsset, a.id), delta)
   }
 
+  // A staged correction REPLACES the posted row it supersedes: count one of them, not both. With
+  // posted rows only (publication) there is no staged row, and the original counts.
+  const replaced = new Set(input.earnings.filter(e => e.status === 'staged' && e.supersedes_id).map(e => e.supersedes_id!))
   for (const e of input.earnings) {
     if (!e.asset_id || !KPI_STATUSES.includes(e.status) || e.period_end < start || e.period_end > end) continue
+    if (e.id && replaced.has(e.id)) continue
     if (!typeOf.has(e.asset_id)) continue
     const delta = {
       staged: e.status === 'staged' ? 1 : 0,

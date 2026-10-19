@@ -50,6 +50,7 @@ export interface ParseOutcome {
 }
 
 const cents = (n: number) => Math.round(n * 100)
+const round4 = (n: number) => Math.round(n * 10_000) / 10_000
 const text = (v: unknown) => (v == null ? '' : String(v).trim())
 
 /** A blank cell is null; anything else must be a number, or the row is refused. */
@@ -71,17 +72,21 @@ function parseOne(line: number, cells: Record<string, string>): ParsedEarning | 
   if (!periodEnd) return fail('period_end must be a date (YYYY-MM-DD or M/D/YYYY)')
   if (periodEnd < periodStart) return fail('period_end is before period_start')
 
+  // Stored as the columns hold them: money to the cent, hours and percentages to 4 dp. Rounding
+  // here, before any check, means the entry built from the row always balances.
+  const MONEY = new Set(['gross', 'fee', 'net'])
   const nums: Record<string, number | null> = {}
   for (const k of ['rented_hours', 'utilization_pct', 'gross', 'fee', 'net', 'downtime_hours']) {
     const r = amount(cells[k] ?? '', k)
     if ('error' in r) return fail(r.error)
-    nums[k] = r.value
+    nums[k] = r.value == null ? null : MONEY.has(k) ? cents(r.value) / 100 : round4(r.value)
   }
   const given = [nums.rented_hours, nums.utilization_pct].filter(v => v != null).length
   if (given !== 1) return fail('give exactly one of rented_hours and utilization_pct')
   if (nums.utilization_pct != null && nums.utilization_pct > 100) return fail('utilization_pct cannot be more than 100')
   if (nums.gross == null) return fail('gross is required')
   const fee = nums.fee ?? 0
+  if (cents(fee) > cents(nums.gross)) return fail(`fee ${fee} is more than gross ${nums.gross}`)
   const net = nums.net ?? (cents(nums.gross) - cents(fee)) / 100
   if (cents(nums.gross) - cents(fee) !== cents(net)) {
     return fail(`gross ${nums.gross} less fee ${fee} is ${(cents(nums.gross) - cents(fee)) / 100}, not net ${net}`)
@@ -114,16 +119,23 @@ export function parseManualRows(rows: ManualRow[]): ParseOutcome {
   })))
 }
 
+/** Whether a record is the header row: its cells are the column names, in order (case and spaces aside). */
+export function isHeaderRow(fields: string[]): boolean {
+  const named = fields.map(f => f.trim().toLowerCase()).filter((f, i) => f !== '' || i === 0)
+  return named.length >= 2 && named.every((f, i) => f === EARNINGS_CSV_COLUMNS[i])
+}
+
 /**
- * A CSV, TSV or semicolon paste in EARNINGS_CSV_COLUMNS order. The first record is a header when its
- * period_start cell is not a date. Fields may be quoted; a quoted field may hold the delimiter.
+ * A CSV, TSV or semicolon paste in EARNINGS_CSV_COLUMNS order. The first record is a header only when
+ * it names the columns; anything else is data, and a malformed first row is reported like any other
+ * rather than dropped. Fields may be quoted; a quoted field may hold the delimiter.
  */
 export function parseEarningsCsv(csv: string): ParseOutcome {
   const records = splitRecords(csv ?? '')
   if (records.length === 0) return { rows: [], errors: ['Nothing to import'] }
   const delim = pickDelim(records[0])
   const lines = records.map((r, i) => ({ line: i + 1, fields: splitLine(r, delim) }))
-  const body = normalizeDate(lines[0].fields[1] ?? '') ? lines : lines.slice(1)
+  const body = isHeaderRow(lines[0].fields) ? lines.slice(1) : lines
   if (body.length === 0) return { rows: [], errors: ['Nothing to import: only a header row'] }
   return collect(body.map(l => ({
     line: l.line,

@@ -6,7 +6,7 @@ import { daysInclusive } from '../kpis'
 import type { GpuAssetRow } from '../types'
 import type { ParsedEarning } from './parse'
 
-export type MatchAsset = Pick<GpuAssetRow, 'id' | 'name' | 'serials' | 'gpu_count'>
+export type MatchAsset = Pick<GpuAssetRow, 'id' | 'name' | 'serials' | 'gpu_count'> & { disposed_on?: string | null }
 
 export interface MatchedEarning extends ParsedEarning {
   /** Null = no server answers to `assetRef`: the row is kept as `unmatched`. */
@@ -58,7 +58,8 @@ export function dedupHash(vehicleId: string, row: ParsedEarning, occurrence = 0)
 /**
  * Match each row to a server and derive the missing one of rented hours / utilization from its GPU
  * count. Refused (an error, not a row): rented or downtime hours above what the server has in the
- * period, and a second row for the same server and period in one paste.
+ * period, a period starting after the server was disposed of, and a second row for the same server
+ * and period in one paste.
  */
 export function matchAssets(parsed: ParsedEarning[], assets: MatchAsset[]): MatchOutcome {
   const out: MatchOutcome = { rows: [], errors: [], unmatched: 0 }
@@ -68,6 +69,11 @@ export function matchAssets(parsed: ParsedEarning[], assets: MatchAsset[]): Matc
     if (!asset) {
       out.unmatched++
       out.rows.push({ ...p, assetId: null, assetName: null, gpuHoursRented: p.rentedHours, utilizationPct: p.utilizationPct, status: 'unmatched' })
+      continue
+    }
+    // A disposed server still earns for its last periods; not for one starting after it left.
+    if (asset.disposed_on && p.periodStart > asset.disposed_on) {
+      out.errors.push(`Row ${p.line}: ${asset.name} was disposed of on ${asset.disposed_on}, before this period starts`)
       continue
     }
     const period = `${asset.id}|${p.periodStart}|${p.periodEnd}`

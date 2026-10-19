@@ -74,3 +74,30 @@ describe('parseManualRows', () => {
     expect(parseManualRows('x' as any)).toEqual({ rows: [], errors: ['rows must be a list'] })
   })
 })
+
+// ── Review fixes (#90) ──
+describe('review fixes', () => {
+  it('refuses a fee above gross (net would be negative)', () => {
+    const { rows, errors } = parseEarningsCsv('A,2026-09-01,2026-09-30,10,,100,100.01')
+    expect(rows).toEqual([])
+    expect(errors).toEqual(['Row 1: fee 100.01 is more than gross 100'])
+  })
+
+  it('rounds money to the cent and hours to 4 dp before anything is checked or stored', () => {
+    const { rows, errors } = parseEarningsCsv('A,2026-09-01,2026-09-30,10.123456,,100.004,10.001,,0.000049')
+    expect(errors).toEqual([])
+    expect(rows[0]).toMatchObject({ rentedHours: 10.1235, gross: 100, fee: 10, net: 90, downtimeHours: 0 })
+    const half = parseEarningsCsv('A,2026-09-01,2026-09-30,,12.34565,0.125,0.005').rows[0]
+    expect(Math.round(half.gross * 100)).toBe(half.gross * 100)
+    expect(Math.round(half.net * 100)).toBe(Math.round(half.net * 100))
+    expect(Math.round(half.gross * 100) - Math.round(half.fee * 100)).toBe(Math.round(half.net * 100))
+  })
+
+  it('treats the first record as a header only when it names the columns; a bad first data row is reported, not dropped', () => {
+    const bad = parseEarningsCsv('H200 #1,soon,2026-09-30,10,,100\nH200 #2,2026-09-01,2026-09-30,10,,100')
+    expect(bad.rows.map(r => r.assetRef)).toEqual(['H200 #2'])
+    expect(bad.errors).toEqual(['Row 1: period_start must be a date (YYYY-MM-DD or M/D/YYYY)'])
+    expect(parseEarningsCsv(' Asset , Period_Start,period_end\nA,2026-09-01,2026-09-30,1,,1').rows).toHaveLength(1)
+    expect(parseEarningsCsv('server,start,end\nA,2026-09-01,2026-09-30,1,,1').errors[0]).toMatch(/^Row 1: /)
+  })
+})
