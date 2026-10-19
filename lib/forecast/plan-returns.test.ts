@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { planReturns } from './plan-returns'
 import { validateCapital } from './capital'
 import { F1, PACK_INPUTS, PACK_TERMS } from '@/lib/gpu/fixtures/pack-v3'
+import { contribute, distribute, emptyState } from '@/lib/gpu/waterfall'
 
 const m = (o: Record<string, number>) => new Map(Object.entries(o)) as any
 const months = Array.from({ length: 24 }, (_, i) => `${2027 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`) as any[]
@@ -147,6 +148,24 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     })
     expect(r.lp.dpi).toBeCloseTo(1.37393333, 8)
     expect(Math.round(r.lp.dpi! * 1000) / 1000).toBe(1.374)
+  })
+
+  it('pays a released contingency before the tiers, as the engine does (R8)', () => {
+    const terms = { ...PACK_TERMS, dayCount: '30_360' as const }
+    const history = [{ kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: 1_000_000 }]
+    const r = planReturns({
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
+      otherFlows: m({}), invested: m({}), proceeds: m({ '2027-01': 50_000, '2027-12': 2_000_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+      cashWaterfall: { terms, history, contingencyReturns: new Map([['2027-01', 50_000]]) as any },
+    })
+    // The engine, by hand: the January 50,000 is all contingency, so no pref is paid and it carries forward.
+    let state = contribute(emptyState('2026-12-31'), history[0])
+    const jan = distribute(state, 50_000, '2027-01-31', terms, undefined, { contingencyReturn: 50_000 })
+    state = jan.state
+    const dec = distribute(state, 2_000_000, '2027-12-31', terms)
+    expect(jan.tiers).toMatchObject({ contingencyReturn: 50_000, preferred: 0 })
+    expect(r.totals.carry).toBe(Math.round((jan.tiers.toGP + dec.tiers.toGP) * 100) / 100)
+    expect(r.lp.distributed).toBe(Math.round((jan.tiers.toLP + dec.tiers.toLP) * 100) / 100)
   })
 
   it('the fund kinds ignore cashWaterfall unless the kind says distributable_cash', () => {

@@ -51,6 +51,8 @@ export interface CashWaterfallInput {
   history: WaterfallEvent[]
   /** A pitch with nothing contributed on the books yet: the capital its scenario raises, at its start. */
   assumedContribution?: { date: string; amount: number } | null
+  /** Unspent capex contingency released by month (R8): paid out that month, before the tiers. */
+  contingencyReturns?: Map<MonthKey, number>
 }
 
 /** The investors the forecast's own calls are made to: the scenario is vehicle-level, like the engine. */
@@ -89,7 +91,8 @@ export function splitCashDistributions(
       if (!warnings.length) warnings.push('No investor has contributed, so distributions are shown undivided — there is no capital for the waterfall to return')
       continue
     }
-    const split = distribute(state, d, date, terms)
+    const c = Math.min(d, input.contingencyReturns?.get(m) ?? 0)
+    const split = distribute(state, d, date, terms, undefined, c > 0 ? { contingencyReturn: c } : {})
     state = split.state
     byMonth.set(m, { toLp: split.tiers.toLP, carry: split.tiers.toGP, toGpStake: 0 })
   }
