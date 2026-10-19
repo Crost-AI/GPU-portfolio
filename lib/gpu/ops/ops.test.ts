@@ -50,6 +50,14 @@ vi.mock('@/lib/accounting/continuous-allocation', async orig => ({
     return {}
   }),
 }))
+// The bank auto-match's payout gate (#92) reads the caller's access: an admin with gpu_fleet on.
+vi.mock('@/lib/access/effective', async orig => ({
+  ...(await orig<any>()),
+  loadAccessContext: async () => ({
+    fundId: 'f', userId: 'u', role: 'admin', vehicles: { all: true, ids: [] }, grants: {}, defaults: {},
+    features: { ...(await import('@/lib/types/features')).DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: 'everyone' },
+  }),
+}))
 vi.mock('@/lib/accounting/bank-match', async orig => ({
   ...(await orig<any>()),
   linkInflowToEntry: vi.fn(async (_a: any, fundId: string, _g: string, txnId: string, entryId: string) => {
@@ -474,7 +482,9 @@ describe('payout matching is claimed', () => {
 })
 
 describe('end to end: post, record a payout, and the bank auto-match books it', () => {
-  it('Dr 1000 / Cr 1150, the bank row reconciled and 1150 cleared, unattended', async () => {
+  it('Dr 1000 / Cr 1150, the bank row reconciled and 1150 cleared, unattended (auto-posting on)', async () => {
+    s.m.tables.fund_members = [{ fund_id: 'f', user_id: 'u', role: 'admin' }]
+    s.m.tables.gpu_fleet_settings = [{ id: 'fs', fund_id: 'f', vehicle_id: 'v-gpu', auto_post_payout_matches: true }]
     await stage()
     await ignoreEarnings(s.m.admin, 'f', G, [byAsset(null).id])
     await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))

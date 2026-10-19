@@ -100,4 +100,6 @@ export interface GpuFleetSettingsRow {
   fund_id: string
   vehicle_id: string
   capex_contingency_budget: number
+  /** ── GPU fleet (P3) ── The bank auto-match books a fitting payout itself (issue #92); off = propose. */
+  auto_post_payout_matches: boolean
 }

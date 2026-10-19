@@ -151,6 +151,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/fleet/ops/import': { domain: 'fleet' },
   'api/fleet/ops/earnings': { domain: 'fleet' },
   'api/fleet/ops/payouts': { domain: 'fleet' },
+  // Whether the bank auto-match books payout matches itself (#92); PATCH also needs accounting write.
+  'api/fleet/ops/settings': { domain: 'fleet' },
   // GET reads the KPIs; POST publishes them to the fleet company's metrics.
   'api/fleet/kpis': { domain: 'fleet', level: { GET: 'read', POST: 'write' } },
   // ── Management company ─────────────────────────────────────────────────────

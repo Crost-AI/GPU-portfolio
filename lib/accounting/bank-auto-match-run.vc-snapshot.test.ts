@@ -6,7 +6,7 @@ import type { JournalEntry } from './types'
 // take exactly the path it took before: the outcome below is the one the pre-P3 code produced for
 // this fixture, with the same keys, the same drafts and the same bank-row updates, and the payout
 // path is never entered (no gpu_payouts read, no 1150 in the chart).
-const s = vi.hoisted(() => ({ m: null as any, receivables: [] as [string, number][], payables: [] as [string, number][], serial: 0 }))
+const s = vi.hoisted(() => ({ m: null as any, receivables: [] as [string, number][], payables: [] as [string, number][], serial: 0, ctx: null as any }))
 vi.mock('./capital-calls', async orig => ({
   ...(await orig<any>()),
   lpReceivableBalances: async () => new Map(s.receivables),
@@ -27,6 +27,8 @@ vi.mock('./persist', async orig => ({
     return { entryId: id }
   }),
 }))
+// The caller's access for the GPU SPV payout gate (#92); a fund vehicle never reads it.
+vi.mock('@/lib/access/effective', async orig => ({ ...(await orig<any>()), loadAccessContext: vi.fn(async () => s.ctx) }))
 vi.mock('./bank-match', async orig => {
   const real = await orig<any>()
   return {
@@ -44,6 +46,14 @@ vi.mock('./bank-match', async orig => {
 import { autoMatchOpenCapital } from './bank-auto-match-run'
 import { marketplacePayoutCandidates } from './bank-match'
 import { GPU_SPV_CHART } from './chart'
+import { loadAccessContext } from '@/lib/access/effective'
+import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+
+const access = (fleet: 'none' | 'read' | 'write', gpuFleet = 'everyone') => ({
+  fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] }, defaults: {},
+  features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: gpuFleet } as FeatureVisibilityMap,
+  grants: { accounting: 'write', fleet },
+})
 
 const txn = (vehicle_id: string, id: string, amount: number, description: string, txn_date = '2026-10-03', status = 'drafted') =>
   ({ id, fund_id: 'f', vehicle_id, txn_date, amount, description, status, journal_entry_id: `draft-${id}` })
@@ -51,6 +61,8 @@ const placeholder = (vehicle_id: string, id: string) => ({ id: `draft-${id}`, fu
 
 beforeEach(() => {
   vi.mocked(marketplacePayoutCandidates).mockClear()
+  vi.mocked(loadAccessContext).mockClear()
+  s.ctx = access('write')
   s.receivables = []
   s.payables = []
   s.serial = 0
@@ -90,6 +102,7 @@ describe('a fund vehicle: the pre-P3 outcome, unchanged', () => {
     })
     expect(Object.keys(out)).toEqual(['matched', 'ambiguous', 'unmatched'])
     expect(marketplacePayoutCandidates).not.toHaveBeenCalled()
+    expect(loadAccessContext).not.toHaveBeenCalled()
 
     const t = s.m.tables
     expect(t.journal_entries.filter((e: any) => !e.id.startsWith('draft-')).map((e: any) => [e.status, e.memo])).toEqual([
@@ -117,6 +130,8 @@ describe('a GPU SPV: expected marketplace payouts', () => {
       ],
       journal_entries: ['t-1', 't-2', 't-3', 't-4'].map(id => placeholder('v-gpu', id)),
       journal_postings: [], capital_call_lines: [],
+      fund_members: [{ fund_id: 'f', user_id: 'u', role: 'member' }],
+      gpu_fleet_settings: [{ id: 'fs', fund_id: 'f', vehicle_id: 'v-gpu', auto_post_payout_matches: true }],
       gpu_payouts: [
         { id: 'p-1', fund_id: 'f', vehicle_id: 'v-gpu', payout_date: '2026-10-01', amount: 1000, reference: null, status: 'expected' },
         { id: 'p-2', fund_id: 'f', vehicle_id: 'v-gpu', payout_date: '2026-10-01', amount: 2000, reference: null, status: 'expected' },
@@ -128,7 +143,7 @@ describe('a GPU SPV: expected marketplace payouts', () => {
     s.receivables = [['lp-a', 5000], ['lp-b', 300]]
   })
 
-  it('posts an inflow that fits one payout; asks about two payouts, and about a payout that collides with an open call', async () => {
+  it('with auto-posting on: posts an inflow that fits one payout; asks about two payouts, and about a payout that collides with an open call', async () => {
     const out = await autoMatchOpenCapital(s.m.admin, 'f', 'GPU I', 'u')
     if ('error' in out) throw new Error(out.error)
     const t = s.m.tables
@@ -151,5 +166,48 @@ describe('a GPU SPV: expected marketplace payouts', () => {
     expect(t.bank_transactions.find((b: any) => b.id === 't-3')).toMatchObject({ status: 'drafted', journal_entry_id: 'draft-t-3' })
     expect(out.matched).toEqual([{ txnId: 't-4', lpEntityId: 'lp-b', name: 'Beta LP', amount: 300, by: 'amount' }])
     expect(out.ambiguous).toEqual([])
+    expect(out.proposedPayouts).toEqual([])
+  })
+
+  // #92: propose by default, and only for a caller who holds fleet write with gpu_fleet on.
+  it('by default PROPOSES the fitting payout and books nothing; the payout stays expected', async () => {
+    s.m.tables.gpu_fleet_settings[0].auto_post_payout_matches = false
+    const out = await autoMatchOpenCapital(s.m.admin, 'f', 'GPU I', 'u')
+    if ('error' in out) throw new Error(out.error)
+    expect(out.proposedPayouts).toEqual([{ txnId: 't-1', payoutId: 'p-1', amount: 1000, payoutDate: '2026-10-01', reference: null }])
+    expect(out.payouts).toEqual([])
+    expect(s.m.tables.journal_entries.filter((e: any) => String(e.source_ref).startsWith('marketplace-payout:'))).toEqual([])
+    expect(s.m.tables.gpu_payouts.find((p: any) => p.id === 'p-1').status).toBe('expected')
+    expect(s.m.tables.bank_transactions.find((b: any) => b.id === 't-1')).toMatchObject({ status: 'drafted', journal_entry_id: 'draft-t-1' })
+    // The collision rule and the LP path are the same as with auto-posting.
+    expect(out.ambiguousPayouts!.map(a => a.txnId)).toEqual(['t-2', 't-3'])
+    expect(out.matched.map(m => m.txnId)).toEqual(['t-4'])
+  })
+
+  it('with no settings row, proposes (auto-posting is off unless turned on)', async () => {
+    s.m.tables.gpu_fleet_settings = []
+    const out = await autoMatchOpenCapital(s.m.admin, 'f', 'GPU I', 'u')
+    if ('error' in out) throw new Error(out.error)
+    expect(out.proposedPayouts!.map(p => p.payoutId)).toEqual(['p-1'])
+    expect(out.payouts).toEqual([])
+  })
+
+  it.each<[string, () => void]>([
+    ['gpu_fleet is off', () => { s.ctx = access('write', 'off') }],
+    ['gpu_fleet is hidden', () => { s.ctx = access('write', 'hidden') }],
+    ['the caller holds fleet read only', () => { s.ctx = access('read') }],
+    ['the caller holds no fleet grant', () => { s.ctx = access('none') }],
+    ['there is no caller', () => {}],
+  ])('skips the payout pool entirely when %s; LP matching is unchanged', async (name, setup) => {
+    setup()
+    const out = await autoMatchOpenCapital(s.m.admin, 'f', 'GPU I', name === 'there is no caller' ? null : 'u')
+    if ('error' in out) throw new Error(out.error)
+    expect(Object.keys(out)).toEqual(['matched', 'ambiguous', 'unmatched'])
+    expect(marketplacePayoutCandidates).not.toHaveBeenCalled()
+    expect(s.m.tables.gpu_payouts.every((p: any) => p.status === 'expected')).toBe(true)
+    expect(out.matched).toEqual([
+      { txnId: 't-3', lpEntityId: 'lp-a', name: 'Alpha LP', amount: 5000, by: 'amount' },
+      { txnId: 't-4', lpEntityId: 'lp-b', name: 'Beta LP', amount: 300, by: 'amount' },
+    ])
   })
 })

@@ -19,7 +19,7 @@ import { persistEntry, accountIdByCode } from './persist'
 import { matchTransaction, type OpenBalance } from './bank-auto-match'
 // ── GPU fleet (P3) ──
 import { marketplacePayoutCandidates, type PayoutCandidate } from './bank-match'
-import { isPayoutCandidate, matchPayout } from '@/lib/gpu/ops/payouts'
+import { isPayoutCandidate, matchPayout, payoutAutoMatchMode } from '@/lib/gpu/ops/payouts'
 import { RECEIVABLE_CODE as MARKETPLACE_RECEIVABLE_CODE } from '@/lib/gpu/ops/types'
 
 export interface AutoMatchOutcome {
@@ -30,8 +30,13 @@ export interface AutoMatchOutcome {
   unmatched: number
   // ── GPU fleet (P3) ── Present only on a GPU SPV (a chart with 1150), so every other vehicle's
   // outcome has exactly the keys it had before.
-  /** Inflows matched to an expected marketplace payout and posted (Dr 1000 / Cr 1150). */
+  // Present only when the payout pool ran: a GPU SPV, gpu_fleet on, the caller holding fleet write.
+  /** Inflows matched to an expected marketplace payout and posted (Dr 1000 / Cr 1150) — only with the
+   *  vehicle's auto_post_payout_matches on. */
   payouts?: { txnId: string; payoutId: string; amount: number; entryId: string }[]
+  /** Inflows that fit exactly one expected payout, NOT booked: confirm each on the payouts page
+   *  (POST /api/fleet/ops/payouts { action: 'match' }). The default. */
+  proposedPayouts?: { txnId: string; payoutId: string; amount: number; payoutDate: string; reference: string | null }[]
   /**
    * Inflows that fit several expected payouts, or one payout AND a partner's open call at the same
    * amount (`lpCandidates`) — a human picks.
@@ -94,13 +99,20 @@ export async function autoMatchOpenCapital(
 
   // ── GPU fleet (P3) ── Only a GPU SPV's chart has 1150, so for every other vehicle `payouts` stays
   // null and the loop below is the one it always was: no extra read, no extra key in the outcome.
-  // Unlike a capital settlement, a payout match POSTS (matchPayout): the payout was declared by a
-  // person recording it, and its counter-account is a receivable the posted earnings created.
+  // On a GPU SPV the pool runs only for a caller holding fleet write with gpu_fleet on (#92), and it
+  // PROPOSES by default: a fitting payout is booked here only when the vehicle's
+  // auto_post_payout_matches is on; otherwise the accountant confirms it on the payouts page.
   let payouts: PayoutCandidate[] | null = null
+  let autoPost = false
   if (codes.has(MARKETPLACE_RECEIVABLE_CODE)) {
-    payouts = await marketplacePayoutCandidates(admin, fundId, group)
-    out.payouts = []
-    out.ambiguousPayouts = []
+    const mode = await payoutAutoMatchMode(admin, fundId, group, userId)
+    if (mode !== 'off') {
+      payouts = await marketplacePayoutCandidates(admin, fundId, group)
+      autoPost = mode === 'post'
+      out.payouts = []
+      out.proposedPayouts = []
+      out.ambiguousPayouts = []
+    }
   }
 
   for (const t of ((txns as any[]) ?? [])) {
@@ -114,6 +126,12 @@ export async function autoMatchOpenCapital(
       const lpCandidates = !lp || lp.kind === 'none' ? [] : lp.kind === 'ambiguous' ? lp.candidates : openOf(receivables).filter(o => o.lpEntityId === lp.lpEntityId)
       if (fits.length > 1 || lpCandidates.length) {
         out.ambiguousPayouts!.push({ txnId: t.id, amount, description: t.description, candidates: fits, ...(lpCandidates.length ? { lpCandidates } : {}) })
+        continue
+      }
+      if (fits.length === 1 && !autoPost) {
+        const p = fits[0]
+        payouts = payouts.filter(x => x.payoutId !== p.payoutId)
+        out.proposedPayouts!.push({ txnId: t.id, payoutId: p.payoutId, amount, payoutDate: p.payoutDate, reference: p.reference })
         continue
       }
       if (fits.length === 1) {
