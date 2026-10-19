@@ -17,7 +17,7 @@ import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-cont
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { WaterfallView } from '@/components/gpu/waterfall-view'
 import {
-  ProposalForm, canDeclare, declareAction, openProposal, previewAction, proposalReducer, type ProposalState,
+  ProposalForm, canDeclare, declareAction, openProposal, previewAction, previewKey, proposalReducer, type ProposalState,
 } from '@/components/gpu/propose-distribution'
 import { PrefLedgerTable, PrefLedgerUnavailable } from '@/components/gpu/pref-ledger-table'
 import { DistributionHistory, TierBreakdown } from '@/components/gpu/distribution-history'
@@ -83,7 +83,9 @@ const filled = (over: Partial<ProposalState['inputs']> = {}): ProposalState => {
   const s = openProposal(null, ASOF, 'key-1')
   return { ...s, inputs: { ...s.inputs, available: '2,000,000', reserve: '50000', contingencyReturn: '10000', description: 'Year one', ...over } }
 }
-const previewed = (s: ProposalState = filled()): ProposalState => proposalReducer(s, { type: 'previewDone', preview: PREVIEW, asOf: s.inputs.date })
+const done = (s: ProposalState, preview: CashPreview = PREVIEW) =>
+  proposalReducer(s, { type: 'previewDone', preview, asOf: s.inputs.date, key: previewKey(s.inputs)! })
+const previewed = (s: ProposalState = filled()): ProposalState => done(s)
 
 const form = (state: ProposalState, seesCarry = true) => renderToStaticMarkup(
   <ProposalForm state={state} dispatch={() => {}} seesCarry={seesCarry} money={money} onPreview={() => {}} onDeclare={() => {}} />,
@@ -211,8 +213,38 @@ describe('any input change invalidates the preview', () => {
     expect(disabled(html, 'declare')).toBe(true)
     expect(disabled(html, 'preview')).toBe(false)
     expect(html).toContain('data-stale="true"')
-    s = proposalReducer(s, { type: 'previewDone', preview: PREVIEW, asOf: '2027-02-01' })
+    s = done(s)
+    expect(s.previewAsOf).toBe('2027-02-01')
     expect(canDeclare(s)).toBe(true)
+  })
+
+  it('an input changed while the preview is in flight leaves the reply stale', async () => {
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: PREVIEW })
+    let s = proposalReducer(filled(), { type: 'previewStart' })
+    const asked = s.inputs
+    // The reserve moves from 50,000 to 100,000 before the reply for 50,000 lands.
+    s = proposalReducer(s, { type: 'input', field: 'reserve', value: '100000' })
+    s = proposalReducer(s, await previewAction(fetcher, asked))
+    expect(calls[0].body.reserve).toBe(50_000)
+    expect(s.stale).toBe(true)
+    expect(canDeclare(s)).toBe(false)
+    const html = form(s)
+    expect(disabled(html, 'declare')).toBe(true)
+    expect(disabled(html, 'preview')).toBe(false)
+    expect(html).toContain('data-stale="true"')
+    expect(await declareAction(fetcher, s)).toMatchObject({ type: 'refused' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('so does one changed and changed back: the key, not the flag, decides', () => {
+    let s = proposalReducer(filled(), { type: 'previewStart' })
+    const key = previewKey(s.inputs)!
+    s = proposalReducer(s, { type: 'input', field: 'reserve', value: '100000' })
+    s = proposalReducer(s, { type: 'input', field: 'reserve', value: '50000' })
+    s = proposalReducer(s, { type: 'previewDone', preview: PREVIEW, asOf: ASOF, key })
+    expect(canDeclare(s)).toBe(true)
+    s = proposalReducer(s, { type: 'input', field: 'available', value: '2,000,001' })
+    expect(canDeclare(s)).toBe(false)
   })
 
   it.each(['available', 'reserve', 'contingencyReturn'] as const)('changing %s does too', field => {
@@ -313,7 +345,7 @@ describe('the preview’s identity', () => {
   it('a tampered tier breaks it, visibly', () => {
     const bad = { ...PREVIEW, tiers: { ...PREVIEW.tiers, preferred: PREVIEW.tiers.preferred + 0.01 } }
     expect(previewIdentity(bad).holds).toBe(false)
-    expect(form(proposalReducer(filled(), { type: 'previewDone', preview: bad, asOf: ASOF }))).toContain('data-identity="broken"')
+    expect(form(done(filled(), bad))).toContain('data-identity="broken"')
   })
 })
 

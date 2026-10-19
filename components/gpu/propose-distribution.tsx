@@ -31,6 +31,9 @@ export interface ProposalState {
   preview: CashPreview | null
   /** The `asOf` the preview ran for: the declaration's `distributionDate`. */
   previewAsOf: string | null
+  /** `previewKey` of the inputs the preview ran on. A reply that lands after an input changed is
+   *  bound to the inputs it was asked for, not the ones now in the form. */
+  previewedFor: string | null
   /** An input changed (or the server said the waterfall moved) since the preview. */
   stale: boolean
   /** Investor amounts typed over the preview's; null while untouched. */
@@ -43,7 +46,7 @@ export type ProposalAction =
   | { type: 'reset'; state: ProposalState }
   | { type: 'input'; field: keyof ProposalInputs; value: string }
   | { type: 'previewStart' }
-  | { type: 'previewDone'; preview: CashPreview; asOf: string }
+  | { type: 'previewDone'; preview: CashPreview; asOf: string; key: string }
   | { type: 'editLine'; lpEntityId: string; value: string }
   | { type: 'declareStart' }
   | { type: 'declareDone' }
@@ -51,10 +54,16 @@ export type ProposalAction =
 
 /** The form as it opens: today's date, the last declared reserve (blank on the first), no preview. */
 export function openProposal(lastReserve: number | null, today: string, requestKey: string): ProposalState {
-  return { inputs: initialInputs(lastReserve, today), requestKey, preview: null, previewAsOf: null, stale: false, edits: null, busy: null, error: null }
+  return { inputs: initialInputs(lastReserve, today), requestKey, preview: null, previewAsOf: null, previewedFor: null, stale: false, edits: null, busy: null, error: null }
 }
 
 const WATERFALL_INPUTS: (keyof ProposalInputs)[] = ['date', 'available', 'reserve', 'contingencyReturn']
+
+/** The waterfall inputs as the preview request would send them, or null when they cannot be sent. */
+export function previewKey(inputs: ProposalInputs): string | null {
+  const req = previewRequest(inputs)
+  return req.ok ? JSON.stringify(req.body) : null
+}
 
 export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalState {
   switch (a.type) {
@@ -69,7 +78,8 @@ export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalSt
       }
     }
     case 'previewStart': return { ...s, busy: 'preview', error: null }
-    case 'previewDone': return { ...s, busy: null, preview: a.preview, previewAsOf: a.asOf, stale: false, edits: null, error: null }
+    // The inputs may have moved while the request was out: then the reply is shown, but stale.
+    case 'previewDone': return { ...s, busy: null, preview: a.preview, previewAsOf: a.asOf, previewedFor: a.key, stale: previewKey(s.inputs) !== a.key, edits: null, error: null }
     case 'editLine': return { ...s, edits: { ...(s.edits ?? {}), [a.lpEntityId]: a.value } }
     case 'declareStart': return { ...s, busy: 'declare', error: null }
     case 'declareDone': return { ...s, busy: null }
@@ -80,7 +90,7 @@ export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalSt
 
 /** Declare only from a preview whose inputs have not changed since. */
 export function canDeclare(s: ProposalState): boolean {
-  return s.preview != null && !s.stale && s.busy == null && s.previewAsOf === s.inputs.date
+  return s.preview != null && !s.stale && s.busy == null && s.previewedFor != null && s.previewedFor === previewKey(s.inputs)
 }
 
 const today = () => new Date().toLocaleDateString('en-CA')
@@ -94,12 +104,14 @@ export async function previewAction(fetcher: Fetcher, inputs: ProposalInputs): P
   if (r.data.distributable == null) {
     return { type: 'refused', error: { text: 'This vehicle\u2019s waterfall is not set to distributable cash, so it cannot be split from available cash and a reserve. Set the terms, or declare from Capital accounts.' } }
   }
-  return { type: 'previewDone', preview: r.data, asOf: req.body.asOf }
+  return { type: 'previewDone', preview: r.data, asOf: req.body.asOf, key: JSON.stringify(req.body) }
 }
 
 /** Declare what was previewed, under the dialog's one request key. */
 export async function declareAction(fetcher: Fetcher, state: ProposalState): Promise<ProposalAction> {
   if (!state.preview || !state.previewAsOf) return { type: 'refused', error: { text: 'Preview the distribution first.' } }
+  // The button is off for a stale preview; this holds the request to the same rule.
+  if (!canDeclare(state)) return { type: 'refused', error: { text: 'The inputs changed since the preview; preview again before declaring.' } }
   const req = declareRequest({ preview: state.preview, asOf: state.previewAsOf, description: state.inputs.description, requestKey: state.requestKey, edits: state.edits })
   if (!req.ok) return { type: 'refused', error: { text: req.error } }
   const r = await send(fetcher, waterfallPaths.distributions, 'POST', req.body)
