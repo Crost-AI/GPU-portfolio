@@ -12,7 +12,7 @@ import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import { eventBody, eventFormError, fleetPaths, getAsset, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
-import { bookingGate, isOffBooks, offBooksLabel, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
+import { bookingGate, disposedAsOf, isOffBooks, offBooksLabel, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
 import { AsOfControl, ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
@@ -36,7 +36,7 @@ const TAX_METHOD_LABEL: Record<string, string> = {
 export function ValuationCard({ asset }: { asset: ValuedAsset }) {
   const currency = useCurrency()
   const money = (n: number) => formatCurrencyFull(Number(n), currency)
-  const off = isOffBooks(asset) && asset.status !== 'disposed'
+  const off = isOffBooks(asset) && !disposedAsOf(asset)
   const value = (n: number) => (off ? '—' : money(n))
   const rows: [string, string, string][] = [
     ['Basis', money(asset.basis), 'basis'],
@@ -186,7 +186,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
     )
   }
 
-  const off = isOffBooks(asset) && asset.status !== 'disposed'
+  const off = isOffBooks(asset) && !disposedAsOf(asset)
   const disposed = asset.status === 'disposed'
   const book = bookingGate(canWriteFleet, canBook)
   // A name that could not be loaded is said so, not shown as "No type" or a dash.

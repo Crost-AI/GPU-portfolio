@@ -131,6 +131,50 @@ describe('the fleet register', () => {
     expect(cell(register({ assets: fleet }), 'old', 'nbv_book')).toBe('')
   })
 
+  describe('an asset disposed of on 2026-06-30 is judged at the valuation date, not by its status today', () => {
+    // Its status is disposed now; the server values it at each date by disposed_on <= as_of.
+    const sold = (asOf: string, nbvBook: number, nbvTax: number) => asset({
+      id: 'sold', name: 'Sold H100', status: 'disposed', disposed_on: '2026-06-30', hardware_cost: 300_000, basis: 300_000,
+      accumulated_book: 300_000 - nbvBook, nbv_book: nbvBook, accumulated_tax: 300_000 - nbvTax, nbv_tax: nbvTax, valuation_as_of: asOf,
+    })
+    const atDate = (asOf: string, a: ValuedAsset) => PACK.map(p => ({ ...p, valuation_as_of: asOf })).concat(a)
+
+    it('before (2026-03-31): included, with its historical NBV, in the row and the totals', () => {
+      const a = sold('2026-03-31', 285_000, 240_000)
+      const html = register({ assets: atDate('2026-03-31', a) })
+      expect(cell(html, 'sold', 'nbv_book')).toBe('285000')
+      expect(cell(html, 'sold', 'nbv_tax')).toBe('240000')
+      expect(cell(html, 'sold', 'basis')).toBe('300000')
+      expect(fleetTotals(atDate('2026-03-31', a))).toMatchObject({ assets: 4, gpus: 32, basis: 1_617_000, nbvBook: 1_366_950, nbvTax: 1_167_850 })
+      expect(html).toContain(`data-total="nbv_book">${money(1_366_950)}`)
+    })
+
+    it.each(['2026-06-30', '2026-09-30'])('on or after (%s): excluded, and its row shows a dash', asOf => {
+      const a = sold(asOf, 0, 0)
+      const html = register({ assets: atDate(asOf, a) })
+      expect(cell(html, 'sold', 'nbv_book')).toBe('')
+      expect(cell(html, 'sold', 'basis')).toBe('')
+      expect(fleetTotals(atDate(asOf, a))).toMatchObject({ assets: 3, gpus: 24, basis: 1_317_000, nbvBook: 1_081_950 })
+      expect(html).toContain(`data-total="nbv_book">${money(1_081_950)}`)
+    })
+
+    it('write actions follow the status today: a disposed asset offers no Purchase or Dispose at any date', () => {
+      const html = register({ assets: atDate('2026-03-31', sold('2026-03-31', 285_000, 240_000)) })
+      expect(button(html, 'sold', 'Purchase')).toBeNull()
+      expect(button(html, 'sold', 'Dispose')).toBeNull()
+    })
+
+    it('/fleet and the lead page total the same way (both use fleetTotals)', () => {
+      const html = renderToStaticMarkup(
+        <CurrencyProvider currency="USD">
+          <FleetOverviewView vehicles={[{ id: 'v1', name: 'H200 SPV I', active: true }]} loaded={{ v1: { assets: atDate('2026-03-31', sold('2026-03-31', 285_000, 240_000)) } }} asOf="2026-03-31" />
+        </CurrencyProvider>,
+      )
+      expect(html).toContain(`>${money(1_366_950)}<`)
+      expect(readFileSync(path.join(process.cwd(), 'app/(app)/funds/[id]/gpu-detail-view.tsx'), 'utf8')).toContain('fleetTotals(r.data.assets)')
+    })
+  })
+
   it('keeps a planned asset out of book and tax, though the route values it at its full basis', () => {
     // valueAssets reports an unpurchased asset at its basis with nothing depreciated.
     const plan = asset({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000,

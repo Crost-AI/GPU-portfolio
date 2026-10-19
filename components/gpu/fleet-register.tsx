@@ -10,7 +10,7 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import type { DatacenterContractRow, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { fleetPaths, listAssets, listContracts, listTypes, send, statusBody, type Fetcher } from './fleet-api'
 import {
-  MOVE_LABEL, bookingGate, fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+  MOVE_LABEL, bookingGate, disposedAsOf, fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
   type ValuedAsset,
 } from './fleet-math'
 import { AsOfControl, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
@@ -53,7 +53,7 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
   const book = bookingGate(canWriteFleet, canBook)
   const asOf = assets[0]?.valuation_as_of ?? null
   const figure = (a: ValuedAsset, v: number, key: string) => {
-    const shown = !isOffBooks(a) && a.status !== 'disposed'
+    const shown = !isOffBooks(a) && !disposedAsOf(a)
     return <td className={num} data-col={key} data-value={shown ? Number(v) : ''}>{shown ? money(Number(v)) : '—'}</td>
   }
 
@@ -86,7 +86,7 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
           </thead>
           <tbody>
             {assets.map(a => {
-              const off = isOffBooks(a) && a.status !== 'disposed'
+              const off = isOffBooks(a) && !disposedAsOf(a)
               const href = vehicleId ? `/funds/${vehicleId}/fleet/${a.id}` : null
               return (
                 <tr key={a.id} className="border-t" data-asset={a.id}>
@@ -126,7 +126,7 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
           </tbody>
           <tfoot>
             <tr className="border-t bg-muted/30 font-medium">
-              <td className="px-3 py-2" colSpan={2}>Fleet ({totals.assets} {totals.assets === 1 ? 'asset' : 'assets'}, excluding disposed)</td>
+              <td className="px-3 py-2" colSpan={2}>Fleet ({totals.assets} {totals.assets === 1 ? 'asset' : 'assets'}, excluding any disposed of by the as-of date)</td>
               <td className={num} data-total="gpus">{totals.gpus}</td>
               <td className="px-3 py-2" colSpan={2} />
               <td className={num} data-total="basis">{money(totals.basis)}</td>

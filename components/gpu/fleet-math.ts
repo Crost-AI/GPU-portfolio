@@ -27,6 +27,14 @@ export const isOffBooks = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>)
 /** What an off-the-books row is called: planned (not purchased) or unbooked (purchase not linked). */
 export const offBooksLabel = (a: Pick<GpuAssetRow, 'status'>) => (isPlanned(a) ? 'Planned' : 'Unbooked')
 
+/**
+ * Was the asset disposed of by the date it is valued as of? The valuation's own rule (valueAssets:
+ * disposed_on <= as_of gives NBV 0). An asset disposed later is still on the books at an earlier date,
+ * so its figures count then, whatever its status today. Write actions follow the current status.
+ */
+export const disposedAsOf = (a: Pick<ValuedAsset, 'disposed_on' | 'valuation_as_of'>) =>
+  !!a.disposed_on && a.disposed_on <= a.valuation_as_of
+
 const round2 = (n: number) => Math.round(n * 100) / 100
 
 export interface FleetTotals {
@@ -53,9 +61,12 @@ export function addTotals(a: FleetTotals, b: FleetTotals): FleetTotals {
   return out
 }
 
-/** The fleet as it stands, from the server's figures: every asset not disposed of, off-the-books apart. */
+/**
+ * The fleet as it stood on the valuation date, from the server's figures: every asset not disposed of
+ * by then (disposedAsOf), off-the-books apart.
+ */
 export function fleetTotals(assets: ValuedAsset[]): FleetTotals {
-  return assets.filter(a => a.status !== 'disposed').reduce<FleetTotals>((t, a) => addTotals(t, isOffBooks(a)
+  return assets.filter(a => !disposedAsOf(a)).reduce<FleetTotals>((t, a) => addTotals(t, isOffBooks(a)
     ? { ...ZERO_TOTALS, assets: 1, gpus: a.gpu_count, planned: Number(a.basis) }
     : {
         assets: 1, gpus: a.gpu_count, basis: Number(a.basis), planned: 0,
