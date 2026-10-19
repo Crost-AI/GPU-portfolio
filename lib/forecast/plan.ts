@@ -11,6 +11,8 @@ import { evaluateRule, type RuleInput } from './rules'
 import { assertEntryBalanced, compileForecast, counterAccountsFor, type CashTiming, type CompiledEntry, type CompileLine } from './compile'
 import type { MonthlyConstruction } from './construction-adapter'
 import type { GpShareSchedule } from './linked'
+import type { FleetDisposal } from '@/lib/gpu/fleet-forecast'
+import type { LinkedFleetParams } from './rules'
 
 export type PlanKind = 'budget' | 'rolling_forecast'
 
@@ -82,6 +84,8 @@ export interface LinkedDriver {
   amounts: Map<MonthKey, number>
   /** Overrides the rule's own cash timing (a fee link's billing cycle). */
   timing?: CashTiming
+  /** A fleet disposal's cost and accumulated depreciation, for its entry (linked_fleet 'disposal'). */
+  disposal?: FleetDisposal
   basis: string
   warnings: string[]
 }
@@ -138,6 +142,7 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
 
   const outcomes: RuleOutcome[] = []
   const lines: CompileLine[] = []
+  const fleetBooked: CompiledEntry[] = []
   const seen = new Set<string>()
   for (const r of input.rules) {
     const account = byId.get(r.accountId)
@@ -147,7 +152,17 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
     }
     seen.add(r.accountId)
     const ovs = overridesByAccount.get(r.accountId) ?? []
-    if (r.rule.method === 'linked_fee' || r.rule.method === 'linked_construction') {
+    // Depreciation and the sale are not cash flows a rule settles: they book their own entries.
+    const flow = r.rule.method === 'linked_fleet' ? (r.rule.params as LinkedFleetParams).flow : null
+    if (flow === 'depreciation' || flow === 'disposal') {
+      const driver = (input.linked?.get(r.id) ?? [])[0]
+      const booked = driver ? fleetEntries(input, account, r.id, flow, driver, first, last, counters.cash) : { entries: [], warnings: ['No linked source — nothing is forecast for this account'] }
+      if (ovs.length) booked.warnings.push('Month overrides do not apply to fleet depreciation or the hardware sale; they are ignored')
+      fleetBooked.push(...booked.entries)
+      outcomes.push({ ruleId: r.id, accountId: r.accountId, basis: driver?.basis ?? r.rule.method, warnings: [...(driver?.warnings ?? []), ...booked.warnings] })
+      continue
+    }
+    if (r.rule.method === 'linked_fee' || r.rule.method === 'linked_construction' || r.rule.method === 'linked_fleet') {
       const drivers = input.linked?.get(r.id) ?? []
       if (!drivers.length) {
         outcomes.push({ ruleId: r.id, accountId: r.accountId, basis: r.rule.method, warnings: ['No linked source — nothing is forecast for this account'] })
@@ -207,9 +222,61 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
   warnings.push(...construction.warnings)
   const gp = input.gpShare ? gpShareEntries(input, input.gpShare, first, last, counters.cash) : { entries: [], warnings: [] }
   warnings.push(...gp.warnings)
-  for (const e of [...opening.entries, ...construction.entries, ...gp.entries]) assertEntryBalanced(e)
-  const entries = [...compiled.entries, ...opening.entries, ...construction.entries, ...gp.entries].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.memo.localeCompare(b.memo))
+  for (const e of [...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked]) assertEntryBalanced(e)
+  const entries = [...compiled.entries, ...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.memo.localeCompare(b.memo))
   return { first, last, entries, rules: outcomes, warnings }
+}
+
+/**
+ * A GPU SPV's fleet entries that are not a rule's cash settlement:
+ *
+ *   depreciation   Dr 5300 Depreciation             / Cr 1650 Accumulated depreciation, each month
+ *   disposal       Dr cash (the sale at book) + Dr 1650 (depreciation charged) / Cr 1600 (cost),
+ *                  the difference, if any, to the rule's account (4500 gain or loss) — in the sale month
+ *
+ * The disposal is a 'proceeds' entry, so capital management pays it out like an exit.
+ */
+export function fleetEntries(
+  input: Pick<BuildPlanInput, 'accounts' | 'currency'>,
+  account: Account,
+  ruleId: string,
+  flow: 'depreciation' | 'disposal',
+  driver: LinkedDriver,
+  first: MonthKey,
+  last: MonthKey,
+  cashId: string,
+): { entries: CompiledEntry[]; warnings: string[] } {
+  const find = (subtype: string) =>
+    input.accounts.filter(a => a.subtype === subtype && !a.lpEntityId && !a.companyId).sort((a, b) => a.code.localeCompare(b.code))[0]
+  const accumulated = find('accumulated_depreciation')
+  const c = input.currency
+  const base = { accountId: account.id, ruleId, overrideId: null, source: 'rule' as const }
+  if (flow === 'depreciation') {
+    if (!accumulated) return { entries: [], warnings: ['This chart has no accumulated depreciation account, so depreciation is not forecast'] }
+    const entries: CompiledEntry[] = []
+    for (const [month, amount] of [...driver.amounts].sort(([a], [b]) => a.localeCompare(b))) {
+      if (month < first || month > last || !amount) continue
+      entries.push({ ...base, entryDate: lastDay(month), kind: 'recognition', memo: `${account.code} ${account.name} — ${month}`, postings: [
+        { accountId: account.id, amount: roundCents(amount), currency: c }, { accountId: accumulated.id, amount: roundCents(-amount), currency: c },
+      ] })
+    }
+    return { entries, warnings: [] }
+  }
+  const d = driver.disposal
+  if (!d) return { entries: [], warnings: [] }
+  if (d.month < first || d.month > last) return { entries: [], warnings: [`The hardware sale in ${d.month} falls outside the plan`] }
+  const cost = find('fixed_asset')
+  if (!cost || !accumulated) return { entries: [], warnings: ['This chart has no equipment or accumulated depreciation account, so the hardware sale is not forecast'] }
+  const gain = roundCents(d.proceeds + d.accumulated - d.basis)
+  return {
+    entries: [{ ...base, entryDate: lastDay(d.month), kind: 'proceeds', memo: `${account.code} ${account.name} — hardware sold at book ${d.month}`, postings: [
+      { accountId: cashId, amount: roundCents(d.proceeds), currency: c },
+      { accountId: accumulated.id, amount: roundCents(d.accumulated), currency: c },
+      { accountId: cost.id, amount: roundCents(-d.basis), currency: c },
+      { accountId: account.id, amount: roundCents(-gain), currency: c },
+    ].filter(p => p.amount !== 0) }],
+    warnings: [],
+  }
 }
 
 /** Liabilities that clear to cash in the ordinary course: bills, accruals, payroll owed. */

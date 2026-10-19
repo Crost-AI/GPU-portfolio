@@ -21,12 +21,21 @@ import { gpLinkFor } from '@/lib/accounting/gp-economics'
 import { lpCapitalSummary } from '@/lib/accounting/capital-calls'
 import { loadCarryTerms } from '@/lib/accounting/carry'
 import { roundCents } from '@/lib/accounting/ledger'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
+import { fetchAllRows } from '@/lib/accounting/load'
+import { listAssets } from '@/lib/gpu/assets'
+import { loadFeeTerms } from '@/lib/gpu/fee'
+import {
+  FleetAssumptionsError, fleetFromRegister, fleetMonthly, registerContingencySpent, scenarioTermsFor, validateFleetAssumptions,
+  type FleetMonthly,
+} from '@/lib/gpu/fleet-forecast'
+import { runFleetScenario, ScenarioInputError, type FleetAssumptions, type FleetScenarioResult } from '@/lib/gpu/scenario'
+import type { GpuAssetTypeRow } from '@/lib/gpu/types'
 import type { CashTiming } from './compile'
 import { monthlyConstruction, type MonthlyConstruction } from './construction-adapter'
 import { monthDiff, type MonthKey } from './months'
 import type { LinkedDriver, PlanRuleRow } from './plan'
-import type { LinkedConstructionParams, LinkedFeeParams, ManagementFeeParams } from './rules'
+import type { LinkedConstructionParams, LinkedFeeParams, LinkedFleetParams, ManagementFeeParams } from './rules'
 import { managementFeeByMonth, type FeeInputs } from './fee-rule'
 import { primaryPlanRow } from './plan-construction'
 
@@ -112,7 +121,68 @@ export interface LinkedLoad {
   construction: MonthlyConstruction | null
   /** A GP entity's share of the fund it is GP of, from that fund's construction (see gpShareOf). */
   gpShare: GpShareSchedule | null
+  /** A GPU SPV plan's fleet scenario, run once for the plan (loadFleet). */
+  fleet?: FleetLoad | null
   warnings: string[]
+}
+
+/** A plan's fleet scenario, as run: the assumptions with the register resolved, and the result. */
+export interface FleetLoad {
+  assumptions: FleetAssumptions
+  result: FleetScenarioResult
+  monthly: FleetMonthly
+}
+
+/**
+ * Run a GPU SPV plan's fleet scenario once (pivot plan §5.1). `assets: 'register'` reads the
+ * vehicle's planned and in-service servers with their types; `capex.contingencySpent` left null on a
+ * register plan is what the register has capitalized so far. Terms are the vehicle's (the model
+ * pack's when it has none). What cannot run is a warning on the plan, never a failed compile.
+ */
+export async function loadFleet(
+  ctx: { admin: SupabaseClient; fundId: string },
+  vehicle: { id: string; name: string; kind: string },
+  raw: unknown,
+): Promise<{ fleet: FleetLoad | null; warnings: string[] }> {
+  if (raw == null || !isGpuSpv(vehicle.kind)) return { fleet: null, warnings: [] }
+  let a: FleetAssumptions
+  try {
+    a = validateFleetAssumptions(raw)
+  } catch (e) {
+    if (e instanceof FleetAssumptionsError) return { fleet: null, warnings: [`The plan's fleet assumptions cannot be run: ${e.message}`] }
+    throw e
+  }
+  const warnings: string[] = []
+  let fleet = a.assets === 'register' ? [] : a.assets
+  if (a.assets === 'register') {
+    const [assets, types] = await Promise.all([
+      listAssets(ctx.admin, ctx.fundId, vehicle.id),
+      fetchAllRows<GpuAssetTypeRow>((f, t) => (ctx.admin as any).from('gpu_asset_types').select('*').eq('fund_id', ctx.fundId).order('code').range(f, t)),
+    ])
+    const reg = fleetFromRegister(a, assets, types)
+    warnings.push(...reg.warnings)
+    if (!reg.fleet.length) return { fleet: null, warnings }
+    fleet = reg.fleet
+    a = {
+      ...a, types: reg.types,
+      capex: { ...a.capex, contingencySpent: a.capex.contingencySpent ?? registerContingencySpent(a, reg.fleet, assets) },
+    }
+  }
+  const [carry, fee] = await Promise.all([loadCarryTerms(ctx.admin, ctx.fundId, vehicle.name), loadFeeTerms(ctx.admin, ctx.fundId, vehicle.name)])
+  const { terms, warnings: termWarnings } = scenarioTermsFor(carry, fee)
+  warnings.push(...termWarnings)
+  try {
+    const result = runFleetScenario(a, fleet, terms)
+    return { fleet: { assumptions: a, result, monthly: fleetMonthly(a, result) }, warnings }
+  } catch (e) {
+    if (e instanceof ScenarioInputError) return { fleet: null, warnings: [...warnings, `The fleet scenario cannot be run: ${e.message}`] }
+    throw e
+  }
+}
+
+const FLEET_FLOW_LABEL: Record<LinkedFleetParams['flow'], string> = {
+  revenue: 'rental revenue', processing_fee: 'marketplace processing fees', datacenter: 'datacenter hosting',
+  contingency: 'datacenter contingency', insurance: 'insurance', depreciation: 'depreciation', disposal: 'hardware sale at book', fee: 'management fee',
 }
 
 /**
@@ -232,6 +302,8 @@ export async function loadLinkedDrivers(
   includeConstruction: boolean,
   /** The plan being compiled — its own construction, not the primary's. */
   planId?: string | null,
+  /** The plan's fleet assumptions (forecast_plans.fleet), on a GPU SPV. */
+  fleetAssumptions?: unknown,
 ): Promise<LinkedLoad> {
   const linked = new Map<string, LinkedDriver[]>()
   const warnings: string[] = []
@@ -258,7 +330,30 @@ export async function loadLinkedDrivers(
     for (const v of (data as any[]) ?? []) names.set(v.id, v.name)
   }
 
+  const fleetLoad = fleetAssumptions != null || rules.some(r => r.rule.method === 'linked_fleet')
+    ? await loadFleet(ctx, vehicle, fleetAssumptions) : { fleet: null, warnings: [] }
+  warnings.push(...fleetLoad.warnings)
+
   for (const r of rules) {
+    // A GPU SPV's fleet flows, from the plan's scenario: each plan year spread over its months.
+    // Revenue is billed through the marketplace and received the month after (1150).
+    if (r.rule.method === 'linked_fleet') {
+      const p = r.rule.params as LinkedFleetParams
+      const f = fleetLoad.fleet
+      if (!f) {
+        linked.set(r.id, [])
+        if (fleetAssumptions == null) warnings.push(`A fleet rule is on ${vehicle.name}'s plan, but the plan has no fleet scenario`)
+        continue
+      }
+      linked.set(r.id, [{
+        amounts: f.monthly.flows[p.flow],
+        ...(p.flow === 'revenue' ? { timing: { mode: 'offset', months: 1 } as CashTiming } : {}),
+        ...(p.flow === 'disposal' && f.monthly.disposal ? { disposal: f.monthly.disposal } : {}),
+        basis: `Fleet scenario ${FLEET_FLOW_LABEL[p.flow]}, each plan year spread evenly over its months${p.flow === 'revenue' ? ', received the month after' : ''}`,
+        warnings: [],
+      }])
+      continue
+    }
     // The plan's own management fee (plans/plan-unified-plan.md §1.3): its terms on this fund's
     // commitments and deployment; paid on the fee link's billing cycle when the fund has one.
     if (r.rule.method === 'management_fee') {
@@ -342,7 +437,7 @@ export async function loadLinkedDrivers(
     linked.set(r.id, drivers)
   }
 
-  return { linked, construction: includeConstruction && !manco && !gpShare ? own : null, gpShare, warnings }
+  return { linked, construction: includeConstruction && !manco && !gpShare ? own : null, gpShare, fleet: fleetLoad.fleet, warnings }
 }
 
 export function cycleLabel(l: Pick<FeeLinkRow, 'everyMonths' | 'direction' | 'cashLagMonths'>): string {

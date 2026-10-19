@@ -41,7 +41,9 @@ import { buildReport, type FlowEntry, type Report, type ReportView } from './rep
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
 import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco } from './linked'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
+import { FleetAssumptionsError, validateFleetAssumptions } from '@/lib/gpu/fleet-forecast'
+import type { FleetAssumptions } from '@/lib/gpu/scenario'
 
 export interface ForecastServiceContext {
   admin: SupabaseClient
@@ -194,6 +196,8 @@ export interface PlanSummary {
   hasConstruction: boolean
   /** Capital management: call and distribution policy, and month edits (lib/forecast/capital.ts). */
   capital: CapitalSettings
+  /** A GPU SPV scenario's fleet assumptions (lib/gpu/scenario.ts); null on every other plan. */
+  fleet: FleetAssumptions | null
   status: 'active' | 'archived'
   revision: number
   compiledAt: string | null
@@ -234,7 +238,7 @@ export interface VersionView {
   publishedAt: string
 }
 
-const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, construction, capital, is_primary, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
+const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, construction, capital, fleet, is_primary, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
 
 /** A stored capital setting, read leniently (a bad row reads as the default rather than breaking the plan). */
 function safeCapital(raw: unknown): CapitalSettings {
@@ -245,7 +249,7 @@ function mapPlan(r: any, vehicle: string): PlanSummary {
   return {
     id: r.id, vehicle, kind: r.kind, name: r.name, scenario: r.scenario ?? null, fiscalYear: r.fiscal_year ?? null,
     startMonth: monthOf(r.start_month), endMonth: monthOf(r.end_month), horizonMonths: r.horizon_months ?? null,
-    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, isPrimary: r.is_primary === true, hasConstruction: r.construction != null, capital: safeCapital(r.capital), status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
+    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, isPrimary: r.is_primary === true, hasConstruction: r.construction != null, capital: safeCapital(r.capital), fleet: (r.fleet as FleetAssumptions | null) ?? null, status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
     compiledCutoff: r.compiled_cutoff ?? null, createdAt: r.created_at, updatedAt: r.updated_at,
   }
 }
@@ -349,7 +353,7 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
     loadPostedLedger(ctx.admin, ctx.fundId, v.name, lastDay(cutoff)),
     // Always: construction feeds every plan with a portfolio (no switch — plans/plan-unified-plan.md),
     // and it is THIS plan's construction (a downside case has its own exits).
-    loadLinkedDrivers(ctx, v, ruleRows, true, plan.id ?? null),
+    loadLinkedDrivers(ctx, v, ruleRows, true, plan.id ?? null, plan.fleet ?? null),
   ])
   const built = buildPlan({
     kind: plan.kind,
@@ -965,6 +969,8 @@ export interface SavePlanInput {
   adjustments?: unknown
   /** Replace the plan's capital settings whole: policy and month edits (lib/forecast/capital.ts). */
   capital?: unknown
+  /** Replace a GPU SPV plan's fleet assumptions whole (lib/gpu/fleet-forecast.ts); null removes them. */
+  fleet?: unknown
 }
 
 /**
@@ -1036,6 +1042,17 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
       working.capital = cap
     } catch (e) {
       if (e instanceof CapitalError) throw new ForecastError(e.message)
+      throw e
+    }
+  }
+  if (input.fleet !== undefined) {
+    if (!isGpuSpv(v.kind)) throw new ForecastError('Only a GPU SPV plan holds fleet assumptions')
+    try {
+      const fleet = input.fleet === null ? null : validateFleetAssumptions(input.fleet)
+      patch.fleet = fleet
+      working.fleet = fleet
+    } catch (e) {
+      if (e instanceof FleetAssumptionsError) throw new ForecastError(e.message)
       throw e
     }
   }
@@ -1177,6 +1194,8 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
     p_entries: entriesJson(built.entries),
     p_construction: construction ?? null,
     p_capital: row.capital ?? {},
+    // The fleet it assumed, frozen with it (null on every plan that is not a fleet scenario).
+    p_fleet: row.fleet ?? null,
   })
   if (error) rpcError(error)
   return { versionId: (data as any).id as string, versionNo: (data as any).versionNo as number }
