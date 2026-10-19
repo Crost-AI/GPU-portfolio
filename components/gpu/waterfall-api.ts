@@ -88,7 +88,7 @@ export interface WaterfallTermsReply {
     recipients: { lpEntityId: string; pct: number }[]
     prefDayCount?: string; rocLpShare?: number
   }
-  candidates: { lpEntityId: string; name: string }[]
+  candidates: { lpEntityId: string; name: string; partnerClass?: string }[]
 }
 
 export interface FeeTermsReply {
@@ -377,6 +377,81 @@ export function feeTermsBody(f: FeeForm): { ok: true; body: Record<string, unkno
       effectiveFrom: f.effectiveFrom,
       effectiveTo: f.effectiveTo || null,
       ...(f.revenueSubtypes ? { revenueSubtypes: f.revenueSubtypes } : {}),
+    },
+  }
+}
+
+// ── Waterfall terms ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The distributable-cash terms as typed. The two splits are each one number, the investors'
+ * share, and the manager's is what is left: X before capital is returned (rocLpShare = X/100),
+ * Y after (carryRate = 1 − Y/100).
+ */
+export interface CashTermsForm {
+  prefPct: string
+  dayCount: '30_360' | 'act_365'
+  /** Investors' share of the return-of-capital flow, %. */
+  investorsBeforePct: string
+  /** Investors' share of the profit split once capital is returned, %. */
+  investorsAfterPct: string
+  recipients: { lpEntityId: string; pct: string }[]
+}
+
+export type CashTermsField = 'prefPct' | 'investorsBeforePct' | 'investorsAfterPct' | 'recipients'
+
+const pctText = (n: number) => String(Number(n.toFixed(6)))
+
+export function cashTermsFormOf(t: WaterfallTermsReply['terms'] | null): CashTermsForm {
+  const cash = t?.kind === 'distributable_cash'
+  return {
+    prefPct: t ? pctText(t.prefRate * 100) : '',
+    dayCount: t?.prefDayCount === 'act_365' ? 'act_365' : '30_360',
+    investorsBeforePct: pctText((cash ? t.rocLpShare ?? 1 : 1) * 100),
+    investorsAfterPct: t && t.carryRate > 0 ? pctText((1 - t.carryRate) * 100) : '',
+    recipients: (t?.recipients ?? []).map(r => ({ lpEntityId: r.lpEntityId, pct: pctText(r.pct) })),
+  }
+}
+
+/** The manager's side of a split typed as the investors' %, or null while it is not a number in range. */
+export function managerPct(investorsPct: string): number | null {
+  const n = parseAmount(investorsPct.replace(/%$/, ''))
+  return n != null && Number.isFinite(n) && n >= 0 && n <= 100 ? Number((100 - n).toFixed(6)) : null
+}
+
+/**
+ * The PUT body for /api/accounting/waterfall-terms, kind distributable_cash: simple pref on
+ * unreturned capital, no catch-up. The two splits are checked here (each 0–100); every other rule
+ * is the route's (validateCashTerms), and its 400 text is shown as it is.
+ */
+export function cashTermsBody(f: CashTermsForm):
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; field: CashTermsField; error: string } {
+  const pct = (s: string) => parseAmount(s.replace(/%$/, ''))
+  const pref = pct(f.prefPct)
+  if (pref == null || !Number.isFinite(pref)) return { ok: false, field: 'prefPct', error: 'Enter the preferred return as a percentage, e.g. 8.' }
+  const x = pct(f.investorsBeforePct)
+  if (x == null || !Number.isFinite(x) || x < 0 || x > 100) {
+    return { ok: false, field: 'investorsBeforePct', error: 'The investors\u2019 share before capital is returned must be between 0 and 100%.' }
+  }
+  const y = pct(f.investorsAfterPct)
+  if (y == null || !Number.isFinite(y) || y < 0 || y > 100) {
+    return { ok: false, field: 'investorsAfterPct', error: 'The investors\u2019 share after capital is returned must be between 0 and 100%.' }
+  }
+  const recipients = f.recipients.map(r => ({ lpEntityId: r.lpEntityId, pct: pct(r.pct) ?? NaN }))
+  if (recipients.some(r => !Number.isFinite(r.pct))) return { ok: false, field: 'recipients', error: 'Enter each recipient\u2019s share as a percentage.' }
+  return {
+    ok: true,
+    body: {
+      kind: 'distributable_cash',
+      prefRate: Number((pref / 100).toFixed(10)),
+      prefDayCount: f.dayCount,
+      prefBasis: 'unreturned',
+      rocLpShare: Number((x / 100).toFixed(10)),
+      carryRate: Number((1 - y / 100).toFixed(10)),
+      prefCompounds: false,
+      catchupRate: 1,
+      carryRecipients: recipients,
     },
   }
 }
