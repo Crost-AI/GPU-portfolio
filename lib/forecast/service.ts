@@ -1422,6 +1422,7 @@ function describeRule(r: RuleView): string {
       case 'seasonal': return `Repeating 12-month profile from ${p.anchor}${p.annualGrowth ? `, +${p.annualGrowth * 100}%/yr` : ''}`
       case 'linked_fee': return 'Linked management fee'
       case 'linked_construction': return `Portfolio construction ${p.flow}`
+      case 'linked_fleet': return `Fleet scenario ${String(p.flow).replace('_', ' ')}`
       case 'management_fee': return `Management fee ${(p.rate * 100).toFixed(2)}% on ${p.basis} capital for ${p.termYears} years${p.stepDownYear ? `, ${(p.stepDownRate * 100).toFixed(2)}% from year ${p.stepDownYear}` : ''}`
       default: return r.method
     }

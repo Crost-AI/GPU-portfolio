@@ -128,6 +128,7 @@ const METHOD_LABEL: Record<RuleMethod, string> = {
   linked_fee: 'Linked fee',
   linked_construction: 'Portfolio construction',
   management_fee: 'Management fee',
+  linked_fleet: 'Fleet scenario',
 }
 
 /** How a rule's amount for one month is written as a formula, and what that formula evaluates to. */

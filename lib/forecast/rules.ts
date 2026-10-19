@@ -20,14 +20,15 @@ export type RuleMethod =
   | 'linked_fee'
   | 'linked_construction'
   | 'management_fee'
+  | 'linked_fleet'
 
-export const RULE_METHODS: RuleMethod[] = ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'seasonal', 'linked_fee', 'linked_construction', 'management_fee']
+export const RULE_METHODS: RuleMethod[] = ['manual', 'fixed', 'recurring', 'run_rate', 'growth', 'seasonal', 'linked_fee', 'linked_construction', 'management_fee', 'linked_fleet']
 
 /** Methods the engine can evaluate today. Linked drivers arrive with their source mappings. */
 export const SUPPORTED_METHODS: RuleMethod[] = RULE_METHODS
 
 /** Methods whose amounts come from another part of the app, supplied by the service, not evaluated here. */
-export const LINKED_METHODS: RuleMethod[] = ['linked_fee', 'linked_construction', 'management_fee']
+export const LINKED_METHODS: RuleMethod[] = ['linked_fee', 'linked_construction', 'management_fee', 'linked_fleet']
 
 /**
  * A fund's management fee, owned by the plan (plans/plan-unified-plan.md §1.3): the rate on a basis,
@@ -54,6 +55,18 @@ export interface LinkedFeeParams {
 export interface LinkedConstructionParams {
   /** Which of the construction model's operating flows this account carries. */
   flow: 'fees' | 'expenses'
+}
+
+/**
+ * A GPU SPV's fleet flows, from the plan's fleet scenario (lib/gpu/scenario.ts runFleetScenario):
+ * each plan-year figure spread evenly over its twelve months. `depreciation` and `disposal` are not
+ * cash: they compile to their own entries (lib/forecast/plan.ts fleetEntries).
+ */
+export const FLEET_FLOWS = ['revenue', 'processing_fee', 'datacenter', 'contingency', 'insurance', 'depreciation', 'disposal', 'fee'] as const
+export type FleetFlow = (typeof FLEET_FLOWS)[number]
+
+export interface LinkedFleetParams {
+  flow: FleetFlow
 }
 
 export interface ManualParams {
@@ -256,6 +269,10 @@ export function validateRule(method: unknown, raw: unknown): RuleInput {
     case 'linked_construction': {
       if (p.flow !== 'fees' && p.flow !== 'expenses') throw new RuleError("flow must be 'fees' or 'expenses'")
       return { method: m, params: { flow: p.flow } satisfies LinkedConstructionParams }
+    }
+    case 'linked_fleet': {
+      if (!FLEET_FLOWS.includes(p.flow as FleetFlow)) throw new RuleError(`flow must be one of ${FLEET_FLOWS.join(', ')}`)
+      return { method: m, params: { flow: p.flow as FleetFlow } satisfies LinkedFleetParams }
     }
     case 'management_fee': {
       const rate = num(p.rate, 'rate')
