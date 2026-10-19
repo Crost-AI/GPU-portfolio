@@ -413,7 +413,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   update_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     const { company, transaction_id, vehicle: _vehicle, ...changes } = input ?? {}
     if (!transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
-    const c = await resolveCompany(admin, fundId, company, access)
+    const c = await resolveCompany(admin, fundId, company, access, 'write')
     const editable = new Set<string>(EDITABLE_TXN_FIELDS)
     const unknown = Object.keys(changes).filter(k => !editable.has(k))
     if (unknown.length) throw new Error(`Not an editable field: ${unknown.join(', ')}`)
@@ -430,7 +430,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   delete_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     if (!input?.transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
-    const c = await resolveCompany(admin, fundId, input.company, access)
+    const c = await resolveCompany(admin, fundId, input.company, access, 'write')
     const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
     const { ledger } = unwrap(await deleteInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, input.transaction_id))
     return { deleted: input.transaction_id, ledger }
@@ -487,7 +487,7 @@ export async function executeRecordInvestment(
   input: RecordInvestmentInput,
 ): Promise<{ transaction: any; ledger: any }> {
   const { admin, fundId, userId, access } = deps
-  const c = await resolveCompany(admin, fundId, input?.company, access)
+  const c = await resolveCompany(admin, fundId, input?.company, access, 'write')
   // Only into one of the caller's entities (and no company-wide rows from a scoped caller).
   const writeNames = (await entityScopeFor(admin, access)).vehicleNames
   const denied = groupWriteDenial(writeNames, input?.vehicle ?? null)

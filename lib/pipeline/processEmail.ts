@@ -29,6 +29,7 @@ import type { Json, IssueType, ProcessingStatus } from '@/lib/types/database'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeCompanyRows, visibleVehicleIds } from '@/lib/access/scope'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+import { fleetCompanyDenied, FLEET_HOLDING_TYPE } from '@/lib/access/fleet-company'
 
 type Supabase = ReturnType<typeof createAdminClient>
 
@@ -672,7 +673,7 @@ export async function getOpenRouterConfig(supabase: Supabase, fundId: string): P
 export async function getCompanies(supabase: Supabase, fundId: string): Promise<CompanyRef[]> {
   const { data } = await supabase
     .from('companies')
-    .select('id, name, aliases')
+    .select('id, name, aliases, holding_type')
     .eq('fund_id', fundId)
     .eq('status', 'active')
 
@@ -692,10 +693,14 @@ export async function companiesForSender(
   fundMember: { userId: string } | null | undefined,
 ): Promise<CompanyRef[]> {
   const companies = await getCompanies(supabase, fundId)
-  if (!fundMember) return companies
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company (#91) takes updates and metrics only from a
+  // member who holds fleet write: never from outside mail, never from a forwarder without it.
+  const fleet = (c: CompanyRef) => (c as { holding_type?: string }).holding_type === FLEET_HOLDING_TYPE
+  if (!fundMember) return companies.filter(c => !fleet(c))
   const scope = await loadEntityScopeForUser(supabase as any, fundMember.userId)
   if (!scope) return []
-  return scopeCompanyRows(companies as any[], scope.companyIds) as CompanyRef[]
+  return (scopeCompanyRows(companies as any[], scope.companyIds) as CompanyRef[])
+    .filter(c => !fleetCompanyDenied(scope.access, (c as { holding_type?: string }).holding_type, 'write'))
 }
 
 /**
