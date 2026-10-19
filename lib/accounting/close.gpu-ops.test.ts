@@ -115,6 +115,29 @@ describe('checkReadiness: GPU operations', () => {
     expect(after.blockers).toContainEqual(expect.stringMatching(/^GPU revenue does not tie/))
   })
 
+  it('the tie is anchored to the span: a hand-booked month before the first operations row closes clean', async () => {
+    // Hand-booked revenue in September; the subledger starts with an October row.
+    m.tables.journal_entries.push(
+      { id: 'je-sep', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-09-15' },
+      { id: 'je-oct', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-10-31' },
+    )
+    const post = (id: string, code: string, amount: number) => ({ journal_entry_id: id, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: `acc-${code}`, amount, currency: 'USD' })
+    m.tables.journal_postings.push(
+      post('je-sep', '1000', 90), post('je-sep', '5150', 10), post('je-sep', '4000', -100),
+      post('je-oct', '1150', 90), post('je-oct', '5150', 10), post('je-oct', '4000', -100),
+    )
+    m.tables.gpu_earnings.push(row({ id: 'e-oct', status: 'posted', period_start: '2026-10-01', period_end: '2026-10-31', journal_entry_id: 'je-oct' }))
+    const sept = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
+    expect(sept.blockers.join(' ')).not.toMatch(/does not tie/)
+    const oct = await checkReadiness(m.admin, 'f', 'GPU I', '2026-10-01', '2026-10-31')
+    expect(oct.blockers.join(' ')).not.toMatch(/does not tie/)
+    // October ties as before: hand-booked revenue next to its operations row is a blocker.
+    m.tables.journal_entries.push({ id: 'je-oct2', fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: '2026-10-20' })
+    m.tables.journal_postings.push(post('je-oct2', '1000', 50), post('je-oct2', '4000', -50))
+    const octOff = await checkReadiness(m.admin, 'f', 'GPU I', '2026-10-01', '2026-10-31')
+    expect(octOff.blockers).toContainEqual(expect.stringMatching(/^GPU revenue does not tie: posted operations entries total 100\.00 gross, but 4000 Rental revenue shows 150\.00/))
+  })
+
   it('turns a failed read into a blocker', async () => {
     m.failNext('gpu_earnings', 'select', 'timeout')
     const r = await checkReadiness(m.admin, 'f', 'GPU I', '2026-09-01', '2026-09-30')
