@@ -973,7 +973,8 @@ async function constructionCostTerms(ctx: ForecastServiceContext, v: VehicleCtx)
  * construction held — on any account that does not already have a rule.
  */
 async function withCostRules(ctx: ForecastServiceContext, v: VehicleCtx, rules: RuleView[]): Promise<RuleView[]> {
-  if (isManagementCompany(v.kind)) return rules
+  // A GPU SPV's fee and costs are its fleet scenario's (linked_fleet), not a fund's construction terms.
+  if (isManagementCompany(v.kind) || isGpuSpv(v.kind)) return rules
   const costs = await constructionCostTerms(ctx, v)
   if (!costs) return rules
   const taken = new Set(rules.map(r => r.accountId))
