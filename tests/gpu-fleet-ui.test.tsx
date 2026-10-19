@@ -21,7 +21,7 @@ import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMo
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
-  fleetPaths, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
+  eventFormError, fleetPaths, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
 } from '@/components/gpu/fleet-api'
 import { parseAssetInput } from '@/lib/gpu/assets'
 import { parseContractInput } from '@/lib/gpu/opex'
@@ -396,6 +396,26 @@ describe('events', () => {
   it('an ongoing event has no end; a bare date is the start of that local day', () => {
     const body = eventBody({ kind: 'note', starts_at: '2026-03-01', ends_at: '', gpus_affected: '', cause: '' })
     expect(body).toEqual({ kind: 'note', starts_at: new Date('2026-03-01T00:00').toISOString(), ends_at: null, gpus_affected: null })
+  })
+
+  it('refuses a value that is not a real date or time before converting it, so the form never throws', () => {
+    expect(() => localToUtc('2026-13-40T10:00')).toThrow(RangeError)
+    expect(eventFormError({ starts_at: '2026-13-40T10:00', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '2026-02-30T10:00', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T25:00' })).toMatch(/valid end date/)
+    expect(eventFormError({ starts_at: '2026-03-01T12:00', ends_at: '2026-03-01T10:00' })).toBe('The end must be on or after the start.')
+    expect(eventFormError({ starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T12:00' })).toBeNull()
+    expect(eventFormError({ starts_at: '2026-03-01', ends_at: '' })).toBeNull()
+  })
+
+  it('the event form checks before it converts or goes busy, and always leaves busy', () => {
+    const s = readFileSync(path.join(process.cwd(), 'components', 'gpu', 'asset-detail.tsx'), 'utf8')
+    const body = s.slice(s.indexOf('async function record'), s.indexOf('return (', s.indexOf('async function record')))
+    expect(body.indexOf('eventFormError(form)')).toBeGreaterThan(-1)
+    expect(body.indexOf('eventFormError(form)')).toBeLessThan(body.indexOf('setBusy(true)'))
+    expect(body.indexOf('setBusy(true)')).toBeLessThan(body.indexOf('eventBody(form)'))
+    expect(body).toMatch(/finally \{\s*setBusy\(false\)/)
   })
 
   it('shows a stored instant back as the same wall-clock time it was entered at', () => {

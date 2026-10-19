@@ -13,7 +13,7 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAsset, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import type { DepreciationLine } from '@/lib/gpu/depreciation'
 import type { DepreciationConvention } from '@/lib/gpu/types'
-import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
+import { call, eventBody, eventFormError, fleetPaths, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
 import { assetFigures, assetSchedule, bookingGate, offersBookedActions, todayIso } from './fleet-math'
 import { ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
@@ -302,12 +302,18 @@ function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: Gp
 
   async function record(e: React.FormEvent) {
     e.preventDefault()
+    // Checked before anything is converted or the form goes busy: a bad value is a message, not a throw.
+    const invalid = eventFormError(form)
+    if (invalid) { setError(invalid); return }
     setBusy(true); setError(null)
-    const r = await send(fetcher, fleetPaths.events(asset.id), 'POST', eventBody(form))
-    setBusy(false)
-    if (!r.ok) { setError(r.error); return }
-    setForm(empty)
-    onDone()
+    try {
+      const r = await send(fetcher, fleetPaths.events(asset.id), 'POST', eventBody(form))
+      if (!r.ok) { setError(r.error); return }
+      setForm(empty)
+      onDone()
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

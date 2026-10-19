@@ -210,6 +210,30 @@ export interface EventForm { kind: GpuEventKind; starts_at: string; ends_at: str
  * date is the start of that local day. The event log stores instants, so a two-hour outage stays two
  * hours whatever the time zone.
  */
+/**
+ * Is `s` a real local date or date-time as a `datetime-local` (or date) input gives it? Checked by
+ * round trip, so 2026-02-30T10:00 (which Date would roll into March) is refused, not shifted.
+ */
+export function isValidLocalDateTime(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s)
+  if (!m) return false
+  const [, y, mo, d, h = '0', mi = '0', sec = '0'] = m
+  const t = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec))
+  return t.getFullYear() === Number(y) && t.getMonth() === Number(mo) - 1 && t.getDate() === Number(d)
+    && t.getHours() === Number(h) && t.getMinutes() === Number(mi)
+}
+
+/**
+ * Why the event form cannot be sent, or null. Run before eventBody: localToUtc throws (RangeError)
+ * on a value that is not a date, which would otherwise escape the submit and leave the form busy.
+ */
+export function eventFormError(f: Pick<EventForm, 'starts_at' | 'ends_at'>): string | null {
+  if (!isValidLocalDateTime(f.starts_at)) return 'Enter a valid start date and time.'
+  if (f.ends_at.trim() && !isValidLocalDateTime(f.ends_at)) return 'Enter a valid end date and time, or leave it blank while ongoing.'
+  if (f.ends_at.trim() && new Date(f.ends_at) < new Date(f.starts_at)) return 'The end must be on or after the start.'
+  return null
+}
+
 export function localToUtc(s: string): string {
   const local = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s
   return new Date(local).toISOString()
