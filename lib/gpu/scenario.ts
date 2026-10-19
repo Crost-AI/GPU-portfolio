@@ -16,12 +16,12 @@
 //
 // THE TIERS ARE NOT REIMPLEMENTED HERE. Each period goes through `distribute` from
 // `lib/gpu/waterfall.ts`, so the scenario and the actuals engine cannot disagree about a split.
-// The one thing this file adds is the unspent-contingency return (R8), as a pre-step on the state.
+// The unspent-contingency return (R8) is the engine's `contingencyReturn` option too.
 //
 // The fleet comes from the assumptions (a pitch fleet) or from the asset register through
 // `resolveFleet`; the register is P1b, so that seam throws a typed error until it is wired.
 
-import { accrue, contribute, distribute, emptyState, validateCashTerms, type CashWaterfallState, type CashWaterfallTerms } from './waterfall'
+import { contribute, distribute, emptyState, validateCashTerms, type CashWaterfallTerms } from './waterfall'
 import { irrOf } from '@/lib/accounting/construction-forecast'
 import { apportionCents } from '@/lib/accounting/allocation'
 import { roundCents } from '@/lib/accounting/ledger'
@@ -305,25 +305,6 @@ function validate(a: FleetAssumptions, fleet: PlannedAsset[]): void {
   }
 }
 
-/**
- * R8 pre-step: pay `amountCents` of unspent contingency to investors as capital, before the tiers.
- * Pro rata by contributed, each share capped at that investor's unreturned capital; what the cap
- * leaves falls into the normal tiers of the same period. The state must already be accrued to the
- * period end, so the period's pref is earned on the capital outstanding during it.
- *
- * gpu-P2's PR B adds `distribute(…, { contingencyReturn })` for the actuals path; B1 switches this
- * file to it and deletes the pre-step. Until then it lives here so `waterfall.ts` is untouched.
- */
-function returnContingency(state: CashWaterfallState, amountCents: number): { state: CashWaterfallState; returned: number } {
-  const unreturned = state.investors.map(i => cents(i.unreturned))
-  const capped = Math.min(amountCents, sum(unreturned))
-  if (capped <= 0) return { state, returned: 0 }
-  const shares = apportionCents(capped, state.investors.map(i => cents(i.contributed)))
-    .map((s, k) => Math.min(s, unreturned[k]))
-  const investors = state.investors.map((i, k) => ({ ...i, unreturned: dollars(unreturned[k] - shares[k]) }))
-  return { state: { ...state, investors }, returned: sum(shares) }
-}
-
 /** Per year, in cents: the cash the waterfall sees, split into its parts so periods can place them. */
 interface YearCash {
   /** Operating profit − fee: spread evenly over the year's periods. */
@@ -394,22 +375,22 @@ function runCadence(
       const t = period / n
       const date = lastDay(addMonths(a.startMonth, period * months - 1))
       const unreturnedStart = roundCents(sum(state.investors.map(i => i.unreturned)))
-      const accrued = accrue(state, date, terms, 1 / n)
-      const { state: afterReturn, returned } = returnContingency(accrued, p.contingency)
-      const d = distribute(afterReturn, dollars(p.amount - returned), date, terms, 0)
+      // R8: the shared engine pays the contingency before the tiers, capped at unreturned capital,
+      // after the period's pref accrual, so that pref is still earned on the outstanding capital.
+      const d = distribute(state, dollars(p.amount), date, terms, 1 / n, { contingencyReturn: dollars(p.contingency) })
       state = d.state
       periods.push({
         period, year: yi + 1, t, date,
         distributable: dollars(p.amount),
         unreturnedStart,
-        contingencyReturn: dollars(returned),
+        contingencyReturn: d.tiers.contingencyReturn,
         preferred: d.tiers.preferred,
         prefCarriedForward: d.tiers.prefCarriedForward,
         returnOfCapital: d.tiers.returnOfCapital,
         managerRocShare: d.tiers.managerRocShare,
         profitToLP: d.tiers.profitToLP,
         carry: d.tiers.carry,
-        toInvestors: dollars(returned + cents(d.tiers.toLP)),
+        toInvestors: d.tiers.toLP,
         toManager: d.tiers.toGP,
         unreturnedAfter: d.tiers.unreturnedAfter,
       })
