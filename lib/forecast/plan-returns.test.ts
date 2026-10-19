@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { planReturns } from './plan-returns'
 import { validateCapital } from './capital'
+import { F1, PACK_INPUTS, PACK_TERMS } from '@/lib/gpu/fixtures/pack-v3'
 
 const m = (o: Record<string, number>) => new Map(Object.entries(o)) as any
 const months = Array.from({ length: 24 }, (_, i) => `${2027 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`) as any[]
@@ -85,4 +86,59 @@ describe('the fund kinds are byte-identical whatever the GPU branch does', () =>
   for (const [name, input] of Object.entries(cases)) {
     it(name, () => expect(JSON.stringify(planReturns(input as any))).toMatchSnapshot())
   }
+})
+
+describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind 'distributable_cash')", () => {
+  const gpuMonths = Array.from({ length: 60 }, (_, i) => `${2027 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`) as any[]
+  // The pack's Base case: its distributable cash paid each December, no reserve.
+  const december = (k: number) => `${2027 + k}-12`
+  const cashIn = m(Object.fromEntries(F1.distributableCents.map((d, k) => [december(k), d])))
+  const run = (extra: Record<string, unknown> = {}) => planReturns({
+    months: gpuMonths, asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
+    otherFlows: m({}), invested: m({}), proceeds: cashIn, terminalNav: 0,
+    waterfallKind: 'distributable_cash',
+    cashWaterfall: { terms: { ...PACK_TERMS, dayCount: '30_360' }, history: [], assumedContribution: { date: '2026-12-31', amount: PACK_INPUTS.capital } },
+    ...extra,
+  })
+
+  it("reproduces the pack's Base case: to investors, the profit share and IRR 33.6% / 2.02x", () => {
+    const r = run()
+    r.years.forEach((y, k) => expect(Math.abs(y.toLp - F1.years[k].toLP), `${y.calendarYear}`).toBeLessThanOrEqual(1))
+    expect(Math.abs(r.totals.carry - F1.totals.carry)).toBeLessThanOrEqual(1)
+    expect(Math.abs(r.lp.distributed - F1.totals.toLP)).toBeLessThanOrEqual(1)
+    expect(Math.round(r.lp.irr! * 1000) / 10).toBe(33.6)
+    expect(Math.round(r.lp.tvpi! * 100) / 100).toBe(2.02)
+    expect(r.lp.called).toBe(0)
+  })
+
+  it('carries nothing to the end (R4): what is left is valued without a profit share', () => {
+    const held = run({ settings: validateCapital({ distributions: { [december(4)]: 0 } }) })
+    const endCash = held.cash[held.cash.length - 1].ending
+    expect(endCash).toBe(F1.distributableCents[4])
+    expect(held.lp.terminal).toBe(endCash)
+  })
+
+  it('replays the books first: a contingency already returned stays capital returned, not profit', () => {
+    const history = [
+      { kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: PACK_INPUTS.capital },
+      { kind: 'distribution' as const, date: '2026-12-31', amount: 30_500, contingencyReturn: 30_500 },
+    ]
+    const r = run({ cashWaterfall: { terms: { ...PACK_TERMS, dayCount: '30_360' }, history } })
+    // 30,500 less capital left to return, so that much more reaches the split: a larger profit share.
+    expect(r.years[0].toLp).toBe(F1.distributableCents[0])
+    expect(r.totals.carry).toBeGreaterThan(F1.totals.carry + 8_000)
+    // The history's own flows count: 1,435,500 in, 30,500 back before the plan.
+    expect(r.lp.dpi!).toBeCloseTo((30_500 + r.lp.distributed) / PACK_INPUTS.capital, 9)
+  })
+
+  it('the fund kinds ignore cashWaterfall unless the kind says distributable_cash', () => {
+    const vc = { ...run(), warnings: [] }
+    const asFund = planReturns({
+      months: gpuMonths, asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
+      otherFlows: m({}), invested: m({}), proceeds: cashIn, terminalNav: 0,
+      cashWaterfall: { terms: PACK_TERMS, history: [] },
+    })
+    expect(asFund.totals.carry).toBe(0)
+    expect(asFund.lp.distributed).not.toBe(vc.lp.distributed)
+  })
 })

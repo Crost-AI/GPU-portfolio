@@ -8,14 +8,21 @@
 // distributions in, their share of what is left valued through the waterfall at the end — give the
 // net figures. A simulated run is the same thing with its own deal flows.
 //
+// A GPU SPV (waterfallKind 'distributable_cash') splits each month's distribution with
+// lib/gpu/waterfall.ts instead — pref on unreturned capital, return of capital, then the profit split,
+// replayed from the vehicle's own history — and has no terminal carry (Karl, R4: the manager's share
+// is earned only when a distribution pays it).
+//
 // Pure: the service supplies the flows, the starting state and the terminal value.
 
 import { roundCents } from '@/lib/accounting/ledger'
 import { runWaterfall } from '@/lib/accounting/waterfall'
 import { irrOf, type TimedFlow } from '@/lib/accounting/construction-forecast'
 import type { ConstructionWaterfallProjection } from '@/lib/accounting/construction'
-import { computeCapital, runMonthlyWaterfall, type CapitalSettings } from './capital'
-import { monthDiff, type MonthKey } from './months'
+import type { CarryKind } from '@/lib/accounting/carry'
+import { accrue, contribute, distribute, replay, type CashWaterfallState, type CashWaterfallTerms, type WaterfallEvent } from '@/lib/gpu/waterfall'
+import { computeCapital, runMonthlyWaterfall, type CapitalSettings, type MonthlySplit } from './capital'
+import { addMonths, lastDay, monthDiff, type MonthKey } from './months'
 
 export interface ReturnsInput {
   months: MonthKey[]
@@ -32,6 +39,66 @@ export interface ReturnsInput {
   /** The fund's NAV (gross, holdings at value) at the end of the window, plus its cash then. */
   terminalNav: number
   waterfall?: ConstructionWaterfallProjection
+  /** The vehicle's waterfall kind; 'distributable_cash' (a GPU SPV) splits with `cashWaterfall`. */
+  waterfallKind?: CarryKind
+  cashWaterfall?: CashWaterfallInput
+}
+
+export interface CashWaterfallInput {
+  /** The vehicle's terms (lib/accounting/distribution-waterfall.ts cashWaterfallTerms). */
+  terms: CashWaterfallTerms
+  /** The books so far: each investor's contributions and the prior distributions, with any contingency returned. */
+  history: WaterfallEvent[]
+  /** A pitch with nothing contributed on the books yet: the capital its scenario raises, at its start. */
+  assumedContribution?: { date: string; amount: number } | null
+}
+
+/** The investors the forecast's own calls are made to: the scenario is vehicle-level, like the engine. */
+export const FORECAST_INVESTORS = 'forecast-investors'
+
+/**
+ * A GPU SPV's distributions, month by month, through the distributable-cash waterfall: the books'
+ * history replayed to the month before the plan, then each forecast call contributed and each
+ * distribution split. The manager's take is `carry` (its profit share and any return-of-capital
+ * share); there is no GP stake, the manager being a recipient, not an investor.
+ */
+export function splitCashDistributions(
+  distributions: Map<MonthKey, number>,
+  calls: Map<MonthKey, number>,
+  months: MonthKey[],
+  input: CashWaterfallInput,
+): { byMonth: Map<MonthKey, MonthlySplit>; warnings: string[] } {
+  const byMonth = new Map<MonthKey, MonthlySplit>()
+  const warnings: string[] = []
+  // A periodic day count is the scenario engine's; dated distributions accrue 30E/360.
+  const terms: CashWaterfallTerms = input.terms.dayCount === 'periodic' ? { ...input.terms, dayCount: '30_360' } : input.terms
+  if (!months.length) return { byMonth, warnings }
+  const before = lastDay(addMonths(months[0], -1))
+  const events = [...input.history]
+  const contributed = input.history.some(e => e.kind === 'contribution' && e.amount > 0)
+  if (!contributed && input.assumedContribution && input.assumedContribution.amount > 0) {
+    events.push({ kind: 'contribution', date: input.assumedContribution.date, lpEntityId: FORECAST_INVESTORS, amount: input.assumedContribution.amount })
+  }
+  let state: CashWaterfallState = replay(events.filter(e => e.date <= before), terms, before)
+  // An assumed contribution dated inside the plan (a pitch starting this month) joins on its date.
+  const later = events.filter(e => e.kind === 'contribution' && e.date > before)
+  for (const m of months) {
+    const date = lastDay(m)
+    for (const e of later.filter(x => x.date.slice(0, 7) === m)) state = contribute(accrue(state, e.date, terms), e as Extract<WaterfallEvent, { kind: 'contribution' }>)
+    const call = calls.get(m) ?? 0
+    if (call > 0) state = contribute(accrue(state, date, terms), { kind: 'contribution', date, lpEntityId: FORECAST_INVESTORS, amount: call })
+    const d = distributions.get(m) ?? 0
+    if (!d) continue
+    if (!state.investors.length) {
+      byMonth.set(m, { toLp: d, carry: 0, toGpStake: 0 })
+      if (!warnings.length) warnings.push('No investor has contributed, so distributions are shown undivided — there is no capital for the waterfall to return')
+      continue
+    }
+    const split = distribute(state, d, date, terms)
+    state = split.state
+    byMonth.set(m, { toLp: split.tiers.toLP, carry: split.tiers.toGP, toGpStake: 0 })
+  }
+  return { byMonth, warnings }
 }
 
 export interface YearRow { calendarYear: number; called: number; distributed: number; carry: number; toLp: number; invested: number; proceeds: number; lpCalled: number; endingCash: number }
@@ -62,8 +129,11 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   const cap = computeCapital({
     months: input.months, openingCash: input.openingCash, cashFlows, proceeds: input.proceeds, uncalled: input.uncalled, settings: input.settings,
   })
-  const wf = runMonthlyWaterfall(cap.distributions, cap.calls, input.months, input.waterfall)
-  const carryOn = !!wf.state
+  const cash = input.waterfallKind === 'distributable_cash' && input.cashWaterfall
+    ? splitCashDistributions(cap.distributions, cap.calls, input.months, input.cashWaterfall) : null
+  const wf = cash ? { byMonth: cash.byMonth, state: null, terms: null, lpShare: 1 } : runMonthlyWaterfall(cap.distributions, cap.calls, input.months, input.waterfall)
+  // The cash waterfall's split is already the investors' net; it carries nothing to the end (R4).
+  const carryOn = cash ? true : !!wf.state
   const share = wf.lpShare
 
   const byYear = new Map<number, YearRow>()
@@ -74,7 +144,17 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   const lpFlows: TimedFlow[] = []
   const t = (m: MonthKey) => monthDiff(input.asOfMonth, m) / 12
   // The LPs' history (dated), so the IRR runs since inception.
-  if (input.waterfall) {
+  let cashPriorCalled = 0, cashPriorDistributed = 0
+  if (cash && input.cashWaterfall) {
+    const hist = [...input.cashWaterfall.history]
+    const a = input.cashWaterfall.assumedContribution
+    if (a && a.amount > 0 && !hist.some(e => e.kind === 'contribution' && e.amount > 0)) hist.push({ kind: 'contribution', date: a.date, lpEntityId: FORECAST_INVESTORS, amount: a.amount })
+    for (const e of hist) {
+      lpFlows.push({ t: t(e.date.slice(0, 7) as MonthKey), amount: e.kind === 'contribution' ? -e.amount : e.amount })
+      if (e.kind === 'contribution') cashPriorCalled = roundCents(cashPriorCalled + e.amount)
+      else cashPriorDistributed = roundCents(cashPriorDistributed + e.amount)
+    }
+  } else if (input.waterfall) {
     for (const c of input.waterfall.contributions) lpFlows.push({ t: t(c.date.slice(0, 7) as MonthKey), amount: -c.amount })
     for (const d of input.waterfall.distributions ?? []) lpFlows.push({ t: t(d.date.slice(0, 7) as MonthKey), amount: d.amount })
   }
@@ -104,8 +184,8 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   const last = input.months[input.months.length - 1]
   if (terminal > 0 && last) lpFlows.push({ t: t(last), amount: terminal })
 
-  const priorCalled = input.waterfall?.lpCalledCapital ?? 0
-  const priorDistributed = input.waterfall?.lpDistributedCapital ?? 0
+  const priorCalled = cash ? cashPriorCalled : input.waterfall?.lpCalledCapital ?? 0
+  const priorDistributed = cash ? cashPriorDistributed : input.waterfall?.lpDistributedCapital ?? 0
   const paidIn = priorCalled + lpCalled
   const outBack = priorDistributed + lpDistributed
   const years = [...byYear.values()].sort((a, b) => a.calendarYear - b.calendarYear)
@@ -132,6 +212,6 @@ export function planReturns(input: ReturnsInput): PlanReturns {
       const v = cap.endingCash.get(m) ?? 0
       return !low || v < low.amount ? { month: m, amount: v } : low
     }, null),
-    warnings: cap.warnings,
+    warnings: cash ? [...cap.warnings, ...cash.warnings] : cap.warnings,
   }
 }
