@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 import { todayLocalIso } from '@/lib/local-date'
 import {
-  declareRequest, initialInputs, linesEditable, previewIdentity, previewRequest, refusal, send, waterfallPaths,
+  declareRequest, initialInputs, lineLock, linesEditable, previewIdentity, previewRequest, refusal, send, waterfallPaths,
   type CashPreview, type Fetcher, type ProposalField, type ProposalInputs,
 } from './waterfall-api'
 
@@ -81,7 +81,7 @@ export function proposalReducer(s: ProposalState, a: ProposalAction): ProposalSt
     case 'previewStart': return { ...s, busy: 'preview', error: null }
     // The inputs may have moved while the request was out: then the reply is shown, but stale.
     case 'previewDone': return { ...s, busy: null, preview: a.preview, previewAsOf: a.asOf, previewedFor: a.key, stale: previewKey(s.inputs) !== a.key, edits: null, error: null }
-    // Locked when the preview pays a profit share: the route would refuse any edit (linesEditable).
+    // Locked when the preview pays a profit share or returns contingency (lineLock).
     case 'editLine': return s.preview && linesEditable(s.preview) ? { ...s, edits: { ...(s.edits ?? {}), [a.lpEntityId]: a.value } } : s
     case 'declareStart': return { ...s, busy: 'declare', error: null }
     case 'declareDone': return { ...s, busy: null }
@@ -268,6 +268,7 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
   const isWaterfall = p.method === 'waterfall'
   const identity = previewIdentity(p)
   const contingency = p.tiers.contingencyReturn ?? 0
+  const lock = lineLock(p)
   const tierRows: [string, number, string?][] = [
     ['Return of unspent contingency', contingency, 'contingency'],
     ['Preferred return', p.tiers.preferred, 'preferred'],
@@ -326,23 +327,24 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
 
       <div className="space-y-2">
         <h3 className="text-base font-semibold">To each investor</h3>
-        {!linesEditable(p) && (
-          <p className="text-caption text-muted-foreground" data-lines="locked">
-            These amounts are set by the waterfall. To change them, change the cash, reserve or contingency and preview again.
-          </p>
-        )}
+        {lock && <p className="text-caption text-muted-foreground" data-lines="locked">{lock}</p>}
         <div className="space-y-1.5">
           {p.lines.map(l => (
             <div key={l.lpEntityId} className="flex items-center justify-between gap-3 text-sm" data-line={l.lpEntityId}>
-              <Label htmlFor={`wf-line-${l.lpEntityId}`} className="font-normal">{p.names[l.lpEntityId] ?? l.lpEntityId}</Label>
-              <Input
-                id={`wf-line-${l.lpEntityId}`}
-                inputMode="decimal"
-                readOnly={!linesEditable(p)}
-                className="h-8 w-40 text-right tabular-nums read-only:bg-muted/40"
-                value={state.edits?.[l.lpEntityId] ?? String(l.amount)}
-                onChange={e => dispatch({ type: 'editLine', lpEntityId: l.lpEntityId, value: e.target.value })}
-              />
+              {lock
+                ? <span>{p.names[l.lpEntityId] ?? l.lpEntityId}</span>
+                : <Label htmlFor={`wf-line-${l.lpEntityId}`} className="font-normal">{p.names[l.lpEntityId] ?? l.lpEntityId}</Label>}
+              {lock ? (
+                <span className="tabular-nums" data-line-amount={l.lpEntityId}>{money(l.amount)}</span>
+              ) : (
+                <Input
+                  id={`wf-line-${l.lpEntityId}`}
+                  inputMode="decimal"
+                  className="h-8 w-40 text-right tabular-nums"
+                  value={state.edits?.[l.lpEntityId] ?? String(l.amount)}
+                  onChange={e => dispatch({ type: 'editLine', lpEntityId: l.lpEntityId, value: e.target.value })}
+                />
+              )}
             </div>
           ))}
         </div>

@@ -191,7 +191,8 @@ describe('declare', () => {
     const s = proposalReducer(previewed(), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
     expect(s.edits).toBeNull()
     const html = form(s)
-    expect(input(html, `wf-line-${a.lpEntityId}`)).toContain('readOnly=""')
+    expect(input(html, `wf-line-${a.lpEntityId}`)).toBe('')
+    expect(html).toContain(`data-line-amount="${a.lpEntityId}"`)
     expect(html).toContain('data-lines="locked"')
     // Even if edits reached the action, it would not send them.
     const { fetcher, calls } = fakeFetcher()
@@ -199,12 +200,31 @@ describe('declare', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('without one, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
-    // Pref and capital only: no profit, so no carry line, so the route runs only the cash check.
-    const NO_CARRY = packPreview(400_000, 25_000, 10_000)
+  it('with a contingency returned the lines are locked too: a manual split would not store it', async () => {
+    const WITH_CONTINGENCY = packPreview(400_000, 25_000, 10_000)
+    expect(WITH_CONTINGENCY.carryLines.some(l => l.amount > 0)).toBe(false)
+    expect(WITH_CONTINGENCY.tiers.contingencyReturn).toBe(10_000)
+    expect(linesEditable(WITH_CONTINGENCY)).toBe(false)
+    const s0 = done(filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' }), WITH_CONTINGENCY)
+    const [a] = WITH_CONTINGENCY.lines
+    const s = proposalReducer(s0, { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
+    expect(s.edits).toBeNull()
+    const html = form(s)
+    expect(html).not.toMatch(/<input[^>]*id="wf-line-/)
+    expect(html).toContain('Per-investor overrides are not supported when a contingency return is declared.')
+    // Declare sends the unmodified waterfall preview.
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: {} })
+    expect(await declareAction(fetcher, s)).toEqual({ type: 'declareDone' })
+    expect(calls[0].body).toMatchObject({ splitMethod: 'waterfall', tiers: WITH_CONTINGENCY.tiers, cash: WITH_CONTINGENCY.cash, lines: WITH_CONTINGENCY.lines })
+    expect(calls[0].body.cash.contingencyReturn).toBe(10_000)
+  })
+
+  it('with neither, an edited line declares a manual split with no tiers, tied to available less reserve', async () => {
+    // Pref and capital only, nothing returned from contingency: no carry line, so the route runs only the cash check.
+    const NO_CARRY = packPreview(400_000, 25_000, 0)
     expect(linesEditable(NO_CARRY)).toBe(true)
     const [a, b] = NO_CARRY.lines
-    let s = proposalReducer(done(filled({ available: '400000', reserve: '25000', contingencyReturn: '10000' }), NO_CARRY), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
+    let s = proposalReducer(done(filled({ available: '400000', reserve: '25000', contingencyReturn: '' }), NO_CARRY), { type: 'editLine', lpEntityId: a.lpEntityId, value: String(a.amount + 100) })
     const { fetcher, calls } = fakeFetcher()
     expect(await declareAction(fetcher, s)).toMatchObject({ type: 'refused' })
     expect(calls).toHaveLength(0)
@@ -213,9 +233,8 @@ describe('declare', () => {
     expect(await declareAction(ok.fetcher, s)).toEqual({ type: 'declareDone' })
     const body = ok.calls[0].body
     expect(body).toMatchObject({ splitMethod: 'manual', tiers: null, available: 400_000, reserve: 25_000 })
-    // The preview's cash block still goes, so the contingency returned reaches the route.
     expect(body.cash).toEqual(NO_CARRY.cash)
-    expect(body.cash.contingencyReturn).toBe(10_000)
+    expect(body.cash.contingencyReturn ?? 0).toBe(0)
     // What the route then checks (cashAmountMismatch): no positive carry line, and the lines total available − reserve.
     expect(body.carryLines.filter((l: { amount: number }) => l.amount > 0)).toEqual([])
     expect(body.lines.reduce((t: number, l: { amount: number }) => t + Math.round(l.amount * 100), 0)).toBe(37_500_000)
@@ -640,16 +659,27 @@ describe('edit the waterfall terms', () => {
     expect(html).toContain('<option value="30_360">30E/360</option>')
   })
 
+  // Each refused value, with the route's own message, before any request.
+  const ROUTE_X = "Investors' share of the return of capital must be above 0 and at most 1 (1 = 100%)."
+  const ROUTE_Y = "The manager's profit share must be a fraction between 0 and 1 (0.3 = 30%)."
   it.each([
-    ['investorsBeforePct', '-1'], ['investorsBeforePct', '100.5'], ['investorsAfterPct', '-0.01'], ['investorsAfterPct', '101'],
-  ] as const)('refuses %s = %s on the page', (field, value) => {
-    expect(cashTermsBody({ ...PACK_FORM, [field]: value })).toMatchObject({ ok: false, field })
-    expect(managerPct(value)).toBeNull()
+    ['investorsBeforePct', '-1', ROUTE_X], ['investorsBeforePct', '0', ROUTE_X], ['investorsBeforePct', '100.5', ROUTE_X],
+    ['investorsAfterPct', '-0.01', ROUTE_Y], ['investorsAfterPct', '0', ROUTE_Y], ['investorsAfterPct', '100', ROUTE_Y], ['investorsAfterPct', '101', ROUTE_Y],
+  ] as const)('refuses %s = %s on the page, as the route would', (field, value, error) => {
+    const r = cashTermsBody({ ...PACK_FORM, [field]: value })
+    expect(r).toEqual({ ok: false, field, error })
+    // The route's own rule agrees: the same value is refused there too.
+    const n = Number(value)
+    const terms = { prefRate: 0.08, dayCount: '30_360', recipients: [{ lpEntityId: 'mgr', pct: 100 }],
+      rocLpShare: field === 'investorsBeforePct' ? n / 100 : 1, carryRate: field === 'investorsAfterPct' ? 1 - n / 100 : 0.3 }
+    expect(validateCashTerms(terms)).toBe(error)
   })
 
-  it('accepts the bounds themselves; the route decides the rest', () => {
-    expect(cashTermsBody({ ...PACK_FORM, investorsBeforePct: '0' }).ok).toBe(true)
-    expect(cashTermsBody({ ...PACK_FORM, investorsAfterPct: '100' }).ok).toBe(true)
+  it('accepts what the route accepts at the edges: X = 100, Y just inside (0, 100)', () => {
+    expect(cashTermsBody({ ...PACK_FORM, investorsBeforePct: '100' }).ok).toBe(true)
+    expect(cashTermsBody({ ...PACK_FORM, investorsBeforePct: '0.01' }).ok).toBe(true)
+    expect(cashTermsBody({ ...PACK_FORM, investorsAfterPct: '99.99' }).ok).toBe(true)
+    expect(cashTermsBody({ ...PACK_FORM, investorsAfterPct: '0.01' }).ok).toBe(true)
   })
 
   it('a 400 from the route is shown in its own words', async () => {

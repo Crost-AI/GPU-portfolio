@@ -160,21 +160,34 @@ export function previewRequest(inputs: ProposalInputs): PreviewRequest {
 }
 
 /**
- * Can the investor lines be typed over? Only when the preview pays no profit share. The route
- * holds any declaration with a carry line to the waterfall, every investor line to the cent
- * (declareDistribution → cashCarryMismatch, whatever the split method), so an edited split with a
- * profit share is always refused; the form locks the lines rather than offer it.
+ * Why the investor lines cannot be typed over, or null when they can. Only a preview with no
+ * profit share and no contingency returned can be edited:
+ * - a carry line makes the route hold every investor line to the waterfall, to the cent, whatever
+ *   the split method (declareDistribution → cashCarryMismatch), so any edit is refused;
+ * - a manual split freezes no `cash`, so a contingency return would never be stored
+ *   (wf_contingency_return) and later replays would treat that cash as preferred return.
  */
-export function linesEditable(p: Pick<CashPreview, 'carryLines'>): boolean {
-  return !p.carryLines.some(l => l.amount > 0)
+export function lineLock(p: Pick<CashPreview, 'carryLines' | 'tiers'>): string | null {
+  if ((p.tiers.contingencyReturn ?? 0) > 0) {
+    return 'Per-investor overrides are not supported when a contingency return is declared. These amounts are set by the waterfall; to change them, change the cash, reserve or contingency and preview again.'
+  }
+  if (p.carryLines.some(l => l.amount > 0)) {
+    return 'These amounts are set by the waterfall. To change them, change the cash, reserve or contingency and preview again.'
+  }
+  return null
 }
+
+export function linesEditable(p: Pick<CashPreview, 'carryLines' | 'tiers'>): boolean {
+  return lineLock(p) == null
+}
+
 
 /**
  * The declaration body from an unmodified preview. `edited` investor amounts (allowed only where
- * `linesEditable`) make it a manual split, as on the capital-accounts page: no tiers, no character,
- * nothing frozen from the waterfall — but the cash, the reserve and the preview's `cash` block
- * (which carries the contingency returned, the only place the declare route reads it) still sent,
- * so the route holds the lines to available − reserve and sees the contingency as previewed.
+ * `lineLock` is null: no profit share, no contingency returned) make it a manual split, as on the
+ * capital-accounts page: no tiers, no character, nothing frozen from the waterfall — but the cash,
+ * the reserve and the preview's `cash` block still sent, so the route holds the lines to
+ * available − reserve.
  */
 export function declareRequest(args: {
   preview: CashPreview
@@ -185,9 +198,8 @@ export function declareRequest(args: {
 }): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
   const { preview, asOf, requestKey, edits } = args
   const manual = edits != null
-  if (manual && !linesEditable(preview)) {
-    return { ok: false, error: 'These amounts are set by the waterfall and cannot be edited. To change them, change the cash, reserve or contingency and preview again.' }
-  }
+  const lock = lineLock(preview)
+  if (manual && lock) return { ok: false, error: lock }
   // As previewed: a waterfall, or the pro-rata fallback the preview's warnings explain.
   const waterfall = !manual && preview.method === 'waterfall'
   const lines = manual
@@ -421,8 +433,9 @@ export function managerPct(investorsPct: string): number | null {
 
 /**
  * The PUT body for /api/accounting/waterfall-terms, kind distributable_cash: simple pref on
- * unreturned capital, no catch-up. The two splits are checked here (each 0–100); every other rule
- * is the route's (validateCashTerms), and its 400 text is shown as it is.
+ * unreturned capital, no catch-up. The two splits are checked here exactly as the route checks
+ * them (X above 0 and at most 100; Y above 0 and below 100); every other rule is the route's
+ * (validateCashTerms), and its 400 text is shown as it is.
  */
 export function cashTermsBody(f: CashTermsForm):
   | { ok: true; body: Record<string, unknown> }
@@ -431,12 +444,13 @@ export function cashTermsBody(f: CashTermsForm):
   const pref = pct(f.prefPct)
   if (pref == null || !Number.isFinite(pref)) return { ok: false, field: 'prefPct', error: 'Enter the preferred return as a percentage, e.g. 8.' }
   const x = pct(f.investorsBeforePct)
-  if (x == null || !Number.isFinite(x) || x < 0 || x > 100) {
-    return { ok: false, field: 'investorsBeforePct', error: 'The investors\u2019 share before capital is returned must be between 0 and 100%.' }
+  // The route's own rule (validateCashTerms), in its own words: rocLpShare in (0, 1], carryRate in (0, 1).
+  if (x == null || !Number.isFinite(x) || !(x > 0 && x <= 100)) {
+    return { ok: false, field: 'investorsBeforePct', error: "Investors' share of the return of capital must be above 0 and at most 1 (1 = 100%)." }
   }
   const y = pct(f.investorsAfterPct)
-  if (y == null || !Number.isFinite(y) || y < 0 || y > 100) {
-    return { ok: false, field: 'investorsAfterPct', error: 'The investors\u2019 share after capital is returned must be between 0 and 100%.' }
+  if (y == null || !Number.isFinite(y) || !(y > 0 && y < 100)) {
+    return { ok: false, field: 'investorsAfterPct', error: "The manager's profit share must be a fraction between 0 and 1 (0.3 = 30%)." }
   }
   const recipients = f.recipients.map(r => ({ lpEntityId: r.lpEntityId, pct: pct(r.pct) ?? NaN }))
   if (recipients.some(r => !Number.isFinite(r.pct))) return { ok: false, field: 'recipients', error: 'Enter each recipient\u2019s share as a percentage.' }
