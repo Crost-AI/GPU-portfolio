@@ -30,7 +30,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction }: {
+export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction, termsAction }: {
   waterfall: WaterfallTermsReply | null
   /** undefined: the caller cannot read the fee terms (accounting); null: the vehicle has none. */
   fee: FeeTermsReply['terms'] | undefined
@@ -39,6 +39,8 @@ export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction }: {
   payeeName: (vehicleId: string) => string | null
   /** The Edit fee terms button, for a caller with accounting write. */
   feeAction?: React.ReactNode
+  /** The Edit terms button, for a caller who may change the waterfall here; else a link to the terms page. */
+  termsAction?: React.ReactNode
 }) {
   const t = waterfall?.terms
   const nameOf = (id: string) => waterfall?.candidates.find(c => c.lpEntityId === id)?.name ?? id
@@ -46,7 +48,7 @@ export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction }: {
     <ShellSection
       title="Terms"
       description="How each distribution is split between investors and the manager."
-      action={<Link href="/funds/allocation-terms" className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Edit terms</Link>}
+      action={termsAction ?? <Link href="/funds/allocation-terms" className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Edit terms</Link>}
     >
       <div className="grid gap-x-8 gap-y-4 md:grid-cols-2" data-region="terms">
         <dl className="text-sm">

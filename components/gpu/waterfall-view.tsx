@@ -13,6 +13,7 @@ import { PrefLedgerTable, PrefLedgerUnavailable } from './pref-ledger-table'
 import { ProposeDistributionDialog } from './propose-distribution'
 import { DistributionHistory } from './distribution-history'
 import { FeeTermsDialog } from './fee-terms-dialog'
+import { WaterfallTermsDialog } from './waterfall-terms-dialog'
 import {
   CADENCES, historyScope, positionFromLedger, send, vehicleFetcher, waterfallPaths,
   type Cadence, type FeeTermsReply, type HistoryRow, type PrefLedgerRow, type WaterfallTermsReply,
@@ -43,6 +44,8 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
   const readsAccounting = useCanRead('accounting')
   const writesAccounting = useCanWrite('accounting')
   const canDeclare = useCanWrite('lp_capital')
+  // The terms route is gp_economics; changing what the books distribute also asks for accounting.
+  const writesTerms = useCanWrite('gp_economics') && writesAccounting
   const { vehicles } = useVehicle()
   const fetcher = useMemo(() => vehicleFetcher(vehicle), [vehicle])
 
@@ -123,6 +126,13 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
             fee={fee}
             cadence={{ value: cadence, canEdit: writesAccounting, saving: savingCadence, onChange: c => { void changeCadence(c) } }}
             payeeName={id => vehicles.find(v => v.id === id)?.name ?? null}
+            termsAction={writesTerms && (!terms || terms.terms.kind === 'none' || terms.terms.kind === 'distributable_cash') ? (
+              <WaterfallTermsDialog
+                fetcher={fetcher}
+                waterfall={terms}
+                onSaved={() => { setTermsVersion(n => n + 1); setBooksVersion(n => n + 1) }}
+              />
+            ) : undefined}
             feeAction={writesAccounting && fee !== undefined ? (
               <FeeTermsDialog
                 fetcher={fetcher}
