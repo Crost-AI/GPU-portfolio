@@ -18,7 +18,7 @@ import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMo
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody, endContractBody, eventBody,
-  fleetPaths, mapBounded, rollBody, send, statusBody, type Fetcher,
+  fleetPaths, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
 } from '@/components/gpu/fleet-api'
 import { parseAssetInput } from '@/lib/gpu/assets'
 import { parseContractInput } from '@/lib/gpu/opex'
@@ -322,11 +322,26 @@ describe('datacenter contracts', () => {
 })
 
 describe('events', () => {
-  it('a downtime entry posts the route’s fields, dates as timestamps', () => {
-    expect(eventBody({ kind: 'downtime', starts_at: '2026-03-01', ends_at: '2026-03-02', gpus_affected: '2', cause: 'PSU' }))
-      .toEqual({ kind: 'downtime', starts_at: '2026-03-01T00:00:00Z', ends_at: '2026-03-02T00:00:00Z', gpus_affected: 2, cause: 'PSU' })
-    expect(eventBody({ kind: 'note', starts_at: '2026-03-01', ends_at: '', gpus_affected: '', cause: '' }))
-      .toEqual({ kind: 'note', starts_at: '2026-03-01T00:00:00Z', ends_at: null, gpus_affected: null })
+  const ms = (iso: string) => Date.parse(iso)
+
+  it('a same-day two-hour outage is two hours: local wall-clock times become UTC instants', () => {
+    const body = eventBody({ kind: 'downtime', starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T12:00', gpus_affected: '2', cause: 'PSU' })
+    expect(body).toEqual({
+      kind: 'downtime', starts_at: new Date('2026-03-01T10:00').toISOString(), ends_at: new Date('2026-03-01T12:00').toISOString(),
+      gpus_affected: 2, cause: 'PSU',
+    })
+    expect(body.starts_at).toMatch(/Z$/)
+    expect(ms(body.ends_at as string) - ms(body.starts_at as string)).toBe(2 * 60 * 60 * 1000)
+  })
+
+  it('an ongoing event has no end; a bare date is the start of that local day', () => {
+    const body = eventBody({ kind: 'note', starts_at: '2026-03-01', ends_at: '', gpus_affected: '', cause: '' })
+    expect(body).toEqual({ kind: 'note', starts_at: new Date('2026-03-01T00:00').toISOString(), ends_at: null, gpus_affected: null })
+  })
+
+  it('shows a stored instant back as the same wall-clock time it was entered at', () => {
+    expect(utcToLocalLabel(localToUtc('2026-03-01T10:00'))).toBe('2026-03-01 10:00')
+    expect(nowLocalInput(new Date(2026, 2, 1, 9, 5))).toBe('2026-03-01T09:05')
   })
 })
 

@@ -12,7 +12,7 @@ import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAsset, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import type { DepreciationLine } from '@/lib/gpu/depreciation'
-import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, send, type EventForm, type Fetcher } from './fleet-api'
+import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
 import { assetFigures, assetSchedule, bookingGate, offersBookedActions, todayIso } from './fleet-math'
 import { ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
@@ -217,8 +217,8 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
                 {events.map(e => (
                   <tr key={e.id} className="border-t">
                     <td className="px-3 py-2">{EVENT_LABEL[e.kind]}</td>
-                    <td className="whitespace-nowrap px-3 py-2 tabular-nums">{e.starts_at.slice(0, 10)}</td>
-                    <td className="whitespace-nowrap px-3 py-2 tabular-nums">{e.ends_at ? e.ends_at.slice(0, 10) : 'Open'}</td>
+                    <td className="whitespace-nowrap px-3 py-2 tabular-nums">{utcToLocalLabel(e.starts_at)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 tabular-nums">{e.ends_at ? utcToLocalLabel(e.ends_at) : 'Open'}</td>
                     <td className={num}>{e.gpus_affected ?? 'All'}</td>
                     <td className="px-3 py-2 text-muted-foreground">{e.cause ?? '—'}</td>
                   </tr>
@@ -250,7 +250,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
 
 /** Record a downtime, maintenance, RMA, relocation or note against the asset. */
 function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: GpuAsset; onDone: () => void }) {
-  const empty: EventForm = { kind: 'downtime', starts_at: todayIso(), ends_at: '', gpus_affected: '', cause: '' }
+  const empty: EventForm = { kind: 'downtime', starts_at: nowLocalInput(), ends_at: '', gpus_affected: '', cause: '' }
   const [form, setForm] = useState<EventForm>(empty)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -275,10 +275,10 @@ function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: Gp
             {GPU_EVENT_KINDS.map(k => <option key={k} value={k}>{EVENT_LABEL[k]}</option>)}
           </select>
         </Field>
-        <Field id="event-from" label="From"><Input id="event-from" type="date" value={form.starts_at} onChange={set('starts_at')} /></Field>
-        <Field id="event-to" label="To" hint="Blank while ongoing."><Input id="event-to" type="date" value={form.ends_at} onChange={set('ends_at')} /></Field>
+        <Field id="event-from" label="From"><Input id="event-from" type="datetime-local" value={form.starts_at} onChange={set('starts_at')} /></Field>
+        <Field id="event-to" label="To" hint="Blank while ongoing. Your local time."><Input id="event-to" type="datetime-local" min={form.starts_at || undefined} value={form.ends_at} onChange={set('ends_at')} /></Field>
         <Field id="event-gpus" label="GPUs affected" hint={`Blank: all ${asset.gpu_count}.`}>
-          <Input id="event-gpus" inputMode="numeric" className="text-right tabular-nums" value={form.gpus_affected} onChange={set('gpus_affected')} />
+          <Input id="event-gpus" type="number" min={1} max={asset.gpu_count} step={1} inputMode="numeric" className="text-right tabular-nums" value={form.gpus_affected} onChange={set('gpus_affected')} />
         </Field>
         <Field id="event-cause" label="Cause"><Input id="event-cause" value={form.cause} onChange={set('cause')} /></Field>
       </div>

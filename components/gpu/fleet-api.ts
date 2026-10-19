@@ -178,8 +178,30 @@ export function capexSubmitter(fetcher: Fetcher, assetId: string, newKey: () => 
 
 export interface EventForm { kind: GpuEventKind; starts_at: string; ends_at: string; gpus_affected: string; cause: string }
 
-/** Dates typed as YYYY-MM-DD are sent as the start of that day, UTC. */
-const timestamp = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00Z` : s)
+/**
+ * A `datetime-local` value ('YYYY-MM-DDTHH:mm', the user's wall clock) as a UTC ISO timestamp. A bare
+ * date is the start of that local day. The event log stores instants, so a two-hour outage stays two
+ * hours whatever the time zone.
+ */
+export function localToUtc(s: string): string {
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s
+  return new Date(local).toISOString()
+}
+
+/** A stored instant as the user's wall clock, 'YYYY-MM-DD HH:mm'. */
+export function utcToLocalLabel(iso: string): string {
+  const d = new Date(iso)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** Now, as a `datetime-local` value in the user's own time zone. */
+export function nowLocalInput(now = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T${p(now.getHours())}:${p(now.getMinutes())}`
+}
+
+const timestamp = localToUtc
 
 export function eventBody(f: EventForm): Record<string, unknown> {
   return {
