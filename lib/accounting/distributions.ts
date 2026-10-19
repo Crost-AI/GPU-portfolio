@@ -346,7 +346,7 @@ function cashCarryMismatch(
   perRecipient: Map<string, number>,
   declaredTotal: number,
   carryTotal: number,
-): { cash?: CashSplitExtras; tiers: WaterfallTiers } | CashRefusal {
+): { cash?: CashSplitExtras; tiers: WaterfallTiers | null } | CashRefusal {
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
   for (const id of Array.from(perRecipient.keys())) {
     if (!recipientIds.has(id)) return { error: 'Carry lines can only go to the vehicle\'s profit-share recipients', code: 'WATERFALL_MISMATCH' }
@@ -366,7 +366,8 @@ function cashCarryMismatch(
   const declared = new Map(Array.from(perLp.entries()).filter(([, v]) => cents(v) !== 0).map(([id, v]) => [id, cents(v)] as [string, number]))
   const same = expected.size === declared.size && Array.from(expected.entries()).every(([id, c]) => declared.get(id) === c)
   if (!same) return { error: 'The investor lines do not match the waterfall', code: 'WATERFALL_MISMATCH' }
-  return { cash: split.cash, tiers: split.tiers }
+  // A pro-rata fallback (the terms could not be replayed) has no tiers to freeze.
+  return split.method === 'waterfall' ? { cash: split.cash, tiers: split.tiers } : { cash: undefined, tiers: null }
 }
 
 /**
@@ -488,6 +489,9 @@ export async function declareDistribution(
     let realised: Map<string, number> | null = null
     let serverCash: CashSplitExtras | null = null
     let serverTiers: WaterfallTiers | null = null
+    // Once the guard has run on a waterfall split, the register freezes only what the server's split
+    // produced: its tiers and cash, or nothing at all after a pro-rata fallback.
+    let serverFroze = false
     const statesCash = input.available != null || input.reserve != null
     const isWaterfall = splitMethod === 'waterfall'
     if (perRecipient.size > 0 || cash || statesCash || isWaterfall) {
@@ -525,6 +529,7 @@ export async function declareDistribution(
         if (isWaterfall) {
           serverCash = checked.cash ?? null
           serverTiers = checked.tiers
+          serverFroze = true
         }
         if (perRecipient.size > 0) {
           const plan = realisedCarryPlan(postings, terms, perRecipient, input.distributionDate)
@@ -596,17 +601,17 @@ export async function declareDistribution(
         split_method: splitMethod,
         // A distributable-cash declaration the guard checked freezes the server's tiers; every other
         // declaration (a fund's included) keeps the tiers it was given.
-        wf_return_of_capital: (serverTiers ?? tiers)?.returnOfCapital ?? null,
-        wf_preferred: (serverTiers ?? tiers)?.preferred ?? null,
-        wf_catch_up: (serverTiers ?? tiers)?.catchUp ?? null,
-        wf_carry: (serverTiers ?? tiers)?.carry ?? null,
+        wf_return_of_capital: (serverFroze ? serverTiers : tiers)?.returnOfCapital ?? null,
+        wf_preferred: (serverFroze ? serverTiers : tiers)?.preferred ?? null,
+        wf_catch_up: (serverFroze ? serverTiers : tiers)?.catchUp ?? null,
+        wf_carry: (serverFroze ? serverTiers : tiers)?.carry ?? null,
         // distributable_cash only; absent keys leave every other vehicle's row as it was written.
         ...(carryRealizedEntryId ? { carry_realized_journal_entry_id: carryRealizedEntryId } : {}),
-        ...((serverCash ?? cash) ? {
-          wf_contingency_return: (serverCash ?? cash)!.contingencyReturn,
-          wf_profit_lp: (serverCash ?? cash)!.profitToLP,
-          wf_pref_carried_forward: (serverCash ?? cash)!.prefCarriedForward,
-          wf_unreturned_after: (serverCash ?? cash)!.unreturnedAfter,
+        ...((serverFroze ? serverCash : cash) ? {
+          wf_contingency_return: (serverFroze ? serverCash : cash)!.contingencyReturn,
+          wf_profit_lp: (serverFroze ? serverCash : cash)!.profitToLP,
+          wf_pref_carried_forward: (serverFroze ? serverCash : cash)!.prefCarriedForward,
+          wf_unreturned_after: (serverFroze ? serverCash : cash)!.unreturnedAfter,
         } : {}),
         ...(input.reserve != null ? { reserve_amount: roundCents(Number(input.reserve)) } : {}),
         kind,

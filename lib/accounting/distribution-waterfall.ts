@@ -329,13 +329,13 @@ function splitDistributableCash(input: SplitInput): DistributionSplit {
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
   for (const p of input.partners) {
     if (recipientIds.has(p.lpEntityId) && p.contributed > 0) {
-      warnings.push(`${p.lpEntityId} receives the profit share and has also contributed capital; the waterfall treats it as a recipient only. Edit its line if it should share as an investor.`)
+      warnings.push(`${p.lpEntityId} receives the profit share and has also contributed capital; the waterfall treats it as a recipient only. To have it share as an investor, declare the distribution with splitMethod 'manual'.`)
     }
   }
   const investorIds = new Set(live.map(c => c.lpEntityId))
   for (const p of input.partners) {
     if (!recipientIds.has(p.lpEntityId) && !investorIds.has(p.lpEntityId) && p.ending > 0) {
-      warnings.push(`${p.lpEntityId} holds capital but made no contribution, so the waterfall leaves it out. Edit its line if it should share.`)
+      warnings.push(`${p.lpEntityId} holds capital but made no contribution, so the waterfall leaves it out. To include it, declare the distribution with splitMethod 'manual'.`)
     }
   }
 

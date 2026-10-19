@@ -304,6 +304,25 @@ describe('declareDistribution: distributable_cash', () => {
     expect(m.tables.distributions[0]).toMatchObject({ wf_preferred: F1.y3Cents.pref, wf_return_of_capital: F1.y3Cents.roc, wf_carry: F1.y3Cents.carry, wf_catch_up: 0 })
   })
 
+  it('a pro-rata fallback freezes nothing, whatever cash and tiers the body carries', async () => {
+    // Compounding pref is not a valid distributable-cash term, so the split falls back to pro-rata.
+    s.postings = [at('lp', -1_000, 'capital_call', '2027-01-01')]
+    const { m } = admin({ ...cashTerms, pref_compounds: true })
+    const p = await previewDistribution(m.admin, 'f', 'GPU I', NaN, '2028-01-01', 'waterfall', { available: 100, reserve: 0 })
+    if ('error' in p) throw new Error(p.error)
+    expect(p.method).toBe('pro_rata')
+    expect(p.warnings[0]).toMatch(/pro-rata/)
+    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', {
+      requestKey: 'fallback', distributionDate: '2028-01-01', lines: p.lines, splitMethod: 'waterfall', available: 100, reserve: 0,
+      tiers: { returnOfCapital: 90, preferred: 10, catchUp: 0, carry: 0, profitToLP: 0, toLP: 100, toGP: 0 },
+      cash: { prefDue: 10, prefCarriedForward: 0, unreturnedAfter: 910, profitToLP: 0, managerRocShare: 0, contingencyReturn: 0 },
+    })
+    expect(out).not.toHaveProperty('error')
+    const row = m.tables.distributions[0]
+    for (const k of ['wf_preferred', 'wf_return_of_capital', 'wf_carry', 'wf_catch_up']) expect(row[k], k).toBeNull()
+    for (const k of ['wf_unreturned_after', 'wf_profit_lp', 'wf_pref_carried_forward', 'wf_contingency_return']) expect(row, k).not.toHaveProperty(k)
+  })
+
   describe('a carry-free waterfall declaration (QA round 4)', () => {
     // Two investors on 2028-01-01, the year-one distribution: pref and ROC only, no carry lines.
     async function y1() {
