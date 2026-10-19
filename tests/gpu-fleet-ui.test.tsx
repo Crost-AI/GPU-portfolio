@@ -14,7 +14,8 @@ import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-cont
 import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { DepreciationTable } from '@/components/gpu/asset-detail'
 import { ErrorAlert } from '@/components/gpu/fleet-ui'
-import { assetFigures, assetSchedule, fleetTotals } from '@/components/gpu/fleet-math'
+import { assetFigures, assetSchedule, fleetTotals, todayIso } from '@/components/gpu/fleet-math'
+import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody, endContractBody, eventBody,
   fleetPaths, mapBounded, rollBody, send, type Fetcher,
@@ -92,6 +93,20 @@ describe('the fleet register', () => {
     const fleet = [...PACK, asset({ id: 'old', name: 'Old', hardware_cost: 100_000, status: 'disposed', disposed_on: '2026-06-30' })]
     expect(fleetTotals(fleet, AFTER_12)).toMatchObject({ assets: 3, gpus: 24, cost: 1_305_000 })
     expect(register({ assets: fleet })).toMatch(/data-asset="old"[\s\S]*?data-nbv=""/)
+  })
+
+  it('counts a planned, unbooked asset as planned cost: no book value and no simulated depreciation', () => {
+    // In service on paper, but its purchase is not booked: the ledger holds nothing for it.
+    const plan = asset({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000, salvage_value: 33_500 })
+    expect(assetFigures(plan, AFTER_12)).toEqual({ cost: 335_000, booked: false, accumulated: 0, nbv: null, remainingMonths: null })
+    expect(assetSchedule(plan)).toEqual([])
+    expect(fleetTotals([plan], AFTER_12)).toMatchObject({ cost: 0, planned: 335_000, nbv: 0 })
+    // Beside the booked pack, it adds to Planned and nothing else.
+    expect(fleetTotals([...PACK, plan], AFTER_12)).toMatchObject({ cost: 1_305_000, planned: 335_000, nbv: 1_070_100 })
+    const html = register({ assets: [...PACK, plan] })
+    expect(html).toMatch(/data-asset="plan"[\s\S]*?data-cost=""[\s\S]*?data-planned="335000"[\s\S]*?data-nbv=""/)
+    expect(html).toContain(`data-total="planned">${money(335_000)}`)
+    expect(html).toContain(`data-total="nbv">${money(1_070_100)}`)
   })
 
   it('adds capitalized costs to cost and NBV', () => {
@@ -259,6 +274,12 @@ describe('the asset’s depreciation schedule', () => {
     expect(html).toMatch(/data-month="1"[\s\S]*?data-nbv="1285425"/)
   })
 
+  it('takes today as the local calendar date, not the UTC one', () => {
+    const d = new Date()
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    expect(todayIso()).toBe(local)
+  })
+
   it('marks the final-month true-up when rounding leaves a different last charge', () => {
     const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3 })
     const lines = assetSchedule(odd)
@@ -268,7 +289,30 @@ describe('the asset’s depreciation schedule', () => {
   })
 })
 
-describe('the firm-wide overview’s requests', () => {
+describe('the firm-wide overview', () => {
+  const vehicles = [{ id: 'v1', name: 'H200 SPV I', active: true }, { id: 'v2', name: 'B300 SPV II', active: true }]
+  const view = (loaded: Parameters<typeof FleetOverviewView>[0]['loaded']) => renderToStaticMarkup(
+    <CurrencyProvider currency="USD"><FleetOverviewView vehicles={vehicles} loaded={loaded} asOf={AFTER_12} /></CurrencyProvider>,
+  )
+
+  it('shows a vehicle that failed to load on its own card, and says the totals are partial', () => {
+    const html = view({ v1: { assets: PACK }, v2: { error: 'Could not read the record' } })
+    expect(html).toMatch(/data-vehicle="v2"[\s\S]*?role="alert"[^>]*>Could not read the record</)
+    expect(html).toContain('Partial: 1 vehicle could not be loaded')
+    expect(html).toContain(money(1_070_100))
+  })
+
+  it('totals every vehicle when all load, with planned cost said apart', () => {
+    const plan = asset({ id: 'plan', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000 })
+    const html = view({ v1: { assets: PACK }, v2: { assets: [plan] } })
+    expect(html).not.toContain('Partial')
+    expect(html).toContain(`Booked; ${money(335_000)} more planned`)
+    expect(html).toContain('LTM revenue')
+    expect(html).toContain('Utilization')
+  })
+})
+
+describe('the firm-wide overview\u2019s requests', () => {
   it('keeps at most `limit` in flight and returns results in order', async () => {
     let live = 0
     let peak = 0

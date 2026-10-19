@@ -53,7 +53,8 @@ export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWr
             <th scope="col" className={`${th} text-right`}>GPUs</th>
             <th scope="col" className={`${th} text-left`}>Status</th>
             <th scope="col" className={`${th} text-left`}>In service</th>
-            <th scope="col" className={`${th} text-right`}>Cost</th>
+            <th scope="col" className={`${th} text-right`} title="What the ledger holds: booked purchases and capitalized costs">Cost</th>
+            <th scope="col" className={`${th} text-right`} title="Cost of assets whose purchase is not booked yet">Planned</th>
             <th scope="col" className={`${th} text-right`}>NBV</th>
             <th scope="col" className={`${th} text-left`}>Contract</th>
             <th scope="col" className={th}><span className="sr-only">Actions</span></th>
@@ -70,7 +71,8 @@ export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWr
                 <td className={num}>{a.gpu_count}</td>
                 <td className="px-3 py-2"><StatusBadge status={a.status} /></td>
                 <td className="whitespace-nowrap px-3 py-2 tabular-nums">{a.in_service_date ?? '—'}</td>
-                <td className={num}>{money(f.cost)}</td>
+                <td className={num} data-cost={f.booked ? f.cost : ''}>{f.booked ? money(f.cost) : '—'}</td>
+                <td className={`${num} text-muted-foreground`} data-planned={f.booked ? '' : f.cost}>{f.booked ? '—' : money(f.cost)}</td>
                 <td className={num} data-nbv={f.nbv ?? ''}>{f.nbv == null ? '—' : money(f.nbv)}</td>
                 <td className="px-3 py-2 text-muted-foreground">{(a.datacenter_contract_id && facility.get(a.datacenter_contract_id)) || '—'}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-right">
@@ -96,6 +98,7 @@ export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWr
             <td className={num} data-total="gpus">{totals.gpus}</td>
             <td className="px-3 py-2" colSpan={2} />
             <td className={num} data-total="cost">{money(totals.cost)}</td>
+            <td className={`${num} text-muted-foreground`} data-total="planned">{money(totals.planned)}</td>
             <td className={num} data-total="nbv">{money(totals.nbv)}</td>
             <td className="px-3 py-2" colSpan={2} />
           </tr>
@@ -212,7 +215,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
 
       <ShellSection
         title="Assets"
-        description="Net book value is cost less book depreciation through today."
+        description="Cost and net book value are what the ledger holds: an asset counts once its purchase is booked. Until then its cost is planned."
         action={<GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="default" onClick={() => setDialog({ kind: 'add' })}><Plus className="mr-1 h-4 w-4" />Add asset</GatedButton>}
       >
         {actionError && <div className="mb-3"><ErrorAlert>{actionError}</ErrorAlert></div>}

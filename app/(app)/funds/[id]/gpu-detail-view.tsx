@@ -86,7 +86,8 @@ export function GpuDetailView({
               label="Fleet NBV"
               value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbv, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
-                : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`}
+                : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned, not booked` : '')}
             />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
