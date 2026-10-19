@@ -28,6 +28,20 @@ export const isOffBooks = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>)
 export const offBooksLabel = (a: Pick<GpuAssetRow, 'status'>) => (isPlanned(a) ? 'Planned' : 'Unbooked')
 
 /**
+ * Why an off-the-books asset shows no book or tax value. An unbooked asset may have its purchase
+ * posted (the #94 recovery case: booked, but the link to the asset was not made), so it is not
+ * "nothing booked": the entry is not linked, and its value is not counted until it is.
+ */
+export function offBooksReason(a: Pick<GpuAssetRow, 'status'>): { short: string; long: string } {
+  return isPlanned(a)
+    ? { short: 'Not purchased yet', long: 'Planned: the purchase is not booked yet, so the asset has no book or tax value. Its basis is shown at cost.' }
+    : {
+        short: 'Purchase not linked',
+        long: 'Unbooked: the purchase entry is not linked to this asset, so its value is not counted until it is. Book the purchase again to link it.',
+      }
+}
+
+/**
  * Was the asset disposed of by the date it is valued as of? The valuation's own rule (valueAssets:
  * disposed_on <= as_of gives NBV 0). An asset disposed later is still on the books at an earlier date,
  * so its figures count then, whatever its status today. Write actions follow the current status.

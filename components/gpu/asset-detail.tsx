@@ -12,7 +12,7 @@ import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import { eventBody, eventFormError, fleetPaths, getAsset, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
-import { bookingGate, disposedAsOf, isOffBooks, offBooksLabel, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
+import { bookingGate, disposedAsOf, isOffBooks, offBooksLabel, offBooksReason, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
 import { AsOfControl, ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
@@ -49,7 +49,7 @@ export function ValuationCard({ asset }: { asset: ValuedAsset }) {
     >
       {off && (
         <p className="mb-3 text-sm text-muted-foreground">
-          {offBooksLabel(asset)}: nothing is booked and linked for this asset yet, so it has no book or tax value. Its basis is shown at cost.
+          {offBooksReason(asset).long}
         </p>
       )}
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
@@ -240,9 +240,9 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric label="Basis" value={money(Number(asset.basis))} sub={off ? `${offBooksLabel(asset)}: not on the books` : Number(asset.capitalized_costs) > 0 ? `Includes ${money(Number(asset.capitalized_costs))} capitalized` : 'Hardware'} />
-        <Metric label="Book NBV" value={off ? '—' : money(Number(asset.nbv_book))} sub={off ? 'Nothing booked yet' : `Accumulated ${money(Number(asset.accumulated_book))}`} />
-        <Metric label="Tax NBV" value={off ? '—' : money(Number(asset.nbv_tax))} sub={off ? 'Nothing booked yet' : `Accumulated ${money(Number(asset.accumulated_tax))}`} />
+        <Metric label="Basis" value={money(Number(asset.basis))} sub={off ? `${offBooksLabel(asset)}: ${offBooksReason(asset).short.toLowerCase()}` : Number(asset.capitalized_costs) > 0 ? `Includes ${money(Number(asset.capitalized_costs))} capitalized` : 'Hardware'} />
+        <Metric label="Book NBV" value={off ? '—' : money(Number(asset.nbv_book))} sub={off ? offBooksReason(asset).short : `Accumulated ${money(Number(asset.accumulated_book))}`} />
+        <Metric label="Tax NBV" value={off ? '—' : money(Number(asset.nbv_tax))} sub={off ? offBooksReason(asset).short : `Accumulated ${money(Number(asset.accumulated_tax))}`} />
         <Metric label="Capitalized" value={money(Number(asset.capitalized_costs))} sub={`${asset.capex_events.length} ${asset.capex_events.length === 1 ? 'entry' : 'entries'}`} />
       </div>
 

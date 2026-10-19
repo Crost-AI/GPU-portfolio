@@ -260,7 +260,14 @@ describe('the asset\u2019s book, tax and capex', () => {
     expect(col(html, 'basis')).toBe(money(335_000))
     expect(col(html, 'nbv_book')).toBe('—')
     expect(col(html, 'nbv_tax')).toBe('—')
-    expect(html).toContain('Planned: nothing is booked and linked')
+    expect(html).toContain('Planned: the purchase is not booked yet')
+  })
+
+  it('an unbooked asset is not called unbooked-nothing: its purchase may be posted, just not linked', () => {
+    const html = view(asset({ status: 'ordered', purchase_entry_id: null, basis: 410_000, nbv_book: 410_000, nbv_tax: 410_000 }))
+    expect(html).toContain('Unbooked: the purchase entry is not linked to this asset, so its value is not counted until it is.')
+    expect(html).not.toMatch(/nothing is booked/i)
+    expect(col(html, 'nbv_book')).toBe('—')
   })
 
   it('lists the capex events: month, amount, source ref and when posted', () => {
