@@ -297,11 +297,13 @@ async function reverseSuperseded(
     if (!isStale(old)) return { error: reversingBusy(old), keep: false }
     const evidence = ref ? await liveEntryByRef(admin, ctx, ref) : null
     if (evidence?.status === 'posted') {
-      if (!(await completeFromEvidence(admin, EARNINGS, scope, old, { status: 'reversed' }))) return { error: reversingBusy(old), keep: false }
-      // The link the holder path sets: without it the journal would allow a second reverse.
+      // Link FIRST (idempotent), then finish the row: a link that fails leaves the row reversing, so
+      // the next attempt repeats it. Finishing first would clear the claim and never retry the link,
+      // and without it the journal would allow the original to be reversed again.
       const { error: linkError } = await (admin as any).from('journal_entries').update({ reversed_by: evidence.id })
         .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('id', old.journal_entry_id!)
       if (linkError) throw linkError
+      if (!(await completeFromEvidence(admin, EARNINGS, scope, old, { status: 'reversed' }))) return { error: reversingBusy(old), keep: false }
       return { reversalId: evidence.id }
     }
     if (evidence) return { error: inProgress(evidence).error, keep: false }
