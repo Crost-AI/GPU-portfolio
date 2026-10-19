@@ -15,7 +15,8 @@ const money = (c: number) => (c / 100).toFixed(2)
  * Over [start, end]:
  *   - blocker: posted rows' gross ≠ 4000 posted activity, or their fees ≠ 5150 activity (to the
  *     cent) — revenue reached the ledger outside the subledger, or the reverse. Only once the
- *     vehicle uses the subledger (any gpu_earnings row): revenue booked by hand has nothing to tie to;
+ *     vehicle uses the subledger (any gpu_earnings row with period_end by the span end): revenue
+ *     booked by hand has nothing to tie to;
  *   - blocker: an unmatched row (revenue entered against no server, so it can never post);
  *   - warning: a staged row (revenue entered but not posted);
  *   - blocker: a row being posted or reversed, or a payout being matched (an in-flight or abandoned
@@ -45,10 +46,11 @@ export async function gpuOpsCloseIssues(
   const subFee = posted.reduce((s, r) => s + cents(r.marketplace_fee), 0)
   const ledgerRevenue = -activity(REVENUE_CODE)
   const ledgerFee = activity(FEE_CODE)
-  // The tie holds only once the vehicle keeps its revenue in the operations subledger: a GPU SPV
-  // that books rental revenue by hand (no gpu_earnings row at all) has nothing to tie to.
+  // The tie holds only once the vehicle keeps its revenue in the operations subledger, as of this
+  // span: a GPU SPV that books rental revenue by hand — or a month before its first operations row
+  // — has nothing to tie to.
   const { data: anyRow, error: anyError } = await (admin as any).from('gpu_earnings').select('id')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).limit(1)
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).lte('period_end', end).limit(1)
   if (anyError) throw anyError
   const subledgerInUse = ((anyRow as any[]) ?? []).length > 0
   if (subledgerInUse && subGross !== ledgerRevenue) {
