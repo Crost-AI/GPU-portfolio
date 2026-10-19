@@ -91,7 +91,10 @@ export function requireAccountingWrite(access: AccessContext): NextResponse | nu
     : NextResponse.json({ error: 'Booking this to the ledger needs write access to Accounting.' }, { status: 403 })
 }
 
-/** A lib/gpu refusal as a response: 409 while another request is mid-write, else 400. */
-export function refusal(r: { error: string; inProgress?: true }): NextResponse {
-  return NextResponse.json({ error: r.error, ...(r.inProgress ? { inProgress: true } : {}) }, { status: r.inProgress ? 409 : 400 })
+/** A lib/gpu refusal as a response: 409 while another request is mid-write or on a conflict, else 400. */
+export function refusal(r: { error: string; inProgress?: true; conflict?: true }): NextResponse {
+  return NextResponse.json(
+    { error: r.error, ...(r.inProgress ? { inProgress: true } : {}), ...(r.conflict ? { conflict: true } : {}) },
+    { status: r.inProgress || r.conflict ? 409 : 400 },
+  )
 }
