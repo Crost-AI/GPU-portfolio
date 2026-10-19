@@ -43,12 +43,14 @@ export async function resolveCompany(
   ref: string,
   /** The caller's access: only companies linked to their entities resolve. Required. */
   access: Pick<AccessContext, 'fundId' | 'vehicles'>,
+  /** What the caller will do with it: a tool that writes to the company passes 'write' (#91). */
+  need: 'read' | 'write' = 'read',
 ): Promise<any> {
   if (!ref) throw new Error('A company id or name is required')
   const visible = await visibleCompanyIds(admin, access)
   // ── GPU fleet (P3) ── A GPU SPV's fleet company resolves — and is suggested — only to a caller
   // who can read the fleet (#91); to anyone else it does not exist.
-  const mine = (c: any) => (visible === null || visible.includes(c.id)) && !fleetCompanyDenied(access as AccessContext, c.holding_type)
+  const mine = (c: any) => (visible === null || visible.includes(c.id)) && !fleetCompanyDenied(access as AccessContext, c.holding_type, need)
   return resolveAnyCompany(admin, fundId, ref, mine, visible)
 }
 
@@ -331,7 +333,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   submit_company_update: async ({ admin, fundId, userId, access, origin }: AgentToolContext, input: any) =>
     submitCompanyUpdate(
-      { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access) },
+      { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access, 'write') },
       input,
     ),
 
@@ -339,7 +341,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
     companyUpdateStatus(admin, fundId, jobRecordId('company_update', String(input?.job_id ?? '')), await visibleCompanyIds(admin, access), origin),
 
   record_metric_value: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     const metric = await resolveMetric(admin, fundId, company.id, String(input?.metric ?? ''))
     const period = parseMetricPeriod(input?.period)
     if (!period) throw new Error(`Couldn't read the period "${input?.period ?? ''}". Use "Q3 2026", "Sep 2026" or "FY2025".`)
@@ -390,7 +392,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   add_company_note: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     if (!userId) throw new Error('A note needs a person behind the credential.')
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     let vehicleId: string | null = null
     if (typeof input?.vehicle === 'string' && input.vehicle.trim()) {
       const { data: v } = await (admin as any).from('fund_vehicles').select('id').eq('fund_id', fundId).ilike('name', input.vehicle.trim()).maybeSingle()

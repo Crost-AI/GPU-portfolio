@@ -23,7 +23,7 @@ export function ledgerEffectText(input: RecordInvestmentInput): string {
  * write happens only when a human approves, via `executeRecordInvestment`.
  */
 export async function previewRecordInvestment(deps: ActionDeps, input: RecordInvestmentInput): Promise<PreviewResult> {
-  const c = await resolveCompany(deps.admin, deps.fundId, input.company, deps.access)
+  const c = await resolveCompany(deps.admin, deps.fundId, input.company, deps.access, 'write')
   // The same entity rule the write applies — refused when staged, not only when approved.
   const writeNames = (await entityScopeFor(deps.admin, deps.access)).vehicleNames
   const denied = groupWriteDenial(writeNames, input?.vehicle ?? null)

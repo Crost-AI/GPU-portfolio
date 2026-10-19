@@ -87,7 +87,7 @@ async function resolveEntity(deps: ActionDeps, tool: AgentTool, input: Record<st
   // linked to one of their entities; resolveCompany throws otherwise. The approver's access is
   // checked again when the call runs.
   if (typeof input.company === 'string' && input.company.trim()) {
-    await resolveCompany(deps.admin, deps.fundId, input.company, deps.access)
+    await resolveCompany(deps.admin, deps.fundId, input.company, deps.access, 'write')
     return null
   }
   // A file for an email (add_email_attachment): the stager's when the email is an inbound deal they
