@@ -277,6 +277,33 @@ describe('declareDistribution: distributable_cash', () => {
     expect(legs).toEqual([['a', 108_709.77], ['b', 47_343.1], ['mgr', -F1.y3Cents.carry]])
   })
 
+  it('two investors: lines moved between them at the same total are refused; the exact preview lines go through', async () => {
+    const engine = engineF1()
+    s.postings = postingsBefore(2, engine).flatMap(p => p.lpEntityId !== 'lp' ? [p] : [
+      { ...p, lpEntityId: 'a', amount: roundTo(p.amount * 1_000_000 / CAPITAL) },
+      { ...p, lpEntityId: 'b', amount: roundTo(p.amount - roundTo(p.amount * 1_000_000 / CAPITAL)) },
+    ])
+    const { m, rpc } = admin()
+    const input = await y3Input(m, 'moved')
+    const [a, b] = input.lines
+    const moved = { ...input, lines: [{ ...a, amount: roundTo(a.amount - 100) }, { ...b, amount: roundTo(b.amount + 100) }] }
+    expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', moved)).toEqual({ error: 'The investor lines do not match the waterfall', code: 'WATERFALL_MISMATCH' })
+    expect(s.entries).toEqual([])
+    expect(m.tables.distributions).toEqual([])
+    expect(rpc).not.toHaveBeenCalled()
+    expect(await declareDistribution(m.admin, 'f', 'GPU I', 'u', input)).not.toHaveProperty('error')
+    expect(s.entries.map(e => e.sourceType)).toEqual(['distribution', 'carry_distribution', 'carried_interest'])
+  })
+
+  it('freezes the server tiers, not the body\'s: tiers.preferred = 1 is stored as the waterfall\'s pref', async () => {
+    s.postings = postingsBefore(2, engineF1())
+    const { m } = admin()
+    const input = await y3Input(m, 'tiers')
+    const out = await declareDistribution(m.admin, 'f', 'GPU I', 'u', { ...input, tiers: { ...input.tiers, preferred: 1, returnOfCapital: 2, carry: 3 } })
+    expect(out).not.toHaveProperty('error')
+    expect(m.tables.distributions[0]).toMatchObject({ wf_preferred: F1.y3Cents.pref, wf_return_of_capital: F1.y3Cents.roc, wf_carry: F1.y3Cents.carry, wf_catch_up: 0 })
+  })
+
   it.each<[string, (i: any) => any]>([
     ['carry lines to someone who is not a recipient', i => ({ ...i, carryLines: [{ lpEntityId: 'lp2', amount: i.carryLines[0].amount }] })],
     ['carry lines that do not total the waterfall', i => ({ ...i, carryLines: [{ lpEntityId: 'mgr', amount: roundTo(i.carryLines[0].amount + 0.01) }] })],

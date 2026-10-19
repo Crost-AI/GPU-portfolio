@@ -342,10 +342,11 @@ function cashCarryMismatch(
   contingencyByDate: Map<string, number>,
   terms: VehicleCarryTerms,
   input: DeclareDistributionInput,
+  perLp: Map<string, number>,
   perRecipient: Map<string, number>,
   declaredTotal: number,
   carryTotal: number,
-): { cash?: CashSplitExtras } | CashRefusal {
+): { cash?: CashSplitExtras; tiers: WaterfallTiers } | CashRefusal {
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
   for (const id of Array.from(perRecipient.keys())) {
     if (!recipientIds.has(id)) return { error: 'Carry lines can only go to the vehicle\'s profit-share recipients', code: 'WATERFALL_MISMATCH' }
@@ -357,7 +358,15 @@ function cashCarryMismatch(
   const split = splitDistribution({
     total, terms, ...h, asOf: input.distributionDate, contingencyReturn: input.cash?.contingencyReturn ?? 0,
   })
-  return roundCents(split.tiers.toGP) === carryTotal ? { cash: split.cash } : { error: 'The carry lines do not match the waterfall', code: 'WATERFALL_MISMATCH' }
+  if (roundCents(split.tiers.toGP) !== carryTotal) return { error: 'The carry lines do not match the waterfall', code: 'WATERFALL_MISMATCH' }
+  // Every investor line, to the cent: the realised entry and the register both rest on the split, so
+  // lines moved between investors at the same total are as wrong as a wrong total.
+  const cents = (n: number) => Math.round(roundCents(n) * 100)
+  const expected = new Map(split.lines.filter(l => cents(l.amount) !== 0).map(l => [l.lpEntityId, cents(l.amount)]))
+  const declared = new Map(Array.from(perLp.entries()).filter(([, v]) => cents(v) !== 0).map(([id, v]) => [id, cents(v)] as [string, number]))
+  const same = expected.size === declared.size && Array.from(expected.entries()).every(([id, c]) => declared.get(id) === c)
+  if (!same) return { error: 'The investor lines do not match the waterfall', code: 'WATERFALL_MISMATCH' }
+  return { cash: split.cash, tiers: split.tiers }
 }
 
 /**
@@ -478,6 +487,7 @@ export async function declareDistribution(
     // and the investors' stays overstated. Worked out before anything is written.
     let realised: Map<string, number> | null = null
     let serverCash: CashSplitExtras | null = null
+    let serverTiers: WaterfallTiers | null = null
     const statesCash = input.available != null || input.reserve != null
     if (perRecipient.size > 0 || cash || statesCash) {
       let terms: VehicleCarryTerms
@@ -501,11 +511,14 @@ export async function declareDistribution(
         } catch (e) {
           return { error: `The distribution history could not be read: ${(e as { message?: string })?.message ?? String(e)}` }
         }
-        const checked = cashCarryMismatch(postings, contingencyByDate, terms, input, perRecipient, declaredTotal, carryTotal)
+        const checked = cashCarryMismatch(postings, contingencyByDate, terms, input, perLp, perRecipient, declaredTotal, carryTotal)
         if ('error' in checked) return checked
         // What the register freezes for the notice is the server's own waterfall, not the
         // request's: the body's cash is accepted for compatibility and ignored here.
-        serverCash = checked.cash ?? null
+        if (splitMethod === 'waterfall') {
+          serverCash = checked.cash ?? null
+          serverTiers = checked.tiers
+        }
         if (perRecipient.size > 0) {
           const plan = realisedCarryPlan(postings, terms, perRecipient, input.distributionDate)
           if ('error' in plan) return plan
@@ -574,10 +587,12 @@ export async function declareDistribution(
         journal_entry_id: entryId ?? carryEntryId,
         carry_journal_entry_id: carryEntryId,
         split_method: splitMethod,
-        wf_return_of_capital: tiers?.returnOfCapital ?? null,
-        wf_preferred: tiers?.preferred ?? null,
-        wf_catch_up: tiers?.catchUp ?? null,
-        wf_carry: tiers?.carry ?? null,
+        // A distributable-cash declaration the guard checked freezes the server's tiers; every other
+        // declaration (a fund's included) keeps the tiers it was given.
+        wf_return_of_capital: (serverTiers ?? tiers)?.returnOfCapital ?? null,
+        wf_preferred: (serverTiers ?? tiers)?.preferred ?? null,
+        wf_catch_up: (serverTiers ?? tiers)?.catchUp ?? null,
+        wf_carry: (serverTiers ?? tiers)?.carry ?? null,
         // distributable_cash only; absent keys leave every other vehicle's row as it was written.
         ...(carryRealizedEntryId ? { carry_realized_journal_entry_id: carryRealizedEntryId } : {}),
         ...((serverCash ?? cash) ? {
