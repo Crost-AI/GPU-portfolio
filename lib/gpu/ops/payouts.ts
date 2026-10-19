@@ -147,13 +147,14 @@ export async function matchPayout(
   }
 
   const mine = token
-  // Release: settle FIRST, and only if that still held do anything to the ref this holder owns —
-  // remove a draft under it (never a posted entry). A posted entry keeps the claim (`keep`).
+  // Release, all inside the owned section: renew the lease (still the holder?), remove the draft
+  // under the ref this holder owns (never a posted entry), and only then hand the payout back. Once
+  // the claim is released nothing here touches the ref: a new match may already hold it.
   const release = async (error: string) => {
-    if (await settleClaim(admin, PAYOUTS, scope, payout!.id, mine, { status: 'expected', bank_transaction_id: null, journal_entry_id: null })) {
-      const left = await loadEntry()
-      if (left?.status === 'draft') await (admin as any).from('journal_entries').delete().eq('id', left.id).eq('fund_id', fundId).eq('status', 'draft')
-    }
+    if (!(await renewClaim(admin, PAYOUTS, scope, payout!.id, mine))) return { error }
+    const left = await loadEntry()
+    if (left?.status === 'draft') await (admin as any).from('journal_entries').delete().eq('id', left.id).eq('fund_id', fundId).eq('status', 'draft')
+    await settleClaim(admin, PAYOUTS, scope, payout!.id, mine, { status: 'expected', bank_transaction_id: null, journal_entry_id: null })
     return { error }
   }
   const lostClaim = { error: 'This match lost its claim to another request; nothing more was booked. Try again shortly.' }

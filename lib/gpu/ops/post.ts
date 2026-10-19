@@ -185,8 +185,12 @@ export async function postEarnings(
       }
       throw e
     }
-    // Lost the claim to a takeover after booking: the taker completes it from the entry.
-    if (!(await settleClaim(admin, EARNINGS, scope, row.id, holder.token, { status: 'posted', journal_entry_id: entryId }))) return fail(busy(row))
+    // Lost the claim after booking: if the request that took it over already finished the row with
+    // OUR entry, that is success; otherwise the taker completes it from the entry.
+    if (!(await settleClaim(admin, EARNINGS, scope, row.id, holder.token, { status: 'posted', journal_entry_id: entryId }))) {
+      const [now] = await loadRows(admin, fundId, ctx.vehicleId, [row.id])
+      if (now?.status !== 'posted' || now.journal_entry_id !== entryId) return fail(busy(row))
+    }
     posted.push({ id: row.id, entryId })
   }
   return { posted, reversed }
@@ -285,15 +289,20 @@ async function reverseSuperseded(
     if (error) throw error
     return ((standing as any[]) ?? []).length ? { error: replaced(old), keep: false } : {}
   }
-  if (old.status !== 'reversing') return { error: replaced(old), keep: false }
+  // Lost the posted -> reversing race and the row is not (yet) reversing: in progress elsewhere.
+  if (old.status !== 'reversing') return { error: reversingBusy(old), keep: false }
 
   const ref = old.journal_entry_id ? reversalRef(old.journal_entry_id) : null
   if (!token) {
     if (!isStale(old)) return { error: reversingBusy(old), keep: false }
     const evidence = ref ? await liveEntryByRef(admin, ctx, ref) : null
     if (evidence?.status === 'posted') {
-      if (await completeFromEvidence(admin, EARNINGS, scope, old, { status: 'reversed' })) return { reversalId: evidence.id }
-      return { error: reversingBusy(old), keep: false }
+      if (!(await completeFromEvidence(admin, EARNINGS, scope, old, { status: 'reversed' }))) return { error: reversingBusy(old), keep: false }
+      // The link the holder path sets: without it the journal would allow a second reverse.
+      const { error: linkError } = await (admin as any).from('journal_entries').update({ reversed_by: evidence.id })
+        .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('id', old.journal_entry_id!)
+      if (linkError) throw linkError
+      return { reversalId: evidence.id }
     }
     if (evidence) return { error: inProgress(evidence).error, keep: false }
     token = await takeOver(admin, EARNINGS, scope, old)

@@ -56,13 +56,22 @@ export function isStale(row: Pick<ClaimedRow, 'claimed_at'>, at = Date.now()): b
   return !row.claimed_at || at - Date.parse(row.claimed_at) > CLAIM_LEASE_MS
 }
 
-/** Take over an expired claim, conditional on the token it still carries. Returns my new token, or null. */
+/**
+ * The row as it was when it was judged expired: status, token AND lease timestamp. A holder that
+ * renewed in the meantime kept its token but moved claimed_at, so the stale snapshot no longer
+ * matches and the update touches nothing.
+ */
+const observed = (row: ClaimedRow) => (q: any) => {
+  let out = row.claim_token ? q.eq('claim_token', row.claim_token) : q.is('claim_token', null)
+  out = row.claimed_at ? out.eq('claimed_at', row.claimed_at) : out.is('claimed_at', null)
+  return out.eq('status', row.status)
+}
+
+/** Take over an expired claim, conditional on the observed token and lease. Returns my new token, or null. */
 export async function takeOver(admin: SupabaseClient, table: ClaimTable, scope: ClaimScope, row: ClaimedRow): Promise<string | null> {
   if (!isStale(row)) return null
   const token = randomUUID()
-  const won = await update(admin, table, scope, row.id,
-    q => (row.claim_token ? q.eq('claim_token', row.claim_token) : q.is('claim_token', null)).eq('status', row.status),
-    { claim_token: token, claimed_at: now() })
+  const won = await update(admin, table, scope, row.id, observed(row), { claim_token: token, claimed_at: now() })
   return won ? token : null
 }
 
@@ -79,13 +88,11 @@ export async function renewClaim(admin: SupabaseClient, table: ClaimTable, scope
 }
 
 /**
- * Complete an EXPIRED claim from durable evidence: only while the row is still in `inProgress` and
- * still carries the token observed together with that evidence. False = someone else moved it.
+ * Complete an EXPIRED claim from durable evidence: only while the row still carries the status,
+ * token and lease timestamp observed together with that evidence. False = someone else moved it.
  */
 export async function completeFromEvidence(
   admin: SupabaseClient, table: ClaimTable, scope: ClaimScope, row: ClaimedRow, values: Record<string, unknown>,
 ): Promise<boolean> {
-  return update(admin, table, scope, row.id,
-    q => (row.claim_token ? q.eq('claim_token', row.claim_token) : q.is('claim_token', null)).eq('status', row.status),
-    { ...values, claim_token: null, claimed_at: null })
+  return update(admin, table, scope, row.id, observed(row), { ...values, claim_token: null, claimed_at: null })
 }
