@@ -212,11 +212,6 @@ export function capexSubmitter(fetcher: Fetcher, assetId: string, newKey: () => 
 export interface EventForm { kind: GpuEventKind; starts_at: string; ends_at: string; gpus_affected: string; cause: string }
 
 /**
- * A `datetime-local` value ('YYYY-MM-DDTHH:mm', the user's wall clock) as a UTC ISO timestamp. A bare
- * date is the start of that local day. The event log stores instants, so a two-hour outage stays two
- * hours whatever the time zone.
- */
-/**
  * Is `s` a real local date or date-time as a `datetime-local` (or date) input gives it? Checked by
  * round trip, so 2026-02-30T10:00 (which Date would roll into March) is refused, not shifted.
  */
@@ -236,13 +231,23 @@ export function isValidLocalDateTime(s: string): boolean {
 export function eventFormError(f: Pick<EventForm, 'starts_at' | 'ends_at'>): string | null {
   if (!isValidLocalDateTime(f.starts_at)) return 'Enter a valid start date and time.'
   if (f.ends_at.trim() && !isValidLocalDateTime(f.ends_at)) return 'Enter a valid end date and time, or leave it blank while ongoing.'
-  if (f.ends_at.trim() && new Date(f.ends_at) < new Date(f.starts_at)) return 'The end must be on or after the start.'
+  // Both read as local instants: a bare date would otherwise parse as UTC midnight against a local time.
+  if (f.ends_at.trim() && localDate(f.ends_at) < localDate(f.starts_at)) return 'The end must be on or after the start.'
   return null
 }
 
+/**
+ * A `datetime-local` value ('YYYY-MM-DDTHH:mm', the user's wall clock) as a UTC ISO timestamp. A bare
+ * date is the start of that local day. The event log stores instants, so a two-hour outage stays two
+ * hours whatever the time zone.
+ */
 export function localToUtc(s: string): string {
-  const local = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s
-  return new Date(local).toISOString()
+  return localDate(s).toISOString()
+}
+
+/** A date or `datetime-local` value as the local instant it names; a bare date is local midnight. */
+function localDate(s: string): Date {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s)
 }
 
 /** A stored instant as the user's wall clock, 'YYYY-MM-DD HH:mm'. */

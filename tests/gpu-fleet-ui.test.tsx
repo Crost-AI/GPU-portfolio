@@ -634,6 +634,9 @@ describe('events', () => {
     expect(eventFormError({ starts_at: '2026-03-01T12:00', ends_at: '2026-03-01T10:00' })).toBe('The end must be on or after the start.')
     expect(eventFormError({ starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T12:00' })).toBeNull()
     expect(eventFormError({ starts_at: '2026-03-01', ends_at: '' })).toBeNull()
+    // A bare date is local midnight on both sides, never UTC midnight against a local time.
+    expect(eventFormError({ starts_at: '2026-03-01', ends_at: '2026-03-01T00:30' })).toBeNull()
+    expect(eventFormError({ starts_at: '2026-03-01T00:30', ends_at: '2026-03-01' })).toBe('The end must be on or after the start.')
   })
 
   it('the event form checks before it converts or goes busy, and always leaves busy', () => {
