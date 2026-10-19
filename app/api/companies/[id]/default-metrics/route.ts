@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 import { listedHoldingType, seedCompanyFromDefaults, templateKindFor } from '@/lib/metrics/seed-default-metrics'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 // The fund's default metric profile, seen from ONE company: which defaults it already tracks,
 // which it has opted out of, and which are still available to seed. Powers the company page's
@@ -21,6 +22,9 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
   const gate = await assertReadAccess(admin, user.id)
@@ -65,6 +69,9 @@ export async function POST(_req: NextRequest, props: { params: Promise<{ id: str
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
   const gate = await assertWriteAccess(admin, user.id)

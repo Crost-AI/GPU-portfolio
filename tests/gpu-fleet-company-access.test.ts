@@ -129,3 +129,27 @@ describe('refuseFleetCompany / fleetCompanyDenied', () => {
     expect(fleetCompanyDenied(PORTFOLIO_NO_FLEET(), null)).toBe(false)
   })
 })
+
+describe('service-role paths outside the company routes', () => {
+  it('the agent resolves and suggests the fleet company only to a fleet reader', async () => {
+    const { resolveCompany } = await import('@/lib/agent/portfolio-tools')
+    const denied = PORTFOLIO_NO_FLEET()
+    await expect(resolveCompany(s.m.admin, 'f', 'fleet', denied)).rejects.toThrow(/No company named "fleet" in this fund/)
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet — GPU I', denied)).rejects.toThrow(/^No company named/)
+    // Not even as a "did you mean" suggestion.
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet', denied)).rejects.toThrow('No company named "Fleet" in this fund.')
+    expect((await resolveCompany(s.m.admin, 'f', 'Acme', denied)).id).toBe('vc')
+    expect((await resolveCompany(s.m.admin, 'f', 'Fleet — GPU I', FLEET_READER())).id).toBe('fleet')
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet', FLEET_READER())).rejects.toThrow(/Did you mean: Fleet — GPU I\?/)
+  })
+
+  it('the shared metric writer (Analyst, metric-values route) refuses a fleet metric without fleet write', async () => {
+    const { writeMetricValue } = await import('@/lib/pending-actions/metric-value')
+    const input = { companyId: 'fleet', metricId: 'm-fleet', period_label: '2026-09', period_year: 2026, period_month: 9, value: 1 }
+    s.ctx = FLEET_READER()
+    await expect(writeMetricValue({ admin: s.m.admin, fundId: 'f', userId: 'u', access: s.ctx }, input)).rejects.toThrow('Metric not found in this fund')
+    expect(s.m.tables.metric_values.find((v: any) => v.id === 'v-fleet').value_number).toBe(25_920)
+    const vc = await writeMetricValue({ admin: s.m.admin, fundId: 'f', userId: 'u', access: s.ctx }, { ...input, companyId: 'vc', metricId: 'm-vc', period_month: 10 })
+    expect(vc.mode).toBe('insert')
+  })
+})

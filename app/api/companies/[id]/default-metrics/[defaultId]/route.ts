@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 // Toggle a company's opt-out of a single fund default. `{ excluded: true }` writes an exclusion row
 // (so seed/sync skip it here); `{ excluded: false }` clears it. Neither creates or deletes a metric
@@ -16,6 +17,9 @@ export async function PATCH(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
   const gate = await assertWriteAccess(admin, user.id)

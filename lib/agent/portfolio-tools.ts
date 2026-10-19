@@ -15,6 +15,7 @@ import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-
 import { getUpdates } from '@/lib/company-updates/analyst'
 import type { AccessContext } from '@/lib/access/effective'
 import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
+import { fleetCompanyDenied } from '@/lib/access/fleet-company'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
@@ -45,7 +46,9 @@ export async function resolveCompany(
 ): Promise<any> {
   if (!ref) throw new Error('A company id or name is required')
   const visible = await visibleCompanyIds(admin, access)
-  const mine = (c: any) => visible === null || visible.includes(c.id)
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company resolves — and is suggested — only to a caller
+  // who can read the fleet (#91); to anyone else it does not exist.
+  const mine = (c: any) => (visible === null || visible.includes(c.id)) && !fleetCompanyDenied(access as AccessContext, c.holding_type)
   return resolveAnyCompany(admin, fundId, ref, mine, visible)
 }
 
@@ -66,7 +69,7 @@ async function resolveAnyCompany(
 
   // Scoped in the query, so a scoped caller still gets five suggestions of their own.
   const { data: fuzzy } = await filterByCompany((admin as any)
-    .from('companies').select('id, name').eq('fund_id', fundId).ilike('name', `%${ref}%`), visible, { column: 'id' }).limit(5)
+    .from('companies').select('id, name, holding_type').eq('fund_id', fundId).ilike('name', `%${ref}%`), visible, { column: 'id' }).limit(5)
   const near = ((fuzzy as any[]) ?? []).filter(mine).map(c => c.name)
   throw new Error(
     near.length > 0

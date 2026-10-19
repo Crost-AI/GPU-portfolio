@@ -39,7 +39,7 @@ export async function refuseFleetCompany(
   }
   if (!companyId) return null
   const { data: company, error } = await (admin as any).from('companies').select('fund_id, holding_type').eq('id', companyId).maybeSingle()
-  if (error) return NextResponse.json({ error: 'Internal error' }, { status: 500 })
+  if (error) return NextResponse.json({ error: 'Could not read the company. Try again.' }, { status: 500 })
   if (!company || company.holding_type !== FLEET_HOLDING_TYPE) return null
 
   const { data: member } = await (admin as any).from('fund_members').select('role')

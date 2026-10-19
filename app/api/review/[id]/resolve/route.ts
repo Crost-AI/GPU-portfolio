@@ -11,6 +11,7 @@ import { dbError } from '@/lib/api-error'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { approveFundReview, type FundApproval } from '@/lib/portfolio/fof-reviews'
 import { isFundReviewType, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 type ReviewRow = Pick<
   ParsingReview,
@@ -167,6 +168,12 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
 
   const valueToWrite =
     resolution === 'manually_corrected' ? resolved_value! : review.extracted_value
+
+  // ── GPU fleet (P3) ── Writing a fleet company's metric needs fleet write (#91): not found otherwise.
+  if (!isFund && shouldWrite && review.company_id) {
+    const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: review.company_id }, 'write')
+    if (fleetDenied) return fleetDenied
+  }
 
   if (!isFund && shouldWrite && review.metric_id && review.company_id && valueToWrite) {
     // Get period info from the email's stored Claude response
