@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Chats approve staged changes in the conversation by default
+- **Ask, then approve, in the chat.** A chat connection (Claude or ChatGPT over OAuth) is now told at `initialize`, and in `stage_run`'s description, to show the person a staged change, ask them to approve it there, and call `approve_action` on their explicit yes. The host's own approve prompt (from `approve_action`'s destructive hint) is the confirmation. The approval link is the fallback, for changes `approve_action` refuses: admin-only changes a member staged, and anything that must be confirmed in the app. The server instructions used to say a chat could not approve what it staged, which contradicted the tool results and the service, so assistants sent people to the app.
+- **Scripts unchanged.** A static key is still told to hand over the link, since it cannot approve what it staged.
+
 ### Bank rows from chat: ignore a sweep, re-point a split draft
 - **`ignore_bank_transaction`.** The bank page's Ignore, for rows that are not posted: a money-market reinvestment, a sweep or a duplicate. The draft entry is voided and the row set aside. A posted row is refused, since voiding a posted entry needs a reason and stays on the bank page. A row whose entry belongs to an investment is only unlinked, as on the page. Staged from chat (`ignoreBankTransaction` in `lib/accounting/bank-actions.ts`).
 - **`set_bank_transaction_account` can replace a split.** A draft spread over several accounts (a distribution allocated pro rata to every partner when it went to one) used to be refused with "edit it in the Journal". With `replaceSplit: true` the split is replaced by one posting to the chosen account, drafts only. The new lines go in before the old ones come out, so the entry balances at every step.
