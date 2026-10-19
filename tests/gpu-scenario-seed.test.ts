@@ -41,7 +41,8 @@ const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounti
 const ACCESS: AccessContext = { fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, features: FEATURES, grants: { accounting: 'write' }, defaults: {} }
 
 /** A memory database whose forecast_save / forecast_publish do what the SQL does to the rows these tests read. */
-function books() {
+function books(failRulesSaveOf: string | null = null) {
+  let failing = failRulesSaveOf
   const written = new Set<string>()
   const { admin, tables } = memoryAdmin({
     chart_of_accounts: GPU_SPV_CHART.map(a => ({ id: `acct-${a.code}`, fund_id: 'f1', vehicle_id: 'v1', code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, is_active: true })),
@@ -52,6 +53,7 @@ function books() {
     const plan = tables.forecast_plans.find(p => p.id === args.p_plan_id)!
     if (name === 'forecast_save') {
       plan.status ??= 'active' // the column default
+      if (failing && plan.name === failing && args.p_rule_upserts.length) { failing = null; return { data: null, error: { message: 'connection reset' } } }
       for (const [k, v] of Object.entries(args.p_plan_patch ?? {})) plan[k] = v
       for (const r of args.p_rule_upserts) {
         tables.forecast_rules = tables.forecast_rules.filter(x => !(x.plan_id === plan.id && x.account_id === r.account_id))
@@ -125,6 +127,20 @@ describe('createPitchScenarios', () => {
     expect(second.plans).toEqual(first.plans)
     expect(b.tables.forecast_plans).toHaveLength(6)
     expect(b.rpc.mock.calls.length).toBe(writes)
+  })
+
+  it('finishes a run that stopped half-way: only the missing scenarios are created, none twice', async () => {
+    const b = books('Balanced')
+    await expect(createPitchScenarios(ctx(b.admin), 'GPU SPV I')).rejects.toBeTruthy()
+    // Base case done; Balanced inserted with its fleet but its rules never saved.
+    expect(b.tables.forecast_plans.map(p => p.name)).toEqual(['Base case', 'Balanced'])
+    expect(b.tables.forecast_plans.every(p => p.fleet != null)).toBe(true)
+    const again = await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
+    expect(again.created).toBe(true)
+    expect(b.tables.forecast_plans.map(p => p.name).sort()).toEqual(PITCH_ORDER.map(id => PACK_SCENARIOS[id].label).sort())
+    // Base was published once, by the first run.
+    expect(b.rpc.mock.calls.filter(c => c[0] === 'forecast_publish')).toHaveLength(1)
+    expect(again.baseVersionId).toBeNull()
   })
 
   it('books no journal entries (the #86 ground rule): forecast_* only, through forecast_save and forecast_publish', async () => {

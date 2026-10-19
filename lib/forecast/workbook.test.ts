@@ -187,7 +187,16 @@ describe('a GPU SPV fleet plan adds its scenario sheets to the same workbook', (
     for (const col of ['B', 'C', 'D', 'E', 'F', 'G']) expect(detail[`${col}${carry}`].v).toBe('—')
   })
 
-  it('a plan without a fleet keeps the workbook as it was', () => {
-    expect(build().SheetNames).toEqual(['Summary', 'Monthly', 'Assumptions'])
+  it('a plan without a fleet keeps the workbook as it was, sheet for sheet', () => {
+    const plain = build()
+    expect(plain.SheetNames).toEqual(['Summary', 'Monthly', 'Assumptions'])
+    const withNull = buildForecastWorkbook({
+      monthly: fixture(), rules, interval: 'month', fleet: null,
+      accounts: lines.map(l => ({ id: l.accountId, code: l.code, name: l.name })),
+      meta: { fundName: 'Test Fund', generatedAt: '2026-10-11T00:00:00Z' },
+    })
+    expect(withNull.Sheets).toEqual(plain.Sheets)
+    // And the fleet build's own forecast sheets are those same sheets.
+    for (const name of plain.SheetNames) expect(withFleet(true).Sheets[name]).toEqual(plain.Sheets[name])
   })
 })
