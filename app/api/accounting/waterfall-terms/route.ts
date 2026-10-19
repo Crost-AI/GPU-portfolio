@@ -17,6 +17,7 @@ import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { loadCarryTerms } from '@/lib/accounting/carry'
 import { loadEntityNames } from '@/lib/accounting/load'
 import { dbError } from '@/lib/api-error'
+import { validateCashTerms } from '@/lib/gpu/waterfall'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -69,8 +70,8 @@ export async function PUT(req: NextRequest) {
   if (!vehicleId) return NextResponse.json({ error: `Unknown vehicle "${group}".` }, { status: 400 })
 
   const kind = body?.kind
-  if (!['none', 'straight', 'american', 'european'].includes(kind)) {
-    return NextResponse.json({ error: 'kind must be none, straight, american, or european.' }, { status: 400 })
+  if (!['none', 'straight', 'american', 'european', 'distributable_cash'].includes(kind)) {
+    return NextResponse.json({ error: 'kind must be none, straight, american, european, or distributable_cash.' }, { status: 400 })
   }
 
   const num = (v: any, fallback = 0) => {
@@ -121,6 +122,27 @@ export async function PUT(req: NextRequest) {
     if (foreign.length > 0) return NextResponse.json({ error: 'A carry recipient is not in this fund.' }, { status: 400 })
   }
 
+  // ── GPU fleet (P2) ── A GPU SPV's waterfall (plan §3.2): pref on unreturned capital, simple, no
+  // catch-up. Stored terms are dated, so the scenario engine's 'periodic' day count is refused.
+  let cashColumns: Record<string, unknown> = {}
+  if (kind === 'distributable_cash') {
+    const prefBasis = body?.prefBasis ?? 'unreturned'
+    const prefDayCount = body?.prefDayCount ?? '30_360'
+    if (prefDayCount === 'periodic') {
+      return NextResponse.json({ error: 'The periodic day count is for scenarios; choose 30_360 (30E/360) or act_365.' }, { status: 400 })
+    }
+    const rocLpShare = body?.rocLpShare == null ? 1 : Number(body.rocLpShare)
+    const invalid = validateCashTerms({
+      prefRate, dayCount: String(prefDayCount), rocLpShare, carryRate,
+      recipients: recipients.length > 0 ? recipients : gpEntityId ? [{ lpEntityId: gpEntityId, pct: 100 }] : [],
+      catchupRate: body?.catchupRate == null ? undefined : Number(body.catchupRate),
+      prefCompounds: body?.prefCompounds === true,
+      prefBasis: String(prefBasis),
+    })
+    if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
+    cashColumns = { pref_basis: 'unreturned', pref_day_count: prefDayCount, roc_lp_share: rocLpShare, catchup_rate: 1, pref_compounds: false }
+  }
+
   // Keep gp_entity_id meaningful as the single-recipient fallback: the sole recipient when there
   // is exactly one, otherwise the explicit legacy value (or null).
   const singleGp = recipients.length === 1 ? recipients[0].lpEntityId : recipients.length === 0 ? gpEntityId : null
@@ -138,6 +160,7 @@ export async function PUT(req: NextRequest) {
         pref_compounds: body?.prefCompounds !== false,
         gp_entity_id: singleGp,
         carry_recipients: recipients.length > 0 ? recipients : null,
+        ...cashColumns,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'fund_id,vehicle_id' }

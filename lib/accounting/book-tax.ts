@@ -294,6 +294,9 @@ export function carryOnUnrealizedForYear(
 ): Map<string, number> {
   const out = new Map<string, number>()
   if (terms.kind === 'none' || terms.carryRate <= 0 || terms.recipients.length === 0) return out
+  // A GPU SPV books profit share only as it is paid (Karl, R4): none of it rests on an unrealized
+  // mark, so there is nothing to reverse, and carryTarget is never asked about this kind.
+  if (terms.kind === 'distributable_cash') return out
   const recipientIds = new Set(terms.recipients.map(r => r.lpEntityId))
 
   // `borne` is each partner's share of the prior year-end target: the carry it already bears on

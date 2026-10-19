@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { TABLE_RULES } from '@/lib/access/table-domains'
 
 // ── GPU fleet (P1) ── The same guardrail as tax-data-api-grants.test.ts, for the fleet register.
 //
@@ -22,6 +23,8 @@ const SERVICE_ROLE_ONLY = [
   'gpu_import_runs',
   'gpu_earnings',
   'gpu_payouts',
+  // ── GPU fleet (P2) ── fee terms: read by the accounting-gated fee-terms route and by the close.
+  'vehicle_fee_terms',
 ]
 
 function migrationFiles(): { name: string; sql: string }[] {
@@ -126,5 +129,33 @@ describe('operations entries are booked once', () => {
   it('ships manual and csv sources only, and no marketplace account tables (decision Q1)', () => {
     expect(sql()).toContain("check (source in ('manual', 'csv'))")
     expect(sql()).not.toMatch(/marketplace_accounts|marketplace_listings/)
+  })
+})
+
+describe('the registry agrees', () => {
+  it.each(SERVICE_ROLE_ONLY)('%s is a service-scope table in TABLE_RULES', table => {
+    expect(TABLE_RULES[table]?.scope).toBe('service')
+  })
+})
+
+describe('void_intercompany_charge (GPU fee true-up)', () => {
+  const sql = readFileSync(join(MIGRATIONS, '20261019200000_distributable_cash_waterfall.sql'), 'utf8')
+  const fn = sql.slice(sql.indexOf('create or replace function public.void_intercompany_charge'), sql.indexOf('grant execute on function public.void_intercompany_charge'))
+
+  it('locks the charge and refuses anything settled before touching the books', () => {
+    expect(fn).toMatch(/for update;/)
+    expect(fn).toMatch(/c\.status <> 'accrued' or c\.from_settlement_entry_id is not null or c\.to_settlement_entry_id is not null/)
+    expect(fn.indexOf('raise exception')).toBeLessThan(fn.indexOf('update public.journal_entries'))
+  })
+
+  it('voids both entries, their generated allocations and the row in the one function', () => {
+    expect(fn).toContain('from public.journal_entry_allocations')
+    expect(fn).toContain('delete from public.journal_entry_allocation_skips')
+    expect(fn).toMatch(/update public\.intercompany_transactions\s+set status = 'void'/)
+  })
+
+  it('is executable by the service role only', () => {
+    expect(sql).toContain('revoke execute on function public.void_intercompany_charge(uuid, uuid) from public, anon, authenticated;')
+    expect(sql).toContain('grant execute on function public.void_intercompany_charge(uuid, uuid) to service_role;')
   })
 })

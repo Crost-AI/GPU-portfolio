@@ -405,7 +405,9 @@ async function loadConstructionActuals(
       distributedCapital: economics?.fund.distributions ?? 0,
       waterfall: economics && economics.fund.paidIn != null && economics.fund.distributions != null && economics.fund.nav != null ? {
         asOf: new Date().toISOString().slice(0, 10),
-        kind: carryTerms.kind,
+        // A GPU SPV's distributable-cash waterfall is not a fund construction projection; its
+        // forecast is the scenario engine's (lib/gpu), so this projection carries no carry for it.
+        kind: carryTerms.kind === 'distributable_cash' ? 'none' : carryTerms.kind,
         carryRate: carryTerms.carryRate,
         prefRate: carryTerms.prefRate,
         catchupRate: carryTerms.catchupRate,

@@ -199,6 +199,11 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/distributions': { domain: 'lp_capital' },
   'api/accounting/commitments': { domain: 'lp_capital' },
   'api/accounting/closings': { domain: 'lp_capital' },
+  // ── GPU fleet (P2) ──
+  // The carried-forward pref ledger shows each investor's unreturned capital and unpaid pref.
+  'api/accounting/pref-ledger': { domain: 'lp_capital' },
+  // A vehicle's management-fee terms (a GPU SPV's gross-revenue fee): the books' business.
+  'api/accounting/fee-terms': { domain: 'accounting' },
   // ── Tax: its own area, so a preparer can do the tax work without changing the books ──
   // `tax` requires reading the books (DOMAIN_META.tax.requires), and reading the books confers LP
   // capital, so the per-partner payloads below (tax forms, K-1 lines, state allocations) are

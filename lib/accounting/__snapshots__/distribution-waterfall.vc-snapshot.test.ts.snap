@@ -1,0 +1,627 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`VC splitDistribution output is unchanged > american on 0.07 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 0.02,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 0.05,
+      "lpEntityId": "b",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.17,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 0.07,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 0.07,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > american on 1000.01 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 333,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 666.01,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 1,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 50000.11,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 1000.01,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 1000.01,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > american on 123456.78 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 41111.15,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 82222.3,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 123.33,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 172456.88,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 123456.78,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 123456.78,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > american on 2000000.05 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 136586.35,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 136586.35,
+      "lpEntityId": "gp2",
+    },
+    {
+      "amount": 136627.33,
+      "lpEntityId": "gp3",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 529537.13,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 1059074.28,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 1588.61,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 409800.03,
+    "preferredPaid": 185604.46,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 185604.46,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 363398.91,
+    "catchUp": 46401.12,
+    "preferred": 136604.36,
+    "profitToLP": 1453595.66,
+    "returnOfCapital": 0,
+    "toGP": 409800.03,
+    "toLP": 1590200.02,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > european on 0.07 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 0.02,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 0.05,
+      "lpEntityId": "b",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.17,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 0.07,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 0.07,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > european on 1000.01 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 333,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 666.01,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 1,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 50000.11,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 1000.01,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 1000.01,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > european on 123456.78 1`] = `
+{
+  "carryLines": [],
+  "lines": [
+    {
+      "amount": 41111.15,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 82222.3,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 123.33,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 172456.88,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0,
+    "catchUp": 0,
+    "preferred": 123456.78,
+    "profitToLP": 0,
+    "returnOfCapital": 0,
+    "toGP": 0,
+    "toLP": 123456.78,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > european on 2000000.05 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 136586.35,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 136586.35,
+      "lpEntityId": "gp2",
+    },
+    {
+      "amount": 136627.33,
+      "lpEntityId": "gp3",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 529537.13,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 1059074.28,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 1588.61,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 409800.03,
+    "preferredPaid": 195506.88,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 0,
+    "preferredPaid": 49000.1,
+    "preferredTarget": 195506.88,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 360923.31,
+    "catchUp": 48876.72,
+    "preferred": 146506.78,
+    "profitToLP": 1443693.24,
+    "returnOfCapital": 0,
+    "toGP": 409800.03,
+    "toLP": 1590200.02,
+  },
+  "warnings": [
+    "The waterfall implies 0.00 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > straight on 0.07 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 0.01,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 0.01,
+      "lpEntityId": "gp2",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 0.02,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 0.03,
+      "lpEntityId": "b",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12250.05,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12250.03,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 0.02,
+    "catchUp": 0,
+    "preferred": 0,
+    "profitToLP": 0.05,
+    "returnOfCapital": 0,
+    "toGP": 0.02,
+    "toLP": 0.05,
+  },
+  "warnings": [
+    "The waterfall implies 12250.03 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > straight on 1000.01 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 83.33,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 83.33,
+      "lpEntityId": "gp2",
+    },
+    {
+      "amount": 83.34,
+      "lpEntityId": "gp3",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 249.75,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 499.51,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 0.75,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12500.03,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12250.03,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 250,
+    "catchUp": 0,
+    "preferred": 0,
+    "profitToLP": 750.01,
+    "returnOfCapital": 0,
+    "toGP": 250,
+    "toLP": 750.01,
+  },
+  "warnings": [
+    "The waterfall implies 12250.03 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > straight on 123456.78 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 10287.04,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 10287.04,
+      "lpEntityId": "gp2",
+    },
+    {
+      "amount": 10290.12,
+      "lpEntityId": "gp3",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 30833.36,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 61666.72,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 92.5,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 43114.23,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12250.03,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 30864.2,
+    "catchUp": 0,
+    "preferred": 0,
+    "profitToLP": 92592.58,
+    "returnOfCapital": 0,
+    "toGP": 30864.2,
+    "toLP": 92592.58,
+  },
+  "warnings": [
+    "The waterfall implies 12250.03 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;
+
+exports[`VC splitDistribution output is unchanged > straight on 2000000.05 1`] = `
+{
+  "carryLines": [
+    {
+      "amount": 166650,
+      "lpEntityId": "gp1",
+    },
+    {
+      "amount": 166650,
+      "lpEntityId": "gp2",
+    },
+    {
+      "amount": 166700.01,
+      "lpEntityId": "gp3",
+    },
+  ],
+  "lines": [
+    {
+      "amount": 499500.51,
+      "lpEntityId": "a",
+    },
+    {
+      "amount": 999001.03,
+      "lpEntityId": "b",
+    },
+    {
+      "amount": 1498.5,
+      "lpEntityId": "c",
+    },
+  ],
+  "method": "waterfall",
+  "stateAfter": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 512250.04,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "stateBefore": {
+    "contributedCapital": 1001000,
+    "gpCarryPaid": 12250.03,
+    "preferredPaid": 0,
+    "preferredTarget": 0,
+    "returnedCapital": 1001000,
+  },
+  "tiers": {
+    "carry": 500000.01,
+    "catchUp": 0,
+    "preferred": 0,
+    "profitToLP": 1500000.04,
+    "returnOfCapital": 0,
+    "toGP": 500000.01,
+    "toLP": 1500000.04,
+  },
+  "warnings": [
+    "The waterfall implies 12250.03 of carry paid to date from prior distributions, but the books show 10.00. Earlier distributions were split differently; review before declaring.",
+  ],
+}
+`;

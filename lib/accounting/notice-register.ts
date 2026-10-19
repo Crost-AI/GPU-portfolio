@@ -9,7 +9,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { callExtras, distributionDeductions } from './call-extras'
-import type { NoticeData, NoticeKind } from './notice-types'
+import { distributionTierLines, type NoticeData, type NoticeKind, type NoticeTiers } from './notice-types'
 import { lpCapitalSummary, listCapitalCalls } from './capital-calls'
 import { loadEntityNames } from './load'
 import { vehicleIdByName } from './vehicle-id'
@@ -39,7 +39,7 @@ export interface NoticeRegister {
   dueDate: string | null
   lines: NoticeLine[]
   /** The waterfall tiers, for a distribution declared through one. */
-  tiers: { returnOfCapital: number; preferred: number; lpTotal: number } | null
+  tiers: NoticeTiers | null
   /** Set when the register has a posted entry behind it (ledger vehicles). */
   posted: boolean
   /** True on a capital-tracking vehicle, where there is no entry to check. */
@@ -72,12 +72,12 @@ export async function loadNoticeRegister(
   } else {
     const { data } = await admin
       .from('distributions' as any)
-      .select('id, distribution_date, distribution_number, description, status, journal_entry_id, carry_journal_entry_id, wf_return_of_capital, wf_preferred, distribution_lines(id, lp_entity_id, amount, role, notice_document_id)')
+      .select('id, distribution_date, distribution_number, description, status, journal_entry_id, carry_journal_entry_id, carry_realized_journal_entry_id, wf_return_of_capital, wf_preferred, wf_contingency_return, wf_profit_lp, wf_pref_carried_forward, wf_unreturned_after, distribution_lines(id, lp_entity_id, amount, role, notice_document_id)')
       .eq('id', id).eq('fund_id', fundId).eq('vehicle_id', vehicleId)
       .maybeSingle()
     if (!data) return { error: 'Distribution not found on this vehicle', status: 404 }
     row = data
-    entryIds = [row.journal_entry_id, row.carry_journal_entry_id].filter(Boolean)
+    entryIds = [row.journal_entry_id, row.carry_journal_entry_id, row.carry_realized_journal_entry_id].filter(Boolean)
   }
 
   const rawLines: any[] = kind === 'capital_call' ? (row.capital_call_lines ?? []) : (row.distribution_lines ?? [])
@@ -126,7 +126,17 @@ export async function loadNoticeRegister(
     dueDate: kind === 'capital_call' ? (row.due_date ?? null) : null,
     lines,
     tiers: kind === 'distribution' && row.wf_return_of_capital != null
-      ? { returnOfCapital: Number(row.wf_return_of_capital), preferred: Number(row.wf_preferred ?? 0), lpTotal }
+      ? {
+          returnOfCapital: Number(row.wf_return_of_capital), preferred: Number(row.wf_preferred ?? 0), lpTotal,
+          ...(row.wf_unreturned_after != null ? {
+            cash: {
+              contingencyReturn: Number(row.wf_contingency_return ?? 0),
+              profitToLP: Number(row.wf_profit_lp ?? 0),
+              unreturnedAfter: Number(row.wf_unreturned_after),
+              prefCarriedForward: Number(row.wf_pref_carried_forward ?? 0),
+            },
+          } : {}),
+        }
       : null,
     posted,
     tracking: entryIds.length === 0,
@@ -242,11 +252,7 @@ export async function noticeDataFor(
       const taken = deductions?.get(line.lpEntityId) ?? []
       for (const d of taken) context.push({ label: `Less: ${d.description}`, value: -d.amount })
       if (taken.length) context.push({ label: 'Net paid to you', value: roundCents(line.amount - taken.reduce((s, d) => s + d.amount, 0)) })
-      if (line.role === 'lp' && reg.tiers && reg.tiers.lpTotal > 0) {
-        const share = line.amount / reg.tiers.lpTotal
-        context.push({ label: 'Of which return of capital', value: roundCents(reg.tiers.returnOfCapital * share) })
-        if (reg.tiers.preferred > 0) context.push({ label: 'Of which preferred return', value: roundCents(reg.tiers.preferred * share) })
-      }
+      if (line.role === 'lp' && reg.tiers) context.push(...distributionTierLines(reg.tiers, line.amount))
       if (row) context.push({ label: 'Capital account balance', value: row.ending })
     }
     return {

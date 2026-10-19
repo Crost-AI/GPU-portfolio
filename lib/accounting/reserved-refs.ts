@@ -18,6 +18,11 @@ export const RESERVED_SOURCE_REF_PREFIXES = [
   // GPU fleet (P3): an operations row's revenue entry and a marketplace payout's cash entry, which
   // postEarnings and matchPayout find by ref and complete their rows from.
   'marketplace:', 'marketplace-payout:',
+  // ── GPU fleet (P2) ── the gross-revenue fee true-up counts every live `gpu-fee:<vehicle>:<YYYY-MM>`
+  // entry as fee already booked for that month (lib/gpu/fee.ts), so a typed one would shrink the fee.
+  // intercompany_transactions.source_ref carries the same value, but on the charge register, which
+  // no journal path writes.
+  'gpu-fee:',
   // Allocation, close, tax
   'allocation:', 'agent-allocation:', 'close:', 'tax:', 'schedule:', 'recurring:',
   // Intercompany

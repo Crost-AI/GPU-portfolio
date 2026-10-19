@@ -21,6 +21,7 @@ export type AuditAction =
   | 'tax.adjustments' | 'pending_action.approve' | 'pending_action.reject' | 'pending_action.stage'
   | 'pending_action.undo'
   | 'agent.write'
+  | 'intercompany.void'
 
 export interface AuditEvent {
   fundId: string

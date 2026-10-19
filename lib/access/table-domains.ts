@@ -223,6 +223,8 @@ export const TABLE_RULES: Record<string, TableRule> = {
   vehicle_partner_ownership: { scope: 'fund', domain: 'gp_economics' },
   vehicle_gp_links: { scope: 'fund', domain: 'gp_economics' },
   vehicle_waterfall_terms: { scope: 'fund', domain: 'gp_economics' },
+  // ── GPU fleet (P2) ──
+  vehicle_fee_terms: { scope: 'service', note: 'A vehicle\'s management-fee terms (gross-revenue basis for GPU SPVs); served by the accounting-gated fee-terms route and read by the close.' },
 
   // ---- LP relations ------------------------------------------------------------------------
   lp_letters: { scope: 'fund', domain: 'lp_relations', feature: 'lp_letters' },
