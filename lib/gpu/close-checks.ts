@@ -72,7 +72,8 @@ async function loadFleetState(admin: SupabaseClient, fundId: string, vehicleId: 
 
 /**
  * The depreciation the close proposes for [start, end], basis 'fleet': one entry per booked asset per
- * month due in the span with no live entry, at the remaining-life charge on the posted state, dated
+ * month due by the period end with no live entry (catch-up months from before the span included,
+ * dated the span's start), at the remaining-life charge on the posted state, otherwise dated
  * min(month end, disposal date). A month booked and then reversed is proposed again under
  * `gpu-dep:<id>:<YYYY-MM>:r<n>`. Also the asset accounts, so the caller can drop any other proposal
  * on them (the fleet is their only source). Null for any vehicle that is not a GPU SPV, and when the
@@ -94,21 +95,25 @@ export async function loadFleetCloseSuggestions(
     const expense = (await accountIdsByCode(admin, fundId, vehicleId, [DEPRECIATION_EXPENSE_CODE])).get(DEPRECIATION_EXPENSE_CODE)!
     for (const s of state.assets) {
       for (const line of s.schedule) {
-        // Due when its entry date (min(month end, disposal)) falls in the span: a period ending
-        // mid-month does not yet owe that month's charge.
-        const date = depreciationEntryDate(line.month, s.asset.disposed_on)
-        if (date < start || date > end) continue
+        // Due once its entry date (min(month end, disposal)) is on or before the period end; a period
+        // ending mid-month does not yet owe that month. A due month from BEFORE the span with no
+        // posting is a CATCH-UP (an asset whose purchase was booked after it went into service): it
+        // is proposed here, dated the span's start, so a closed earlier period is never written into
+        // and the "posted through period end" check, which reads the ref's month, is satisfied.
+        const natural = depreciationEntryDate(line.month, s.asset.disposed_on)
+        if (natural > end) continue
+        const date = natural < start ? start : natural
         const refs = s.refs.get(line.month)
         if (s.posted.has(line.month) || refs?.live || line.amount <= 0) continue
         const sourceRef = refs?.reversed ? `${gpuSourceRef.depreciation(s.asset.id, line.month)}:r${refs.reversed}` : gpuSourceRef.depreciation(s.asset.id, line.month)
         const entry = buildDepreciationEntry({
           fundId, assetId: s.asset.id, month: line.month, amount: line.amount, expenseAccountId: expense,
-          accumulatedAccountId: s.accumulatedAccountId, entryDate: depreciationEntryDate(line.month, s.asset.disposed_on),
+          accumulatedAccountId: s.accumulatedAccountId, entryDate: date,
           memo: `Depreciation — ${s.asset.name} — ${line.month}`,
         })
         suggestions.push({
           id: sourceRef, sourceRef, basis: 'fleet', title: `Depreciation — ${s.asset.name}`,
-          detail: `${line.month} depreciation for ${s.asset.name}${refs?.reversed ? ' (re-proposed: the earlier entry was reversed)' : ''}.`,
+          detail: `${line.month} depreciation for ${s.asset.name}${refs?.reversed ? ' (re-proposed: the earlier entry was reversed)' : ''}${natural < start ? ` (catch-up, booked in this period: the purchase was recognised after ${line.month})` : ''}.`,
           entryDate: entry.entryDate, memo: entry.memo ?? '', sourceType: entry.sourceType ?? 'partnership_expense', required: true,
           postings: entry.postings, evidence: { assetId: s.asset.id },
         })

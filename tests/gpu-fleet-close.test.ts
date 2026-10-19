@@ -87,7 +87,12 @@ describe('fleet depreciation suggestions (basis fleet)', () => {
       [`gpu-dep:${B}:2027-03`, '2027-03-10', [6_150, -6_150]],
       [`gpu-dep:${A}:2027-03`, '2027-03-31', [5_025, -5_025]],
     ])
-    expect((await suggest(GPU, '2027-04-01', '2027-04-30')).map(s => s[0])).toEqual([`gpu-dep:${A}:2027-04`])
+    // April: nothing for B after its disposal. March, left unposted, comes back as a catch-up dated 1 April.
+    expect((await suggest(GPU, '2027-04-01', '2027-04-30')).map(s => [s[0], s[1]])).toEqual([
+      [`gpu-dep:${B}:2027-03`, '2027-04-01'],
+      [`gpu-dep:${A}:2027-03`, '2027-04-01'],
+      [`gpu-dep:${A}:2027-04`, '2027-04-30'],
+    ])
   })
 
   it('a failing kind read changes nothing for a VC entity (treated as not fleet)', async () => {
@@ -254,6 +259,32 @@ describe('fleet close review', () => {
     const r = await readiness()
     expect(r.blockers.join(' ')).toMatch(/The GPU fleet could not be checked: canceling statement due to statement timeout/)
     expect(r.fleetChecks![0]).toMatchObject({ status: 'blocked' })
+  })
+
+  it('an asset in service before its purchase is booked: June closes, July proposes June as a catch-up and July, then July closes', async () => {
+    // In service 10 June, invoice booked 5 July (QA's fixture). Only this asset.
+    m.tables.gpu_assets = [{ ...asset(C, 'H200 #3', 335_000), in_service_date: '2027-06-10', purchase_entry_id: 'p-C' }]
+    m.tables.journal_entries = []
+    m.tables.journal_postings = []
+    m.tables.chart_of_accounts.push(account('v-gpu', GPU, `1600-${C.slice(0, 8)}`, 'asset', 'fixed_asset'), account('v-gpu', GPU, `1650-${C.slice(0, 8)}`, 'asset', 'accumulated_depreciation'))
+    book('2027-07-05', `gpu-asset:${C}:purchase`, [[`1600-${C.slice(0, 8)}`, 335_000], ['1000', -335_000]], { source_type: 'manual' })
+
+    const june = await checkReadiness(m.admin as any, 'f', GPU, '2027-06-01', '2027-06-30')
+    expect(june.fleetChecks!.map(c => c.status)).toEqual(['passed', 'passed'])
+    expect(await suggest(GPU, '2027-06-01', '2027-06-30')).toEqual([])
+
+    const july = await loadCloseEntrySuggestions(m.admin, 'f', GPU, '2027-07-01', '2027-07-31')
+    expect(july.map(x => [x.sourceRef, x.entryDate, x.postings[0].amount])).toEqual([
+      [`gpu-dep:${C}:2027-06`, '2027-07-01', 5_025],
+      [`gpu-dep:${C}:2027-07`, '2027-07-31', 5_025],
+    ])
+    expect((await checkReadiness(m.admin as any, 'f', GPU, '2027-07-01', '2027-07-31')).fleetChecks![0].status).toBe('blocked')
+    // Posting both proposals, as dated, clears July; nothing is written into June.
+    for (const s of july) book(s.entryDate, s.sourceRef, s.postings.map(p => [p.accountId.replace('v-gpu-', ''), p.amount] as [string, number]))
+    expect(m.tables.journal_entries.filter((e: any) => e.entry_date <= '2027-06-30')).toEqual([])
+    const closed = await checkReadiness(m.admin as any, 'f', GPU, '2027-07-01', '2027-07-31')
+    expect(closed.fleetChecks!.map(c => c.status)).toEqual(['passed', 'passed'])
+    expect(await suggest(GPU, '2027-07-01', '2027-07-31')).toEqual([])
   })
 
   it('a VC entity has no fleet checks at all', async () => {
