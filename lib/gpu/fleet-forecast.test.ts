@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { NO_CARRY, type VehicleCarryTerms } from '@/lib/accounting/carry'
 import { FLEET_FLOWS } from '@/lib/forecast/rules'
 import {
-  FleetAssumptionsError, fleetFromRegister, fleetMonthly, registerContingencySpent, scenarioTermsFor, validateFleetAssumptions,
+  FleetAssumptionsError, fleetFromRegister, fleetMonthly, fleetOpening, registerContingencySpent, scenarioTermsFor, validateFleetAssumptions,
 } from './fleet-forecast'
 import { PACK_FLEET, PACK_SCENARIO_TERMS, packAssumptions } from './fixtures/pack-v3-fleet'
 import { runFleetScenario } from './scenario'
@@ -140,5 +140,24 @@ describe('scenarioTermsFor', () => {
     const { terms, warnings } = scenarioTermsFor(NO_CARRY, null)
     expect(terms).toEqual(PACK_SCENARIO_TERMS)
     expect(warnings).toHaveLength(2)
+  })
+})
+
+describe("a pitch's opening and the R8 release", () => {
+  it('the pack: 1,435,500 raised, 1,305,000 bought, the 130,500 contingency consumed, nothing released', () => {
+    const a = packAssumptions('base')
+    const r = runFleetScenario(a, PACK_FLEET, PACK_SCENARIO_TERMS)
+    expect(fleetOpening(a, r)).toEqual({ month: '2027-01', raised: 1_435_500, purchase: 1_305_000, consumed: 130_500 })
+    expect(fleetMonthly(a, r).contingencyRelease).toBeNull()
+  })
+
+  it('100,000 spent: 30,500 released in the first month of the return year, as the engine pays it', () => {
+    const a = packAssumptions('oversupply_50', { capex: { contingencyPct: 0.1, contingencySpent: 100_000 } })
+    const r = runFleetScenario(a, PACK_FLEET, PACK_SCENARIO_TERMS)
+    expect(fleetOpening(a, r)).toMatchObject({ raised: 1_435_500, purchase: 1_305_000, consumed: 100_000 })
+    expect(fleetMonthly(a, r).contingencyRelease).toEqual({ month: '2031-01', amount: 30_500 })
+    expect(r.waterfall[4].contingencyReturn).toBe(30_500)
+    const early = { ...a, capex: { ...a.capex, returnYear: 2 } }
+    expect(fleetMonthly(early, runFleetScenario(early, PACK_FLEET, PACK_SCENARIO_TERMS)).contingencyRelease).toEqual({ month: '2028-01', amount: 30_500 })
   })
 })

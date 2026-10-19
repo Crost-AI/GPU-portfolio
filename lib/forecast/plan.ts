@@ -11,7 +11,7 @@ import { evaluateRule, type RuleInput } from './rules'
 import { assertEntryBalanced, compileForecast, counterAccountsFor, type CashTiming, type CompiledEntry, type CompileLine } from './compile'
 import type { MonthlyConstruction } from './construction-adapter'
 import type { GpShareSchedule } from './linked'
-import type { FleetDisposal } from '@/lib/gpu/fleet-forecast'
+import type { FleetDisposal, FleetOpening } from '@/lib/gpu/fleet-forecast'
 import type { LinkedFleetParams } from './rules'
 
 export type PlanKind = 'budget' | 'rolling_forecast'
@@ -78,6 +78,8 @@ export interface BuildPlanInput extends PlanWindowInput {
   construction?: MonthlyConstruction | null
   /** A GP entity's share of its fund's forecast (lib/forecast/linked.ts gpShareOf). */
   gpShare?: GpShareSchedule | null
+  /** A GPU SPV pitch plan's capital raise and equipment purchase (lib/gpu/fleet-forecast.ts fleetOpening). */
+  fleetOpening?: FleetOpening | null
 }
 
 export interface LinkedDriver {
@@ -222,8 +224,10 @@ export function buildPlan(input: BuildPlanInput): BuiltPlan {
   warnings.push(...construction.warnings)
   const gp = input.gpShare ? gpShareEntries(input, input.gpShare, first, last, counters.cash) : { entries: [], warnings: [] }
   warnings.push(...gp.warnings)
-  for (const e of [...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked]) assertEntryBalanced(e)
-  const entries = [...compiled.entries, ...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.memo.localeCompare(b.memo))
+  const fleetStart = input.fleetOpening ? fleetOpeningEntries(input, input.fleetOpening, first, last, counters.cash) : { entries: [], warnings: [] }
+  warnings.push(...fleetStart.warnings)
+  for (const e of [...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked, ...fleetStart.entries]) assertEntryBalanced(e)
+  const entries = [...compiled.entries, ...opening.entries, ...construction.entries, ...gp.entries, ...fleetBooked, ...fleetStart.entries].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.memo.localeCompare(b.memo))
   return { first, last, entries, rules: outcomes, warnings }
 }
 
@@ -277,6 +281,45 @@ export function fleetEntries(
     ].filter(p => p.amount !== 0) }],
     warnings: [],
   }
+}
+
+/** The memo of a pitch plan's capital raise: capital management and the returns read it back. */
+export const FLEET_RAISE_MEMO = 'Capital raised for the fleet'
+
+/**
+ * A pitch plan's start, in Y1's first month: the capital raised (Dr cash / Cr partners' capital),
+ * the equipment bought at cost (Dr 1600 / Cr cash) and the capex contingency spent without being
+ * capitalized (Dr 5900 / Cr cash). With them, the plan's cash and equity are funded and the disposal
+ * clears 1600 and 1650 to zero. Outlays are 'investment' entries, so they are never paid out.
+ */
+export function fleetOpeningEntries(
+  input: Pick<BuildPlanInput, 'accounts' | 'currency'>,
+  o: FleetOpening,
+  first: MonthKey,
+  last: MonthKey,
+  cashId: string,
+): { entries: CompiledEntry[]; warnings: string[] } {
+  if (o.month < first || o.month > last) return { entries: [], warnings: [`The fleet starts in ${o.month}, outside the plan, so its capital raise and purchase are not forecast`] }
+  const find = (subtype: string) =>
+    input.accounts.filter(a => a.subtype === subtype && !a.lpEntityId && !a.companyId).sort((a, b) => a.code.localeCompare(b.code))[0]
+  const capital = find('lp_capital')
+  const cost = find('fixed_asset')
+  const other = find('operating_expense')
+  if (!capital || !cost || !other) return { entries: [], warnings: ["This chart lacks partners' capital, equipment or other expenses, so the fleet's capital raise and purchase are not forecast"] }
+  const c = input.currency
+  const base = { entryDate: lastDay(o.month), ruleId: null, overrideId: null, source: 'construction' as const }
+  const entries: CompiledEntry[] = [
+    { ...base, kind: 'capital_call', accountId: capital.id, memo: FLEET_RAISE_MEMO, postings: [
+      { accountId: cashId, amount: o.raised, currency: c }, { accountId: capital.id, amount: -o.raised, currency: c },
+    ] },
+    { ...base, kind: 'investment', accountId: cost.id, memo: `${cost.code} ${cost.name} — fleet bought ${o.month}`, postings: [
+      { accountId: cost.id, amount: o.purchase, currency: c }, { accountId: cashId, amount: -o.purchase, currency: c },
+    ] },
+  ]
+  if (o.consumed > 0) entries.push({ ...base, kind: 'investment', accountId: other.id, memo: `${other.code} ${other.name} — capex contingency spent, not capitalized`, postings: [
+    { accountId: other.id, amount: o.consumed, currency: c }, { accountId: cashId, amount: -o.consumed, currency: c },
+  ] })
+  return { entries: entries.filter(e => e.postings[0].amount !== 0), warnings: [] }
 }
 
 /** Liabilities that clear to cash in the ordinary course: bills, accruals, payroll owed. */

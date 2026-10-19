@@ -132,6 +132,8 @@ export interface FleetLoad {
   assumptions: FleetAssumptions
   /** The servers it ran on: the plan's own, or the register's as read. */
   assets: PlannedAsset[]
+  /** A pitch: the servers are the plan's own, so nothing is on the books (fleetOpening applies). */
+  pitch: boolean
   /** The vehicle's terms the scenario ran on (before the plan's overrides, which the engine applies). */
   terms: ScenarioTerms
   result: FleetScenarioResult
@@ -165,7 +167,7 @@ export async function loadFleet(
   const warnings: string[] = []
   if (opts.frozen) {
     if (a.assets === 'register') return { fleet: null, warnings: ['This version was published without its servers, so its scenario cannot be shown'] }
-    return run(a, a.assets, PACK_SCENARIO_TERMS, warnings)
+    return run(a, a.assets, PACK_SCENARIO_TERMS, warnings, false)
   }
   let fleet = a.assets === 'register' ? [] : a.assets
   if (a.assets === 'register') {
@@ -185,13 +187,13 @@ export async function loadFleet(
   const [carry, fee] = await Promise.all([loadCarryTerms(ctx.admin, ctx.fundId, vehicle.name), loadFeeTerms(ctx.admin, ctx.fundId, vehicle.name)])
   const { terms, warnings: termWarnings } = scenarioTermsFor(carry, fee)
   warnings.push(...termWarnings)
-  return run(a, fleet, terms, warnings)
+  return run(a, fleet, terms, warnings, a.assets !== 'register')
 }
 
-function run(a: FleetAssumptions, assets: PlannedAsset[], terms: ScenarioTerms, warnings: string[]): { fleet: FleetLoad | null; warnings: string[] } {
+function run(a: FleetAssumptions, assets: PlannedAsset[], terms: ScenarioTerms, warnings: string[], pitch: boolean): { fleet: FleetLoad | null; warnings: string[] } {
   try {
     const result = runFleetScenario(a, assets, terms)
-    return { fleet: { assumptions: a, assets, terms, result, monthly: fleetMonthly(a, result) }, warnings }
+    return { fleet: { assumptions: a, assets, pitch, terms, result, monthly: fleetMonthly(a, result) }, warnings }
   } catch (e) {
     if (e instanceof ScenarioInputError) return { fleet: null, warnings: [...warnings, `The fleet scenario cannot be run: ${e.message}`] }
     throw e

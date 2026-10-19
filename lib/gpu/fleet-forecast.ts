@@ -205,6 +205,11 @@ export interface FleetMonthly {
   /** Natural-side amount per month per flow; `disposal` is the sale proceeds in the sale month. */
   flows: Record<FleetFlow, Map<MonthKey, number>>
   disposal: FleetDisposal | null
+  /**
+   * The unspent capex contingency released to investors (R8), in the first month of its return
+   * year as the engine pays it: distributed with that month's cash, before the tiers.
+   */
+  contingencyRelease: { month: MonthKey; amount: number } | null
   /** Plan year y covers months startMonth + 12(y−1) … + 11. */
   yearMonths: MonthKey[][]
 }
@@ -219,6 +224,29 @@ function spread(byYear: number[], yearMonths: MonthKey[][]): Map<MonthKey, numbe
     yearMonths[k].forEach((m, i) => { if (parts[i]) out.set(m, parts[i] / 100) })
   })
   return out
+}
+
+/**
+ * A PITCH plan's start (its servers stated on the plan, none on the books): the capital raised, the
+ * equipment bought at cost, and the capex contingency spent without being capitalized, all in Y1's
+ * first month. What is left of the contingency is the unspent part R8 hands back. A register plan
+ * has these on the books already, so it gets none of them.
+ */
+export interface FleetOpening {
+  month: MonthKey
+  raised: number
+  /** Hardware plus capitalized costs: the depreciation basis, cleared by the disposal. */
+  purchase: number
+  /** Contingency consumed and not capitalized (all of it when `contingencySpent` is null, the pack). */
+  consumed: number
+}
+
+export function fleetOpening(a: FleetAssumptions, r: FleetScenarioResult): FleetOpening {
+  const raised = toCents(r.returns.capitalRaised)
+  const purchase = toCents(r.operating[0].nbv)
+  // Released in its return year whether or not the cap lets it all return as capital (R8).
+  const unspent = r.operating.reduce((s, o) => s + toCents(o.unspentContingency), 0)
+  return { month: a.startMonth, raised: raised / 100, purchase: purchase / 100, consumed: Math.max(0, raised - purchase - unspent) / 100 }
 }
 
 /** The engine's annual figures as monthly amounts (R7: even within each plan year). */
@@ -247,5 +275,7 @@ export function fleetMonthly(a: FleetAssumptions, r: FleetScenarioResult): Fleet
       accumulated: roundCents(op.reduce((s, o) => s + o.depreciation, 0)),
     }
   }
-  return { flows, disposal, yearMonths }
+  const releaseYear = op.findIndex(o => o.unspentContingency > 0)
+  const contingencyRelease = releaseYear >= 0 ? { month: yearMonths[releaseYear][0], amount: op[releaseYear].unspentContingency } : null
+  return { flows, disposal, contingencyRelease, yearMonths }
 }

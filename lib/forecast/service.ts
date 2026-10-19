@@ -36,7 +36,7 @@ import type { Account, Posting } from '@/lib/accounting/types'
 import { addMonths, firstDay, isMonthKey, lastDay, monthDiff, monthOf, monthRange, type Interval, type MonthKey } from './months'
 import { RuleError, validateRule, type RuleMethod } from './rules'
 import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntry } from './compile'
-import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
+import { actualsByAccount, buildPlan, FLEET_RAISE_MEMO, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
 import { cycleLabel, loadFeeLinks, loadFleet, loadLinkedDrivers, materializeFleet, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
@@ -49,7 +49,7 @@ import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distri
 import type { CashWaterfallTerms } from '@/lib/gpu/waterfall'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
 import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
-import { FleetAssumptionsError, validateFleetAssumptions } from '@/lib/gpu/fleet-forecast'
+import { FleetAssumptionsError, fleetOpening, validateFleetAssumptions } from '@/lib/gpu/fleet-forecast'
 import type { FleetAssumptions } from '@/lib/gpu/scenario'
 
 export interface ForecastServiceContext {
@@ -383,6 +383,7 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
     linked: drivers.linked,
     construction: drivers.construction,
     gpShare: drivers.gpShare,
+    fleetOpening: drivers.fleet?.pitch ? fleetOpening(drivers.fleet.assumptions, drivers.fleet.result) : null,
   })
   // An entity that keeps no books here has no actuals to be unclosed: its plan starts from nothing
   // recorded (opening cash zero), which is what the warning should say.
@@ -430,7 +431,19 @@ async function cashWaterfallFor(ctx: ForecastServiceContext, v: VehicleCtx, cuto
     terms,
     history: cashWaterfallEvents(h.contributions, h.priors, asOf),
     assumedContribution: fleet ? { date: lastDay(addMonths(fleet.assumptions.startMonth, -1)), amount: fleet.result.returns.capitalRaised } : null,
+    ...(fleet?.monthly.contingencyRelease ? { contingencyReturns: new Map([[fleet.monthly.contingencyRelease.month, fleet.monthly.contingencyRelease.amount]]) } : {}),
   }
+}
+
+/**
+ * What a GPU SPV's distribution policy pays out of an entry's cash: its operating cash and sale, not
+ * the capital raised nor the equipment and contingency it was spent on (fleetOpeningEntries).
+ */
+const paidOutOnGpu = (e: CompiledEntry) => e.kind !== 'investment' && e.kind !== 'capital_call'
+
+/** The R8 release adds to what is paid out in its month: the cash is the raise's, held until then. */
+function addContingencyReleases(proceeds: Map<MonthKey, number>, cash: CashWaterfallInput | null) {
+  for (const [m, amount] of cash?.contingencyReturns ?? []) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + amount))
 }
 
 async function capitalEntries(
@@ -465,8 +478,9 @@ async function capitalEntries(
     if (!c) continue
     cashFlows.set(m, roundCents((cashFlows.get(m) ?? 0) + c))
     // Exit proceeds, and cash that belongs to the investors (an unused prepaid fee refunded), are paid out.
-    if (e.kind === 'proceeds' || e.distributable || distributesOperatingCash(v)) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
+    if (e.kind === 'proceeds' || e.distributable || (distributesOperatingCash(v) && paidOutOnGpu(e))) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
   }
+  addContingencyReleases(proceeds, cash)
   // Cash in the bank when the plan's window opens — the books through the month before it (a
   // budget's window can start before the cutoff; a rolling forecast's starts just after it).
   const opensAfter = lastDay(addMonths(window.first, -1))
@@ -1670,13 +1684,16 @@ export async function getPlanReturns(
   const invested = new Map<MonthKey, number>()
   const proceeds = new Map<MonthKey, number>()
   for (const e of built.entries) {
-    if (CAPITAL_KINDS.has(e.kind)) continue
+    // A pitch's capital raise is the plan's opening funding, not a call capital management made.
+    if (CAPITAL_KINDS.has(e.kind) && e.memo !== FLEET_RAISE_MEMO) continue
     const m = e.entryDate.slice(0, 7) as MonthKey
     const c = cashOf(e)
     if (!c) continue
-    const into = e.kind === 'investment' ? invested : e.kind === 'proceeds' || e.distributable || distributesOperatingCash(v) ? proceeds : otherFlows
+    const into = e.kind === 'investment' ? invested
+      : e.kind === 'proceeds' || e.distributable || (distributesOperatingCash(v) && paidOutOnGpu(e)) ? proceeds : otherFlows
     into.set(m, roundCents((into.get(m) ?? 0) + c))
   }
+  addContingencyReleases(proceeds, compiled.cashWaterfall ?? null)
   const opensAfter = lastDay(addMonths(built.first, -1))
   const openingCash = roundCents(compiled.ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
   const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name, planId: row.id })

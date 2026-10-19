@@ -154,6 +154,64 @@ describe('publishing freezes the fleet', () => {
   })
 })
 
+describe("a pitch plan's opening: the capital raised and the fleet bought", () => {
+  const balances = (entries: { postings: { accountId: string; amount: number }[] }[]) => {
+    const out = new Map<string, number>()
+    for (const e of entries) for (const p of e.postings) out.set(p.accountId, Math.round(((out.get(p.accountId) ?? 0) + p.amount) * 100) / 100)
+    return (code: string) => out.get(`acct-${code}`) ?? 0
+  }
+
+  it('funds cash and equity, and the sale clears 1600 and 1650 to zero', async () => {
+    const detail = await getPlan(ctx(books([plan()]).admin), { vehicle: GPU, planId: 'p1' })
+    const raise = detail.entries.find(e => e.memo === 'Capital raised for the fleet')!
+    expect(raise).toMatchObject({ kind: 'capital_call', date: `${firstPlanMonth}-${raise.date.slice(8)}` })
+    expect(raise.postings).toEqual([{ accountId: 'acct-1000', amount: 1_435_500 }, { accountId: 'acct-3100', amount: -1_435_500 }])
+    const bought = detail.entries.filter(e => e.kind === 'investment')
+    expect(bought.map(e => e.postings.find(p => p.accountId !== 'acct-1000')!)).toEqual([
+      { accountId: 'acct-1600', amount: 1_305_000 },
+      // The pack: the whole 10% contingency consumed, nothing capitalized or returned.
+      { accountId: 'acct-5900', amount: 130_500 },
+    ])
+    const bal = balances(detail.entries)
+    expect(bal('1600')).toBe(0)
+    expect(bal('1650')).toBe(0)
+    // The raise pays for the fleet and the contingency exactly: the opening nets to no cash.
+    const opening = [raise, ...bought].flatMap(e => e.postings).filter(p => p.accountId === 'acct-1000').reduce((s, p) => s + p.amount, 0)
+    expect(opening).toBe(0)
+  })
+
+  it('a register plan carries these from the books, so it books none of them', async () => {
+    const b = books([plan({ fleet: { ...FLEET, assets: 'register' } })])
+    b.tables.gpu_asset_types.push({ id: 't1', fund_id: 'f1', code: 'b200', label: 'B200', gpu_model: null, gpus_per_server: 8, anchor_rate: null, notes: null })
+    const assets = await import('@/lib/gpu/assets')
+    const list = vi.spyOn(assets, 'listAssets').mockResolvedValue([{ id: 'a1', name: 'srv-1', status: 'in_service', asset_type_id: 't1', hardware_cost: 410_000, capitalized_costs: 0 } as any])
+    const detail = await getPlan(ctx(b.admin), { vehicle: GPU, planId: 'p1' })
+    expect(detail.entries.some(e => e.memo === 'Capital raised for the fleet' || e.kind === 'investment')).toBe(false)
+    expect(detail.entries.some(e => e.accountId === 'acct-4000')).toBe(true)
+    list.mockRestore()
+  })
+})
+
+describe('R8 in the monthly plan: the unspent contingency is paid out in its return year', () => {
+  it('Oversupply 50% with 100,000 spent: 30,500 released in Y5, as the engine pays it', async () => {
+    const fleet = packAssumptions('oversupply_50', { startMonth: firstPlanMonth as any, capex: { contingencyPct: 0.1, contingencySpent: 100_000 } })
+    const consumedAll = packAssumptions('oversupply_50', { startMonth: firstPlanMonth as any })
+    const engine = runFleetScenario(fleet, PACK_FLEET, PACK_SCENARIO_TERMS)
+    expect(engine.waterfall[4].contingencyReturn).toBe(30_500)
+    const r = await getPlanReturns(ctx(books([plan({ fleet })]).admin), { vehicle: GPU, planId: 'p1' })
+    const pack = await getPlanReturns(ctx(books([plan({ fleet: consumedAll })]).admin), { vehicle: GPU, planId: 'p1' })
+    // Only 100,000 of the 130,500 is spent, so 30,500 more is paid out, in Y5's first month.
+    const y5 = Number(firstPlanMonth.slice(0, 4)) + 4
+    const paid = (x: typeof r) => x.base.distributedToDate[x.base.distributedToDate.length - 1]
+    expect(Math.round((paid(r) - paid(pack)) * 100)).toBe(3_050_000)
+    expect(r.base.years.find(y => y.calendarYear === y5)!.distributed).toBeGreaterThan(pack.base.years.find(y => y.calendarYear === y5)!.distributed)
+    expect(r.base.totals.carry).toBe(0)
+    // And the opening books only the 100,000 consumed.
+    const detail = await getPlan(ctx(books([plan({ fleet })]).admin), { vehicle: GPU, planId: 'p1' })
+    expect(detail.entries.find(e => e.accountId === 'acct-5900' && e.kind === 'investment')!.postings[0].amount).toBe(100_000)
+  })
+})
+
 describe('copying a fleet plan', () => {
   it('carries its fleet with its capital and hand edits', async () => {
     const b = books([plan({ capital: { policy: { calls: { reserve: 7 } } } })])
