@@ -66,3 +66,23 @@ describe("a plan's returns — one calculation", () => {
     expect(r2.lp.terminal).toBe(495_000)
   })
 })
+
+describe('the fund kinds are byte-identical whatever the GPU branch does', () => {
+  // Every fixture above, whole, pinned: a change to planReturns that moves a VC figure fails here.
+  const base = {
+    months, asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 2_000_000,
+    otherFlows: m({ '2027-01': -20_000 }), invested: m({ '2027-01': -1_000_000 }), proceeds: m({ '2028-06': 3_000_000 }),
+  }
+  const cases = {
+    european: { ...base, settings: validateCapital({}), terminalNav: 0, waterfall: wf },
+    edited: {
+      ...base, otherFlows: m({}), terminalNav: 0, waterfall: wf,
+      settings: validateCapital({ distributions: Object.fromEntries(months.filter(x => x >= '2028-06').map(x => [x, x === '2028-06' ? 1_000_000 : 0])) }),
+    },
+    none: { ...base, otherFlows: m({}), settings: validateCapital({}), terminalNav: 500_000, waterfall: { ...wf, kind: 'none' as const, carryRate: 0 } },
+    noWaterfall: { ...base, settings: validateCapital({}), terminalNav: 250_000 },
+  }
+  for (const [name, input] of Object.entries(cases)) {
+    it(name, () => expect(JSON.stringify(planReturns(input as any))).toMatchSnapshot())
+  }
+})
