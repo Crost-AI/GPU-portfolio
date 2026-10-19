@@ -23,14 +23,15 @@ import { PrefLedgerTable, PrefLedgerUnavailable } from '@/components/gpu/pref-le
 import { DistributionHistory, TierBreakdown } from '@/components/gpu/distribution-history'
 import { FeeTermsForm } from '@/components/gpu/fee-terms-dialog'
 import { PositionTiles } from '@/components/gpu/waterfall-position'
+import { CashTermsEditor } from '@/components/gpu/waterfall-terms-dialog'
 import { dayCountLabel } from '@/components/gpu/waterfall-terms-card'
 import {
-  PREVIEW_AGAIN, feeFormOf, linesEditable, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
+  PREVIEW_AGAIN, feeFormOf, linesEditable, cashTermsBody, cashTermsFormOf, managerPct, type CashTermsForm, feeTermsBody, positionFromLedger, prefLedgerTotals, previewIdentity, send, unreturnedCapital,
   vehicleFetcher, type CashPreview, type Fetcher, type HistoryRow, type PrefLedgerRow,
 } from '@/components/gpu/waterfall-api'
 import { splitDistribution, suggestedCharacter, cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import type { VehicleCarryTerms } from '@/lib/accounting/carry'
-import { prefLedger } from '@/lib/gpu/waterfall'
+import { prefLedger, validateCashTerms } from '@/lib/gpu/waterfall'
 import { FEE_BASES, FEE_FREQUENCIES } from '@/lib/gpu/fee'
 
 const money = (n: number) => formatCurrencyFull(n, 'USD')
@@ -393,14 +394,14 @@ const HISTORY: HistoryRow[] = [{
 
 // A fund with the books, investors' capital and GPU economics switched on for members; the member
 // is granted the books and investors' capital, and gp_economics or not.
-const access = (gp: boolean): ClientAccess => ({
+const access = (gp: boolean | 'write', accounting: 'read' | 'write' = 'write'): ClientAccess => ({
   role: 'member',
   features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', lps: 'everyone', lp_tracking: 'everyone', gp_economics: 'everyone', gpu_fleet: 'everyone' } as FeatureVisibilityMap,
-  grants: { lp_capital: 'write', accounting: 'write', ...(gp ? { gp_economics: 'read' as const } : {}) },
+  grants: { lp_capital: 'write', accounting, ...(gp ? { gp_economics: gp === 'write' ? 'write' as const : 'read' as const } : {}) },
   defaults: {},
 })
-const page = (gp: boolean) => renderToStaticMarkup(
-  <AccessProvider value={access(gp)}>
+const page = (gp: boolean | 'write', accounting: 'read' | 'write' = 'write') => renderToStaticMarkup(
+  <AccessProvider value={access(gp, accounting)}>
     <CurrencyProvider currency="USD"><WaterfallView vehicle="GPU SPV I" vehicleId="v1" /></CurrencyProvider>
   </AccessProvider>,
 )
@@ -584,10 +585,82 @@ describe('edit fee terms', () => {
   })
 })
 
+// ── Waterfall terms ────────────────────────────────────────────────────────────────────────────
+
+describe('edit the waterfall terms', () => {
+  const PACK_FORM: CashTermsForm = {
+    prefPct: '8', dayCount: '30_360', investorsBeforePct: '100', investorsAfterPct: '70',
+    recipients: [{ lpEntityId: 'mgr', pct: '100' }],
+  }
+
+  it('PUTs the pack terms: 8% pref, 30E/360, X = 100 and Y = 70 as rocLpShare 1 and carryRate 0.3', async () => {
+    const r = cashTermsBody(PACK_FORM)
+    if (!r.ok) throw new Error(r.error)
+    expect(r.body).toEqual({
+      kind: 'distributable_cash', prefRate: 0.08, prefDayCount: '30_360', prefBasis: 'unreturned',
+      rocLpShare: 1, carryRate: 0.3, prefCompounds: false, catchupRate: 1,
+      carryRecipients: [{ lpEntityId: 'mgr', pct: 100 }],
+    })
+    // The route's own rule for this kind accepts it.
+    const b = r.body as any
+    expect(validateCashTerms({
+      prefRate: b.prefRate, dayCount: b.prefDayCount, rocLpShare: b.rocLpShare, carryRate: b.carryRate,
+      recipients: b.carryRecipients, catchupRate: b.catchupRate, prefCompounds: b.prefCompounds, prefBasis: b.prefBasis,
+    })).toBeNull()
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { ok: true } })
+    await send(vehicleFetcher('GPU SPV I', fetcher), '/api/accounting/waterfall-terms', 'PUT', r.body)
+    expect(calls[0].path).toBe('/api/accounting/waterfall-terms?group=GPU%20SPV%20I')
+    expect(calls[0].init?.method).toBe('PUT')
+    expect(calls[0].body).toMatchObject({ kind: 'distributable_cash', rocLpShare: 1, carryRate: 0.3, group: 'GPU SPV I' })
+  })
+
+  it('opens on the stored terms, and shows the manager\u2019s side of each split as it is typed', () => {
+    const f = cashTermsFormOf({ kind: 'distributable_cash', carryRate: 0.3, prefRate: 0.08, recipients: [{ lpEntityId: 'mgr', pct: 100 }], prefDayCount: 'act_365', rocLpShare: 0.9 })
+    expect(f).toEqual({ prefPct: '8', dayCount: 'act_365', investorsBeforePct: '90', investorsAfterPct: '70', recipients: [{ lpEntityId: 'mgr', pct: '100' }] })
+    expect(managerPct('90')).toBe(10)
+    expect(managerPct('70')).toBe(30)
+    const html = renderToStaticMarkup(<CashTermsEditor form={f} onChange={() => {}} candidates={[{ lpEntityId: 'mgr', name: 'GPU Manager LLC', partnerClass: 'gp' }]} error={null} />)
+    expect(html).toContain('data-derived="manager-before">10%')
+    expect(html).toContain('data-derived="manager-after">30%')
+    expect(html).toContain('GPU Manager LLC (GP)')
+    expect(html).toContain('<option value="30_360">30E/360</option>')
+  })
+
+  it.each([
+    ['investorsBeforePct', '-1'], ['investorsBeforePct', '100.5'], ['investorsAfterPct', '-0.01'], ['investorsAfterPct', '101'],
+  ] as const)('refuses %s = %s on the page', (field, value) => {
+    expect(cashTermsBody({ ...PACK_FORM, [field]: value })).toMatchObject({ ok: false, field })
+    expect(managerPct(value)).toBeNull()
+  })
+
+  it('accepts the bounds themselves; the route decides the rest', () => {
+    expect(cashTermsBody({ ...PACK_FORM, investorsBeforePct: '0' }).ok).toBe(true)
+    expect(cashTermsBody({ ...PACK_FORM, investorsAfterPct: '100' }).ok).toBe(true)
+  })
+
+  it('a 400 from the route is shown in its own words', async () => {
+    const message = 'Profit-share recipient percentages must total 100 (they total 90).'
+    const { fetcher } = fakeFetcher({ status: 400, body: { error: message } })
+    const r = await send(fetcher, '/api/accounting/waterfall-terms', 'PUT', {})
+    expect(r).toEqual({ ok: false, status: 400, error: message })
+    const html = renderToStaticMarkup(<CashTermsEditor form={PACK_FORM} onChange={() => {}} candidates={[]} error={{ text: !r.ok ? r.error : '' }} />)
+    expect(html).toContain(message)
+    expect(html).toContain('role="alert"')
+  })
+
+  it('the Edit terms button needs gp_economics write and accounting write', () => {
+    const button = /data-action="edit-waterfall-terms"/
+    expect(page(false)).not.toMatch(button)
+    expect(page(true)).not.toMatch(button)
+    expect(page('write', 'read')).not.toMatch(button)
+    expect(page('write')).toMatch(button)
+  })
+})
+
 // ── Q8 ─────────────────────────────────────────────────────────────────────────────────────────
 
 describe('no accrued profit share anywhere on the page (Q8)', () => {
-  const files = ['waterfall-view.tsx', 'propose-distribution.tsx', 'distribution-history.tsx', 'waterfall-position.tsx', 'waterfall-terms-card.tsx', 'pref-ledger-table.tsx']
+  const files = ['waterfall-view.tsx', 'propose-distribution.tsx', 'distribution-history.tsx', 'waterfall-position.tsx', 'waterfall-terms-card.tsx', 'waterfall-terms-dialog.tsx', 'pref-ledger-table.tsx']
   it.each(files)('%s names no accrued or hypothetical carry', f => {
     const src = readFileSync(join(process.cwd(), 'components/gpu', f), 'utf8')
     expect(src).not.toMatch(/accrued (carry|profit share)|carry accrued|carry at NAV|hypothetical liquidation/i)
