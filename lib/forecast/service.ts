@@ -39,7 +39,9 @@ import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntr
 import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
+import { cycleLabel, loadFeeLinks, loadFleet, loadLinkedDrivers, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
+import { redactScenarioResult, type Cadence, type FleetScenarioResult, type RedactedScenarioResult } from '@/lib/gpu/scenario'
+import { scenarioComparison, scenarioDetail, type ScenarioComparison, type ScenarioDetail } from '@/lib/gpu/report'
 import { splitCashDistributions, type CashWaterfallInput } from './plan-returns'
 import { loadCapitalPostings } from '@/lib/accounting/capital-source'
 import { loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
@@ -1722,6 +1724,61 @@ export async function getPlanReturns(
     carryRestricted: !seesCarry(ctx.access),
     gross: { moic: model.forecast.returns.estimatedGrossMoic ?? null, reserveLeft: model.forecast.capital.remaining ?? null },
     callReserve: common.settings.policy.calls.reserve,
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fleet scenarios — a GPU SPV's plans side by side (gpu-P4 B1, the gpu-P5 contract)
+// ---------------------------------------------------------------------------------------------
+
+export interface FleetScenariosResponse {
+  /** Per plan id, the engine's result with the manager's figures null for a caller without gp_economics. */
+  results: Record<string, RedactedScenarioResult>
+  /** Columns are plan ids, in `plans` order. */
+  comparison: ScenarioComparison
+  /** The requested plan, else the primary; null when there are no fleet plans. */
+  detail: ScenarioDetail | null
+  /** The detail plan's distribution cadence; null with no detail. */
+  cadence: Cadence | null
+  primaryPlanId: string | null
+  /** The fleet plans, for labelling the comparison's columns. */
+  plans: { id: string; name: string; scenario: string | null; isPrimary: boolean }[]
+  warnings: string[]
+}
+
+/**
+ * Every active fleet plan of a GPU SPV, each run through the scenario engine once, as the
+ * Scenarios page reads them. `results` is empty when the vehicle has none (the page offers the
+ * seed). The raw result carries every manager figure, so it is redacted here, before it leaves the
+ * server (redactScenarioResult), as the comparison and detail are (showCarry).
+ */
+export async function getFleetScenarios(ctx: ForecastServiceContext, input: { vehicle: string; planId?: string | null }): Promise<FleetScenariosResponse> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  const showCarry = seesCarry(ctx.access)
+  const { data, error } = await (ctx.admin as any).from('forecast_plans').select(PLAN_COLS)
+    .eq('fund_id', ctx.fundId).eq('vehicle_id', v.id).eq('status', 'active').order('created_at', { ascending: true })
+  if (error) throw error
+  const rows = ((data as any[]) ?? []).filter(r => r.fleet != null)
+  if (input.planId && !rows.some(r => r.id === input.planId)) throw new ForecastError('No such fleet plan for this vehicle', 404)
+  const raw: Record<string, FleetScenarioResult> = {}
+  const warnings: string[] = []
+  for (const r of rows) {
+    const { fleet, warnings: w } = await loadFleet(ctx, v, r.fleet)
+    warnings.push(...w.map(x => `${r.name}: ${x}`))
+    if (fleet) raw[r.id] = fleet.result
+  }
+  const plans = rows.filter(r => raw[r.id]).map(r => ({ id: r.id, name: r.name, scenario: r.scenario ?? null, isPrimary: r.is_primary === true }))
+  const primaryPlanId = plans.find(p => p.isPrimary)?.id ?? null
+  const detailId = input.planId ?? primaryPlanId ?? plans[0]?.id ?? null
+  const detailResult = detailId ? raw[detailId] : undefined
+  return {
+    results: Object.fromEntries(Object.entries(raw).map(([id, r]) => [id, redactScenarioResult(r, showCarry)])),
+    comparison: scenarioComparison(raw, { showCarry }),
+    detail: detailResult ? scenarioDetail(detailResult, { showCarry }) : null,
+    cadence: detailResult?.cadence ?? null,
+    primaryPlanId,
+    plans,
+    warnings: [...new Set(warnings)],
   }
 }
 
