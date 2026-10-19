@@ -1704,11 +1704,11 @@ export async function getPlanReturns(
   const common = {
     months, asOfMonth: compiled.cutoff, openingCash, uncalled: model.actuals.uncalledCapital ?? 0,
     settings: compiled.capital ?? safeCapital(row.capital), otherFlows, waterfall: model.actuals.waterfall,
-    // A GPU SPV: its distributable-cash waterfall, no terminal carry (lib/forecast/plan-returns.ts).
+    // A GPU SPV: its distributable-cash waterfall, the end value through it too (lib/forecast/plan-returns.ts).
     ...(compiled.cashWaterfall ? { waterfallKind: 'distributable_cash' as const, cashWaterfall: compiled.cashWaterfall } : {}),
   }
   // A GPU SPV's revenue is received the month after (1150): what is still receivable when the plan
-  // ends is the investors' too, so it is valued at the end with the cash left (no profit share, R4).
+  // ends is valued at the end with the cash left, through the waterfall like the rest.
   const receivableIds = new Set(isGpuSpv(v.kind) ? v.accounts.filter(a => a.subtype === 'marketplace_receivable' && !a.lpEntityId && !a.companyId).map(a => a.id) : [])
   const openReceivable = receivableIds.size ? roundCents(
     compiled.ledgerPostings.filter(p => receivableIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0)

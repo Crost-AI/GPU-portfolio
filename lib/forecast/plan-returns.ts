@@ -10,8 +10,8 @@
 //
 // A GPU SPV (waterfallKind 'distributable_cash') splits each month's distribution with
 // lib/gpu/waterfall.ts instead — pref on unreturned capital, return of capital, then the profit split,
-// replayed from the vehicle's own history — and has no terminal carry (Karl, R4: the manager's share
-// is earned only when a distribution pays it).
+// replayed from the vehicle's own history — and values what is left at the end through the same
+// waterfall, its manager share counted in the plan's profit share.
 //
 // Pure: the service supplies the flows, the starting state and the terminal value.
 
@@ -69,11 +69,11 @@ export function splitCashDistributions(
   calls: Map<MonthKey, number>,
   months: MonthKey[],
   input: CashWaterfallInput,
-): { byMonth: Map<MonthKey, MonthlySplit>; warnings: string[] } {
+): { byMonth: Map<MonthKey, MonthlySplit>; warnings: string[]; state: CashWaterfallState | null; terms: CashWaterfallTerms } {
   const byMonth = new Map<MonthKey, MonthlySplit>()
   const warnings: string[] = []
   const terms = datedTerms(input.terms)
-  if (!months.length) return { byMonth, warnings }
+  if (!months.length) return { byMonth, warnings, state: null, terms }
   const before = lastDay(addMonths(months[0], -1))
   const events = historyEvents(input)
   let state: CashWaterfallState = replay(events.filter(e => e.date <= before), terms, before)
@@ -96,7 +96,7 @@ export function splitCashDistributions(
     state = split.state
     byMonth.set(m, { toLp: split.tiers.toLP, carry: split.tiers.toGP, toGpStake: 0 })
   }
-  return { byMonth, warnings }
+  return { byMonth, warnings, state, terms }
 }
 
 /** A periodic day count is the scenario engine's; dated distributions accrue 30E/360. */
@@ -168,7 +168,7 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   const cash = input.waterfallKind === 'distributable_cash' && input.cashWaterfall
     ? splitCashDistributions(cap.distributions, cap.calls, input.months, input.cashWaterfall) : null
   const wf = cash ? { byMonth: cash.byMonth, state: null, terms: null, lpShare: 1 } : runMonthlyWaterfall(cap.distributions, cap.calls, input.months, input.waterfall)
-  // The cash waterfall's split is already the investors' net; it carries nothing to the end (R4).
+  // The cash waterfall's split is already the investors' net.
   const carryOn = cash ? true : !!wf.state
   const share = wf.lpShare
 
@@ -213,8 +213,13 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   // What the LPs would get for what is left: their share of the end NAV and cash, through the waterfall.
   const endCash = cap.endingCash.get(input.months[input.months.length - 1]) ?? 0
   const leftGross = Math.max(0, roundCents((input.terminalNav + endCash) * share))
-  const terminal = carryOn && wf.state && wf.terms ? runWaterfall(leftGross, wf.terms, wf.state).toLP : leftGross
   const last = input.months[input.months.length - 1]
+  // A GPU SPV's end value goes through its waterfall too, as its distributions do (and as the
+  // scenario engine splits its sale year): the investors' part is the terminal, the manager's part
+  // counts in the plan's profit share. R4 is about the books, not a projection.
+  const cashEnd = cash?.state?.investors.length && leftGross > 0 && last
+    ? distribute(cash.state, leftGross, lastDay(last), cash.terms).tiers : null
+  const terminal = cashEnd ? cashEnd.toLP : carryOn && wf.state && wf.terms ? runWaterfall(leftGross, wf.terms, wf.state).toLP : leftGross
   if (terminal > 0 && last) lpFlows.push({ t: t(last), amount: terminal })
 
   const priorCalled = cash ? cashPriorCalled : input.waterfall?.lpCalledCapital ?? 0
@@ -229,7 +234,7 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   return {
     years,
     totals: {
-      called: sumMap(cap.calls), distributed: roundCents(totalDist), carry: roundCents(years.reduce((s, y) => s + y.carry, 0)),
+      called: sumMap(cap.calls), distributed: roundCents(totalDist), carry: roundCents(years.reduce((s, y) => s + y.carry, 0) + (cashEnd?.toGP ?? 0)),
       toLp: roundCents(lpDistributed), invested: roundCents(years.reduce((s, y) => s + y.invested, 0)), proceeds: roundCents(years.reduce((s, y) => s + y.proceeds, 0)),
     },
     lp: {

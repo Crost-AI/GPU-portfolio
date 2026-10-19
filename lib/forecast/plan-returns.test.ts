@@ -112,11 +112,14 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     expect(r.lp.called).toBe(0)
   })
 
-  it('carries nothing to the end (R4): what is left is valued without a profit share', () => {
+  it('values what is left at the end through the waterfall: held back, Y5 still splits as the pack', () => {
     const held = run({ settings: validateCapital({ distributions: { [december(4)]: 0 } }) })
     const endCash = held.cash[held.cash.length - 1].ending
     expect(endCash).toBe(F1.distributableCents[4])
-    expect(held.lp.terminal).toBe(endCash)
+    // Not paid, but valued as if it were: the investors' Y5 is the terminal, the manager's 30% counts.
+    expect(Math.abs(held.lp.terminal - F1.years[4].toLP)).toBeLessThanOrEqual(1)
+    expect(Math.abs(held.totals.carry - F1.totals.carry)).toBeLessThanOrEqual(1)
+    expect(Math.round(held.lp.tvpi! * 100) / 100).toBe(2.02)
   })
 
   it('replays the books first: a contingency already returned stays capital returned, not profit', () => {
