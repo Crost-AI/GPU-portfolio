@@ -1,12 +1,14 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
 import { useVehicle, FundSwitcher } from '@/components/accounting-vehicle'
 import { AccountingBody, AccountingPageHeader } from '@/components/accounting-chrome'
 import { Metric } from '@/components/ui/metric'
-import { useAccess, useIsAdmin } from '@/components/access-context'
+import { useAccess, useCanRead, useIsAdmin } from '@/components/access-context'
+import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
+import { send, unreturnedCapital, vehicleFetcher, waterfallPaths, type PrefLedgerRow } from '@/components/gpu/waterfall-api'
 import { canSee } from '@/components/app-sidebar'
 import { ACCOUNTING_SECTIONS, type AccountingSection } from '@/lib/accounting/nav'
 import type { Domain } from '@/lib/access/domains'
@@ -47,6 +49,23 @@ export function GpuDetailView({
 
   const links = gpuQuickLinks(isAdmin, access)
 
+  // Unreturned capital, from the pref ledger the Waterfall page reads (lp_capital): asked for this
+  // URL's vehicle by name, not the context's, which this page pins only after its first render.
+  const currency = useCurrency()
+  const readsCapital = useCanRead('lp_capital')
+  const fetcher = useMemo(() => vehicleFetcher(vehicle), [vehicle])
+  const [unreturned, setUnreturned] = useState<{ value: number | null; sub: string } | null>(null)
+  useEffect(() => {
+    if (!readsCapital) return
+    let cancelled = false
+    void send<PrefLedgerRow[]>(fetcher, waterfallPaths.prefLedger).then(r => {
+      if (cancelled) return
+      const value = r.ok && Array.isArray(r.data) ? unreturnedCapital(r.data) : null
+      setUnreturned({ value, sub: r.ok ? 'From the preferred return ledger' : r.status === 400 ? 'No distributable-cash waterfall set' : 'Could not load the pref ledger' })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, readsCapital])
+
   return (
     <>
       <AccountingPageHeader
@@ -69,7 +88,11 @@ export function GpuDetailView({
             <Metric label="Fleet NBV" value="—" sub="Fills in with the fleet register (P5-2)" />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
-            <Metric label="Unreturned capital" value="—" sub="Fills in with the waterfall (P5-3)" />
+            <Metric
+              label="Unreturned capital"
+              value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}
+              sub={!readsCapital ? 'Needs access to investors\u2019 capital' : unreturned?.sub ?? 'Loading'}
+            />
           </div>
 
           {links.length > 0 && (
