@@ -57,8 +57,8 @@ export function GpuDetailView({
   const [fleet, setFleet] = useState<FleetTotals | { error: string } | null>(null)
   useEffect(() => {
     let cancelled = false
-    void listVehicleAssets(browserFetch, vehicle).then(r => {
-      if (!cancelled) setFleet(r.ok ? fleetTotals(r.data.assets, todayIso()) : { error: r.error })
+    void listVehicleAssets(browserFetch, vehicle, todayIso()).then(r => {
+      if (!cancelled) setFleet(r.ok ? fleetTotals(r.data.assets) : { error: r.error })
     })
     return () => { cancelled = true }
   }, [vehicle])
@@ -84,10 +84,10 @@ export function GpuDetailView({
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric
               label="Fleet NBV"
-              value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbv, currency) : '—'}
+              value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbvBook, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
                 : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
-                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned, not booked` : '')}
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')}
             />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />

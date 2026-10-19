@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { GpuAssetStatus } from '@/lib/gpu/types'
 import { STATUS_LABEL, STATUS_TONE } from './fleet-math'
+import { isValidLocalDateTime } from './fleet-api'
 
 // ── GPU fleet (P5) ── The small pieces the fleet forms share: a status badge, the alert a route's
 // refusal is shown in, a labelled field, and a dialog that submits one request.
@@ -100,6 +101,29 @@ export function GatedButton({ allowed, hint, onClick, children, variant = 'outli
     <Button type="button" size="sm" variant={variant} disabled={!allowed} title={allowed ? undefined : hint} onClick={onClick}>
       {children}
     </Button>
+  )
+}
+
+/**
+ * The as-of date the fleet figures are valued at. Only a complete, real date replaces the current one,
+ * so typing through the field never sends a half-typed date to the route (which 400s on it).
+ */
+export function AsOfControl({ id, value, onChange }: { id: string; value: string; onChange: (date: string) => void }) {
+  const [draft, setDraft] = React.useState(value)
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="text-xs text-muted-foreground">As of</label>
+      <input
+        id={id}
+        type="date"
+        value={draft}
+        onChange={e => {
+          setDraft(e.target.value)
+          if (isValidLocalDateTime(e.target.value) && /^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) onChange(e.target.value)
+        }}
+        className="h-9 rounded-md border border-input bg-background px-2 text-sm tabular-nums"
+      />
+    </div>
   )
 }
 

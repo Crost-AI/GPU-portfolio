@@ -7,12 +7,13 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { useLedgerFetch } from '@/components/accounting-vehicle'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
-import type { DatacenterContractRow, GpuAsset, GpuAssetTypeRow } from '@/lib/gpu/types'
+import type { DatacenterContractRow, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { fleetPaths, listAssets, listContracts, listTypes, send, statusBody, type Fetcher } from './fleet-api'
 import {
-  MOVE_LABEL, assetFigures, bookingGate, fleetTotals, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+  MOVE_LABEL, bookingGate, fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+  type ValuedAsset,
 } from './fleet-math'
-import { ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
+import { AsOfControl, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
 import type { GpuAssetStatus } from '@/lib/gpu/types'
 import { AssetDialog, ContractDialog, DisposeDialog, EndContractDialog, PurchaseDialog, RollDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
@@ -26,93 +27,120 @@ const th = 'whitespace-nowrap px-3 py-2 font-medium'
 const num = 'px-3 py-2 text-right tabular-nums'
 
 export interface RegisterTableProps {
-  assets: GpuAsset[]
+  assets: ValuedAsset[]
   types: GpuAssetTypeRow[]
   contracts: DatacenterContractRow[]
-  asOf: string
   vehicleId: string | null
   canWriteFleet: boolean
   canBook: boolean
-  onPurchase: (a: GpuAsset) => void
-  onDispose: (a: GpuAsset) => void
-  onDelete: (a: GpuAsset) => void
+  onPurchase: (a: ValuedAsset) => void
+  onDispose: (a: ValuedAsset) => void
+  onDelete: (a: ValuedAsset) => void
   /** An operational status move the PATCH route allows (statusMoves). */
-  onMove: (a: GpuAsset, to: GpuAssetStatus) => void
+  onMove: (a: ValuedAsset, to: GpuAssetStatus) => void
 }
 
-/** The register table and its totals row (the fleet as it stands: disposed assets excluded). */
-export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWriteFleet, canBook, onPurchase, onDispose, onDelete, onMove }: RegisterTableProps) {
+/**
+ * The register table and its totals row (the fleet as it stands: disposed assets excluded). Every
+ * book and tax figure is the server's valuation for the as-of date the rows were fetched for.
+ */
+export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFleet, canBook, onPurchase, onDispose, onDelete, onMove }: RegisterTableProps) {
   const currency = useCurrency()
   const money = (n: number) => formatCurrencyFull(n, currency)
   const typeLabel = new Map(types.map(t => [t.id, t.label]))
   const facility = new Map(contracts.map(c => [c.id, c.facility]))
-  const totals = fleetTotals(assets, asOf)
+  const totals = fleetTotals(assets)
   const book = bookingGate(canWriteFleet, canBook)
+  const asOf = assets[0]?.valuation_as_of ?? null
+  const figure = (a: ValuedAsset, v: number, key: string) => {
+    const shown = !isOffBooks(a) && a.status !== 'disposed'
+    return <td className={num} data-col={key} data-value={shown ? Number(v) : ''}>{shown ? money(Number(v)) : '—'}</td>
+  }
 
   return (
-    <div className="overflow-x-auto rounded-card border">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50 text-muted-foreground">
-          <tr>
-            <th scope="col" className={`${th} text-left`}>Asset</th>
-            <th scope="col" className={`${th} text-left`}>Type</th>
-            <th scope="col" className={`${th} text-right`}>GPUs</th>
-            <th scope="col" className={`${th} text-left`}>Status</th>
-            <th scope="col" className={`${th} text-left`}>In service</th>
-            <th scope="col" className={`${th} text-right`} title="What the ledger holds: booked purchases and capitalized costs">Cost</th>
-            <th scope="col" className={`${th} text-right`} title="Cost of assets whose purchase is not booked yet">Planned</th>
-            <th scope="col" className={`${th} text-right`}>NBV</th>
-            <th scope="col" className={`${th} text-left`}>Contract</th>
-            <th scope="col" className={th}><span className="sr-only">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {assets.map(a => {
-            const f = assetFigures(a, asOf)
-            const href = vehicleId ? `/funds/${vehicleId}/fleet/${a.id}` : null
-            return (
-              <tr key={a.id} className="border-t" data-asset={a.id}>
-                <td className="px-3 py-2 font-medium">{href ? <Link href={href} className="hover:underline">{a.name}</Link> : a.name}</td>
-                <td className="px-3 py-2 text-muted-foreground">{(a.asset_type_id && typeLabel.get(a.asset_type_id)) || '—'}</td>
-                <td className={num}>{a.gpu_count}</td>
-                <td className="px-3 py-2"><StatusBadge status={a.status} /></td>
-                <td className="whitespace-nowrap px-3 py-2 tabular-nums">{a.in_service_date ?? '—'}</td>
-                <td className={num} data-cost={f.booked ? f.cost : ''}>{f.booked ? money(f.cost) : '—'}</td>
-                <td className={`${num} text-muted-foreground`} data-planned={f.booked ? '' : f.cost}>{f.booked ? '—' : money(f.cost)}</td>
-                <td className={num} data-nbv={f.nbv ?? ''}>{f.nbv == null ? '—' : money(f.nbv)}</td>
-                <td className="px-3 py-2 text-muted-foreground">{(a.datacenter_contract_id && facility.get(a.datacenter_contract_id)) || '—'}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-right">
-                  <div className="flex justify-end gap-1.5">
-                    {statusMoves(a).map(to => (
-                      <GatedButton key={to} allowed={canWriteFleet} hint={FLEET_WRITE_HINT} onClick={() => onMove(a, to)}>{MOVE_LABEL[to]}</GatedButton>
-                    ))}
-                    {offersPurchase(a) && (
-                      <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onPurchase(a)}>Purchase</GatedButton>
-                    )}
-                    {offersBookedActions(a) && (
-                      <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onDispose(a)}>Dispose</GatedButton>
-                    )}
-                    {offersDelete(a) && (
-                      <GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="ghost" onClick={() => onDelete(a)}>Delete</GatedButton>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-        <tfoot>
-          <tr className="border-t bg-muted/30 font-medium">
-            <td className="px-3 py-2" colSpan={2}>Fleet ({totals.assets} {totals.assets === 1 ? 'asset' : 'assets'}, excluding disposed)</td>
-            <td className={num} data-total="gpus">{totals.gpus}</td>
-            <td className="px-3 py-2" colSpan={2} />
-            <td className={num} data-total="cost">{money(totals.cost)}</td>
-            <td className={`${num} text-muted-foreground`} data-total="planned">{money(totals.planned)}</td>
-            <td className={num} data-total="nbv">{money(totals.nbv)}</td>
-            <td className="px-3 py-2" colSpan={2} />
-          </tr>
-        </tfoot>
-      </table>
+    <div className="space-y-2">
+      <div className="overflow-x-auto rounded-card border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50 text-muted-foreground">
+            <tr>
+              <th scope="colgroup" colSpan={7} />
+              <th scope="colgroup" colSpan={2} className={`${th} border-l text-center`}>Book</th>
+              <th scope="colgroup" colSpan={2} className={`${th} border-l text-center`}>Tax book</th>
+              <th scope="colgroup" colSpan={2} className="border-l" />
+            </tr>
+            <tr>
+              <th scope="col" className={`${th} text-left`}>Asset</th>
+              <th scope="col" className={`${th} text-left`}>Type</th>
+              <th scope="col" className={`${th} text-right`}>GPUs</th>
+              <th scope="col" className={`${th} text-left`}>Status</th>
+              <th scope="col" className={`${th} text-left`}>In service</th>
+              <th scope="col" className={`${th} text-right`} title="Hardware plus capitalized costs, for assets on the books">Basis</th>
+              <th scope="col" className={`${th} text-right`} title="Basis of assets not on the books yet: planned, or a purchase not linked">Planned</th>
+              <th scope="col" className={`${th} border-l text-right`}>Accumulated</th>
+              <th scope="col" className={`${th} text-right`}>NBV</th>
+              <th scope="col" className={`${th} border-l text-right`}>Accumulated</th>
+              <th scope="col" className={`${th} text-right`}>NBV</th>
+              <th scope="col" className={`${th} border-l text-left`}>Contract</th>
+              <th scope="col" className={th}><span className="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map(a => {
+              const off = isOffBooks(a) && a.status !== 'disposed'
+              const href = vehicleId ? `/funds/${vehicleId}/fleet/${a.id}` : null
+              return (
+                <tr key={a.id} className="border-t" data-asset={a.id}>
+                  <td className="px-3 py-2 font-medium">{href ? <Link href={href} className="hover:underline">{a.name}</Link> : a.name}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{(a.asset_type_id && typeLabel.get(a.asset_type_id)) || '—'}</td>
+                  <td className={num}>{a.gpu_count}</td>
+                  <td className="px-3 py-2"><StatusBadge status={a.status} /></td>
+                  <td className="whitespace-nowrap px-3 py-2 tabular-nums">{a.in_service_date ?? '—'}</td>
+                  {figure(a, a.basis, 'basis')}
+                  <td className={`${num} text-muted-foreground`} data-col="planned" data-value={off ? Number(a.basis) : ''}>
+                    {off ? <>{money(Number(a.basis))}<span className="ml-1.5 text-caption">{offBooksLabel(a)}</span></> : '—'}
+                  </td>
+                  {figure(a, a.accumulated_book, 'accumulated_book')}
+                  {figure(a, a.nbv_book, 'nbv_book')}
+                  {figure(a, a.accumulated_tax, 'accumulated_tax')}
+                  {figure(a, a.nbv_tax, 'nbv_tax')}
+                  <td className="border-l px-3 py-2 text-muted-foreground">{(a.datacenter_contract_id && facility.get(a.datacenter_contract_id)) || '—'}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right">
+                    <div className="flex justify-end gap-1.5">
+                      {statusMoves(a).map(to => (
+                        <GatedButton key={to} allowed={canWriteFleet} hint={FLEET_WRITE_HINT} onClick={() => onMove(a, to)}>{MOVE_LABEL[to]}</GatedButton>
+                      ))}
+                      {offersPurchase(a) && (
+                        <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onPurchase(a)}>Purchase</GatedButton>
+                      )}
+                      {offersBookedActions(a) && (
+                        <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onDispose(a)}>Dispose</GatedButton>
+                      )}
+                      {offersDelete(a) && (
+                        <GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="ghost" onClick={() => onDelete(a)}>Delete</GatedButton>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t bg-muted/30 font-medium">
+              <td className="px-3 py-2" colSpan={2}>Fleet ({totals.assets} {totals.assets === 1 ? 'asset' : 'assets'}, excluding disposed)</td>
+              <td className={num} data-total="gpus">{totals.gpus}</td>
+              <td className="px-3 py-2" colSpan={2} />
+              <td className={num} data-total="basis">{money(totals.basis)}</td>
+              <td className={`${num} text-muted-foreground`} data-total="planned">{money(totals.planned)}</td>
+              <td className={num} data-total="accumulated_book">{money(totals.accumulatedBook)}</td>
+              <td className={num} data-total="nbv_book">{money(totals.nbvBook)}</td>
+              <td className={num} data-total="accumulated_tax">{money(totals.accumulatedTax)}</td>
+              <td className={num} data-total="nbv_tax">{money(totals.nbvTax)}</td>
+              <td className="px-3 py-2" colSpan={2} />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {asOf && <p className="text-caption text-muted-foreground" data-valuation-as-of={asOf}>Valued as of <span className="tabular-nums">{asOf}</span>, from the ledger. Planned and unbooked assets are not in the book or tax totals.</p>}
     </div>
   )
 }
@@ -172,7 +200,7 @@ export function ContractsTable({ contracts, canWriteFleet, canBook, onEnd, onRol
 }
 
 type Dialog =
-  | { kind: 'add' } | { kind: 'purchase'; asset: GpuAsset } | { kind: 'dispose'; asset: GpuAsset }
+  | { kind: 'add' } | { kind: 'purchase'; asset: ValuedAsset } | { kind: 'dispose'; asset: ValuedAsset }
   | { kind: 'contract' } | { kind: 'end'; contract: DatacenterContractRow } | { kind: 'roll'; contract: DatacenterContractRow }
   | null
 
@@ -181,7 +209,9 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   const canWriteFleet = useCanWrite('fleet')
   const canBook = useCanWrite('accounting')
 
-  const [assets, setAssets] = useState<GpuAsset[] | null>(null)
+  const [assets, setAssets] = useState<ValuedAsset[] | null>(null)
+  // The date the register is valued as of: today in the user's own zone, or the one they pick.
+  const [asOf, setAsOf] = useState(todayIso)
   const [types, setTypes] = useState<GpuAssetTypeRow[]>([])
   const [contracts, setContracts] = useState<DatacenterContractRow[] | null>(null)
   // One error per list, so a later good load of one never clears another's failure.
@@ -198,7 +228,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   }
   const loadTypes = () => { void fetchTypes().then(applyTypes) }
 
-  const fetchAll = useCallback(() => Promise.all([listAssets(lf), listContracts(lf)] as const), [lf])
+  const fetchAll = useCallback(() => Promise.all([listAssets(lf, asOf), listContracts(lf)] as const), [lf, asOf])
   const apply = ([a, c]: Awaited<ReturnType<typeof fetchAll>>) => {
     if (a.ok) setAssets(a.data.assets)
     if (c.ok) setContracts(c.data.contracts)
@@ -218,14 +248,14 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   const done = () => { setActionError(null); void load() }
 
   /** A status move: the route's 409 for a move it no longer allows is shown as it says it. */
-  async function move(a: GpuAsset, to: GpuAssetStatus) {
+  async function move(a: ValuedAsset, to: GpuAssetStatus) {
     setActionError(null)
     const r = await send(lf, fleetPaths.asset(a.id), 'PATCH', statusBody(to))
     if (!r.ok) setActionError(r.error)
     else load()
   }
 
-  async function remove(a: GpuAsset) {
+  async function remove(a: ValuedAsset) {
     if (!window.confirm(`Delete ${a.name} from the register? Nothing is booked for it.`)) return
     setActionError(null)
     const r = await send(lf, fleetPaths.asset(a.id), 'DELETE')
@@ -233,16 +263,19 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
     else void load()
   }
 
-  const asOf = todayIso()
-
   return (
     <div className="space-y-4">
       {loadError && <ErrorAlert>{loadError}</ErrorAlert>}
 
       <ShellSection
         title="Assets"
-        description="Cost and net book value are what the ledger holds: an asset counts once its purchase is booked. Until then its cost is planned."
-        action={<GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="default" onClick={() => setDialog({ kind: 'add' })}><Plus className="mr-1 h-4 w-4" />Add asset</GatedButton>}
+        description="Book and tax figures are the ledger's valuation as of the date chosen. An asset counts once its purchase is booked and linked; until then its basis is planned."
+        action={
+          <div className="flex items-end gap-2">
+            <AsOfControl id="register-as-of" value={asOf} onChange={setAsOf} />
+            <GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="default" onClick={() => setDialog({ kind: 'add' })}><Plus className="mr-1 h-4 w-4" />Add asset</GatedButton>
+          </div>
+        }
       >
         {actionError && <div className="mb-3"><ErrorAlert>{actionError}</ErrorAlert></div>}
         {typesError && <div className="mb-3"><ErrorAlert>Could not load the GPU types, so the Type column is blank: {typesError}</ErrorAlert></div>}
@@ -252,7 +285,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
           <EmptyState compact>No assets yet. Add the servers this vehicle owns or has on order.</EmptyState>
         ) : (
           <RegisterTable
-            assets={assets} types={types} contracts={contracts ?? []} asOf={asOf} vehicleId={vehicleId}
+            assets={assets} types={types} contracts={contracts ?? []} vehicleId={vehicleId}
             canWriteFleet={canWriteFleet} canBook={canBook}
             onPurchase={a => setDialog({ kind: 'purchase', asset: a })}
             onDispose={a => setDialog({ kind: 'dispose', asset: a })}

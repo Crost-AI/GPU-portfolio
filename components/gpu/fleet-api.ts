@@ -3,7 +3,8 @@
 // parseAssetInput (lib/gpu/assets.ts), parseContractInput (lib/gpu/opex.ts) and the lifecycle routes
 // read; nothing here decides what is allowed, the routes do.
 
-import type { DatacenterContractRow, GpuAsset, GpuAssetEventRow, GpuAssetStatus, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
+import type { DatacenterContractRow, GpuAssetEventRow, GpuAssetRow, GpuAssetStatus, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
+import type { ValuedAsset } from './fleet-math'
 
 export type Fetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -49,7 +50,12 @@ export const fleetPaths = {
 }
 
 export const listTypes = (f: Fetcher) => call<{ assetTypes: GpuAssetTypeRow[] }>(f, fleetPaths.types)
-export const listAssets = (f: Fetcher) => call<{ assets: GpuAsset[] }>(f, fleetPaths.assets)
+/** The register valued as of `asOf` (the user's local date by default: the route's own default is UTC). */
+export const listAssets = (f: Fetcher, asOf: string) =>
+  call<{ assets: ValuedAsset[] }>(f, `${fleetPaths.assets}?as_of=${encodeURIComponent(asOf)}`)
+/** One asset valued as of `asOf`. */
+export const getAsset = (f: Fetcher, id: string, asOf: string) =>
+  call<ValuedAsset>(f, `${fleetPaths.asset(id)}?as_of=${encodeURIComponent(asOf)}`)
 export const listContracts = (f: Fetcher) => call<{ contracts: DatacenterContractRow[] }>(f, fleetPaths.contracts)
 export const listEvents = (f: Fetcher, id: string) => call<{ events: GpuAssetEventRow[] }>(f, fleetPaths.events(id))
 
@@ -124,7 +130,7 @@ export function assetBody(f: AssetForm): Record<string, unknown> {
 }
 
 /** The register row as an edit form, for the Specs card. */
-export function assetFormOf(a: GpuAsset): AssetForm {
+export function assetFormOf(a: GpuAssetRow): AssetForm {
   const s = (v: unknown) => (v == null ? '' : String(v))
   return {
     name: a.name, status: a.status, asset_type_id: s(a.asset_type_id), gpu_count: s(a.gpu_count), hardware_cost: s(a.hardware_cost),
@@ -157,7 +163,7 @@ export function assetFormError(f: AssetForm, editing: boolean): string | null {
  * not trip the "cost is booked" refusal. Blank optional fields that were set are cleared to null; a
  * cleared bonus is 0 (no bonus). Salvage and useful life cannot be cleared (assetFormError).
  */
-export function assetPatch(a: GpuAsset, f: AssetForm): Record<string, unknown> {
+export function assetPatch(a: GpuAssetRow, f: AssetForm): Record<string, unknown> {
   const before = assetFormOf(a)
   const full = assetBody(f)
   const out: Record<string, unknown> = {}
@@ -302,8 +308,8 @@ export const endContractBody = (endDate: string) => ({ end_date: endDate, status
 export const rollBody = (asOf: string) => ({ action: 'roll' as const, asOf })
 
 /** One GPU SPV's register by name, outside a vehicle scope (the firm-wide /fleet page). */
-export const listVehicleAssets = (f: Fetcher, vehicle: string) =>
-  call<{ assets: GpuAsset[] }>(f, `${fleetPaths.assets}?group=${encodeURIComponent(vehicle)}`)
+export const listVehicleAssets = (f: Fetcher, vehicle: string, asOf: string) =>
+  call<{ assets: ValuedAsset[] }>(f, `${fleetPaths.assets}?group=${encodeURIComponent(vehicle)}&as_of=${encodeURIComponent(asOf)}`)
 
 /** Run `fn` over `items` with at most `limit` in flight, results in input order. */
 export async function mapBounded<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
