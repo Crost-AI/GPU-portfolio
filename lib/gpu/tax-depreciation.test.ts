@@ -68,3 +68,23 @@ describe('bookToTaxDepreciation', () => {
     expect(bookToTaxDepreciation(asset(), 2040)).toEqual({ book: 0, tax: 0, difference: 0 })
   })
 })
+
+describe('book versus independent tax inputs', () => {
+  // 600 cost, 60 salvage, 60 months from January; 600 of capex in January; twelve posted book charges.
+  const base = (over: Partial<TaxDepreciableAsset> = {}): TaxDepreciableAsset => ({
+    id: 'x', basis: 600, salvage: 60, lifeMonths: 60, inServiceDate: '2027-01-01', convention: 'full_month',
+    taxMethod: 'book', taxBonusPct: 0, taxLifeYears: null, capex: [{ month: '2027-01', amount: 600 }], ...over,
+  })
+
+  it('the book method follows the book schedule with its capex and postings: no book-to-tax difference', () => {
+    const a = base()
+    expect(bookToTaxDepreciation(a, 2027)).toEqual({ book: 228, tax: 228, difference: 0 })
+    const posted = new Map(Array.from({ length: 12 }, (_, i) => [`2027-${String(i + 1).padStart(2, '0')}`, 19] as [string, number]))
+    expect(bookToTaxDepreciation(base({ posted }), 2027)).toEqual({ book: 228, tax: 228, difference: 0 })
+  })
+
+  it('a non-book method ignores the book postings and capex events', () => {
+    const posted = new Map(Array.from({ length: 12 }, (_, i) => [`2027-${String(i + 1).padStart(2, '0')}`, 9] as [string, number]))
+    expect(taxDepreciationSchedule(base({ taxMethod: 'straight_line', taxLifeYears: 5, capex: [], posted }))[0]).toMatchObject({ year: 2027, amount: 120 })
+  })
+})

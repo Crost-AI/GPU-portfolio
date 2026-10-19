@@ -145,9 +145,10 @@ export function depreciationForMonth(a: DepreciableAsset, month: MonthKey): numb
   return depreciationSchedule(a).find(l => l.month === month)?.amount ?? 0
 }
 
-/** Net book value: cost booked by `date` (basis plus capex) less each month's charge whose month end is ≤ `date`. */
+/** Net book value: cost booked by `date` (basis plus capex) less each charge whose entry date is ≤ `date`. */
 export function nbvAsOf(a: DepreciableAsset, date: string): number {
   const cost = cents(a.basis) + (a.capex ?? []).filter(e => e.month <= monthOf(date)).reduce((t, e) => t + cents(e.amount), 0)
-  const charged = depreciationSchedule(a).filter(l => monthEnd(l.month) <= date).reduce((t, l) => t + cents(l.amount), 0)
+  // Each charge counts from its entry date: the month end, or the disposal date in the disposal month.
+  const charged = depreciationSchedule(a).filter(l => depreciationEntryDate(l.month, a.disposedOn) <= date).reduce((t, l) => t + cents(l.amount), 0)
   return dollars(cost - charged)
 }
