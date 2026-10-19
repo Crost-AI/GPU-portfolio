@@ -671,7 +671,8 @@ export async function getOpenRouterConfig(supabase: Supabase, fundId: string): P
  * made a forwarded LP letter match nothing and vanish.
  */
 export async function getCompanies(supabase: Supabase, fundId: string): Promise<CompanyRef[]> {
-  const { data } = await supabase
+  // holding_type is not on the generated Company type (see companies/[id]/load.ts).
+  const { data } = await (supabase as any)
     .from('companies')
     .select('id, name, aliases, holding_type')
     .eq('fund_id', fundId)
