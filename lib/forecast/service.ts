@@ -688,6 +688,10 @@ export interface CreatePlanInput {
   includeConstruction?: boolean
   /** 'blank', or 'actuals' (budget: last year's months; forecast: 3-month run rate), or another plan's rules. */
   seed?: { from: 'blank' | 'suggested' | 'last_year' | 'actuals' | 'plan'; planId?: string; lookbackMonths?: number }
+  /** A GPU SPV scenario's fleet assumptions, stored with the plan row itself. */
+  fleet?: unknown
+  /** Start the fleet's Y1 in the plan's first month (its own `startMonth` is replaced). */
+  fleetStartsAtPlan?: boolean
 }
 
 export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanInput): Promise<PlanDetail> {
@@ -728,6 +732,17 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     endMonth = addMonths(cutoff, horizon)
   }
 
+  let fleet: FleetAssumptions | null = null
+  if (input.fleet != null) {
+    if (!isGpuSpv(v.kind)) throw new ForecastError('Only a GPU SPV plan holds fleet assumptions')
+    try {
+      fleet = validateFleetAssumptions(input.fleetStartsAtPlan ? { ...(input.fleet as object), startMonth } : input.fleet)
+    } catch (e) {
+      if (e instanceof FleetAssumptionsError) throw new ForecastError(e.message)
+      throw e
+    }
+  }
+
   const seed = normaliseSeed(input.seed)
   const seeded = await seedRules(ctx, v, input.kind, seed, cutoff, fiscalYear)
   // A copied plan keeps its source's rules; any other gets the fund's fee and expense rules.
@@ -747,7 +762,7 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     if (src) copied = { ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}) }
   }
   const { data: inserted, error } = await (ctx.admin as any).from('forecast_plans').insert({
-    construction, is_primary: !hasPrimary, ...copied, revision: 0,
+    construction, is_primary: !hasPrimary, ...copied, ...(fleet ? { fleet } : {}), revision: 0,
     fund_id: ctx.fundId, vehicle_id: v.id, kind: input.kind, name, scenario,
     fiscal_year: fiscalYear, start_month: firstDay(startMonth), end_month: firstDay(endMonth), horizon_months: horizon,
     actuals_cutoff: cutoffDate, seed, created_by: ctx.userId || null, include_construction: true,
@@ -1670,7 +1685,14 @@ export async function getPlanReturns(
     // A GPU SPV: its distributable-cash waterfall, no terminal carry (lib/forecast/plan-returns.ts).
     ...(compiled.cashWaterfall ? { waterfallKind: 'distributable_cash' as const, cashWaterfall: compiled.cashWaterfall } : {}),
   }
-  const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) })
+  // A GPU SPV's revenue is received the month after (1150): what is still receivable when the plan
+  // ends is the investors' too, so it is valued at the end with the cash left (no profit share, R4).
+  const receivableIds = new Set(isGpuSpv(v.kind) ? v.accounts.filter(a => a.subtype === 'marketplace_receivable' && !a.lpEntityId && !a.companyId).map(a => a.id) : [])
+  const openReceivable = receivableIds.size ? roundCents(
+    compiled.ledgerPostings.filter(p => receivableIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0)
+    + built.entries.flatMap(e => e.postings).filter(p => receivableIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0),
+  ) : 0
+  const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) + openReceivable })
 
   let simulation: PlanReturnsResponse['simulation'] = null
   const sim = model.assumptions.simulation
@@ -1795,8 +1817,9 @@ export async function getFleetReport(
   const row = await loadPlanRow(ctx, v, input.planId)
   let fleet: unknown = row.fleet
   if (input.versionId) {
-    const { data } = await (ctx.admin as any).from('forecast_versions').select('fleet')
+    const { data, error } = await (ctx.admin as any).from('forecast_versions').select('fleet')
       .eq('fund_id', ctx.fundId).eq('plan_id', row.id).eq('id', input.versionId).maybeSingle()
+    if (error) throw error
     fleet = data?.fleet ?? null
   }
   const { fleet: run } = await loadFleet(ctx, v, fleet)

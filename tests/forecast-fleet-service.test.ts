@@ -37,7 +37,8 @@ vi.mock('@/lib/accounting/construction-service', () => ({
 }))
 
 import { getPlan, getPlanReturns, publishPlan, savePlan, ForecastError } from '@/lib/forecast/service'
-import { packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
+import { PACK_FLEET, PACK_SCENARIO_TERMS, packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
+import { runFleetScenario } from '@/lib/gpu/scenario'
 import { F1 } from '@/lib/gpu/fixtures/pack-v3'
 import { FLEET_FLOWS } from '@/lib/forecast/rules'
 
@@ -132,12 +133,24 @@ describe("a GPU SPV plan's returns", () => {
     const b = books([plan()])
     const r = await getPlanReturns(ctx(b.admin), { vehicle: GPU, planId: 'p1' })
     // Pitch: 1,435,500 assumed in the month before Y1; operating cash and the sale paid out monthly.
-    expect(r.base.totals.distributed).toBeGreaterThan(3_000_000)
-    expect(r.base.totals.carry).toBeGreaterThan(400_000)
-    expect(r.base.lp.tvpi!).toBeGreaterThan(1.8)
-    // Monthly distributions return capital sooner than the pack's annual ones, so less pref and more split:
-    // the profit share is near the pack's 549,824 but not equal to it.
-    expect(Math.abs(r.base.totals.carry - F1.totals.carry)).toBeLessThan(60_000)
+    // Everything the engine makes distributable reaches the investors' side: paid out, or — the
+    // sale month's revenue, received the month after the plan ends — valued at the end.
+    // Exactly the compiled flows, each the engine's figure for its year in cents ...
+    const engine = runFleetScenario(FLEET, PACK_FLEET, PACK_SCENARIO_TERMS)
+    const c = (n: number) => Math.round(n * 100)
+    const flows = engine.operating.slice(1).reduce((s, o, k) =>
+      s + c(o.revenue) - c(o.datacenter) - c(o.contingency) - c(o.processing) - c(o.insurance) - c(engine.waterfall[k].fee) + c(o.saleProceeds), 0)
+    expect(Math.round((r.base.totals.distributed + r.base.lp.terminal) * 100)).toBe(flows)
+    // ... which is the engine's distributable (3,456,399.99) to within the cents each flow rounds to.
+    const distributable = F1.distributableCents.reduce((s, d) => s + c(d), 0)
+    expect(distributable).toBe(345_639_999)
+    expect(Math.abs(flows - distributable)).toBeLessThanOrEqual(5)
+    // The receivable left at the end is one month of Y5 revenue (793,063.60 / 12, in cents).
+    expect(r.base.lp.terminal).toBe(66_088.63)
+    // Monthly distributions return capital sooner than the pack's annual ones, so less pref accrues and
+    // more reaches the split: the plan's profit share is its own, not the pack's 549,824.
+    expect(r.base.totals.carry).toBe(543_895)
+    expect(F1.totals.carry - r.base.totals.carry).toBeGreaterThan(5_000)
     expect(r.carryRestricted).toBe(false)
   })
 
