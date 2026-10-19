@@ -253,7 +253,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Delete a company document | `companies/[id]/documents/[docId] (DELETE)` | gap | - | no reason found | delete_company_document tool | S |
 | Delete a company note | `companies/[id]/notes/[noteId] (DELETE)` | gap | - | no reason found | delete_note tool | S |
 | Delete a fund default metric | `default-metrics/[id] (DELETE)` | gap | - | settings-level; no reason found | delete_default_metric tool | S |
-| Delete a fund holding (and its ledger accounts) | `portfolio/fund-holdings/[id] (DELETE)` | gap | - | dangerous (deletes chart accounts); would belong with delete_company | cover via staged delete_company | M |
+| Delete a fund holding (and its ledger accounts) | `portfolio/fund-holdings/[id] (DELETE)` | covered | delete_fund_holding | Behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve; the route and the tool share `lib/portfolio/fund-holding-delete.ts` | - | - |
 | Delete a governing document | `entities/[id]/documents/[docId] (DELETE)` | gap | - | no reason found | delete_entity_document tool (staged) | S |
 | Delete a metric and its values (force) | `metrics/[id] (DELETE)` | gap | - | destructive, but member-level in app; no reason found | delete_metric tool (staged) | S |
 | Delete a note | `dashboard/notes/[noteId] (DELETE)` | gap | - | no reason found | delete_note tool | S |

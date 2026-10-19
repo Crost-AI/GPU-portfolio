@@ -85,6 +85,22 @@ export const DESTRUCTIVE_LEDGER_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'delete_inactive_company_accounts',
+    description:
+      'Delete a holding\'s DEACTIVATED chart accounts on this entity (its per-company 1100-, 1200-… accounts, left inactive when a ' +
+      'duplicate holding was merged into another, or when the holding left this entity but stays in another). Active accounts and ' +
+      'the company itself are untouched. Refused while any of them carries a ledger posting in any book or a schedule line. ' +
+      'Cannot be undone; an account needed again is re-created with a new id.' + STAGED,
+    scope: 'write',
+    destructive: true,
+    inputSchema: {
+      type: 'object',
+      required: ['company'],
+      properties: { company: { type: 'string', description: 'Company name or id.' } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'delete_lp_positions',
     description:
       'Delete a whole dated set of LP positions (one as-of column) from a capital-tracking vehicle: every LP\'s commitment, called ' +
@@ -120,6 +136,45 @@ export const DESTRUCTIVE_TOOL_MANIFEST: AgentToolMeta[] = [
       type: 'object',
       required: ['company'],
       properties: { company: { type: 'string', description: 'Company name or id.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'delete_fund_holding',
+    description:
+      'Delete a fund holding (a fund the vehicle invests in, holding type fund) for every entity, with its terms, capital notices ' +
+      'and NAV statements, and its own chart accounts. Refused while anything of it is on the ledger: a confirmed notice or a NAV ' +
+      'mark posted, an investment transaction, or a posting on its accounts. For a company or digital asset, use delete_company. ' +
+      'Cannot be undone: the holding and its register are gone.' + STAGED,
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    destructive: true,
+    inputSchema: {
+      type: 'object',
+      required: ['company'],
+      properties: { company: { type: 'string', description: 'The fund holding\'s name or id.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'clear_fund_register',
+    description:
+      'Delete the fund-register rows (terms and commitment, capital notices, NAV statements) left on one entity for a holding that ' +
+      'is now a company or digital asset, not a fund. The investment transactions those notices and statements booked are KEPT, ' +
+      'with their journal entries, so the books do not move; they become ordinary transactions the company page can edit. ' +
+      'Refused for a fund holding, whose register is its record. Cannot be undone: the rows would have to be entered again.' + STAGED,
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    destructive: true,
+    inputSchema: {
+      type: 'object',
+      required: ['company'],
+      properties: {
+        company: { type: 'string', description: 'Company name or id.' },
+        vehicle: { type: 'string', description: 'The entity whose register rows to delete (optional when the fund has one).' },
+      },
       additionalProperties: false,
     },
   },

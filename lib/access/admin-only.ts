@@ -137,6 +137,9 @@ export const ADMIN_ONLY_TOOLS: Record<string, { label: string; when?: (input: an
   // AGENT_DESTRUCTIVE_ACTIONS=true and always staged, so this is who may APPROVE them. The same
   // operations, with the same labels, as the routes above.
   delete_company: { label: 'delete a company' },
+  delete_fund_holding: { label: 'delete a fund holding' },
+  clear_fund_register: { label: 'clear a holding\'s fund register' },
+  delete_inactive_company_accounts: { label: 'delete inactive chart accounts' },
   lp_delete_investor: { label: 'delete an LP investor' },
   lp_delete_entity: { label: 'delete an LP entity' },
   lp_delete_commitment: { label: 'delete a commitment' },

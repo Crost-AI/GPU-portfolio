@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-### Chats approve staged changes in the conversation by default
-- **Ask, then approve, in the chat.** A chat connection (Claude or ChatGPT over OAuth) is now told at `initialize`, and in `stage_run`'s description, to show the person a staged change, ask them to approve it there, and call `approve_action` on their explicit yes. The host's own approve prompt (from `approve_action`'s destructive hint) is the confirmation. The approval link is the fallback, for changes `approve_action` refuses: admin-only changes a member staged, and anything that must be confirmed in the app. The server instructions used to say a chat could not approve what it staged, which contradicted the tool results and the service, so assistants sent people to the app.
-- **Scripts unchanged.** A static key is still told to hand over the link, since it cannot approve what it staged.
+### Deleting fund holdings and tidying a holding's leftovers from chat
+- **`delete_fund_holding`.** Deletes a fund holding as the holding page's delete does, with its terms, notices, NAV statements and chart accounts, and the same refusals: anything posted, any investment transaction, or a posting on its accounts. The checks moved out of `DELETE /api/portfolio/fund-holdings/[id]` into `lib/portfolio/fund-holding-delete.ts`, which the route and the tool share.
+- **`clear_fund_register`.** For a holding first recorded as a fund and later changed to a company or digital asset: deletes the register rows left on one entity (terms, capital notices, NAV statements). The investment transactions they booked are kept with their journal entries, and are no longer owned by the register, so the company page can edit them. Refused for a fund holding.
+- **`delete_inactive_company_accounts`.** Deletes a holding's deactivated per-company accounts on one entity, such as those a merge of duplicate holdings leaves behind. Active accounts and the company stay; refused while any of them carries a posting or a schedule line.
+- All three are destructive tools: offered only with `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged, approved by an admin, with a preview of what goes.
 
 ### Bank rows from chat: ignore a sweep, re-point a split draft
 - **`ignore_bank_transaction`.** The bank page's Ignore, for rows that are not posted: a money-market reinvestment, a sweep or a duplicate. The draft entry is voided and the row set aside. A posted row is refused, since voiding a posted entry needs a reason and stays on the bank page. A row whose entry belongs to an investment is only unlinked, as on the page. Staged from chat (`ignoreBankTransaction` in `lib/accounting/bank-actions.ts`).
