@@ -131,6 +131,24 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     expect(r.lp.dpi!).toBeCloseTo((30_500 + r.lp.distributed) / PACK_INPUTS.capital, 9)
   })
 
+  it("counts a prior distribution at the investors' share only, not the manager's take already paid", () => {
+    // 1,000,000 in on 1 Jan 2026, 1,500,000 out on 31 Dec: the replay gives the investors
+    // 1,373,933.33 and the manager 126,066.67 (pref 80,000, capital back, 30% of the rest).
+    const r = planReturns({
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
+      otherFlows: m({}), invested: m({}), proceeds: m({}), terminalNav: 0, waterfallKind: 'distributable_cash',
+      cashWaterfall: {
+        terms: { ...PACK_TERMS, dayCount: '30_360' },
+        history: [
+          { kind: 'contribution', date: '2026-01-01', lpEntityId: 'lp1', amount: 1_000_000 },
+          { kind: 'distribution', date: '2026-12-31', amount: 1_500_000 },
+        ],
+      },
+    })
+    expect(r.lp.dpi).toBeCloseTo(1.37393333, 8)
+    expect(Math.round(r.lp.dpi! * 1000) / 1000).toBe(1.374)
+  })
+
   it('the fund kinds ignore cashWaterfall unless the kind says distributable_cash', () => {
     const vc = { ...run(), warnings: [] }
     const asFund = planReturns({

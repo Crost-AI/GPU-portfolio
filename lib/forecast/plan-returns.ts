@@ -20,7 +20,7 @@ import { runWaterfall } from '@/lib/accounting/waterfall'
 import { irrOf, type TimedFlow } from '@/lib/accounting/construction-forecast'
 import type { ConstructionWaterfallProjection } from '@/lib/accounting/construction'
 import type { CarryKind } from '@/lib/accounting/carry'
-import { accrue, contribute, distribute, replay, type CashWaterfallState, type CashWaterfallTerms, type WaterfallEvent } from '@/lib/gpu/waterfall'
+import { accrue, contribute, distribute, emptyState, replay, type CashWaterfallState, type CashWaterfallTerms, type WaterfallEvent } from '@/lib/gpu/waterfall'
 import { computeCapital, runMonthlyWaterfall, type CapitalSettings, type MonthlySplit } from './capital'
 import { addMonths, lastDay, monthDiff, type MonthKey } from './months'
 
@@ -70,15 +70,10 @@ export function splitCashDistributions(
 ): { byMonth: Map<MonthKey, MonthlySplit>; warnings: string[] } {
   const byMonth = new Map<MonthKey, MonthlySplit>()
   const warnings: string[] = []
-  // A periodic day count is the scenario engine's; dated distributions accrue 30E/360.
-  const terms: CashWaterfallTerms = input.terms.dayCount === 'periodic' ? { ...input.terms, dayCount: '30_360' } : input.terms
+  const terms = datedTerms(input.terms)
   if (!months.length) return { byMonth, warnings }
   const before = lastDay(addMonths(months[0], -1))
-  const events = [...input.history]
-  const contributed = input.history.some(e => e.kind === 'contribution' && e.amount > 0)
-  if (!contributed && input.assumedContribution && input.assumedContribution.amount > 0) {
-    events.push({ kind: 'contribution', date: input.assumedContribution.date, lpEntityId: FORECAST_INVESTORS, amount: input.assumedContribution.amount })
-  }
+  const events = historyEvents(input)
   let state: CashWaterfallState = replay(events.filter(e => e.date <= before), terms, before)
   // An assumed contribution dated inside the plan (a pitch starting this month) joins on its date.
   const later = events.filter(e => e.kind === 'contribution' && e.date > before)
@@ -99,6 +94,44 @@ export function splitCashDistributions(
     byMonth.set(m, { toLp: split.tiers.toLP, carry: split.tiers.toGP, toGpStake: 0 })
   }
   return { byMonth, warnings }
+}
+
+/** A periodic day count is the scenario engine's; dated distributions accrue 30E/360. */
+const datedTerms = (t: CashWaterfallTerms): CashWaterfallTerms => (t.dayCount === 'periodic' ? { ...t, dayCount: '30_360' } : t)
+
+/** The books' history, with a pitch's assumed contribution when nothing is contributed yet. */
+function historyEvents(input: CashWaterfallInput): WaterfallEvent[] {
+  const events = [...input.history]
+  const a = input.assumedContribution
+  if (a && a.amount > 0 && !events.some(e => e.kind === 'contribution' && e.amount > 0)) {
+    events.push({ kind: 'contribution', date: a.date, lpEntityId: FORECAST_INVESTORS, amount: a.amount })
+  }
+  return events
+}
+
+/**
+ * The investors' own history: each contribution out, and of each prior distribution only what the
+ * replay gives THEM (tiers.toLP) — the manager's profit share and return-of-capital share already
+ * paid are not investor cash.
+ */
+export function investorHistory(input: CashWaterfallInput): { date: string; amount: number }[] {
+  const terms = datedTerms(input.terms)
+  const sorted = historyEvents(input).sort((a, b) => a.date.localeCompare(b.date) || (a.kind === b.kind ? 0 : a.kind === 'contribution' ? -1 : 1))
+  let state = emptyState(sorted[0]?.date ?? '')
+  const out: { date: string; amount: number }[] = []
+  for (const e of sorted) {
+    if (e.kind === 'contribution') {
+      state = contribute(accrue(state, e.date, terms), e)
+      out.push({ date: e.date, amount: -e.amount })
+    } else if (!state.investors.length) {
+      out.push({ date: e.date, amount: e.amount })
+    } else {
+      const d = distribute(state, e.amount, e.date, terms, undefined, { contingencyReturn: e.contingencyReturn })
+      state = d.state
+      out.push({ date: e.date, amount: d.tiers.toLP })
+    }
+  }
+  return out
 }
 
 export interface YearRow { calendarYear: number; called: number; distributed: number; carry: number; toLp: number; invested: number; proceeds: number; lpCalled: number; endingCash: number }
@@ -146,13 +179,10 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   // The LPs' history (dated), so the IRR runs since inception.
   let cashPriorCalled = 0, cashPriorDistributed = 0
   if (cash && input.cashWaterfall) {
-    const hist = [...input.cashWaterfall.history]
-    const a = input.cashWaterfall.assumedContribution
-    if (a && a.amount > 0 && !hist.some(e => e.kind === 'contribution' && e.amount > 0)) hist.push({ kind: 'contribution', date: a.date, lpEntityId: FORECAST_INVESTORS, amount: a.amount })
-    for (const e of hist) {
-      lpFlows.push({ t: t(e.date.slice(0, 7) as MonthKey), amount: e.kind === 'contribution' ? -e.amount : e.amount })
-      if (e.kind === 'contribution') cashPriorCalled = roundCents(cashPriorCalled + e.amount)
-      else cashPriorDistributed = roundCents(cashPriorDistributed + e.amount)
+    for (const f of investorHistory(input.cashWaterfall)) {
+      lpFlows.push({ t: t(f.date.slice(0, 7) as MonthKey), amount: f.amount })
+      if (f.amount < 0) cashPriorCalled = roundCents(cashPriorCalled - f.amount)
+      else cashPriorDistributed = roundCents(cashPriorDistributed + f.amount)
     }
   } else if (input.waterfall) {
     for (const c of input.waterfall.contributions) lpFlows.push({ t: t(c.date.slice(0, 7) as MonthKey), amount: -c.amount })
