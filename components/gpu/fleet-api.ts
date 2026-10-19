@@ -3,7 +3,7 @@
 // parseAssetInput (lib/gpu/assets.ts), parseContractInput (lib/gpu/opex.ts) and the lifecycle routes
 // read; nothing here decides what is allowed, the routes do.
 
-import type { DatacenterContractRow, GpuAsset, GpuAssetEventRow, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
+import type { DatacenterContractRow, GpuAsset, GpuAssetEventRow, GpuAssetStatus, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
 
 export type Fetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -61,6 +61,8 @@ const blank = (s: string | undefined | null) => !s || !s.trim()
 /** The asset form as typed. Blank optional fields are left to the route's defaults. */
 export interface AssetForm {
   name: string
+  /** On create: planned, or in service / offline for a fleet already running. On edit: the allowed moves. */
+  status: GpuAssetStatus
   asset_type_id: string
   gpu_count: string
   hardware_cost: string
@@ -78,7 +80,7 @@ export interface AssetForm {
 }
 
 export const EMPTY_ASSET_FORM: AssetForm = {
-  name: '', asset_type_id: '', gpu_count: '8', hardware_cost: '', serials: '', useful_life_months: '60',
+  name: '', status: 'planned', asset_type_id: '', gpu_count: '8', hardware_cost: '', serials: '', useful_life_months: '60',
   salvage_value: '', depreciation_convention: 'full_month', in_service_date: '', tax_method: 'book',
   tax_bonus_pct: '', tax_life_years: '', insurance_basis: '', datacenter_contract_id: '', notes: '',
 }
@@ -99,6 +101,8 @@ export function assetBody(f: AssetForm): Record<string, unknown> {
     depreciation_convention: f.depreciation_convention,
     tax_method: f.tax_method,
   }
+  // Planned is the route's default; anything else is a running fleet being registered (or a move).
+  if (f.status !== 'planned') b.status = f.status
   if (!blank(f.asset_type_id)) b.asset_type_id = f.asset_type_id
   if (!blank(f.useful_life_months)) b.useful_life_months = num(f.useful_life_months)
   if (!blank(f.salvage_value)) b.salvage_value = num(f.salvage_value)
@@ -115,7 +119,7 @@ export function assetBody(f: AssetForm): Record<string, unknown> {
 export function assetFormOf(a: GpuAsset): AssetForm {
   const s = (v: unknown) => (v == null ? '' : String(v))
   return {
-    name: a.name, asset_type_id: s(a.asset_type_id), gpu_count: s(a.gpu_count), hardware_cost: s(a.hardware_cost),
+    name: a.name, status: a.status, asset_type_id: s(a.asset_type_id), gpu_count: s(a.gpu_count), hardware_cost: s(a.hardware_cost),
     serials: (a.serials ?? []).join('\n'), useful_life_months: s(a.useful_life_months), salvage_value: s(a.salvage_value),
     depreciation_convention: a.depreciation_convention, in_service_date: s(a.in_service_date), tax_method: a.tax_method,
     tax_bonus_pct: a.tax_bonus_pct ? s(Math.round(Number(a.tax_bonus_pct) * 10000) / 100) : '', tax_life_years: s(a.tax_life_years),
@@ -217,6 +221,9 @@ export function contractBody(f: ContractForm, schedule: boolean): Record<string,
     schedule,
   }
 }
+
+/** PATCH /api/fleet/assets/[id] for an operational move (ordered → in service, in service ↔ offline). */
+export const statusBody = (status: GpuAssetStatus) => ({ status })
 
 export const endContractBody = (endDate: string) => ({ end_date: endDate, status: 'ended' as const })
 export const rollBody = (asOf: string) => ({ action: 'roll' as const, asOf })

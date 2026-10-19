@@ -14,11 +14,11 @@ import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-cont
 import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { DepreciationTable } from '@/components/gpu/asset-detail'
 import { ErrorAlert } from '@/components/gpu/fleet-ui'
-import { assetFigures, assetSchedule, fleetTotals, todayIso } from '@/components/gpu/fleet-math'
+import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMoves, todayIso } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody, endContractBody, eventBody,
-  fleetPaths, mapBounded, rollBody, send, type Fetcher,
+  fleetPaths, mapBounded, rollBody, send, statusBody, type Fetcher,
 } from '@/components/gpu/fleet-api'
 import { parseAssetInput } from '@/lib/gpu/assets'
 import { parseContractInput } from '@/lib/gpu/opex'
@@ -58,7 +58,7 @@ const register = (props: Partial<Parameters<typeof RegisterTable>[0]> = {}) => r
   <CurrencyProvider currency="USD">
     <RegisterTable
       assets={PACK} types={[]} contracts={[]} asOf={AFTER_12} vehicleId="v1" canWriteFleet canBook
-      onPurchase={() => {}} onDispose={() => {}} onDelete={() => {}}
+      onPurchase={() => {}} onDispose={() => {}} onDelete={() => {}} onMove={() => {}}
       {...props}
     />
   </CurrencyProvider>,
@@ -133,11 +133,11 @@ describe('Purchase and Dispose need accounting write', () => {
     expect(button(html, 'h200', 'Dispose')).not.toMatch(/disabled=""/)
   })
 
-  it('offer Purchase only on a planned server and Dispose only on one that has left planned', () => {
-    const html = register({ assets: fleet })
-    expect(button(html, 'p', 'Dispose')).toBeNull()
-    expect(button(html, 'h200', 'Purchase')).toBeNull()
-    expect(button(html, 'h200', 'Delete')).toBeNull()
+  it('name the grant that is missing: the fleet, Accounting, or both', () => {
+    const hint = (canWriteFleet: boolean, canBook: boolean) => button(register({ assets: fleet, canWriteFleet, canBook }), 'p', 'Purchase')
+    expect(hint(false, true)).toMatch(/disabled=""[^>]*title="This needs write access to the GPU fleet\."/)
+    expect(hint(true, false)).toMatch(/title="This needs write access to Accounting\."/)
+    expect(hint(false, false)).toMatch(/title="This needs write access to the GPU fleet and to Accounting\."/)
   })
 
   it('a 403 from the route is shown in its own words', async () => {
@@ -153,6 +153,75 @@ describe('Purchase and Dispose need accounting write', () => {
     const r = await send(async () => { throw new TypeError('Failed to fetch') }, fleetPaths.assets, 'POST', {})
     expect(r.ok).toBe(false)
     expect(!r.ok && r.error).toMatch(/Could not reach the server/)
+  })
+})
+
+describe('which actions a row offers', () => {
+  // Purchase is the route's recovery path too (purchaseAsset adopts and links a booked entry), so it
+  // is offered for any unlinked asset not disposed of; Dispose and Capitalize need the purchase linked.
+  const rows = [
+    asset({ id: 'planned', status: 'planned', purchase_entry_id: null, in_service_date: null }),
+    asset({ id: 'ordered-unlinked', status: 'ordered', purchase_entry_id: null }),
+    asset({ id: 'ordered', status: 'ordered', purchase_entry_id: 'je' }),
+    asset({ id: 'running-unlinked', status: 'in_service', purchase_entry_id: null }),
+    asset({ id: 'in-service', status: 'in_service', purchase_entry_id: 'je' }),
+    asset({ id: 'offline', status: 'offline', purchase_entry_id: 'je' }),
+    asset({ id: 'disposed', status: 'disposed', purchase_entry_id: 'je', disposed_on: '2026-06-30' }),
+  ]
+  const html = register({ assets: rows })
+  const offered = (id: string) => ['Purchase', 'Dispose', 'Delete', 'Put in service', 'Take offline'].filter(l => button(html, id, l))
+
+  it.each([
+    ['planned', ['Purchase', 'Delete']],
+    ['ordered-unlinked', ['Purchase']],
+    ['ordered', ['Dispose', 'Put in service']],
+    ['running-unlinked', ['Purchase', 'Take offline']],
+    ['in-service', ['Dispose', 'Take offline']],
+    ['offline', ['Dispose', 'Put in service']],
+    ['disposed', []],
+  ])('%s offers %j', (id, labels) => {
+    expect(offered(id)).toEqual(labels)
+  })
+
+  it('Capitalize follows Dispose: only once the purchase is linked', () => {
+    expect(rows.map(a => [a.id, offersBookedActions(a)])).toEqual([
+      ['planned', false], ['ordered-unlinked', false], ['ordered', true], ['running-unlinked', false],
+      ['in-service', true], ['offline', true], ['disposed', false],
+    ])
+  })
+})
+
+describe('status moves', () => {
+  it.each([
+    ['ordered', 'in_service'],
+    ['in_service', 'offline'],
+    ['offline', 'in_service'],
+  ] as const)('%s \u2192 %s sends { status } as a PATCH the route accepts', async (from, to) => {
+    const a = asset({ id: 'x', status: from, purchase_entry_id: 'je' })
+    expect(statusMoves(a)).toEqual([to])
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: {} })
+    await send(fetcher, fleetPaths.asset('x'), 'PATCH', statusBody(to))
+    expect(calls[0]).toMatchObject({ path: '/api/fleet/assets/x', init: { method: 'PATCH' }, body: { status: to } })
+    expect(parseAssetInput(calls[0].body, true)).toEqual({ value: { status: to } })
+    // The editor sends the same move, and only it.
+    expect(assetPatch(a, { ...assetFormOf(a), status: to })).toEqual({ status: to })
+  })
+
+  it('offers no move from planned, disposed, or an ordered asset whose purchase is still being linked', () => {
+    expect(statusMoves(asset({ status: 'planned', purchase_entry_id: null }))).toEqual([])
+    expect(statusMoves(asset({ status: 'disposed' }))).toEqual([])
+    expect(statusMoves(asset({ status: 'ordered', purchase_entry_id: null }))).toEqual([])
+  })
+
+  it('a disallowed move comes back as the route\u2019s 409, in its words', async () => {
+    const message = 'Status cannot change from offline to ordered here: an asset is ordered by booking its purchase and disposed of by its disposal, and never returns to planned'
+    const { fetcher } = fakeFetcher({ status: 409, body: { error: message } })
+    expect(await send(fetcher, fleetPaths.asset('x'), 'PATCH', statusBody('ordered'))).toEqual({ ok: false, status: 409, error: message })
+  })
+
+  it('a new asset for a running fleet may start in service; planned is left to the default', () => {
+    expect(assetBody({ ...EMPTY_ASSET_FORM, name: 'A', hardware_cost: '1', status: 'in_service' })).toMatchObject({ status: 'in_service' })
+    expect(assetBody({ ...EMPTY_ASSET_FORM, name: 'A', hardware_cost: '1' })).not.toHaveProperty('status')
   })
 })
 
@@ -243,7 +312,7 @@ describe('datacenter contracts', () => {
 
   it('End and Roll are disabled without accounting write', () => {
     const html = (canBook: boolean) => renderToStaticMarkup(
-      <CurrencyProvider currency="USD"><ContractsTable contracts={[contract]} canBook={canBook} onEnd={() => {}} onRoll={() => {}} /></CurrencyProvider>,
+      <CurrencyProvider currency="USD"><ContractsTable contracts={[contract]} canWriteFleet canBook={canBook} onEnd={() => {}} onRoll={() => {}} /></CurrencyProvider>,
     )
     expect(html(false)).toMatch(/<button[^>]*disabled=""[^>]*>End contract<\/button>/)
     expect(html(false)).toMatch(/<button[^>]*disabled=""[^>]*>Roll schedules<\/button>/)

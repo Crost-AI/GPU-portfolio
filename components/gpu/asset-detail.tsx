@@ -13,8 +13,8 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAsset, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
 import type { DepreciationLine } from '@/lib/gpu/depreciation'
 import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, send, type EventForm, type Fetcher } from './fleet-api'
-import { assetFigures, assetSchedule, todayIso } from './fleet-math'
-import { ACCOUNTING_WRITE_HINT, ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
+import { assetFigures, assetSchedule, bookingGate, offersBookedActions, todayIso } from './fleet-math'
+import { ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
 
@@ -114,6 +114,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
   const f = assetFigures(asset, asOf)
   const lines = assetSchedule(asset)
   const disposed = asset.status === 'disposed'
+  const book = bookingGate(canWriteFleet, canBook)
   const typeLabel = types.find(t => t.id === asset.asset_type_id)?.label ?? null
   const contract = contracts.find(c => c.id === asset.datacenter_contract_id)?.facility ?? null
 
@@ -139,7 +140,9 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
         </div>
         {!disposed && (
           <div className="flex gap-2">
-            <GatedButton allowed={canBook} hint={ACCOUNTING_WRITE_HINT} onClick={() => setDialog('capex')}>Capitalize a cost</GatedButton>
+            {offersBookedActions(asset) && (
+              <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => setDialog('capex')}>Capitalize a cost</GatedButton>
+            )}
             <GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} onClick={() => setDialog('edit')}>Edit</GatedButton>
           </div>
         )}

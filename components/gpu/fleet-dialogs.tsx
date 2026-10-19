@@ -6,13 +6,13 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
-import { DEPRECIATION_CONVENTIONS, TAX_METHODS, type DatacenterContractRow, type GpuAsset, type GpuAssetTypeRow } from '@/lib/gpu/types'
+import { DEPRECIATION_CONVENTIONS, TAX_METHODS, type DatacenterContractRow, type GpuAsset, type GpuAssetStatus, type GpuAssetTypeRow } from '@/lib/gpu/types'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, EMPTY_TYPE_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody,
   disposeBody, endContractBody, fleetPaths, purchaseBody, rollBody, send, typeBody,
   type AssetForm, type CapexForm, type ContractForm, type Fetcher, type TypeForm,
 } from './fleet-api'
-import { todayIso } from './fleet-math'
+import { STATUS_LABEL, statusMoves, todayIso } from './fleet-math'
 import { ErrorAlert, Field, FormDialog, selectCls } from './fleet-ui'
 
 // ── GPU fleet (P5) ── Every write the fleet pages make, one dialog each. Each returns the route's
@@ -27,6 +27,9 @@ interface Common { open: boolean; onOpenChange: (o: boolean) => void; fetcher: F
 function whileOpen<P extends Common>(Body: (p: P) => React.ReactElement | null) {
   return function Gated(p: P) { return p.open ? <Body {...p} /> : null }
 }
+
+/** What a new asset may start as (the assets route's CREATABLE_STATUSES). */
+const CREATE_STATUSES: GpuAssetStatus[] = ['planned', 'in_service', 'offline']
 
 const CONVENTION_LABEL: Record<string, string> = { full_month: 'Full month', mid_month: 'Mid month' }
 const TAX_LABEL: Record<string, string> = {
@@ -69,6 +72,15 @@ export const AssetDialog = whileOpen(function AssetDialogBody({ open, onOpenChan
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field id="asset-name" label="Name"><Input id="asset-name" value={form.name} onChange={set('name')} placeholder="e.g. H200 NVL #1" /></Field>
+        <Field
+          id="asset-status"
+          label="Status"
+          hint={editing ? 'Ordered moves to in service; in service and offline move between each other. Purchase and disposal set the rest.' : 'Planned until its purchase is booked; in service or offline for a server already running.'}
+        >
+          <select id="asset-status" className={selectCls} value={form.status} onChange={set('status')}>
+            {(editing ? [asset!.status, ...statusMoves(asset!)] : CREATE_STATUSES).map(st => <option key={st} value={st}>{STATUS_LABEL[st]}</option>)}
+          </select>
+        </Field>
         <Field id="asset-type" label="GPU type">
           <div className="flex gap-1.5">
             <select id="asset-type" className={selectCls} value={form.asset_type_id} onChange={set('asset_type_id')}>

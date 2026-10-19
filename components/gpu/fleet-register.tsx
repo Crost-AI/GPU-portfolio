@@ -8,9 +8,12 @@ import { useLedgerFetch } from '@/components/accounting-vehicle'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import type { DatacenterContractRow, GpuAsset, GpuAssetTypeRow } from '@/lib/gpu/types'
-import { fleetPaths, listAssets, listContracts, listTypes, send, type Fetcher } from './fleet-api'
-import { assetFigures, fleetTotals, todayIso } from './fleet-math'
-import { ACCOUNTING_WRITE_HINT, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
+import { fleetPaths, listAssets, listContracts, listTypes, send, statusBody, type Fetcher } from './fleet-api'
+import {
+  MOVE_LABEL, assetFigures, bookingGate, fleetTotals, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+} from './fleet-math'
+import { ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
+import type { GpuAssetStatus } from '@/lib/gpu/types'
 import { AssetDialog, ContractDialog, DisposeDialog, EndContractDialog, PurchaseDialog, RollDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
 
@@ -33,15 +36,18 @@ export interface RegisterTableProps {
   onPurchase: (a: GpuAsset) => void
   onDispose: (a: GpuAsset) => void
   onDelete: (a: GpuAsset) => void
+  /** An operational status move the PATCH route allows (statusMoves). */
+  onMove: (a: GpuAsset, to: GpuAssetStatus) => void
 }
 
 /** The register table and its totals row (the fleet as it stands: disposed assets excluded). */
-export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWriteFleet, canBook, onPurchase, onDispose, onDelete }: RegisterTableProps) {
+export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWriteFleet, canBook, onPurchase, onDispose, onDelete, onMove }: RegisterTableProps) {
   const currency = useCurrency()
   const money = (n: number) => formatCurrencyFull(n, currency)
   const typeLabel = new Map(types.map(t => [t.id, t.label]))
   const facility = new Map(contracts.map(c => [c.id, c.facility]))
   const totals = fleetTotals(assets, asOf)
+  const book = bookingGate(canWriteFleet, canBook)
 
   return (
     <div className="overflow-x-auto rounded-card border">
@@ -77,13 +83,16 @@ export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWr
                 <td className="px-3 py-2 text-muted-foreground">{(a.datacenter_contract_id && facility.get(a.datacenter_contract_id)) || '—'}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-right">
                   <div className="flex justify-end gap-1.5">
-                    {a.status === 'planned' && !a.purchase_entry_id && (
-                      <GatedButton allowed={canBook} hint={ACCOUNTING_WRITE_HINT} onClick={() => onPurchase(a)}>Purchase</GatedButton>
+                    {statusMoves(a).map(to => (
+                      <GatedButton key={to} allowed={canWriteFleet} hint={FLEET_WRITE_HINT} onClick={() => onMove(a, to)}>{MOVE_LABEL[to]}</GatedButton>
+                    ))}
+                    {offersPurchase(a) && (
+                      <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onPurchase(a)}>Purchase</GatedButton>
                     )}
-                    {a.status !== 'planned' && a.status !== 'disposed' && (
-                      <GatedButton allowed={canBook} hint={ACCOUNTING_WRITE_HINT} onClick={() => onDispose(a)}>Dispose</GatedButton>
+                    {offersBookedActions(a) && (
+                      <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onDispose(a)}>Dispose</GatedButton>
                     )}
-                    {a.status === 'planned' && !a.purchase_entry_id && (
+                    {offersDelete(a) && (
                       <GatedButton allowed={canWriteFleet} hint={FLEET_WRITE_HINT} variant="ghost" onClick={() => onDelete(a)}>Delete</GatedButton>
                     )}
                   </div>
@@ -110,13 +119,15 @@ export function RegisterTable({ assets, types, contracts, asOf, vehicleId, canWr
 
 export interface ContractsTableProps {
   contracts: DatacenterContractRow[]
+  canWriteFleet: boolean
   canBook: boolean
   onEnd: (c: DatacenterContractRow) => void
   onRoll: (c: DatacenterContractRow) => void
 }
 
-export function ContractsTable({ contracts, canBook, onEnd, onRoll }: ContractsTableProps) {
+export function ContractsTable({ contracts, canWriteFleet, canBook, onEnd, onRoll }: ContractsTableProps) {
   const currency = useCurrency()
+  const book = bookingGate(canWriteFleet, canBook)
   return (
     <div className="overflow-x-auto rounded-card border">
       <table className="w-full text-sm">
@@ -147,8 +158,8 @@ export function ContractsTable({ contracts, canBook, onEnd, onRoll }: ContractsT
               <td className="whitespace-nowrap px-3 py-2 text-right">
                 {c.status === 'active' && (
                   <div className="flex justify-end gap-1.5">
-                    <GatedButton allowed={canBook} hint={ACCOUNTING_WRITE_HINT} onClick={() => onRoll(c)}>Roll schedules</GatedButton>
-                    <GatedButton allowed={canBook} hint={ACCOUNTING_WRITE_HINT} onClick={() => onEnd(c)}>End contract</GatedButton>
+                    <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onRoll(c)}>Roll schedules</GatedButton>
+                    <GatedButton allowed={book.allowed} hint={book.hint} onClick={() => onEnd(c)}>End contract</GatedButton>
                   </div>
                 )}
               </td>
@@ -199,6 +210,14 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   const close = () => setDialog(null)
   const done = () => { setActionError(null); void load() }
 
+  /** A status move: the route's 409 for a move it no longer allows is shown as it says it. */
+  async function move(a: GpuAsset, to: GpuAssetStatus) {
+    setActionError(null)
+    const r = await send(lf, fleetPaths.asset(a.id), 'PATCH', statusBody(to))
+    if (!r.ok) setActionError(r.error)
+    else load()
+  }
+
   async function remove(a: GpuAsset) {
     if (!window.confirm(`Delete ${a.name} from the register? Nothing is booked for it.`)) return
     setActionError(null)
@@ -230,6 +249,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
             onPurchase={a => setDialog({ kind: 'purchase', asset: a })}
             onDispose={a => setDialog({ kind: 'dispose', asset: a })}
             onDelete={remove}
+            onMove={move}
           />
         )}
         {!canBook && assets !== null && assets.length > 0 && (
@@ -246,7 +266,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
           <EmptyState compact>No datacenter contracts yet.</EmptyState>
         ) : (
           <ContractsTable
-            contracts={contracts} canBook={canBook}
+            contracts={contracts} canWriteFleet={canWriteFleet} canBook={canBook}
             onEnd={c => setDialog({ kind: 'end', contract: c })}
             onRoll={c => setDialog({ kind: 'roll', contract: c })}
           />
