@@ -1782,6 +1782,29 @@ export async function getFleetScenarios(ctx: ForecastServiceContext, input: { ve
   }
 }
 
+/**
+ * One fleet plan's scenario tables for the forecast workbook (Headline, Series, Detail), redacted
+ * for the caller — a published version's frozen fleet when one is asked for. Null when the plan, or
+ * the version, has no fleet.
+ */
+export async function getFleetReport(
+  ctx: ForecastServiceContext, input: { vehicle: string; planId: string; versionId?: string | null },
+): Promise<{ comparison: ScenarioComparison; detail: ScenarioDetail } | null> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  if (!isGpuSpv(v.kind)) return null
+  const row = await loadPlanRow(ctx, v, input.planId)
+  let fleet: unknown = row.fleet
+  if (input.versionId) {
+    const { data } = await (ctx.admin as any).from('forecast_versions').select('fleet')
+      .eq('fund_id', ctx.fundId).eq('plan_id', row.id).eq('id', input.versionId).maybeSingle()
+    fleet = data?.fleet ?? null
+  }
+  const { fleet: run } = await loadFleet(ctx, v, fleet)
+  if (!run) return null
+  const showCarry = seesCarry(ctx.access)
+  return { comparison: scenarioComparison({ [row.name]: run.result }, { showCarry }), detail: scenarioDetail(run.result, { showCarry }) }
+}
+
 /** "GP I LLC" or "GP I LLC 60%, Jane Doe 40%" — the fund's carry recipients; null when it names none. */
 async function carryRecipientLabel(ctx: ForecastServiceContext, vehicleName: string): Promise<string | null> {
   const terms = await loadCarryTerms(ctx.admin, ctx.fundId, vehicleName)

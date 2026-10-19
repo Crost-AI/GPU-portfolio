@@ -20,6 +20,7 @@ import type { FixedParams, GrowthParams, ManagementFeeParams, RecurringParams, R
 import type { CashSection } from './report'
 import type { RuleView, SeriesResult, VarianceResponse } from './service'
 import type { VarianceCell } from './variance'
+import type { ReportFormat, ReportRow, ScenarioComparison, ScenarioDetail, Table } from '@/lib/gpu/report'
 
 /** Accounting format — thousands, two decimals, negatives in parentheses. */
 const NUM = '#,##0.00;(#,##0.00)'
@@ -40,6 +41,8 @@ export interface ForecastWorkbookInput {
   /** The interval the person was looking at; a quarterly or annual sheet is added on top. */
   interval: Interval
   meta: ForecastWorkbookMeta
+  /** A GPU SPV fleet plan's scenario tables (lib/gpu/report.ts), already redacted for the caller. */
+  fleet?: { comparison: ScenarioComparison; detail: ScenarioDetail } | null
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -496,7 +499,44 @@ export function buildForecastWorkbook(input: ForecastWorkbookInput): XLSX.WorkBo
   if (rollup) XLSX.utils.book_append_sheet(wb, rollup.ws, input.interval === 'quarter' ? 'Quarterly' : 'Annual')
   XLSX.utils.book_append_sheet(wb, monthly.ws, MONTHLY)
   XLSX.utils.book_append_sheet(wb, assumptions, ASSUMPTIONS)
+  if (input.fleet) {
+    XLSX.utils.book_append_sheet(wb, reportSheet([['Scenario headline (pack §1, §4)', input.fleet.comparison.headline]]), 'Headline')
+    const sr = input.fleet.comparison.series
+    XLSX.utils.book_append_sheet(wb, reportSheet([
+      ['Revenue', sr.revenue], ['Operating profit', sr.operatingProfit], ['Net cash flow', sr.netCashFlow],
+      ['To investors', sr.toInvestors], ['To manager', sr.toManager],
+    ]), 'Series')
+    const d = input.fleet.detail
+    XLSX.utils.book_append_sheet(wb, reportSheet([
+      ['Operating cash flow', d.operating], ['Investor waterfall (annual, pack convention)', d.waterfall], ['$ per GPU-hour', d.rates],
+    ]), 'Detail')
+  }
   return wb
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fleet scenario sheets: the report.ts tables as they are, a block per table
+// ---------------------------------------------------------------------------------------------
+
+const REPORT_FORMAT: Record<ReportFormat, string | undefined> = { usd: NUM, pct: PCT, multiple: '0.00"x"', year: '0' }
+
+/** Values as the app returned them; a hidden (redacted) figure is a dash, never a 0. */
+function reportSheet(blocks: [string, Table][]): XLSX.WorkSheet {
+  const g = new Grid()
+  let r = 0
+  let width = 0
+  for (const [title, t] of blocks) {
+    g.set(r++, 0, title)
+    g.row(r++, ['', ...t.columns.map(c => (typeof c === 'number' ? `Y${c}` : c)), 'Total'])
+    for (const row of t.rows as ReportRow[]) {
+      const z = REPORT_FORMAT[row.format]
+      const cell = (v: number | null): Val | Cell => (row.redacted ? '—' : v == null ? null : { v, z })
+      g.row(r++, [row.label, ...row.values.map(cell), row.total == null ? (row.redacted ? '—' : null) : cell(row.total)])
+    }
+    width = Math.max(width, t.columns.length + 2)
+    r++
+  }
+  return g.toSheet([40, ...Array(Math.max(0, width - 1)).fill(16)])
 }
 
 /** Quarters or years, each a SUM of its months on the monthly sheet. */

@@ -3,6 +3,9 @@ import * as XLSX from 'xlsx'
 import { buildForecastWorkbook, buildVarianceWorkbook } from './workbook'
 import { varianceCell } from './variance'
 import type { RuleView, SeriesResult, VarianceResponse } from './service'
+import { runFleetScenario } from '@/lib/gpu/scenario'
+import { scenarioComparison, scenarioDetail } from '@/lib/gpu/report'
+import { PACK_FLEET, PACK_SCENARIO_TERMS, packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
 
 // Six months: January–March actual, April–June forecast. Each rule method the workbook drives from
 // the Assumptions sheet appears once, plus an override the rule doesn't explain.
@@ -155,5 +158,36 @@ describe('buildVarianceWorkbook', () => {
     expect(ws.F8).toMatchObject({ f: 'F7-F6', v: 70 })
     const net = rowOf(ws, 'Net income')
     expect(ws[`D${net}`].f).toMatch(/^D\d+-D\d+$/)
+  })
+})
+
+describe('a GPU SPV fleet plan adds its scenario sheets to the same workbook', () => {
+  const r = runFleetScenario(packAssumptions('base'), PACK_FLEET, PACK_SCENARIO_TERMS)
+  const withFleet = (showCarry: boolean) => buildForecastWorkbook({
+    monthly: fixture(), rules, interval: 'month',
+    accounts: lines.map(l => ({ id: l.accountId, code: l.code, name: l.name })),
+    meta: { fundName: 'Test Fund', generatedAt: '2026-10-11T00:00:00Z' },
+    fleet: { comparison: scenarioComparison({ 'Base case': r }, { showCarry }), detail: scenarioDetail(r, { showCarry }) },
+  })
+  const cellsOf = (ws: XLSX.WorkSheet) => Object.keys(ws).filter(k => !k.startsWith('!')).map(k => ws[k])
+
+  it('Headline, Series and Detail follow the forecast sheets, carrying the report values', () => {
+    const wb = withFleet(true)
+    expect(wb.SheetNames).toEqual(['Summary', 'Monthly', 'Assumptions', 'Headline', 'Series', 'Detail'])
+    const detail = wb.Sheets.Detail
+    const carry = rowOf(detail, 'Profit share → manager (carry)')
+    // Five years, then the total: 549,824 (pack §5).
+    expect(Math.round(detail[`G${carry}`].v)).toBe(549_824)
+    expect(cellsOf(wb.Sheets.Headline).some(c => c.v === 'Base case')).toBe(true)
+  })
+
+  it('a hidden manager figure is a dash, never a number', () => {
+    const detail = withFleet(false).Sheets.Detail
+    const carry = rowOf(detail, 'Profit share → manager (carry)')
+    for (const col of ['B', 'C', 'D', 'E', 'F', 'G']) expect(detail[`${col}${carry}`].v).toBe('—')
+  })
+
+  it('a plan without a fleet keeps the workbook as it was', () => {
+    expect(build().SheetNames).toEqual(['Summary', 'Monthly', 'Assumptions'])
   })
 })

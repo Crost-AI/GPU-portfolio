@@ -42,10 +42,11 @@ const ACCESS: AccessContext = { fundId: 'f1', userId: 'u1', role: 'member', vehi
 
 /** A memory database whose forecast_save / forecast_publish do what the SQL does to the rows these tests read. */
 function books() {
+  const written = new Set<string>()
   const { admin, tables } = memoryAdmin({
     chart_of_accounts: GPU_SPV_CHART.map(a => ({ id: `acct-${a.code}`, fund_id: 'f1', vehicle_id: 'v1', code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, is_active: true })),
     forecast_plans: [], forecast_rules: [], forecast_overrides: [], forecast_versions: [], forecast_entries: [], gpu_asset_types: [], fund_vehicles: [], lp_entities: [],
-  })
+  }, { before: table => { written.add(table) } })
   let n = 0
   const rpc = vi.fn(async (name: string, args: any) => {
     const plan = tables.forecast_plans.find(p => p.id === args.p_plan_id)!
@@ -66,7 +67,7 @@ function books() {
     }
     return { data: null, error: null }
   })
-  return { admin: { from: (t: string) => (admin as any).from(t), rpc } as any, tables, rpc }
+  return { admin: { from: (t: string) => (admin as any).from(t), rpc } as any, tables, rpc, written }
 }
 const ctx = (admin: any) => ({ admin, fundId: 'f1', userId: 'u1', access: ACCESS })
 
@@ -124,6 +125,17 @@ describe('createPitchScenarios', () => {
     expect(second.plans).toEqual(first.plans)
     expect(b.tables.forecast_plans).toHaveLength(6)
     expect(b.rpc.mock.calls.length).toBe(writes)
+  })
+
+  it('books no journal entries (the #86 ground rule): forecast_* only, through forecast_save and forecast_publish', async () => {
+    const b = books()
+    await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
+    expect([...b.written].filter(t => !t.startsWith('forecast_'))).toEqual([])
+    expect(new Set(b.rpc.mock.calls.map(c => c[0]))).toEqual(new Set(['forecast_save', 'forecast_publish']))
+    // Every compiled entry the seed saved is a forecast entry; none names a journal source_ref.
+    const saved = b.rpc.mock.calls.flatMap(c => c[1].p_entries ?? [])
+    expect(saved.length).toBeGreaterThan(0)
+    expect(saved.every((e: any) => !('source_ref' in e))).toBe(true)
   })
 
   it('gives a GPU SPV plan no fund-style fee or expense rules from construction terms', async () => {
