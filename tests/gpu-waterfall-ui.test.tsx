@@ -262,6 +262,12 @@ describe('any input change invalidates the preview', () => {
     expect(calls).toHaveLength(1)
   })
 
+  it('the waterfall inputs are held while a preview is out', () => {
+    const html = form(proposalReducer(filled(), { type: 'previewStart' }))
+    for (const id of ['wf-date', 'wf-available', 'wf-reserve', 'wf-contingency']) expect(input(html, id)).toContain('disabled=""')
+    expect(input(form(filled()), 'wf-reserve')).not.toContain('disabled=""')
+  })
+
   it('so does one changed and changed back: the key, not the flag, decides', () => {
     let s = proposalReducer(filled(), { type: 'previewStart' })
     const key = previewKey(s.inputs)!

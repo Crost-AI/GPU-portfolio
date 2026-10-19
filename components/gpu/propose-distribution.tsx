@@ -210,6 +210,9 @@ export function ProposalForm({ state, dispatch, seesCarry, money, onPreview, onD
         onChange={set(f)}
         aria-invalid={errField === f || undefined}
         aria-describedby={errField === f ? 'wf-error' : undefined}
+        // Held while a preview is out, so the reply describes what the form shows. The key check
+        // (previewedFor) still guards a reply that lands after the dialog was reopened.
+        disabled={state.busy != null}
         {...props}
       />
       {hint && <p className="text-caption text-muted-foreground">{hint}</p>}
