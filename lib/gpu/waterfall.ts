@@ -84,9 +84,11 @@ export interface CashWaterfallState {
  */
 export type WaterfallEvent =
   | { kind: 'contribution'; date: string; lpEntityId: string; amount: number; periodFraction?: number }
-  | { kind: 'distribution'; date: string; amount: number; periodFraction?: number }
+  | { kind: 'distribution'; date: string; amount: number; periodFraction?: number; contingencyReturn?: number }
 
 export interface CashTiers {
+  /** Unspent capex contingency handed back before the tiers (R8): investors only, no carry. */
+  contingencyReturn: number
   prefDue: number
   preferred: number
   prefCarriedForward: number
@@ -102,6 +104,7 @@ export interface CashTiers {
 export interface CashLine {
   lpEntityId: string
   amount: number
+  contingencyReturn: number
   preferred: number
   roc: number
   profit: number
@@ -262,31 +265,51 @@ function splitAcrossRecipients(totalCents: number, recipients: CarryRecipient[])
     .filter(l => l.amount > 0)
 }
 
-/** Run one distribution of `amount` on `date` through the tiers (plan §3.4). */
+/**
+ * Run one distribution of `amount` on `date` through the tiers (plan §3.4).
+ *
+ * `contingencyReturn` (R8) is unspent capex contingency handed back as part of `amount`. It is not
+ * profit, so it comes off BEFORE the tiers: 100% to investors by unreturned capital, no fee, no
+ * carry, and it reduces unreturned capital (so the pref base) like return of capital does. It is
+ * capped at the capital still unreturned; anything above that runs through the tiers as usual.
+ */
 export function distribute(
   state: CashWaterfallState,
   amount: number,
   date: string,
   terms: CashWaterfallTerms,
   periodFraction?: number,
+  opts: { contingencyReturn?: number } = {},
 ): CashDistribution {
   const D = cents(amount)
   if (D < 0) throw new Error('A distribution cannot be negative.')
+  const askedContingency = cents(opts.contingencyReturn ?? 0)
+  if (askedContingency < 0 || askedContingency > D) {
+    throw new Error('The contingency returned must be between 0 and the amount distributed.')
+  }
   const s = accrue(state, date, terms, periodFraction)
   const inv = s.investors
   if (D > 0 && inv.length === 0) throw new Error('No investor has contributed, so there is no one to distribute to.')
 
+  // 0. Unspent contingency, by unreturned capital. Apportioning at most the total unreturned by
+  //    unreturned never gives an investor more than it has unreturned (largest remainder adds at
+  //    most one cent to a share whose exact value is below its integer weight).
+  const unreturnedBefore = inv.map(i => cents(i.unreturned))
+  const contingency = Math.min(askedContingency, unreturnedBefore.reduce((a, b) => a + b, 0))
+  const contingencyLines = apportionCents(contingency, unreturnedBefore)
+
   // 1. Preferred return: the vehicle's exact owed balance, rounded once, apportioned by what each owes.
   const owed = inv.map(i => i.prefAccrued - i.prefPaid)
   const prefDue = Math.max(0, cents(owed.reduce((a, b) => a + b, 0)))
-  const preferred = Math.min(D, prefDue)
+  // Out of what is left after the contingency: it is part of D, not on top of it.
+  const preferred = Math.min(D - contingency, prefDue)
   const prefLines = apportionCents(preferred, owed.map(o => Math.max(0, o)))
   const prefCarriedForward = prefDue - preferred
 
   // 2. Return of capital. The flow that retires all capital is unreturned / rocLpShare, in whole
   //    cents; the investors' part never exceeds what is unreturned.
-  const R = D - preferred
-  const unreturned = inv.map(i => cents(i.unreturned))
+  const R = D - contingency - preferred
+  const unreturned = unreturnedBefore.map((u, k) => u - contingencyLines[k])
   const unreturnedTotal = unreturned.reduce((a, b) => a + b, 0)
   const flow = Math.min(R, Math.ceil(unreturnedTotal / terms.rocLpShare - 1e-9))
   const roc = Math.min(unreturnedTotal, cents(dollars(flow) * terms.rocLpShare))
@@ -301,7 +324,8 @@ export function distribute(
 
   const lines: CashLine[] = inv.map((i, k) => ({
     lpEntityId: i.lpEntityId,
-    amount: dollars(prefLines[k] + rocLines[k] + profitLines[k]),
+    amount: dollars(contingencyLines[k] + prefLines[k] + rocLines[k] + profitLines[k]),
+    contingencyReturn: dollars(contingencyLines[k]),
     preferred: dollars(prefLines[k]),
     roc: dollars(rocLines[k]),
     profit: dollars(profitLines[k]),
@@ -320,6 +344,7 @@ export function distribute(
 
   return {
     tiers: {
+      contingencyReturn: dollars(contingency),
       prefDue: dollars(prefDue),
       preferred: dollars(preferred),
       prefCarriedForward: dollars(prefCarriedForward),
@@ -328,7 +353,7 @@ export function distribute(
       unreturnedAfter: dollars(unreturnedTotal - roc),
       profitToLP: dollars(profitToLP),
       carry: dollars(carry),
-      toLP: dollars(preferred + roc + profitToLP),
+      toLP: dollars(contingency + preferred + roc + profitToLP),
       toGP: dollars(carry + managerRocShare),
     },
     lines,
@@ -363,7 +388,7 @@ function fractionOf(e: WaterfallEvent, terms: CashWaterfallTerms): number | unde
 function apply(state: CashWaterfallState, e: WaterfallEvent, terms: CashWaterfallTerms): { state: CashWaterfallState; dist?: CashDistribution } {
   const fraction = fractionOf(e, terms)
   if (e.kind === 'distribution') {
-    const dist = distribute(state, e.amount, e.date, terms, fraction)
+    const dist = distribute(state, e.amount, e.date, terms, fraction, { contingencyReturn: e.contingencyReturn })
     return { state: dist.state, dist }
   }
   return { state: contribute(accrue(state, e.date, terms, fraction), e) }

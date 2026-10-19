@@ -38,6 +38,9 @@ import type { JournalEntry } from './types'
 export const INTERCOMPANY_KINDS = [
   'management_fee', 'expense_reimbursement', 'allocated_cost',
   'loan_advance', 'loan_repayment', 'other',
+  // The management company handing back part of a fee already charged (a GPU SPV's fee true-up
+  // when revenue is reversed after the fee was paid): payer and payee swap.
+  'management_fee_rebate',
 ] as const
 
 export type IntercompanyKind = (typeof INTERCOMPANY_KINDS)[number]
@@ -49,6 +52,7 @@ export const INTERCOMPANY_KIND_LABELS: Record<IntercompanyKind, string> = {
   loan_advance: 'Advance',
   loan_repayment: 'Advance repaid',
   other: 'Other charge',
+  management_fee_rebate: 'Management fee rebate',
 }
 
 /**
@@ -58,7 +62,7 @@ export const INTERCOMPANY_KIND_LABELS: Record<IntercompanyKind, string> = {
  * row, because that is what actually happened).
  */
 const ACCRUING_KINDS: IntercompanyKind[] = [
-  'management_fee', 'expense_reimbursement', 'allocated_cost', 'other',
+  'management_fee', 'expense_reimbursement', 'allocated_cost', 'other', 'management_fee_rebate',
 ]
 
 export function isAccruingKind(kind: IntercompanyKind): boolean {
@@ -83,6 +87,8 @@ const INCOME_SUBTYPES: Record<IntercompanyKind, string[]> = {
   expense_reimbursement: ['reimbursement_income', 'other_income'],
   allocated_cost: ['reimbursement_income', 'other_income'],
   other: ['other_income', 'reimbursement_income'],
+  // The payee of a rebate is the vehicle that paid the fee: what it gains is its fee expense back.
+  management_fee_rebate: ['management_fee'],
   // Cash kinds never touch the P&L: lending money is not income to the lender.
   loan_advance: [],
   loan_repayment: [],
@@ -93,6 +99,8 @@ const EXPENSE_SUBTYPES: Record<IntercompanyKind, string[]> = {
   expense_reimbursement: ['partnership_expense', 'operating_expense', 'office'],
   allocated_cost: ['partnership_expense', 'operating_expense', 'office'],
   other: ['partnership_expense', 'operating_expense', 'office'],
+  // The payer of a rebate is the management company: what it gives up is fee income it booked.
+  management_fee_rebate: ['management_fee_income'],
   loan_advance: [],
   loan_repayment: [],
 }
@@ -322,6 +330,18 @@ export async function resolveSideAccounts(
   return { intercompanyAccountId, cashAccountId: cash, pnlAccountId: pnl }
 }
 
+/**
+ * Void an ACCRUED charge and both of its entries — a charge that has to be re-issued at another
+ * amount before any cash moved (a GPU SPV's fee true-up when revenue is reversed). One database
+ * transaction (`void_intercompany_charge`): the charge is locked, rechecked unsettled, and its two
+ * entries, the allocations they generated and the row are voided together or not at all. A settled
+ * charge is refused: what has been paid is undone by a rebate, not by voiding history.
+ */
+export async function voidUnsettledCharge(admin: SupabaseClient, fundId: string, chargeId: string): Promise<{ ok: true } | { error: string }> {
+  const { error } = await admin.rpc('void_intercompany_charge' as any, { p_fund_id: fundId, p_charge_id: chargeId } as any)
+  return error ? { error: `Charge ${chargeId} could not be voided: ${error.message}` } : { ok: true }
+}
+
 // ── Posting ───────────────────────────────────────────────────────────────────────────────────
 
 export interface PostChargeArgs {
@@ -344,6 +364,9 @@ export interface PostChargeArgs {
    * so a second issue of the same invoice is refused at the insert, before anything is posted.
    */
   partnershipInvoiceId?: string | null
+  /** The system process that raised the charge (e.g. `gpu-fee:<vehicle>:<YYYY-MM>`), so it can find
+   *  its own charges without reading the memo. Absent for a charge raised by hand. */
+  sourceRef?: string | null
 }
 
 /**
@@ -378,6 +401,7 @@ export async function postIntercompanyCharge(
       status: 'accrued',
       created_by: args.userId,
       partnership_invoice_id: args.partnershipInvoiceId ?? null,
+      ...(args.sourceRef ? { source_ref: args.sourceRef } : {}),
     })
     .select('id')
     .single()

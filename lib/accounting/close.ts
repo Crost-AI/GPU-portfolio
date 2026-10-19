@@ -24,6 +24,7 @@ import { fleetCloseReview, type FleetReviewCheck } from '@/lib/gpu/close-checks'
 // Reopening voids exactly those entries — nothing else — so a mistake is reversible
 // without hand-unwinding fifteen capital postings.
 
+import { accrueGrossRevenueFee, loadFeeTerms } from '@/lib/gpu/fee'
 import { recordAudit } from '@/lib/audit/events'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadPostedLedger, loadOwnership, loadEntityNames, fetchAllRows } from './load'
@@ -1303,6 +1304,34 @@ export async function closePeriodWithAllocation(
   }
   entryIds.push(...interestResult.entryIds)
 
+  // 2b'. ── GPU fleet (P2) ── TRUE UP THE GROSS-REVENUE FEE for each month in the period, for a
+  // vehicle whose fee terms say so (a GPU SPV). Before carry, because it is an expense; each month
+  // posts only the difference from what is booked under its ref, so re-closing posts nothing.
+  // The fee entry allocates to partners as it posts.
+  if (preview.mode !== 'owner') {
+    let feeTerms
+    try {
+      feeTerms = await loadFeeTerms(admin, fundId, group)
+    } catch (e) {
+      feeTerms = { error: e instanceof Error ? e.message : String(e) }
+    }
+    if (feeTerms && 'error' in feeTerms) {
+      await reopenPeriodWithReversal(admin, fundId, group, periodId)
+      await admin.from('fiscal_periods' as any).delete().eq('id', periodId).eq('fund_id', fundId)
+      return { error: `Management fee accrual failed: ${feeTerms.error}` }
+    }
+    if (feeTerms?.basis === 'gross_revenue') {
+      for (const w of monthWindows(periodStart, periodEnd)) {
+        const fee = await accrueGrossRevenueFee(admin, fundId, group, userId, w.end.slice(0, 7))
+        if ('error' in fee) {
+          await reopenPeriodWithReversal(admin, fundId, group, periodId)
+          await admin.from('fiscal_periods' as any).delete().eq('id', periodId).eq('fund_id', fundId)
+          return { error: `Management fee accrual failed (${w.label}): ${fee.error}` }
+        }
+      }
+    }
+  }
+
   // 2c. ACCRUE CARRIED INTEREST — last, and only after every other category has landed.
   //
   // Carry is computed on the NAV those allocations produce, so it cannot be just another
@@ -1556,6 +1585,10 @@ export async function accrueCarry(
     return { error: `Could not read the carry terms: ${(error as any)?.message ?? String(error)}` }
   }
   if (terms.kind === 'none' || terms.carryRate <= 0) return {}
+  // A GPU SPV's profit share is booked only when a distribution is declared (Karl, R4: investor
+  // statements show PAID profit share only), as a realised reallocation alongside the
+  // carry_distribution (declareDistribution). Nothing unrealised is accrued at the close.
+  if (terms.kind === 'distributable_cash') return {}
   if (terms.recipients.length === 0) {
     return { error: `${group} has carry terms but no recipient set to receive the carry.` }
   }
