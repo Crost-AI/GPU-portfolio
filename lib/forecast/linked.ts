@@ -29,7 +29,8 @@ import {
   FleetAssumptionsError, fleetFromRegister, fleetMonthly, registerContingencySpent, scenarioTermsFor, validateFleetAssumptions,
   type FleetMonthly,
 } from '@/lib/gpu/fleet-forecast'
-import { runFleetScenario, ScenarioInputError, type FleetAssumptions, type FleetScenarioResult, type ScenarioTerms } from '@/lib/gpu/scenario'
+import { runFleetScenario, ScenarioInputError, type FleetAssumptions, type FleetScenarioResult, type PlannedAsset, type ScenarioTerms } from '@/lib/gpu/scenario'
+import { PACK_SCENARIO_TERMS } from '@/lib/gpu/fixtures/pack-v3-fleet'
 import type { GpuAssetTypeRow } from '@/lib/gpu/types'
 import type { CashTiming } from './compile'
 import { monthlyConstruction, type MonthlyConstruction } from './construction-adapter'
@@ -129,6 +130,8 @@ export interface LinkedLoad {
 /** A plan's fleet scenario, as run: the assumptions with the register resolved, and the result. */
 export interface FleetLoad {
   assumptions: FleetAssumptions
+  /** The servers it ran on: the plan's own, or the register's as read. */
+  assets: PlannedAsset[]
   /** The vehicle's terms the scenario ran on (before the plan's overrides, which the engine applies). */
   terms: ScenarioTerms
   result: FleetScenarioResult
@@ -145,6 +148,11 @@ export async function loadFleet(
   ctx: { admin: SupabaseClient; fundId: string },
   vehicle: { id: string; name: string; kind: string },
   raw: unknown,
+  /**
+   * A published version's fleet (materializeFleet): it holds its servers and every term the engine
+   * reads, so it runs from itself alone — no register, no vehicle terms read today.
+   */
+  opts: { frozen?: boolean } = {},
 ): Promise<{ fleet: FleetLoad | null; warnings: string[] }> {
   if (raw == null || !isGpuSpv(vehicle.kind)) return { fleet: null, warnings: [] }
   let a: FleetAssumptions
@@ -155,6 +163,10 @@ export async function loadFleet(
     throw e
   }
   const warnings: string[] = []
+  if (opts.frozen) {
+    if (a.assets === 'register') return { fleet: null, warnings: ['This version was published without its servers, so its scenario cannot be shown'] }
+    return run(a, a.assets, PACK_SCENARIO_TERMS, warnings)
+  }
   let fleet = a.assets === 'register' ? [] : a.assets
   if (a.assets === 'register') {
     const [assets, types] = await Promise.all([
@@ -173,12 +185,34 @@ export async function loadFleet(
   const [carry, fee] = await Promise.all([loadCarryTerms(ctx.admin, ctx.fundId, vehicle.name), loadFeeTerms(ctx.admin, ctx.fundId, vehicle.name)])
   const { terms, warnings: termWarnings } = scenarioTermsFor(carry, fee)
   warnings.push(...termWarnings)
+  return run(a, fleet, terms, warnings)
+}
+
+function run(a: FleetAssumptions, assets: PlannedAsset[], terms: ScenarioTerms, warnings: string[]): { fleet: FleetLoad | null; warnings: string[] } {
   try {
-    const result = runFleetScenario(a, fleet, terms)
-    return { fleet: { assumptions: a, terms, result, monthly: fleetMonthly(a, result) }, warnings }
+    const result = runFleetScenario(a, assets, terms)
+    return { fleet: { assumptions: a, assets, terms, result, monthly: fleetMonthly(a, result) }, warnings }
   } catch (e) {
     if (e instanceof ScenarioInputError) return { fleet: null, warnings: [...warnings, `The fleet scenario cannot be run: ${e.message}`] }
     throw e
+  }
+}
+
+/**
+ * The fleet as a published version freezes it: the servers the scenario ran on (the register as read
+ * today, for a register plan) and the terms it ran on as overrides, so the version runs the same
+ * scenario whatever the register or the vehicle's terms say later (loadFleet `frozen`).
+ */
+export function materializeFleet(f: FleetLoad): FleetAssumptions {
+  const o = f.assumptions.overrides ?? {}
+  const w = f.terms.waterfall
+  return {
+    ...f.assumptions,
+    assets: f.assets,
+    overrides: {
+      feeRate: o.feeRate ?? f.terms.feeRate, prefRate: o.prefRate ?? w.prefRate,
+      carryRate: o.carryRate ?? w.carryRate, rocLpShare: o.rocLpShare ?? w.rocLpShare,
+    },
   }
 }
 

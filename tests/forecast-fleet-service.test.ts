@@ -24,7 +24,8 @@ vi.mock('@/lib/accounting/periods', async orig => ({ ...(await orig<typeof impor
 vi.mock('@/lib/accounting/currency', async orig => ({ ...(await orig<typeof import('@/lib/accounting/currency')>()), fundCurrency: async () => 'USD' }))
 vi.mock('@/lib/accounting/load', async orig => ({ ...(await orig<typeof import('@/lib/accounting/load')>()), loadPostedLedger: async () => ({ postings: [] }) }))
 vi.mock('@/lib/accounting/carry', async orig => ({ ...(await orig<typeof import('@/lib/accounting/carry')>()), loadCarryTerms: async () => NO_CARRY }))
-vi.mock('@/lib/gpu/fee', async orig => ({ ...(await orig<typeof import('@/lib/gpu/fee')>()), loadFeeTerms: async () => null }))
+const feeTerms = vi.hoisted(() => ({ current: null as any }))
+vi.mock('@/lib/gpu/fee', async orig => ({ ...(await orig<typeof import('@/lib/gpu/fee')>()), loadFeeTerms: async () => feeTerms.current }))
 vi.mock('@/lib/accounting/capital-source', async orig => ({ ...(await orig<typeof import('@/lib/accounting/capital-source')>()), loadCapitalPostings: async () => ({ postings: [] }) }))
 vi.mock('@/lib/accounting/distributions', async orig => ({ ...(await orig<typeof import('@/lib/accounting/distributions')>()), loadContingencyByDate: async () => new Map() }))
 vi.mock('@/lib/accounting/construction-service', () => ({
@@ -36,7 +37,7 @@ vi.mock('@/lib/accounting/construction-service', () => ({
   loadConstructionSeed: async () => null,
 }))
 
-import { getPlan, getPlanReturns, publishPlan, savePlan, ForecastError } from '@/lib/forecast/service'
+import { createPlan, getFleetReport, getPlan, getPlanReturns, publishPlan, savePlan, ForecastError } from '@/lib/forecast/service'
 import { PACK_FLEET, PACK_SCENARIO_TERMS, packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
 import { runFleetScenario } from '@/lib/gpu/scenario'
 import { F1 } from '@/lib/gpu/fixtures/pack-v3'
@@ -65,6 +66,7 @@ const plan = (over: Record<string, unknown> = {}) => ({
 })
 
 function books(plans: Record<string, unknown>[], withRules = true) {
+  const inserted: any[] = []
   const { admin, tables } = memoryAdmin({
     chart_of_accounts: GPU_SPV_CHART.map(a => ({ id: `acct-${a.code}`, fund_id: 'f1', vehicle_id: 'v1', code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, is_active: true })),
     forecast_plans: plans,
@@ -73,14 +75,14 @@ function books(plans: Record<string, unknown>[], withRules = true) {
       cash_timing: { mode: 'same' }, source: 'seeded', note: null,
     })) : [],
     forecast_overrides: [], forecast_versions: [], forecast_entries: [], gpu_asset_types: [], fund_vehicles: [], lp_entities: [],
-  })
+  }, { before: (table, op, payload) => { if (table === 'forecast_plans' && op === 'insert') inserted.push(...[payload].flat()) } })
   const rpc = vi.fn(async (name: string, _args: any) => ({ data: name === 'forecast_publish' ? { id: 'ver1', versionNo: 1 } : null, error: null }))
-  return { admin: { from: (t: string) => (admin as any).from(t), rpc } as any, tables, rpc }
+  return { admin: { from: (t: string) => (admin as any).from(t), rpc } as any, tables, rpc, inserted }
 }
 const ctx = (admin: any, a: AccessContext = WRITER) => ({ admin, fundId: 'f1', userId: 'u1', access: a })
 const statusOf = async (p: Promise<unknown>) => { try { await p; return 200 } catch (e) { if (e instanceof ForecastError) return e.status; throw e } }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => { vi.clearAllMocks(); feeTerms.current = null })
 
 describe('plan PATCH: fleet', () => {
   it('stores the checked assumptions through forecast_save, and GET returns them', async () => {
@@ -111,20 +113,55 @@ describe('plan PATCH: fleet', () => {
 })
 
 describe('publishing freezes the fleet', () => {
-  it('hands the plan’s fleet to forecast_publish as p_fleet', async () => {
+  it('hands the plan’s fleet to forecast_publish as p_fleet, with the terms it ran on frozen in', async () => {
     const b = books([plan()])
     await publishPlan(ctx(b.admin), { vehicle: GPU, planId: 'p1', expectedRevision: 3, status: 'published' })
     const [name, args] = b.rpc.mock.calls.find(c => c[0] === 'forecast_publish')!
     expect(name).toBe('forecast_publish')
-    expect(args.p_fleet).toEqual(FLEET)
+    // The vehicle has no terms of its own here, so the pack's: 5% fee, 8% pref, 30% split, 100% ROC.
+    expect(args.p_fleet).toEqual({ ...FLEET, overrides: { feeRate: 0.05, prefRate: 0.08, carryRate: 0.3, rocLpShare: 1 } })
     // The frozen entries are the fleet compile: revenue on 4000 in the first plan month.
     expect(args.p_entries.some((e: any) => e.account_id === 'acct-4000' && e.entry_date.startsWith(firstPlanMonth))).toBe(true)
+  })
+
+  it('a register plan freezes the servers it ran on, and the version runs from its fleet alone', async () => {
+    const b = books([plan({ fleet: { ...FLEET, assets: 'register' } })])
+    b.tables.gpu_asset_types.push({ id: 't1', fund_id: 'f1', code: 'b200', label: 'B200', gpu_model: null, gpus_per_server: 8, anchor_rate: null, notes: null })
+    const assets = await import('@/lib/gpu/assets')
+    const list = vi.spyOn(assets, 'listAssets').mockResolvedValue([{ id: 'a1', name: 'srv-1', status: 'in_service', asset_type_id: 't1', hardware_cost: 410_000, capitalized_costs: 0 } as any])
+    feeTerms.current = { basis: 'gross_revenue', annualRate: 0.05, revenueSubtypes: ['rental_revenue'], frequency: 'monthly', payeeVehicleId: null }
+    await publishPlan(ctx(b.admin), { vehicle: GPU, planId: 'p1', expectedRevision: 3, status: 'approved' })
+    const frozen = b.rpc.mock.calls.find(c => c[0] === 'forecast_publish')![1].p_fleet
+    expect(frozen.assets).toEqual([{ typeCode: 'b200', servers: 1, gpusPerServer: 8, hardwareCost: 410_000, capitalizedCosts: 0 }])
+    expect(frozen.overrides.feeRate).toBe(0.05)
+    b.tables.forecast_versions.push({ id: 'ver1', fund_id: 'f1', plan_id: 'p1', fleet: frozen })
+    const before = await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1', versionId: 'ver1' })
+    // After publishing: the fee is cut and the register empties. The version's sheets do not move.
+    feeTerms.current = { ...feeTerms.current, annualRate: 0.02 }
+    list.mockResolvedValue([])
+    const after = await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1', versionId: 'ver1' })
+    expect(after).toEqual(before)
+    expect(Math.round(after!.detail.waterfall.rows.find(r => r.key === 'fee')!.total!)).toBeGreaterThan(0)
+    // The draft moves with them: an empty register is nothing to show.
+    expect(await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1' })).toBeNull()
+    list.mockRestore()
   })
 
   it('a plan without a fleet publishes p_fleet null', async () => {
     const b = books([plan({ fleet: null })], false)
     await publishPlan(ctx(b.admin), { vehicle: GPU, planId: 'p1', expectedRevision: 3, status: 'published' })
     expect(b.rpc.mock.calls.find(c => c[0] === 'forecast_publish')![1].p_fleet).toBeNull()
+  })
+})
+
+describe('copying a fleet plan', () => {
+  it('carries its fleet with its capital and hand edits', async () => {
+    const b = books([plan({ capital: { policy: { calls: { reserve: 7 } } } })])
+    await createPlan(ctx(b.admin), { vehicle: GPU, kind: 'rolling_forecast', name: 'Copy', seed: { from: 'plan', planId: 'p1' } }).catch(() => null)
+    const copy = b.tables.forecast_plans.find(p => p.name === 'Copy') ?? null
+    const inserted = copy ?? b.inserted.find((r: any) => r.name === 'Copy')
+    expect(inserted.fleet).toEqual(FLEET)
+    expect(inserted.capital).toEqual({ policy: { calls: { reserve: 7 } } })
   })
 })
 

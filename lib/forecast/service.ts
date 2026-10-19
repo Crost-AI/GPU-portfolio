@@ -39,7 +39,7 @@ import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntr
 import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, loadFeeLinks, loadFleet, loadLinkedDrivers, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
+import { cycleLabel, loadFeeLinks, loadFleet, loadLinkedDrivers, materializeFleet, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
 import { redactScenarioResult, type Cadence, type FleetScenarioResult, type RedactedScenarioResult } from '@/lib/gpu/scenario'
 import { scenarioComparison, scenarioDetail, type ScenarioComparison, type ScenarioDetail } from '@/lib/gpu/report'
 import { splitCashDistributions, type CashWaterfallInput } from './plan-returns'
@@ -755,11 +755,15 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
   const hasPrimary = !!(await primaryPlanRow(ctx.admin, ctx.fundId, v.id))
   // A copy is the whole plan as a new scenario: its calls/distributions policy and month edits, and
   // its hand edits, come with its rules and construction.
-  let copied: { capital?: unknown; adjustments?: unknown } = {}
+  let copied: { capital?: unknown; adjustments?: unknown; fleet?: unknown } = {}
   if (seed.from === 'plan' && seed.planId) {
-    const { data: src } = await (ctx.admin as any).from('forecast_plans').select('capital, adjustments')
+    const { data: src } = await (ctx.admin as any).from('forecast_plans').select('capital, adjustments, fleet')
       .eq('fund_id', ctx.fundId).eq('vehicle_id', v.id).eq('id', seed.planId).maybeSingle()
-    if (src) copied = { ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}) }
+    if (src) copied = {
+      ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}),
+      // A fleet scenario's copy is a fleet scenario: its rules name the fleet's flows.
+      ...(src.fleet != null && isGpuSpv(v.kind) ? { fleet: src.fleet } : {}),
+    }
   }
   const { data: inserted, error } = await (ctx.admin as any).from('forecast_plans').insert({
     construction, is_primary: !hasPrimary, ...copied, ...(fleet ? { fleet } : {}), revision: 0,
@@ -1245,7 +1249,7 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
   const label = optionalText(input.label, 'label', MAX_LABEL)
   const notes = optionalText(input.notes, 'notes', MAX_NOTES)
   const { rules, overrides } = await loadInputs(ctx, row.id)
-  const { built, cutoff } = await compile(ctx, v, row, rules, overrides)
+  const { built, cutoff, fleet } = await compile(ctx, v, row, rules, overrides)
   // A version freezes BOTH halves: the exits and deals it assumed, with its capital policy — written
   // by forecast_publish in the version's own INSERT (versions are immutable; an UPDATE afterwards is
   // refused). A plan with no construction of its own yet freezes the one it compiled from.
@@ -1258,8 +1262,9 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
     p_entries: entriesJson(built.entries),
     p_construction: construction ?? null,
     p_capital: row.capital ?? {},
-    // The fleet it assumed, frozen with it (null on every plan that is not a fleet scenario).
-    p_fleet: row.fleet ?? null,
+    // The fleet it assumed, frozen whole: the servers and the terms it ran on, so the version's
+    // scenario never reruns against a register or terms changed since (null on every other plan).
+    p_fleet: fleet ? materializeFleet(fleet) : row.fleet ?? null,
   })
   if (error) rpcError(error)
   return { versionId: (data as any).id as string, versionNo: (data as any).versionNo as number }
@@ -1822,7 +1827,8 @@ export async function getFleetReport(
     if (error) throw error
     fleet = data?.fleet ?? null
   }
-  const { fleet: run } = await loadFleet(ctx, v, fleet)
+  // A version runs from its frozen fleet alone; the draft from the plan's, on today's register and terms.
+  const { fleet: run } = await loadFleet(ctx, v, fleet, { frozen: !!input.versionId })
   if (!run) return null
   const showCarry = seesCarry(ctx.access)
   return { comparison: scenarioComparison({ [row.name]: run.result }, { showCarry }), detail: scenarioDetail(run.result, { showCarry }) }
