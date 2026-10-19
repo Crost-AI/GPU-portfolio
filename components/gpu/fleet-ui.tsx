@@ -104,6 +104,11 @@ export function GatedButton({ allowed, hint, onClick, children, variant = 'outli
   )
 }
 
+/** The date an as-of field commits, or null while it is partial or not a real date (the route 400s on both). */
+export function asOfCommit(value: string): string | null {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && isValidLocalDateTime(value) ? value : null
+}
+
 /**
  * The as-of date the fleet figures are valued at. Only a complete, real date replaces the current one,
  * so typing through the field never sends a half-typed date to the route (which 400s on it).
@@ -119,7 +124,8 @@ export function AsOfControl({ id, value, onChange }: { id: string; value: string
         value={draft}
         onChange={e => {
           setDraft(e.target.value)
-          if (isValidLocalDateTime(e.target.value) && /^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) onChange(e.target.value)
+          const committed = asOfCommit(e.target.value)
+          if (committed) onChange(committed)
         }}
         className="h-9 rounded-md border border-input bg-background px-2 text-sm tabular-nums"
       />

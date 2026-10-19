@@ -17,7 +17,7 @@ import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-cont
 import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { CapexEventsTable, ValuationCard } from '@/components/gpu/asset-detail'
 import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
-import { ErrorAlert } from '@/components/gpu/fleet-ui'
+import { ErrorAlert, asOfCommit } from '@/components/gpu/fleet-ui'
 import { ZERO_TOTALS, fleetTotals, isOffBooks, mayCountLaterPurchases, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
@@ -229,13 +229,31 @@ describe('the as-of date is sent on every assets fetch', () => {
     expect(await listAssets(fetcher, '2026-02-30')).toEqual({ ok: false, status: 400, error: 'as_of must be a date, YYYY-MM-DD' })
   })
 
-  it('every page that fetches assets passes its as-of (none relies on the route\u2019s UTC default)', () => {
-    const read = (f: string) => readFileSync(path.join(process.cwd(), f), 'utf8')
-    expect(read('components/gpu/fleet-register.tsx')).toContain('listAssets(lf, asOf)')
-    expect(read('components/gpu/asset-detail.tsx')).toContain('getAsset(lf, assetId, asOf)')
-    expect(read('components/gpu/fleet-overview.tsx')).toContain('listVehicleAssets(browserFetch, v.name, asOf)')
-    expect(read('app/(app)/funds/[id]/gpu-detail-view.tsx')).toContain('listVehicleAssets(browserFetch, vehicle, todayIso())')
-    expect(read('components/gpu/fleet-math.ts')).not.toMatch(/@\/lib\/gpu\/depreciation/)
+  it('no assets fetch can be made without an as-of: it is a required argument of every helper (checked by tsc)', async () => {
+    // Every page fetches assets only through these three helpers, so none can fall back on the
+    // route's UTC default. The @ts-expect-error lines fail `tsc --noEmit` if as-of ever becomes optional.
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { assets: [] } }, { status: 200, body: {} }, { status: 200, body: { assets: [] } })
+    // @ts-expect-error as-of is required
+    await listAssets(fetcher)
+    // @ts-expect-error as-of is required
+    await getAsset(fetcher, 'b300')
+    // @ts-expect-error as-of is required
+    await listVehicleAssets(fetcher, 'H200 SPV I')
+    // At runtime the missing date reaches the request as a literal, which the route refuses with its 400.
+    expect(calls.map(c => new URL(c.path, 'http://x').searchParams.get('as_of'))).toEqual(['undefined', 'undefined', 'undefined'])
+  })
+
+  it('the as-of field commits only a complete, real date; partial and impossible ones are held back', () => {
+    for (const v of ['', '2026', '2026-0', '2026-02', '2026-02-3', '2026-13-01', '2026-02-30', '2026-04-31', '20260331']) {
+      expect(asOfCommit(v), v).toBeNull()
+    }
+    expect(asOfCommit('2026-03-31')).toBe('2026-03-31')
+    expect(asOfCommit('2028-02-29')).toBe('2028-02-29')
+    expect(asOfCommit('2026-02-29')).toBeNull()
+  })
+
+  it('the client depreciation path is gone: fleet-math does not import lib/gpu/depreciation', () => {
+    expect(readFileSync(path.join(process.cwd(), 'components/gpu/fleet-math.ts'), 'utf8')).not.toMatch(/@\/lib\/gpu\/depreciation/)
   })
 })
 
@@ -495,6 +513,20 @@ describe('Capitalize a cost', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+
+  it('the dialog body takes its submitter only through useCapexSubmitter (structural: the key lives in the hook\u2019s state)', () => {
+    // A full behavioural guard (type into the real dialog, assert one key) needs a DOM test environment,
+    // which this repo does not have yet; it is proposed separately. Until then: the body may not build a
+    // submitter itself, and the hook below is tested behaviourally across re-renders.
+    const src = readFileSync(path.join(process.cwd(), 'components/gpu/fleet-dialogs.tsx'), 'utf8')
+    const start = src.indexOf('function CapexDialogBody(')
+    const body = src.slice(start, src.indexOf('\n})\n', start))
+    expect(start).toBeGreaterThan(-1)
+    expect(body).toMatch(/const submitter = useCapexSubmitter\(/)
+    expect(body).not.toMatch(/\bcapexSubmitter\(/) // the hook is useCapexSubmitter (capital C); a direct call is lowercase
+    const hook = src.slice(src.indexOf('export function useCapexSubmitter('), src.indexOf('export const CapexDialog'))
+    expect(hook).toMatch(/useState\(\(\) => capexSubmitter\(/)
   })
 
   it('the key survives re-renders within one opening (typing in the form must not mint a new key)', () => {
