@@ -1,0 +1,285 @@
+import { describe, expect, it } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
+
+/**
+ * ── GPU fleet (P5) ── The fleet register, asset detail and the requests behind them (P5-2).
+ *
+ * Rendered statically, as the repo's other component tests are: the tables and their gated buttons
+ * from props, and the requests through the same builders and fetch wrapper the dialogs call, with a
+ * fake fetcher. The bodies are also run through the routes' own parsers, so a field the UI names and
+ * the route does not read fails here rather than in a browser.
+ */
+
+import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-context'
+import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
+import { DepreciationTable } from '@/components/gpu/asset-detail'
+import { ErrorAlert } from '@/components/gpu/fleet-ui'
+import { assetFigures, assetSchedule, fleetTotals } from '@/components/gpu/fleet-math'
+import {
+  EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody, endContractBody, eventBody,
+  fleetPaths, mapBounded, rollBody, send, type Fetcher,
+} from '@/components/gpu/fleet-api'
+import { parseAssetInput } from '@/lib/gpu/assets'
+import { parseContractInput } from '@/lib/gpu/opex'
+import type { DatacenterContractRow, GpuAsset } from '@/lib/gpu/types'
+
+const money = (n: number) => formatCurrencyFull(n, 'USD')
+
+const asset = (over: Partial<GpuAsset>): GpuAsset => ({
+  id: 'a', fund_id: 'f', vehicle_id: 'v', asset_type_id: null, name: 'Server', serials: [], vendor_id: null,
+  status: 'in_service', gpu_count: 8, hardware_cost: 0, purchase_date: '2026-01-01', in_service_date: '2026-01-01',
+  useful_life_months: 60, salvage_value: 0, depreciation_convention: 'full_month', tax_method: 'book', tax_bonus_pct: 0,
+  tax_life_years: null, insurance_basis: null, datacenter_contract_id: null, purchase_entry_id: 'je', disposed_on: null,
+  disposal_proceeds: null, disposal_entry_id: null, notes: null, capitalized_costs: 0, ...over,
+})
+
+// The pack's three servers: 8 GPUs each, 60-month life, 10% salvage, in service 1 January 2026.
+const PACK = [
+  asset({ id: 'h200', name: 'H200 NVL', hardware_cost: 335_000, salvage_value: 33_500 }),
+  asset({ id: 'b200', name: 'B200', hardware_cost: 410_000, salvage_value: 41_000 }),
+  asset({ id: 'b300', name: 'B300', hardware_cost: 560_000, salvage_value: 56_000 }),
+]
+const MONTHLY = { h200: 5_025, b200: 6_150, b300: 8_400 }
+const AFTER_12 = '2026-12-31'
+
+/** A fetcher that answers each call from the queue, recording what was sent. */
+function fakeFetcher(...responses: { status: number; body: unknown }[]) {
+  const calls: { path: string; init?: RequestInit; body: any }[] = []
+  const fetcher: Fetcher = async (path, init) => {
+    calls.push({ path, init, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    const r = responses.shift() ?? { status: 200, body: {} }
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } })
+  }
+  return { fetcher, calls }
+}
+
+const register = (props: Partial<Parameters<typeof RegisterTable>[0]> = {}) => renderToStaticMarkup(
+  <CurrencyProvider currency="USD">
+    <RegisterTable
+      assets={PACK} types={[]} contracts={[]} asOf={AFTER_12} vehicleId="v1" canWriteFleet canBook
+      onPurchase={() => {}} onDispose={() => {}} onDelete={() => {}}
+      {...props}
+    />
+  </CurrencyProvider>,
+)
+
+/** The <button> whose text is `label` in the row of asset `id`. */
+const button = (html: string, id: string, label: string) => {
+  const row = html.match(new RegExp(`<tr[^>]*data-asset="${id}"[\\s\\S]*?</tr>`))?.[0] ?? ''
+  return row.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0] ?? null
+}
+
+describe('the fleet register', () => {
+  it('shows each server and its NBV after 12 months: cost less 12 monthly charges', () => {
+    const html = register()
+    for (const a of PACK) {
+      expect(html).toContain(a.name)
+      const nbv = a.hardware_cost - 12 * MONTHLY[a.id as keyof typeof MONTHLY]
+      expect(html, a.id).toMatch(new RegExp(`data-asset="${a.id}"[\\s\\S]*?data-nbv="${nbv}"`))
+      expect(html).toContain(money(nbv))
+    }
+    expect(assetFigures(PACK[0], AFTER_12)).toMatchObject({ cost: 335_000, accumulated: 60_300, nbv: 274_700, remainingMonths: 48 })
+  })
+
+  it('totals the fleet: GPUs, cost and NBV', () => {
+    const html = register()
+    expect(html).toMatch(/data-total="gpus"[^>]*>24</)
+    expect(html).toContain(`data-total="cost">${money(1_305_000)}`)
+    expect(html).toContain(`data-total="nbv">${money(1_305_000 - 12 * (5_025 + 6_150 + 8_400))}`)
+  })
+
+  it('leaves a disposed server out of the totals and shows it no book value', () => {
+    const fleet = [...PACK, asset({ id: 'old', name: 'Old', hardware_cost: 100_000, status: 'disposed', disposed_on: '2026-06-30' })]
+    expect(fleetTotals(fleet, AFTER_12)).toMatchObject({ assets: 3, gpus: 24, cost: 1_305_000 })
+    expect(register({ assets: fleet })).toMatch(/data-asset="old"[\s\S]*?data-nbv=""/)
+  })
+
+  it('adds capitalized costs to cost and NBV', () => {
+    const a = asset({ hardware_cost: 335_000, salvage_value: 33_500, capitalized_costs: 12_000 })
+    expect(assetFigures(a, AFTER_12)).toMatchObject({ cost: 347_000, nbv: 286_700 })
+  })
+})
+
+describe('Purchase and Dispose need accounting write', () => {
+  const fleet = [asset({ id: 'p', name: 'Planned', status: 'planned', purchase_entry_id: null, in_service_date: null }), PACK[0]]
+
+  it('are disabled, with the reason, without it', () => {
+    const html = register({ assets: fleet, canBook: false })
+    expect(button(html, 'p', 'Purchase')).toMatch(/disabled=""/)
+    expect(button(html, 'p', 'Purchase')).toContain('needs write access to Accounting')
+    expect(button(html, 'h200', 'Dispose')).toMatch(/disabled=""/)
+    // Deleting a planned server is a register change: fleet write is enough.
+    expect(button(html, 'p', 'Delete')).not.toMatch(/disabled=""/)
+  })
+
+  it('are enabled with it', () => {
+    const html = register({ assets: fleet, canBook: true })
+    expect(button(html, 'p', 'Purchase')).not.toMatch(/disabled=""/)
+    expect(button(html, 'h200', 'Dispose')).not.toMatch(/disabled=""/)
+  })
+
+  it('offer Purchase only on a planned server and Dispose only on one that has left planned', () => {
+    const html = register({ assets: fleet })
+    expect(button(html, 'p', 'Dispose')).toBeNull()
+    expect(button(html, 'h200', 'Purchase')).toBeNull()
+    expect(button(html, 'h200', 'Delete')).toBeNull()
+  })
+
+  it('a 403 from the route is shown in its own words', async () => {
+    const message = 'Booking this to the ledger needs write access to Accounting.'
+    const { fetcher, calls } = fakeFetcher({ status: 403, body: { error: message } })
+    const r = await send(fetcher, fleetPaths.purchase('p'), 'POST', { entryDate: '2026-01-05', invoiced: false })
+    expect(calls[0].path).toBe('/api/fleet/assets/p/purchase')
+    expect(r).toEqual({ ok: false, status: 403, error: message })
+    expect(renderToStaticMarkup(<ErrorAlert>{!r.ok && r.error}</ErrorAlert>)).toContain(message)
+  })
+
+  it('a dropped connection is a message, not a silent failure', async () => {
+    const r = await send(async () => { throw new TypeError('Failed to fetch') }, fleetPaths.assets, 'POST', {})
+    expect(r.ok).toBe(false)
+    expect(!r.ok && r.error).toMatch(/Could not reach the server/)
+  })
+})
+
+describe('Add asset', () => {
+  const form = {
+    ...EMPTY_ASSET_FORM, name: ' H200 NVL #1 ', asset_type_id: 't1', gpu_count: '8', hardware_cost: '335,000',
+    serials: 'SN-1\nSN-2, SN-3', in_service_date: '2026-01-01', tax_method: 'bonus', tax_bonus_pct: '60', tax_life_years: '5',
+  }
+
+  it('posts the fields parseAssetInput reads, with salvage left to its 10% default', async () => {
+    const body = assetBody(form)
+    expect(body).toEqual({
+      name: 'H200 NVL #1', asset_type_id: 't1', gpu_count: 8, hardware_cost: 335_000, serials: ['SN-1', 'SN-2', 'SN-3'],
+      useful_life_months: 60, depreciation_convention: 'full_month', in_service_date: '2026-01-01',
+      tax_method: 'bonus', tax_bonus_pct: 0.6, tax_life_years: 5,
+    })
+    const parsed = parseAssetInput(body, false)
+    expect(parsed).toEqual({ value: expect.objectContaining({ ...body, salvage_value: 33_500 }) })
+
+    const { fetcher, calls } = fakeFetcher({ status: 201, body: { id: 'new' } })
+    const r = await send(fetcher, fleetPaths.assets, 'POST', body)
+    expect(r.ok).toBe(true)
+    expect(calls[0]).toMatchObject({ path: '/api/fleet/assets', init: { method: 'POST' }, body })
+  })
+
+  it('a 400 comes back as the route’s message', async () => {
+    const { fetcher } = fakeFetcher({ status: 400, body: { error: 'gpu_count must be a positive whole number' } })
+    const r = await send(fetcher, fleetPaths.assets, 'POST', assetBody({ ...form, gpu_count: '0' }))
+    expect(r).toEqual({ ok: false, status: 400, error: 'gpu_count must be a positive whole number' })
+  })
+
+  it('an edit sends only what changed, so leaving the cost alone never trips the booked-cost refusal', () => {
+    const a = PACK[0]
+    const patch = assetPatch(a, { ...assetFormOf(a), notes: 'Rack 4' })
+    expect(patch).toEqual({ notes: 'Rack 4' })
+    expect(parseAssetInput(patch, true)).toEqual({ value: { notes: 'Rack 4' } })
+    // Clearing an optional field sends null, which the route accepts.
+    expect(assetPatch({ ...a, notes: 'Rack 4' }, { ...assetFormOf({ ...a, notes: 'Rack 4' }), notes: '' })).toEqual({ notes: null })
+  })
+})
+
+describe('Capitalize a cost', () => {
+  it('reuses one idempotency key across a retry, and takes a new one when reopened', async () => {
+    let n = 0
+    const { fetcher, calls } = fakeFetcher(
+      { status: 409, body: { error: 'This cost is being booked by another request', inProgress: true } },
+      { status: 200, body: { entryId: 'je' } },
+    )
+    const s = capexSubmitter(fetcher, 'h200', () => `key-${++n}`)
+    const form = { amount: '12,000', entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false }
+    const first = await s.submit(form)
+    expect(first).toEqual({ ok: false, status: 409, error: 'This cost is being booked by another request' })
+    expect((await s.submit(form)).ok).toBe(true)
+    expect(calls.map(c => c.body.key)).toEqual(['key-1', 'key-1'])
+    expect(calls[0]).toMatchObject({ path: '/api/fleet/assets/h200/capex', body: { amount: 12_000, entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false } })
+    s.reset()
+    expect(s.key()).toBe('key-2')
+  })
+})
+
+describe('datacenter contracts', () => {
+  const contract: DatacenterContractRow = {
+    id: 'c1', fund_id: 'f', vehicle_id: 'v', vendor_id: null, facility: 'Equinix DA11', start_date: '2026-01-01', end_date: null,
+    monthly_fee: 10_280, escalator_pct: 0.05, escalates_on: 'anniversary', first_escalation_date: null, power_kw: null,
+    includes_connectivity: false, deposit: null, schedule_id: 's1', allocation: 'none', status: 'active',
+  }
+
+  it('End sends end_date and status ended as a PATCH', async () => {
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: {} })
+    await send(fetcher, fleetPaths.contract('c1'), 'PATCH', endContractBody('2027-06-30'))
+    expect(calls[0]).toMatchObject({ path: '/api/fleet/datacenter-contracts/c1', init: { method: 'PATCH' }, body: { end_date: '2027-06-30', status: 'ended' } })
+    expect(parseContractInput(calls[0].body, true)).toEqual({ value: { end_date: '2027-06-30', status: 'ended' } })
+  })
+
+  it('Roll sends { action: roll, asOf } as a POST', async () => {
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: {} })
+    await send(fetcher, fleetPaths.contract('c1'), 'POST', rollBody('2026-12-31'))
+    expect(calls[0]).toMatchObject({ init: { method: 'POST' }, body: { action: 'roll', asOf: '2026-12-31' } })
+  })
+
+  it('Add sends JSON numbers parseContractInput accepts, and asks for the schedule only with accounting write', () => {
+    const form = { ...EMPTY_CONTRACT_FORM, facility: 'Equinix DA11', start_date: '2026-01-01', monthly_fee: '10,280', escalator_pct: '5' }
+    const withSchedule = contractBody(form, true)
+    expect(withSchedule).toEqual({ facility: 'Equinix DA11', start_date: '2026-01-01', monthly_fee: 10_280, escalator_pct: 0.05, escalates_on: 'anniversary', schedule: true })
+    expect('error' in parseContractInput(withSchedule, false)).toBe(false)
+    expect(contractBody(form, false).schedule).toBe(false)
+  })
+
+  it('End and Roll are disabled without accounting write', () => {
+    const html = (canBook: boolean) => renderToStaticMarkup(
+      <CurrencyProvider currency="USD"><ContractsTable contracts={[contract]} canBook={canBook} onEnd={() => {}} onRoll={() => {}} /></CurrencyProvider>,
+    )
+    expect(html(false)).toMatch(/<button[^>]*disabled=""[^>]*>End contract<\/button>/)
+    expect(html(false)).toMatch(/<button[^>]*disabled=""[^>]*>Roll schedules<\/button>/)
+    expect(html(true)).not.toMatch(/disabled=""/)
+    expect(html(true)).toContain('5%')
+  })
+})
+
+describe('events', () => {
+  it('a downtime entry posts the route’s fields, dates as timestamps', () => {
+    expect(eventBody({ kind: 'downtime', starts_at: '2026-03-01', ends_at: '2026-03-02', gpus_affected: '2', cause: 'PSU' }))
+      .toEqual({ kind: 'downtime', starts_at: '2026-03-01T00:00:00Z', ends_at: '2026-03-02T00:00:00Z', gpus_affected: 2, cause: 'PSU' })
+    expect(eventBody({ kind: 'note', starts_at: '2026-03-01', ends_at: '', gpus_affected: '', cause: '' }))
+      .toEqual({ kind: 'note', starts_at: '2026-03-01T00:00:00Z', ends_at: null, gpus_affected: null })
+  })
+})
+
+describe('the asset’s depreciation schedule', () => {
+  // The plan's P1b fixture: the $1,305,000 fleet as one server, 60 months, 10% salvage.
+  const fleet = asset({ hardware_cost: 1_305_000, salvage_value: 130_500 })
+
+  it('has 60 rows and ends at salvage, NBV 130,500 at month 60', () => {
+    const lines = assetSchedule(fleet)
+    expect(lines).toHaveLength(60)
+    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} /></CurrencyProvider>)
+    expect(html.match(/data-month="/g)).toHaveLength(60)
+    expect(html).toMatch(/data-month="60"[\s\S]*?data-nbv="130500"/)
+    expect(html).toMatch(/data-month="1"[\s\S]*?data-nbv="1285425"/)
+  })
+
+  it('marks the final-month true-up when rounding leaves a different last charge', () => {
+    const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3 })
+    const lines = assetSchedule(odd)
+    expect(lines.map(l => l.amount)).toEqual([333.33, 333.33, 333.34])
+    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} /></CurrencyProvider>)
+    expect(html).toContain('final-month true-up')
+  })
+})
+
+describe('the firm-wide overview’s requests', () => {
+  it('keeps at most `limit` in flight and returns results in order', async () => {
+    let live = 0
+    let peak = 0
+    const out = await mapBounded([1, 2, 3, 4, 5, 6, 7], 3, async n => {
+      live++; peak = Math.max(peak, live)
+      await new Promise(r => setTimeout(r, 1))
+      live--
+      return n * 10
+    })
+    expect(out).toEqual([10, 20, 30, 40, 50, 60, 70])
+    expect(peak).toBe(3)
+  })
+})
+
