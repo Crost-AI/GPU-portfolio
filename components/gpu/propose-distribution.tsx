@@ -253,6 +253,8 @@ export function ProposalForm({ state, dispatch, seesCarry, money, onPreview, onD
   )
 }
 
+const roundSum = (ns: number[]) => ns.reduce((t, n) => t + Math.round(n * 100), 0) / 100
+
 function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
   state: ProposalState
   preview: CashPreview
@@ -303,7 +305,8 @@ function PreviewPanel({ state, preview: p, seesCarry, money, dispatch }: {
           <p className={cn('text-sm', identity.holds ? 'text-success' : 'text-destructive')} data-identity={identity.holds ? 'holds' : 'broken'}>
             {seesCarry
               ? `${money(contingency)} + ${money(p.tiers.preferred)} + ${money(p.tiers.returnOfCapital)} + ${money(p.tiers.profitToLP)} + ${money(p.tiers.carry)} + ${money(p.cash?.managerRocShare ?? 0)} = ${money(identity.sum)}; available less reserve ${money(identity.target)}`
-              : `The tiers, the manager’s share included, total ${money(identity.sum)}; available less reserve ${money(identity.target)}`}
+              // Without gp_economics: the investors' side only. The check itself still covers every tier.
+              : `To investors: ${money(contingency)} + ${money(p.tiers.preferred)} + ${money(p.tiers.returnOfCapital)} + ${money(p.tiers.profitToLP)} = ${money(roundSum([contingency, p.tiers.preferred, p.tiers.returnOfCapital, p.tiers.profitToLP]))}`}
             {identity.holds ? '. It adds up.' : '. It does not add up: do not declare; preview again.'}
           </p>
           {p.cash && (

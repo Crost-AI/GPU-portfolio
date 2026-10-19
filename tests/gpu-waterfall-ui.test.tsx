@@ -414,6 +414,14 @@ describe('the manager’s figures need gp_economics', () => {
     expect(html).not.toContain('data-tier="manager-roc-share"')
     expect(html).not.toContain('GPU Manager LLC')
     expect(html).toContain('data-tier="profit-to-investors"')
+    // The identity line names the investors' side only: no manager-inclusive total, no target.
+    const t = PREVIEW.tiers
+    const toInvestors = (Math.round((t.contingencyReturn ?? 0) * 100) + Math.round(t.preferred * 100) + Math.round(t.returnOfCapital * 100) + Math.round(t.profitToLP * 100)) / 100
+    const line = html.match(/<p[^>]*data-identity="holds"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? ''
+    expect(line).toContain(`= ${money(toInvestors)}`)
+    expect(line).not.toContain(money(1_950_000))
+    expect(line).not.toMatch(/manager/i)
+    expect(line).toContain('It adds up')
   })
 
   it('with it: the carry lines and the manager tier', () => {
