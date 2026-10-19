@@ -153,3 +153,30 @@ describe('service-role paths outside the company routes', () => {
     expect(vc.mode).toBe('insert')
   })
 })
+
+describe('fleet write for the agent’s investment writes and the update pipeline (#91)', () => {
+  const FLEET_WRITER = () => ctx({ grants: { portfolio: 'write', accounting: 'write', fleet: 'write' } })
+
+  it('update, delete and record an investment resolve the fleet company only with fleet write', async () => {
+    const { PORTFOLIO_HANDLERS, executeRecordInvestment } = await import('@/lib/agent/portfolio-tools')
+    const tool = (name: string) => PORTFOLIO_HANDLERS[name] as any
+    const call = { admin: s.m.admin, fundId: 'f', userId: 'u', access: FLEET_READER() }
+    await expect(tool('update_investment')(call, { company: 'fleet', transaction_id: 't-1', notes: 'x' })).rejects.toThrow(/No company named/)
+    await expect(tool('delete_investment')(call, { company: 'fleet', transaction_id: 't-1' })).rejects.toThrow(/No company named/)
+    await expect(executeRecordInvestment(call, { company: 'fleet', transaction_type: 'investment', amount: 1 } as any)).rejects.toThrow(/No company named/)
+    // The same caller still reads it.
+    expect(fleetCompanyDenied(FLEET_READER(), 'gpu_fleet', 'read')).toBe(false)
+    expect(fleetCompanyDenied(FLEET_WRITER(), 'gpu_fleet', 'write')).toBe(false)
+  })
+
+  it('the update pipeline offers the fleet company only to a member with fleet write; outside mail never matches it', async () => {
+    const { companiesForSender } = await import('@/lib/pipeline/processEmail')
+    s.m.tables.companies.forEach((c: any) => { c.status = 'active'; c.aliases = [] })
+    const ids = async (member: { userId: string } | null) => (await companiesForSender(s.m.admin, 'f', member)).map(c => c.id).sort()
+    expect(await ids(null)).toEqual(['vc'])
+    s.ctx = FLEET_READER()
+    expect(await ids({ userId: 'u' })).toEqual(['vc'])
+    s.ctx = FLEET_WRITER()
+    expect(await ids({ userId: 'u' })).toEqual(['fleet', 'vc'])
+  })
+})

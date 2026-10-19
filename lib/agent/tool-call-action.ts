@@ -100,7 +100,7 @@ async function resolveEntity(deps: ActionDeps, tool: AgentTool, input: Record<st
     const { data: email } = await (deps.admin as any)
       .from('inbound_emails').select('company_id').eq('id', String(input.email ?? '')).eq('fund_id', deps.fundId).maybeSingle()
     if (email?.company_id) {
-      await resolveCompany(deps.admin, deps.fundId, email.company_id, deps.access)
+      await resolveCompany(deps.admin, deps.fundId, email.company_id, deps.access, 'write')
       return null
     }
   }
