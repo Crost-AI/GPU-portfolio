@@ -38,6 +38,18 @@ beforeEach(() => {
 })
 
 describe('assistant edit', () => {
+  it('refuses to edit a GPU fleet lifecycle entry, posted or draft, changing nothing (#82)', async () => {
+    m.tables.journal_entries.push(
+      { id: 'gpu1', fund_id: 'f', vehicle_id: 'v', book: 'actual', status: 'posted', entry_date: '2026-03-01', source_ref: 'gpu-asset:a1:purchase', reversed_by: null },
+      { id: 'gpu2', fund_id: 'f', vehicle_id: 'v', book: 'actual', status: 'draft', entry_date: '2026-03-31', source_ref: 'gpu-dep:a1:2026-03', reversed_by: null },
+    )
+    for (const id of ['gpu1', 'gpu2']) {
+      expect(await applyProposal(m.admin, 'f', 'Fund I', 'u', edit(id))).toEqual({ error: expect.stringContaining('is a GPU fleet entry') })
+    }
+    expect(m.tables.journal_entries.find((e: any) => e.id === 'gpu1')!.status).toBe('posted')
+    expect(m.tables.journal_postings.filter((p: any) => ['gpu1', 'gpu2'].includes(p.journal_entry_id))).toEqual([])
+  })
+
   it('refuses either half of a live reversal pair on investment accounts', async () => {
     for (const id of [O, 'r1']) {
       expect(await applyProposal(m.admin, 'f', 'Fund I', 'u', edit(id))).toEqual({ error: 'This entry is half of a reversal pair — reverse the reversal instead.' })

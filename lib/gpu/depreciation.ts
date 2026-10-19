@@ -83,6 +83,8 @@ export function depreciableFromAsset(
  *     mis-posted month corrects itself over the rest of the life.
  *   - The final month takes whatever is left, so accumulated depreciation ends exactly at
  *     basis + Σ capex − salvage.
+ *   - A charge is never negative: when a capex reversal leaves the asset already depreciated past
+ *     its cost to date, the remaining months charge 0 rather than writing depreciation back.
  *
  * full_month: `lifeMonths` charges from the in-service month. mid_month: half a charge in the first
  * and last months, `lifeMonths + 1` months. A disposal stops depreciation after the disposal month
@@ -117,9 +119,9 @@ export function depreciationSchedule(a: DepreciableAsset): DepreciationLine[] {
     const posted = a.posted?.get(month)
     let charge: number
     if (posted !== undefined) charge = cents(posted)
-    else if (i === last) charge = cost - salvage - accumulated
+    else if (i === last) charge = Math.max(0, cost - salvage - accumulated)
     else if (onPlan && cost === basis) charge = planned[i]
-    else charge = Math.round(((cost - salvage - accumulated) * weights[i]) / weights.slice(i).reduce((t, w) => t + w, 0))
+    else charge = Math.max(0, Math.round(((cost - salvage - accumulated) * weights[i]) / weights.slice(i).reduce((t, w) => t + w, 0)))
     if (posted === undefined && a.convention === 'mid_month' && month === out && i > 0 && i < last) charge = Math.round(charge / 2)
     accumulated += charge
     plannedSoFar += planned[i]
