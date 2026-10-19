@@ -7,6 +7,7 @@
 // a proposal is applied as a DRAFT entry the user reviews and posts.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { isEditLockedRef } from './reserved-refs'
 import { loadPostedLedger, loadEntityNames } from './load'
 import { accountBalances, assertBalanced } from './ledger'
 import { accountIdByCode, persistEntry } from './persist'
@@ -278,6 +279,11 @@ export async function applyProposal(
     const { data: existing } = await admin.from('journal_entries' as any)
       .select('id, status, entry_date, source_ref, reversed_by').eq('id', entryId).eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK).maybeSingle()
     if (!existing) return { error: `Entry ${entryId} was not found on ${group}.` }
+    // #82: a GPU fleet lifecycle entry is adopted by the fleet as its own, so its lines are the ones
+    // the lifecycle wrote; no edit (and no unpost-and-rewrite) through the assistant.
+    if (isEditLockedRef((existing as any).source_ref)) {
+      return { error: `Entry ${entryId} is a GPU fleet entry (${(existing as any).source_ref}); void it rather than edit it. Nothing was changed.` }
+    }
 
     // THE GUARDS THE CREATE PATH GETS FOR FREE FROM persistEntry, AND THIS PATH USED TO SKIP.
     //

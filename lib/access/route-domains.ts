@@ -167,6 +167,19 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/manco/overview': { domain: 'management_company' },
   'api/manco/setup': { domain: 'management_company' },
   'api/manco/intercompany': { domain: 'management_company' },
+  // ── GPU fleet (P1) ──
+  // All `fleet` (feature gpu_fleet, which requires accounting). Every handler also resolves the
+  // entity with the caller's scope and refuses a non-GPU SPV (lib/gpu/http.ts); purchase, capex,
+  // dispose and the schedule-writing contract calls additionally need `accounting` write there.
+  'api/fleet/asset-types': { domain: 'fleet' },
+  'api/fleet/assets': { domain: 'fleet' },
+  'api/fleet/assets/[id]': { domain: 'fleet' },
+  'api/fleet/assets/[id]/purchase': { domain: 'fleet' },
+  'api/fleet/assets/[id]/capex': { domain: 'fleet' },
+  'api/fleet/assets/[id]/dispose': { domain: 'fleet' },
+  'api/fleet/assets/[id]/events': { domain: 'fleet' },
+  'api/fleet/datacenter-contracts': { domain: 'fleet' },
+  'api/fleet/datacenter-contracts/[id]': { domain: 'fleet' },
 
   // ── GP economics — the carve-out. These used to sit behind the single `accounting` key,
   //    so anyone who could reconcile the bank could read the partners' carry.

@@ -54,7 +54,7 @@ export async function disposeAsset(
   // accounts), one still in flight (refuse; nothing changes), or one reversed since (refuse).
   const existing = await liveEntryByRef(admin, ctx, gpuSourceRef.disposal(asset.id))
   if (existing) {
-    const ok = await adoptable(admin, ctx, gpuSourceRef.disposal(asset.id), existing)
+    const ok = await adoptable(admin, ctx, gpuSourceRef.disposal(asset.id), existing, 'realized_gain')
     return 'ok' in ok ? recordFrom(existing) : ok
   }
 
@@ -93,13 +93,17 @@ export async function disposeAsset(
 /** Mark the asset disposed from the committed entry: its date, its cash debit and its 4500 line. */
 async function markDisposed(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, booked: LiveEntry, cashAccountId: string, gainAccountId: string,
-): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number }> {
+): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number } | { error: string }> {
   const proceeds = postedTo(booked, cashAccountId)
   const gain = -postedTo(booked, gainAccountId) || 0
-  const { error } = await (admin as any).from('gpu_assets').update({
+  const { data, error } = await (admin as any).from('gpu_assets').update({
     status: 'disposed', disposed_on: booked.entry_date, disposal_proceeds: proceeds,
     disposal_entry_id: booked.id, updated_at: new Date().toISOString(),
-  }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
+  }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id).select('id')
   if (error) throw error
+  // Never a success with a booked disposal and no register row to show it: say so, by entry.
+  if (!((data as any[]) ?? []).length) {
+    return { error: `The disposal is booked as entry ${booked.id}, but the asset is no longer in the register. Void entry ${booked.id}, or restore the asset and dispose of it again to link it.` }
+  }
   return { entryId: booked.id, gain, disposedOn: booked.entry_date, proceeds }
 }

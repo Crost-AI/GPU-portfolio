@@ -24,6 +24,7 @@ import { ConstructionView } from '../construction/view'
 import { PlanOverview } from './overview'
 import { onApplied } from '@/lib/pending-actions/applied-event'
 import { NO_ADJUSTMENTS } from '@/lib/forecast/adjustments'
+import { isGpuSpv } from '@/lib/vehicle-kinds'
 
 type PlanListItem = PlanDetail['plan'] & { versions: { id: string; versionNo: number; label: string | null; status: string; publishedAt: string }[] }
 type View = 'combined' | 'plan' | 'actual' | 'variance'
@@ -70,9 +71,19 @@ async function json<T>(res: Response): Promise<T> {
   return body as T
 }
 
-export type ForecastTab = 'charts' | 'investments' | 'capital' | 'financials'
+export type ForecastTab = 'charts' | 'investments' | 'capital' | 'financials' | 'fleet'
 
-const TAB_LABEL: Record<ForecastTab, string> = { charts: 'Charts', investments: 'Investments', capital: 'Capital planning', financials: 'Financials' }
+const TAB_LABEL: Record<ForecastTab, string> = { charts: 'Charts', investments: 'Investments', capital: 'Capital planning', financials: 'Financials', fleet: 'Fleet' }
+
+/**
+ * The tabs a vehicle of `kind` gets, in order. A management company has no portfolio. ── GPU fleet
+ * (P5) ── A GPU SPV has no deal portfolio either: its Investments tab is the Fleet tab, and the
+ * construction view is never mounted for it.
+ */
+export function forecastTabsFor(kind: string | null | undefined): ForecastTab[] {
+  if (isGpuSpv(kind)) return ['charts', 'fleet', 'capital', 'financials']
+  return kind !== 'manco' ? ['charts', 'investments', 'capital', 'financials'] : ['charts', 'financials', 'capital']
+}
 
 /**
  * Forecast — one plan (plans/plan-unified-plan.md §5). Its key figures and charts sit on top, where
@@ -92,8 +103,8 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
   const [planId, setPlanId] = useState<string>('')
   const [versionId, setVersionId] = useState<string>('')
   const [detail, setDetail] = useState<PlanDetail | null>(null)
-  const hasPortfolio = kind !== 'manco'
-  const tabs = useMemo<ForecastTab[]>(() => (hasPortfolio ? ['charts', 'investments', 'capital', 'financials'] : ['charts', 'financials', 'capital']), [hasPortfolio])
+  const hasPortfolio = kind !== 'manco' && !isGpuSpv(kind)
+  const tabs = useMemo(() => forecastTabsFor(kind), [kind])
   const [tab, setTabState] = useState<ForecastTab>(initialTab && tabs.includes(initialTab) ? initialTab : tabs[0])
   // Bumped by every portfolio save, so the overview recomputes (fund saves move the plan's revision).
   const [portfolioSaves, setPortfolioSaves] = useState(0)
@@ -688,7 +699,7 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
           {versionId && tab !== 'financials' && <p className="mb-3 text-sm text-muted-foreground">A saved scenario&rsquo;s portfolio is saved with it; this is the working draft&rsquo;s, which you can still change.</p>}
           <ConstructionView
             key={`${planId || 'primary'}:${constructionReload}`}
-            section={tab === 'financials' || tab === 'charts' ? 'investments' : tab}
+            section={tab === 'capital' ? 'capital' : 'investments'}
             chartsSlot={chartsSlot}
             usageSlot={usageSlot}
             outcomesSlot={outcomesSlot}
@@ -702,6 +713,14 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
             planId={planId || null}
             onSaved={onPortfolioSaved}
           />
+        </div>
+      )}
+
+      {/* ── GPU fleet (P5) ── The fleet's plan (servers, rates, utilization) is the scenario engine's. */}
+      {tab === 'fleet' && (
+        <div className="mb-6 rounded-card border bg-card p-6 shadow-sm dark:shadow-none">
+          <h2 className="text-base font-semibold">Fleet</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Fleet assumptions arrive with the scenario engine.</p>
         </div>
       )}
 

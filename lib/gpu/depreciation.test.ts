@@ -175,3 +175,15 @@ describe('depreciationEntryDate', () => {
     expect(depreciationEntryDate('2028-05', '2028-06-10')).toBe('2028-05-31')
   })
 })
+
+describe('remaining-life edge cases', () => {
+  it('clamps the charge at 0 when a capex reversal leaves the asset depreciated past its cost', () => {
+    // 600 hardware + 400 capex, two months posted at 350 (700), then the capex reversed: cost 600 < 700.
+    const s = depreciationSchedule({
+      id: 'x', basis: 600, salvage: 0, lifeMonths: 4, inServiceDate: '2027-01-01', convention: 'full_month',
+      capex: [{ month: '2027-01', amount: 400 }, { month: '2027-03', amount: -400 }],
+      posted: new Map([['2027-01', 350], ['2027-02', 350]]),
+    })
+    expect(s.map(l => l.amount)).toEqual([350, 350, 0, 0])
+  })
+})

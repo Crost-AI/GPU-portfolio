@@ -5,6 +5,7 @@
 import {
   Landmark, Users, ScrollText, Gauge,
   Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp, LineChart, Receipt,
+  Server, CircleDollarSign, GitBranch, FlaskConical,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Domain } from '@/lib/access/domains'
@@ -44,6 +45,12 @@ export interface AccountingSection {
    * a GPU SPV). Omitted = every kind, subject to `hideFor`.
    */
   showFor?: VehicleKind[]
+  /**
+   * ── GPU fleet (P5) ── A second domain the page needs, under its OWN switch. `feature` above
+   * replaces the domain's switch rather than adding to it, so a page behind two switches (the
+   * waterfall: `gpu_fleet`, and lp_capital's `lps`) names the second one here.
+   */
+  alsoRequires?: { domain: Domain; feature?: FeatureKey }
   /** Only for a fund of funds — DERIVED from the data (at least one holding is a fund),
    *  never a setting. Consumers filter on it; see lib/portfolio/fof.ts. */
   requiresFof?: boolean
@@ -139,6 +146,49 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     // One page for the plan (plans/plan-unified-plan.md §5): its portfolio construction and its fund
     // forecast, in two tabs. A management company, which holds no portfolio, sees the fund forecast.
     desc: 'Plan the portfolio — deals, timing, exits — and the fund around it: fees, expenses, calls and distributions by month, beside the actuals.',
+  },
+  // ── GPU fleet (P5) ──
+  // The operating pages of a GPU SPV, next to the plan. `showFor` keeps them off every other kind,
+  // and off the firm-wide subnav (a null kind never matches); `gpu_fleet` keeps all four off a GPU
+  // SPV too while the switch is off.
+  {
+    href: '/funds/fleet',
+    label: 'Fleet',
+    icon: Server,
+    desc: 'The servers the vehicle owns: type, GPUs, status, in-service date, cost and net book value.',
+    domain: 'fleet',
+    feature: 'gpu_fleet',
+    showFor: ['gpu_spv'],
+  },
+  {
+    href: '/funds/revenue',
+    label: 'Revenue & payouts',
+    icon: CircleDollarSign,
+    desc: 'Rental revenue, GPU-hours and marketplace fees entered per asset per period, and the payouts that settle them.',
+    domain: 'fleet',
+    feature: 'gpu_fleet',
+    showFor: ['gpu_spv'],
+  },
+  {
+    href: '/funds/waterfall',
+    label: 'Waterfall & distributions',
+    icon: GitBranch,
+    desc: 'Preferred return, capital returned and unreturned, and distributions declared through the waterfall.',
+    domain: 'lp_capital',
+    feature: 'gpu_fleet',
+    // The distributions route behind it is lp_capital under `lps`; with LP Reporting off, no link.
+    alsoRequires: { domain: 'lp_capital' },
+    showFor: ['gpu_spv'],
+  },
+  {
+    href: '/funds/scenarios',
+    label: 'Scenarios',
+    icon: FlaskConical,
+    desc: 'The pitch scenarios side by side: utilization, investor and project returns, and when capital comes back.',
+    // Explicit, or the subnav would read the domain off `gpu_fleet` (fleet) rather than the books.
+    domain: 'accounting',
+    feature: 'gpu_fleet',
+    showFor: ['gpu_spv'],
   },
   {
     href: '/funds/statements',

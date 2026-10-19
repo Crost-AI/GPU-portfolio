@@ -6,6 +6,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { assetAccountCode } from '@/lib/accounting/chart'
+import { addMonths } from '@/lib/forecast/months'
 import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { persistEntry } from '@/lib/accounting/persist'
 import { reversalRef } from '@/lib/accounting/reversal'
@@ -14,7 +15,7 @@ import { defaultSalvage, type CapexEvent } from './depreciation'
 import { buildCapexEntry, buildPurchaseEntry, gpuSourceRef } from './entries'
 import {
   DEPRECIATION_CONVENTIONS, GPU_ASSET_STATUSES, TAX_METHODS,
-  type GpuAsset, type GpuAssetRow,
+  type GpuAsset, type GpuAssetRow, type TaxMethod,
 } from './types'
 
 export const COST_BASE = '1600'
@@ -80,10 +81,9 @@ export function parseAssetInput(body: any, partial: boolean): { value: AssetInpu
     if (b.tax_life_years !== null && (!Number.isInteger(num(b.tax_life_years)) || num(b.tax_life_years) <= 0)) return { error: 'tax_life_years must be a positive whole number' }
     out.tax_life_years = b.tax_life_years === null ? null : num(b.tax_life_years)
   }
-  const method = out.tax_method
-  if (method && (method.startsWith('macrs_') || method === 'bonus') && out.tax_life_years != null) {
-    const classes = method === 'macrs_5' ? [5] : method === 'macrs_7' ? [7] : [5, 7]
-    if (!classes.includes(out.tax_life_years)) return { error: `tax_life_years must be ${classes.join(' or ')} for ${method}` }
+  if (out.tax_method) {
+    const taxError = taxClassError(out.tax_method, out.tax_life_years ?? null)
+    if (taxError) return { error: taxError }
   }
   if (has('serials')) {
     if (!Array.isArray(b.serials) || !b.serials.every((s: unknown) => typeof s === 'string')) return { error: 'serials must be a list of strings' }
@@ -96,6 +96,59 @@ export function parseAssetInput(body: any, partial: boolean): { value: AssetInpu
   }
   if (!partial && out.salvage_value === undefined) out.salvage_value = defaultSalvage(out.hardware_cost!)
   return { value: out }
+}
+
+/**
+ * Why a tax method and class do not go together, or null. MACRS and bonus need a 5- or 7-year class
+ * (macrs_5 → 5, macrs_7 → 7, bonus → either; unset means the method's own). Checked on the merged
+ * row by the route as well, since an update may name only one of the two.
+ */
+export function taxClassError(method: TaxMethod, lifeYears: number | null): string | null {
+  if (lifeYears == null || !(method.startsWith('macrs_') || method === 'bonus')) return null
+  const classes = method === 'macrs_5' ? [5] : method === 'macrs_7' ? [7] : [5, 7]
+  return classes.includes(lifeYears) ? null : `tax_life_years must be ${classes.join(' or ')} for ${method}`
+}
+
+/** Why the asset type or datacenter contract an asset names is not usable here, or null. */
+export async function assetRefsError(admin: SupabaseClient, ctx: Pick<Lifecycle, 'fundId' | 'vehicleId'>, input: AssetInput): Promise<string | null> {
+  if (input.asset_type_id) {
+    const { data, error } = await (admin as any).from('gpu_asset_types').select('id').eq('fund_id', ctx.fundId).eq('id', input.asset_type_id).maybeSingle()
+    if (error) throw error
+    if (!data) return 'asset_type_id is not one of this fund\u2019s GPU types'
+  }
+  if (input.datacenter_contract_id) {
+    const { data, error } = await (admin as any).from('datacenter_contracts').select('id')
+      .eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', input.datacenter_contract_id).maybeSingle()
+    if (error) throw error
+    if (!data) return 'datacenter_contract_id is not one of this entity\u2019s contracts'
+  }
+  return null
+}
+
+/**
+ * What the LEDGER holds for an asset, posted or draft: any lifecycle entry (`gpu-asset:<id>:…`) and
+ * any depreciation (`gpu-dep:<id>:…`). A null purchase_entry_id does not mean unbooked: the purchase
+ * commits before the register is linked, and an in-flight request holds a draft.
+ */
+export async function assetLedgerState(admin: SupabaseClient, ctx: Pick<Lifecycle, 'fundId' | 'vehicleId'>, assetId: string): Promise<{ booked: boolean; depreciated: boolean }> {
+  const live = async (prefix: string) => {
+    const { data, error } = await (admin as any).from('journal_entries').select('id')
+      .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).neq('status', 'void')
+      .like('source_ref', `${prefix}%`).order('id').limit(1)
+    if (error) throw error
+    return ((data as any[]) ?? []).length > 0
+  }
+  const [lifecycle, depreciated] = await Promise.all([live(`gpu-asset:${assetId}:`), live(`gpu-dep:${assetId}:`)])
+  return { booked: lifecycle || depreciated, depreciated }
+}
+
+/** One asset's capitalized costs from its posted capex (0 before its cost account exists). */
+export async function capitalizedCostsOf(admin: SupabaseClient, ctx: Lifecycle, assetId: string): Promise<number> {
+  const { data, error } = await (admin as any).from('chart_of_accounts').select('id')
+    .eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('code', assetAccountCode(COST_BASE, assetId)).maybeSingle()
+  if (error) throw error
+  if (!data) return 0
+  return (await loadCapexEvents(admin, ctx, assetId, data.id)).reduce((t, e) => t + Math.round(e.amount * 100), 0) / 100
 }
 
 /**
@@ -189,12 +242,13 @@ export interface LiveEntry {
   id: string
   status: string
   entry_date: string
+  source_type: string | null
   journal_postings: { account_id: string; amount: number }[]
 }
 
 /** The live entry on this vehicle's actual book carrying `sourceRef`, or null. */
 export async function liveEntryByRef(admin: SupabaseClient, ctx: Lifecycle, sourceRef: string): Promise<LiveEntry | null> {
-  const { data, error } = await (admin as any).from('journal_entries').select('id, status, entry_date, journal_postings(account_id, amount)')
+  const { data, error } = await (admin as any).from('journal_entries').select('id, status, entry_date, source_type, journal_postings(account_id, amount)')
     .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('source_ref', sourceRef).neq('status', 'void')
     .order('id').limit(1)
   if (error) throw error
@@ -211,16 +265,21 @@ async function isReversed(admin: SupabaseClient, ctx: Lifecycle, entryId: string
 }
 
 /**
- * Whether an entry found under a lifecycle ref may be adopted: posted and not reversed. A draft is
- * in progress (inProgress); a reversed one nets to zero in the ledger, so adopting it would record
- * a purchase or disposal the books no longer hold, and the once-only index keeps the ref taken.
+ * Whether an entry found under a lifecycle ref may be adopted: posted, of the source type the
+ * lifecycle writes (`sourceType`), and not reversed. A draft is in progress (inProgress). Anything
+ * else under the ref was not booked by this lifecycle, or nets to zero in the ledger, so adopting it
+ * would record a purchase or disposal the books do not hold; the once-only index keeps the ref
+ * taken until it is voided.
  */
 export async function adoptable(
-  admin: SupabaseClient, ctx: Lifecycle, sourceRef: string, found: LiveEntry,
+  admin: SupabaseClient, ctx: Lifecycle, sourceRef: string, found: LiveEntry, sourceType: string,
 ): Promise<{ ok: true } | { error: string; inProgress?: true }> {
   if (found.status !== 'posted') return inProgress(found)
+  if (found.source_type !== sourceType) {
+    return { error: `Entry ${found.id} carries ${sourceRef} but was not booked by the fleet (${found.source_type ?? 'no type'}). Void it before booking this.` }
+  }
   if (await isReversed(admin, ctx, found.id)) {
-    return { error: `Entry ${found.id} (${sourceRef}) was booked and then reversed. Void it before booking this again.` }
+    return { error: `Entry ${found.id} (${sourceRef}) was booked and then reversed. Void both the entry and its reversal before booking this again, or, for a capitalized cost, use a new key.` }
   }
   return { ok: true }
 }
@@ -244,7 +303,7 @@ export async function bookOnce(
 ): Promise<{ booked: LiveEntry; adopted: boolean } | { error: string; inProgress?: true }> {
   const settle = async (found: LiveEntry | null) => {
     if (!found) return { error: `Could not read the entry already booked under ${entry.sourceRef}. Try again.` }
-    const ok = await adoptable(admin, ctx, entry.sourceRef!, found)
+    const ok = await adoptable(admin, ctx, entry.sourceRef!, found, entry.sourceType ?? 'manual')
     return 'ok' in ok ? { booked: found, adopted: true } : ok
   }
   const found = await liveEntryByRef(admin, ctx, entry.sourceRef!)
@@ -253,7 +312,7 @@ export async function bookOnce(
   if ('entryId' in result) {
     return {
       adopted: false,
-      booked: { id: result.entryId, status: 'posted', entry_date: entry.entryDate, journal_postings: entry.postings.map(p => ({ account_id: p.accountId, amount: p.amount })) },
+      booked: { id: result.entryId, status: 'posted', entry_date: entry.entryDate, source_type: entry.sourceType ?? null, journal_postings: entry.postings.map(p => ({ account_id: p.accountId, amount: p.amount })) },
     }
   }
   if (result.duplicateOf) return settle(await liveEntryByRef(admin, ctx, entry.sourceRef!))
@@ -278,17 +337,52 @@ export async function purchaseAsset(
     { fundId: ctx.fundId, entryDate: p.entryDate, memo: `Purchase \u2014 ${asset.name}` },
     { assetId: asset.id, amount: Number(asset.hardware_cost), costAccountId: accounts.cost, offsetAccountId: offset },
   )
+  // CLAIM the row before anything is booked: planned → ordered, only while it is still planned,
+  // unlinked and at the cost this request read. DELETE and a cost edit run under the same
+  // predicate (assets/[id]/route.ts), so whichever lands first wins and the other changes nothing.
+  // An asset already past planned (a retry, or one ordered by hand) needs no claim: neither DELETE
+  // nor a cost edit can touch it.
+  const scoped = (q: any) => q.eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
+  let claimed = false
+  if (asset.status === 'planned') {
+    const { data, error } = await scoped((admin as any).from('gpu_assets').update({ status: 'ordered', updated_at: new Date().toISOString() }))
+      .eq('status', 'planned').is('purchase_entry_id', null).eq('hardware_cost', asset.hardware_cost).select('id')
+    if (error) throw error
+    if (!((data as any[]) ?? []).length) {
+      return { error: 'This asset changed while its purchase was being booked (deleted, edited or booked by another request). Reload it and try again.', inProgress: true }
+    }
+    claimed = true
+  }
   const result = await bookOnce(admin, ctx, entry)
-  if ('error' in result) return result
-  const { error } = await (admin as any).from('gpu_assets').update({
-    purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date,
-    status: asset.status === 'planned' ? 'ordered' : asset.status, updated_at: new Date().toISOString(),
-  }).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('id', asset.id)
+  if ('error' in result) {
+    // Nothing of ours is in the books (no draft under the ref): give the claim back.
+    if (claimed && !(await liveEntryByRef(admin, ctx, entry.sourceRef!))) {
+      await scoped((admin as any).from('gpu_assets').update({ status: 'planned', updated_at: new Date().toISOString() }))
+        .eq('status', 'ordered').is('purchase_entry_id', null)
+    }
+    return result
+  }
+  // The link is compare-and-set and touches only the link: still unlinked and in the status this
+  // purchase left it in (ordered when it claimed, else as read). It never rewrites status from the
+  // snapshot, so nothing that legitimately moved the row meanwhile is undone.
+  const { data: linked, error } = await scoped((admin as any).from('gpu_assets').update({
+    purchase_entry_id: result.booked.id, purchase_date: asset.purchase_date ?? result.booked.entry_date, updated_at: new Date().toISOString(),
+  })).eq('status', claimed ? 'ordered' : asset.status).is('purchase_entry_id', null).select('id')
   if (error) throw error
+  // Never a success with a booked entry and no register row to show it: say so, by entry.
+  if (!((linked as any[]) ?? []).length) {
+    return { error: `The purchase is booked as entry ${result.booked.id}, but the asset was changed or removed meanwhile, so it was not linked. Book the purchase again to link entry ${result.booked.id}, or void it.` }
+  }
   return { entryId: result.booked.id }
 }
 
-const CAPEX_KEY = /^[A-Za-z0-9_-]{1,64}$/
+export const CAPEX_KEY = /^[A-Za-z0-9_-]{1,64}$/
+
+/** The asset's last depreciation month (in-service month + life, plus one under mid_month); null before in-service. */
+export function lifeEndMonth(asset: Pick<GpuAssetRow, 'in_service_date' | 'useful_life_months' | 'depreciation_convention'>): string | null {
+  if (!asset.in_service_date || !Number.isInteger(asset.useful_life_months)) return null
+  return addMonths(asset.in_service_date.slice(0, 7), asset.useful_life_months - (asset.depreciation_convention === 'mid_month' ? 0 : 1))
+}
 
 /**
  * The asset's posted capex by month: each `gpu-asset:<id>:capex:<key>` entry's debit to 1600-<a>,
@@ -363,6 +457,10 @@ export async function capitalizeCost(
   if (!asset.purchase_entry_id) return { error: 'Book the asset\u2019s purchase before capitalizing costs into it' }
   if (!CAPEX_KEY.test(p.key ?? '')) return { error: 'key must be 1\u201364 letters, digits, hyphens or underscores' }
   if (!(p.amount > 0)) return { error: 'amount must be more than zero' }
+  if (!ISO_DATE.test(p.entryDate ?? '')) return { error: 'entryDate must be YYYY-MM-DD' }
+  // A cost booked after the asset's last depreciation month would never be depreciated: refused.
+  const end = lifeEndMonth(asset)
+  if (end && p.entryDate.slice(0, 7) > end) return { error: `This asset's depreciable life ends in ${end}; a cost booked after it cannot be capitalized into it.` }
   const accounts = await ensureAssetAccounts(admin, ctx.fundId, ctx.group, ctx.vehicleId, asset)
   const offsetCode = p.invoiced ? ACCRUED_CODE : CASH_CODE
   const offset = (await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [offsetCode])).get(offsetCode)!

@@ -60,7 +60,7 @@ export function datacenterPeriods(c: ContractTerms, through: string): SchedulePe
   const starts = [c.start_date, ...escalationDates(c, through)]
   return starts.map((start, i) => ({
     start,
-    end: i + 1 < starts.length ? dayBefore(starts[i + 1]) : c.end_date,
+    end: i + 1 < starts.length ? dayBefore(starts[i + 1]) : c.end_date ?? null,
     amount: datacenterFeeOn(c, start),
   }))
 }
@@ -83,6 +83,103 @@ export function insurancePeriods(premium: number, startDate: string, months: num
   out.push({ start: months > 1 ? `${lastMonth}-01` : startDate, end: monthEnd(lastMonth), amount: final / 100 })
   return out
 }
+
+/** The contract terms a caller may set. Fee, escalator and dates are fixed once a schedule exists. */
+export type ContractInput = Partial<Pick<DatacenterContractRow,
+  'facility' | 'vendor_id' | 'start_date' | 'end_date' | 'monthly_fee' | 'escalator_pct' | 'escalates_on' | 'first_escalation_date'
+  | 'power_kw' | 'includes_connectivity' | 'deposit' | 'allocation' | 'status'>>
+
+export const CONTRACT_TERMS = ['start_date', 'monthly_fee', 'escalator_pct', 'escalates_on', 'first_escalation_date'] as const
+
+/** Validate a contract create (`partial: false`: facility, start_date and monthly_fee required) or update. */
+export function parseContractInput(body: any, partial: boolean): { value: ContractInput } | { error: string } {
+  const b = body ?? {}
+  const out: ContractInput = {}
+  const has = (k: string) => b[k] !== undefined
+  const date = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+  const nonNeg = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0
+  if (has('facility') || !partial) {
+    if (typeof b.facility !== 'string' || !b.facility.trim()) return { error: 'facility is required' }
+    out.facility = b.facility.trim()
+  }
+  for (const k of ['start_date', 'end_date', 'first_escalation_date'] as const) {
+    if (!has(k) && !(k === 'start_date' && !partial)) continue
+    if (k !== 'start_date' && b[k] === null) { out[k] = null; continue }
+    if (!date(b[k])) return { error: `${k} must be YYYY-MM-DD` }
+    out[k] = b[k]
+  }
+  for (const k of ['monthly_fee', 'escalator_pct', 'deposit', 'power_kw'] as const) {
+    if (!has(k) && !(k === 'monthly_fee' && !partial)) continue
+    if ((k === 'deposit' || k === 'power_kw') && b[k] === null) { out[k] = null; continue }
+    if (!nonNeg(b[k])) return { error: `${k} must be a number, zero or more` }
+    out[k] = b[k]
+  }
+  if (has('escalates_on')) {
+    if (!['anniversary', 'calendar_year'].includes(b.escalates_on)) return { error: 'escalates_on must be anniversary or calendar_year' }
+    out.escalates_on = b.escalates_on
+  }
+  if (has('allocation')) {
+    if (!['none', 'gpu_count'].includes(b.allocation)) return { error: 'allocation must be none or gpu_count' }
+    out.allocation = b.allocation
+  }
+  if (has('status')) {
+    if (!['active', 'ended'].includes(b.status)) return { error: 'status must be active or ended' }
+    out.status = b.status
+  }
+  if (has('includes_connectivity')) {
+    if (typeof b.includes_connectivity !== 'boolean') return { error: 'includes_connectivity must be true or false' }
+    out.includes_connectivity = b.includes_connectivity
+  }
+  if (has('vendor_id')) {
+    if (b.vendor_id !== null && typeof b.vendor_id !== 'string') return { error: 'vendor_id must be a string' }
+    out.vendor_id = b.vendor_id
+  }
+  const dates = contractDatesError(out)
+  if (dates) return { error: dates }
+  return { value: out }
+}
+
+/**
+ * Why a contract's dates do not fit together, or null (checked on the merged row at update too). An
+ * escalation date after the end is not an error: ending a contract early simply leaves it
+ * inapplicable, and escalationDates stops at the end.
+ */
+export function contractDatesError(c: Pick<ContractInput, 'start_date' | 'end_date' | 'first_escalation_date'>): string | null {
+  if (c.start_date && c.end_date && c.end_date < c.start_date) return 'end_date must be on or after start_date'
+  if (c.first_escalation_date && c.start_date && c.first_escalation_date <= c.start_date) return 'first_escalation_date must be after start_date'
+  return null
+}
+
+/**
+ * End a contract's accrual schedules at `endDate`: each active fleet schedule of the contract still
+ * open (or ending later) ends then, and one that starts after it is deactivated, so the close stops
+ * proposing accruals past the contract. ensureDatacenterSchedule reads the contract's own end_date,
+ * so a later roll recreates nothing past it. Idempotent: schedules already aligned are left alone,
+ * so it is safe (and cheap) to run on every PATCH and roll of an ended contract, which is what
+ * repairs a termination whose schedule write failed. `dryRun` counts what would change.
+ */
+export async function endDatacenterSchedules(
+  admin: SupabaseClient, t: Pick<ScheduleTarget, 'fundId' | 'vehicleId'>, contractId: string, endDate: string, opts: { dryRun?: boolean } = {},
+): Promise<number> {
+  const prefix = `fleet:datacenter:${contractId}:`
+  const { data, error } = await (admin as any).from('accounting_schedules').select('id, source_ref, start_date, end_date')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('active', true).like('source_ref', `${prefix}%`).order('start_date').order('id')
+  if (error) throw error
+  let changed = 0
+  for (const row of ((data as any[]) ?? []).filter(r => String(r.source_ref).startsWith(prefix))) {
+    const patch = row.start_date > endDate ? { active: false } : (!row.end_date || row.end_date > endDate) ? { end_date: endDate } : null
+    if (!patch) continue
+    changed++
+    if (opts.dryRun) continue
+    const { error: upError } = await (admin as any).from('accounting_schedules').update({ ...patch, updated_at: new Date().toISOString() })
+      .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).eq('id', row.id)
+    if (upError) throw upError
+  }
+  return changed
+}
+
+/** The vehicle's accrual accounts for a datacenter schedule: Dr 5100 / Cr 2000. */
+export const DATACENTER_CODES = { expense: '5100', offset: '2000' } as const
 
 // ── Writing the schedules ──
 
@@ -235,8 +332,18 @@ export async function createInsuranceSchedules(
   t: ScheduleTarget,
   p: { key: string; name: string; premium: number; startDate: string; months: number },
 ): Promise<string[] | ScheduleRefusal> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(p.key ?? '')) return { error: 'key must be 1\u201364 letters, digits, hyphens or underscores' }
+  const periods = insurancePeriods(p.premium, p.startDate, p.months)
+  // A policy key names ONE policy: reusing it with a different start is refused, not a second policy.
+  const prefix = `fleet:insurance:${p.key}:`
+  const { data: used, error } = await (admin as any).from('accounting_schedules').select('id, source_ref, start_date')
+    .eq('fund_id', t.fundId).eq('vehicle_id', t.vehicleId).like('source_ref', `${prefix}%`).order('start_date').order('id')
+  if (error) throw error
+  const starts = new Set(periods.map(x => x.start))
+  const other = ((used as any[]) ?? []).find(r => String(r.source_ref).startsWith(prefix) && !starts.has(r.start_date))
+  if (other) return { error: `Policy key ${p.key} is already used for a schedule starting ${other.start_date} (schedule ${other.id}). Use a new key for a new policy.` }
   const ids: string[] = []
-  for (const period of insurancePeriods(p.premium, p.startDate, p.months)) {
+  for (const period of periods) {
     const row = await insertSchedule(admin, t, p.name, period, fleetScheduleRef.insurance(p.key, period.start), true)
     if ('error' in row) return row
     ids.push(row.id)
