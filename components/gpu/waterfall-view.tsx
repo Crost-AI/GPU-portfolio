@@ -5,12 +5,14 @@ import { Loader2 } from 'lucide-react'
 import { useVehicle } from '@/components/accounting-vehicle'
 import { useCanRead, useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
+import { MANCO_KIND } from '@/lib/vehicle-kinds'
 import { ShellSection } from './parts'
 import { PositionTiles } from './waterfall-position'
 import { TermsCard } from './waterfall-terms-card'
 import { PrefLedgerTable, PrefLedgerUnavailable } from './pref-ledger-table'
 import { ProposeDistributionDialog } from './propose-distribution'
 import { DistributionHistory } from './distribution-history'
+import { FeeTermsDialog } from './fee-terms-dialog'
 import {
   CADENCES, historyScope, positionFromLedger, send, vehicleFetcher, waterfallPaths,
   type Cadence, type FeeTermsReply, type HistoryRow, type PrefLedgerRow, type WaterfallTermsReply,
@@ -52,6 +54,7 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
   const [cadenceMsg, setCadenceMsg] = useState<string | null>(null)
   const [savingCadence, setSavingCadence] = useState(false)
   const [termsError, setTermsError] = useState<string | null>(null)
+  const [termsVersion, setTermsVersion] = useState(0)
   // The reserve the next proposal opens with: the newest declared distribution's (the history's
   // first row, the same `reserve_amount` the preview reports as `lastReserve`), until a preview says.
   const [previewedReserve, setPreviewedReserve] = useState<number | null | undefined>(undefined)
@@ -84,7 +87,7 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
       setCadence(c && (CADENCES as readonly string[]).includes(c) ? (c as Cadence) : null)
     })()
     return () => { cancelled = true }
-  }, [fetcher, seesTerms, readsAccounting])
+  }, [fetcher, seesTerms, readsAccounting, termsVersion])
 
   async function changeCadence(next: Cadence) {
     setSavingCadence(true); setCadenceMsg(null)
@@ -115,6 +118,14 @@ export function WaterfallView({ vehicle }: { vehicle: string; vehicleId: string 
             fee={fee}
             cadence={{ value: cadence, canEdit: writesAccounting, saving: savingCadence, onChange: c => { void changeCadence(c) } }}
             payeeName={id => vehicles.find(v => v.id === id)?.name ?? null}
+            feeAction={writesAccounting && fee !== undefined ? (
+              <FeeTermsDialog
+                fetcher={fetcher}
+                terms={fee}
+                mancos={vehicles.filter(v => v.kind === MANCO_KIND && v.id).map(v => ({ id: v.id!, name: v.name }))}
+                onSaved={() => setTermsVersion(n => n + 1)}
+              />
+            ) : undefined}
           />
           {(termsError || cadenceMsg) && <p className="text-sm text-destructive">{cadenceMsg ?? termsError}</p>}
         </div>

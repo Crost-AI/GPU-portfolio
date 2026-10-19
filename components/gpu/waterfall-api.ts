@@ -13,7 +13,7 @@ export type SendResult<T> =
   | { ok: false; status: number; error: string; code?: string }
 
 /** One request, its JSON reply, and the route's `{ error, code }` on a refusal. Never throws. */
-export async function send<T>(fetcher: Fetcher, path: string, method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: unknown): Promise<SendResult<T>> {
+export async function send<T>(fetcher: Fetcher, path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' = 'GET', body?: unknown): Promise<SendResult<T>> {
   let res: Response
   try {
     res = await fetcher(path, body === undefined ? { method } : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -315,4 +315,46 @@ export const HISTORY_CAP = 200
 /** The caption under the cumulative tiles: what they sum, and what they leave out. */
 export function historyScope(n: number): { caption: string; truncated: boolean } {
   return { caption: `In the ${n} ${n === 1 ? 'distribution' : 'distributions'} shown`, truncated: n >= HISTORY_CAP }
+}
+
+// ── Fee terms ──────────────────────────────────────────────────────────────────────────────────
+
+/** The fee form as typed: the rate as a percentage of revenue, dates as YYYY-MM-DD, '' for none. */
+export interface FeeForm {
+  ratePct: string
+  frequency: 'monthly' | 'quarterly'
+  /** A management company's vehicle id; '' books the fee to Due to manager (2100). */
+  payeeVehicleId: string
+  effectiveFrom: string
+  effectiveTo: string
+}
+
+export function feeFormOf(terms: FeeTermsReply['terms']): FeeForm {
+  return {
+    ratePct: terms ? String(Number((terms.annualRate * 100).toFixed(6))) : '',
+    frequency: terms?.frequency === 'quarterly' ? 'quarterly' : 'monthly',
+    payeeVehicleId: terms?.payeeVehicleId ?? '',
+    effectiveFrom: terms?.effectiveFrom ?? '',
+    effectiveTo: terms?.effectiveTo ?? '',
+  }
+}
+
+/**
+ * The PUT body for /api/accounting/fee-terms. Only the rate is checked here (a blank one would
+ * otherwise arrive as 0); every other rule is the route's, and its 400 text is shown as it is.
+ */
+export function feeTermsBody(f: FeeForm): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  const pct = parseAmount(f.ratePct.replace(/%$/, ''))
+  if (pct == null || !Number.isFinite(pct)) return { ok: false, error: 'Enter the fee rate as a percentage of gross revenue, e.g. 5.' }
+  return {
+    ok: true,
+    body: {
+      basis: 'gross_revenue',
+      annualRate: Number((pct / 100).toFixed(10)),
+      frequency: f.frequency,
+      payeeVehicleId: f.payeeVehicleId || null,
+      effectiveFrom: f.effectiveFrom,
+      effectiveTo: f.effectiveTo || null,
+    },
+  }
 }

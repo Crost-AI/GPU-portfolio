@@ -30,13 +30,15 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-export function TermsCard({ waterfall, fee, cadence, payeeName }: {
+export function TermsCard({ waterfall, fee, cadence, payeeName, feeAction }: {
   waterfall: WaterfallTermsReply | null
   /** undefined: the caller cannot read the fee terms (accounting); null: the vehicle has none. */
   fee: FeeTermsReply['terms'] | undefined
   /** `value` null: the vehicle-settings route does not report the cadence. */
   cadence: { value: Cadence | null; canEdit: boolean; saving?: boolean; onChange: (c: Cadence) => void }
   payeeName: (vehicleId: string) => string | null
+  /** The Edit fee terms button, for a caller with accounting write. */
+  feeAction?: React.ReactNode
 }) {
   const t = waterfall?.terms
   const nameOf = (id: string) => waterfall?.candidates.find(c => c.lpEntityId === id)?.name ?? id
@@ -77,6 +79,7 @@ export function TermsCard({ waterfall, fee, cadence, payeeName }: {
               <Row label="Fee in force">{fee.effectiveFrom ?? '—'} to {fee.effectiveTo ?? 'open'}</Row>
             </>
           )}
+          {feeAction && <div className="flex justify-end py-1.5">{feeAction}</div>}
           <Row label="Distribution cadence">
             {cadence.value == null ? (
               <span className="text-muted-foreground">Not reported by the vehicle settings yet</span>
