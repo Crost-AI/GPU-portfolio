@@ -367,6 +367,49 @@ describe('asset valuation as of a date (#95)', () => {
     expect(await value(id, '?as_of=2027-12-31')).toMatchObject({ accumulated_tax: 67_000, nbv_tax: 268_000, nbv_book: 274_700 })
   })
 
+  const listed = async (id: string, asOf: string) =>
+    (await json(await assets.GET(get(`assets?group=H200 SPV I&as_of=${asOf}`)))).body.assets.find((a: any) => a.id === id)
+
+  it('nothing depreciates before the purchase is recognised: an unbooked asset, and a date before a later purchase', async () => {
+    const unbooked = await createAsset()
+    for (const v of [await value(unbooked, '?as_of=2027-01-31'), await listed(unbooked, '2027-01-31')]) {
+      expect(v).toMatchObject({ accumulated_book: 0, nbv_book: 335_000, accumulated_tax: 0, nbv_tax: 335_000 })
+    }
+    const later = await createAsset({ name: 'later' })
+    await purchase.POST(send(`assets/${later}/purchase`, 'POST', { entryDate: '2027-03-05' }), params(later))
+    for (const v of [await value(later, '?as_of=2027-01-31'), await listed(later, '2027-01-31')]) {
+      expect(v).toMatchObject({ accumulated_book: 0, nbv_book: 335_000 })
+    }
+    expect(await value(later, '?as_of=2027-03-31')).toMatchObject({ accumulated_book: 3 * 5_025 })
+  })
+
+  it('straight-line tax runs on its own inputs, not the posted book charges', async () => {
+    // 600 cost, 60 book salvage, 60 months: book posts 9 a month; tax recovers the full 600 over 5 years (10 a month).
+    const id = await createAsset({ hardware_cost: 600, tax_method: 'straight_line', tax_life_years: 5 })
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))
+    const acc = s.m.tables.chart_of_accounts.find((a: any) => a.code === `1650-${id.slice(0, 8)}`).id
+    for (let i = 1; i <= 12; i++) {
+      const month = `2027-${String(i).padStart(2, '0')}`
+      s.m.tables.journal_entries.push({ id: `sl-${month}`, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: `${month}-28`, source_type: 'partnership_expense', source_ref: `gpu-dep:${id}:${month}` })
+      s.m.tables.journal_postings.push({ journal_entry_id: `sl-${month}`, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: acc, amount: -9 })
+    }
+    expect(await value(id, '?as_of=2027-12-31')).toMatchObject({ accumulated_book: 108, nbv_book: 492, accumulated_tax: 120, nbv_tax: 480 })
+  })
+
+  it('a disposal-month charge counts from the disposal date, not the month end', async () => {
+    const id = await createAsset()
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))
+    Object.assign(s.m.tables.gpu_assets.find((a: any) => a.id === id), { status: 'disposed', disposed_on: '2027-02-10' })
+    const v = await value(id, '?as_of=2027-02-20')
+    expect(v).toMatchObject({ accumulated_book: 2 * 5_025, nbv_book: 0 })
+  })
+
+  it('a later capex is its own tax asset from its own month, not folded into year one', async () => {
+    const id = await setUp({ tax_method: 'macrs_5' })
+    // 2027: 20% of 335,000; 2028: 32% of 335,000 plus 20% of the 4,800 placed in service in January 2028.
+    expect(await value(id, '?as_of=2028-01-31')).toMatchObject({ accumulated_tax: 67_000 + 107_200 + 960, nbv_tax: 339_800 - 175_160 })
+  })
+
   it('defaults to today and refuses an invalid date', async () => {
     const id = await createAsset()
     expect((await value(id)).valuation_as_of).toBe(new Date().toISOString().slice(0, 10))

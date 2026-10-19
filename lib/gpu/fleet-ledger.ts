@@ -22,6 +22,9 @@ export interface LedgerCapexEvent extends CapexEvent {
   /** The capex entry, or `reversal:<id>` for the reversal that takes it back. */
   source_ref: string
   posted_at: string | null
+  /** The journal entry, and for a reversal the entry it takes back. */
+  entry_id: string
+  reverses: string | null
 }
 
 export interface AssetLedger {
@@ -30,6 +33,8 @@ export interface AssetLedger {
   accumulatedAccountId: string | null
   /** The posted, unreversed purchase dated on or before `asOf`, or null. */
   purchase: { id: string; entry_date: string } | null
+  /** A purchase dated on or before `asOf` was posted and then reversed by `asOf` (null purchase for that reason, not a future one). */
+  purchaseReversed: boolean
   /** Capex (and reversals of it) dated on or before `asOf`, in date order. */
   capex: LedgerCapexEvent[]
   /** Depreciation posted and unreversed as of `asOf`, by month. */
@@ -66,14 +71,16 @@ export async function loadFleetLedger(
     const mine = (prefix: string) => entries.filter(e => String(e.source_ref).startsWith(prefix))
     const costAccountId = accountId.get(assetAccountCode(COST_BASE, asset.id)) ?? null
     const accumulatedAccountId = accountId.get(assetAccountCode(ACCUMULATED_BASE, asset.id)) ?? null
-    const purchase = mine(gpuSourceRef.purchase(asset.id)).find(e => e.status === 'posted' && inPeriod(e) && !reversedAsOf(e)) ?? null
+    const purchases = mine(gpuSourceRef.purchase(asset.id)).filter(e => e.status === 'posted' && inPeriod(e))
+    const purchase = purchases.find(e => !reversedAsOf(e)) ?? null
+    const purchaseReversed = !purchase && purchases.some(reversedAsOf)
 
     const capex: LedgerCapexEvent[] = []
     for (const e of mine(`gpu-asset:${asset.id}:capex:`).filter(e => e.status === 'posted' && inPeriod(e))) {
-      capex.push({ month: String(e.entry_date).slice(0, 7), amount: to(e, costAccountId) / 100, source_ref: e.source_ref, posted_at: e.posted_at ?? null })
+      capex.push({ month: String(e.entry_date).slice(0, 7), amount: to(e, costAccountId) / 100, source_ref: e.source_ref, posted_at: e.posted_at ?? null, entry_id: e.id, reverses: null })
       if (reversedAsOf(e)) {
         const r = reversalOf.get(e.id)
-        capex.push({ month: String(r.entry_date).slice(0, 7), amount: to(r, costAccountId) / 100, source_ref: r.source_ref, posted_at: r.posted_at ?? null })
+        capex.push({ month: String(r.entry_date).slice(0, 7), amount: to(r, costAccountId) / 100, source_ref: r.source_ref, posted_at: r.posted_at ?? null, entry_id: r.id, reverses: e.id })
       }
     }
     capex.sort((x, y) => (x.month < y.month ? -1 : x.month > y.month ? 1 : 0))
@@ -89,7 +96,7 @@ export async function loadFleetLedger(
       refs.set(month, ref)
       if (e.status === 'posted' && inPeriod(e) && !reversedAsOf(e)) posted.set(month, (cents(posted.get(month) ?? 0) - to(e, accumulatedAccountId)) / 100)
     }
-    out.push({ asset, costAccountId, accumulatedAccountId, purchase: purchase && { id: purchase.id, entry_date: purchase.entry_date }, capex: capex.filter(c => c.amount !== 0), posted, refs })
+    out.push({ asset, costAccountId, accumulatedAccountId, purchase: purchase && { id: purchase.id, entry_date: purchase.entry_date }, purchaseReversed, capex: capex.filter(c => c.amount !== 0), posted, refs })
   }
   const assetAccountIds = new Set(chart.filter(a => /^16[05]0-/.test(a.code)).map(a => a.id))
   return { assets: out, assetAccountIds }

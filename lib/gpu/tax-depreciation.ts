@@ -70,6 +70,8 @@ function macrs(basisCents: number, cls: 5 | 7): number[] {
  * the year placed in service takes none.
  */
 export function taxDepreciationSchedule(a: TaxDepreciableAsset): TaxYearLine[] {
+  // Tax runs on its own inputs: never the book postings or book capex events (decision Q7).
+  a = { ...a, posted: undefined, capex: [] }
   const basis = cents(a.basis)
   const start = yearOf(a.inServiceDate)
   let years: Map<number, number>

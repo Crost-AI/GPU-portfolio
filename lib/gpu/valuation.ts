@@ -38,9 +38,11 @@ export function parseAsOf(raw: string | null): string | null {
  * Each asset's valuation as of `asOf`.
  *   - basis: hardware cost plus the capex posted by then; capex joins depreciation prospectively.
  *   - book: accumulated = basis − nbvAsOf on the remaining-life schedule (posted months as posted).
- *   - tax: the asset's tax method on the same basis, summed through the tax year containing `asOf`;
- *     tax_method 'book' reports the book figures.
- *   - before in service nothing is depreciated; on or after its disposal, both NBVs are 0.
+ *   - tax: the asset's tax method on independent tax inputs (the hardware and each capex its own tax
+ *     asset from its own month), summed through the tax year containing `asOf`; tax_method 'book'
+ *     reports the book figures.
+ *   - nothing is depreciated before the purchase is recognised as of `asOf`; each charge counts from
+ *     its entry date (min(month end, disposal)); on or after the disposal, both NBVs are 0.
  */
 export async function valueAssets(
   admin: SupabaseClient, fundId: string, vehicleId: string, rows: GpuAssetRow[], asOf: string,
@@ -52,7 +54,9 @@ export async function valueAssets(
     const capexCents = l.capex.reduce((t, e) => t + cents(e.amount), 0)
     const basisCents = cents(Number(a.hardware_cost)) + capexCents
     const disposed = !!a.disposed_on && a.disposed_on <= asOf
-    const dep = depreciableFromAsset(a, l.capex, l.posted)
+    // Nothing depreciates until the purchase is recognised as of the date (the same rule as the close):
+    // a planned or unbooked asset, or a date before a later purchase, shows its full basis.
+    const dep = l.purchase ? depreciableFromAsset(a, l.capex, l.posted) : null
     // The schedule stops at the disposal; once disposed the asset is off the books (NBV 0).
     const scheduleNbv = dep ? cents(nbvAsOf(dep, asOf)) : basisCents
     const accBook = basisCents - scheduleNbv
@@ -61,10 +65,20 @@ export async function valueAssets(
     let accTax = accBook
     let nbvTax = nbvBook
     if (a.tax_method !== 'book' && dep) {
+      // Tax on independent inputs (no book postings, no salvage): the hardware placed in service on
+      // its in-service date, and each capex its own tax asset placed in service in its month, with the
+      // parent's method and class. A capex reversed by the date drops out with its reversal.
+      const reversed = new Set(l.capex.filter(e => e.reverses).map(e => e.reverses!))
+      const pieces = [
+        { basis: Number(a.hardware_cost), inServiceDate: a.in_service_date! },
+        ...l.capex.filter(e => !e.reverses && !reversed.has(e.entry_id)).map(e => ({ basis: e.amount, inServiceDate: `${e.month}-01` })),
+      ]
       const year = Number(asOf.slice(0, 4))
-      accTax = taxDepreciationSchedule({
-        ...dep, basis: dollars(basisCents), capex: [], taxMethod: a.tax_method, taxBonusPct: Number(a.tax_bonus_pct ?? 0), taxLifeYears: a.tax_life_years,
-      }).filter(y => y.year <= year).reduce((t, y) => t + cents(y.amount), 0)
+      accTax = pieces.reduce((t, p) => t + taxDepreciationSchedule({
+        id: a.id, basis: p.basis, salvage: 0, lifeMonths: a.useful_life_months, inServiceDate: p.inServiceDate,
+        convention: a.depreciation_convention, disposedOn: a.disposed_on,
+        taxMethod: a.tax_method, taxBonusPct: Number(a.tax_bonus_pct ?? 0), taxLifeYears: a.tax_life_years,
+      }).filter(y => y.year <= year).reduce((s, y) => s + cents(y.amount), 0), 0)
       nbvTax = disposed ? 0 : Math.max(0, basisCents - accTax)
     }
     out.set(a.id, {
