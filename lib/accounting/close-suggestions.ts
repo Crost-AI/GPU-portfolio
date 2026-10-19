@@ -137,15 +137,11 @@ export async function loadCloseEntrySuggestions(
       evidence: { priorEntryIds: [previous.id, latest.id] },
     })
   }
-  // ── GPU fleet (P1) ── Each booked GPU server's monthly depreciation (lib/gpu/close-checks.ts);
-  // nothing for any other vehicle. Two posted months of the same depreciation also read as a
-  // recurring pattern, so that copy is dropped in favour of the fleet's own proposal.
-  const fleet = await loadFleetCloseSuggestions(admin, fundId, group, vehicleId, start, end)
-  if (fleet.length) {
-    const key = (s: CloseEntrySuggestion) => `${monthKey(s.entryDate)}|${accountSet(s.postings.map(p => ({ account_id: p.accountId })))}`
-    const covered = new Set(fleet.map(key))
-    out.splice(0, out.length, ...out.filter(s => !(s.basis === 'recurring_pattern' && covered.has(key(s)))), ...fleet)
-  }
+  // ── GPU fleet (P1) ── On a GPU SPV, each server's monthly depreciation (lib/gpu/close-checks.ts), and
+  // the fleet is the only source of entries on the per-asset 1600/1650 accounts: a recurring-pattern
+  // copy of past depreciation is dropped. Nothing changes for any other vehicle.
+  const fleet = await loadFleetCloseSuggestions(admin, fundId, vehicleId, start, end)
+  if (fleet) out.splice(0, out.length, ...out.filter(x => !(x.basis === 'recurring_pattern' && x.postings.some(p => fleet.assetAccountIds.has(p.accountId)))), ...fleet.suggestions)
   return out.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.title.localeCompare(b.title))
 }
 

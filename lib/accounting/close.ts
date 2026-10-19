@@ -71,7 +71,7 @@ import { loadStrandedCapital } from './pooled-capital-check'
 import { roundCents } from './ledger'
 import type { Account, JournalEntry, Posting } from './types'
 import { ACTUAL_BOOK } from './books'
-import { closesToOwnerEquity, isGpuSpv } from '@/lib/vehicle-kinds'
+import { closesToOwnerEquity } from '@/lib/vehicle-kinds'
 import { vehicleKindByName } from './vehicle-domain'
 import { ownerCloseEntries } from './close-owner'
 import { ownerNoun } from './vocab'
@@ -940,19 +940,6 @@ export async function checkReadiness(
   // rather than overruling it. See lib/portfolio/lots.ts.
   warnings.push(...await loadLotIssues(admin, fundId, group, end))
 
-  // ── GPU fleet (P1) ── Depreciation posted through the period end and fleet NBV tied to the
-  // register, for a GPU SPV only (lib/gpu/close-checks.ts). A fleet that could not be read is a
-  // blocker, not "nothing to check", like the holdings, quotes and wallets above.
-  let fleetChecks: FleetReviewCheck[] | undefined
-  if (isGpuSpv(kind) && vehicleId) {
-    try {
-      const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, end)
-      if (fleet) { blockers.push(...fleet.blockers); fleetChecks = fleet.checks }
-    } catch (e) {
-      blockers.push(`The GPU fleet could not be checked: ${(e as Error).message}. Try again before closing.`)
-    }
-  }
-
   if (bankRows.length > 0) {
     const total = roundCents(bankRows.reduce((s, t) => s + Number(t.amount), 0))
     blockers.push(
@@ -960,6 +947,10 @@ export async function checkReadiness(
       `Categorize and post them on the Bank page — otherwise their income and expense is never allocated to any partner.`
     )
   }
+
+  // ── GPU fleet (P1) ── depreciation posted and fleet NBV tied, a GPU SPV only (lib/gpu/close-checks.ts).
+  const fleet = await fleetCloseReview(admin, fundId, group, vehicleId, kind, end)
+  if (fleet) blockers.push(...fleet.blockers)
 
   return {
     draftEntries: {
@@ -979,7 +970,7 @@ export async function checkReadiness(
     blockers,
     warnings,
     blockerLinks,
-    ...(fleetChecks ? { fleetChecks } : {}),
+    ...(fleet ? { fleetChecks: fleet.checks } : {}),
   }
 }
 

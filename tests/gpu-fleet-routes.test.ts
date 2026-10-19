@@ -140,7 +140,7 @@ describe('booking needs accounting write', () => {
     expect(await json(await capex.POST(send(`assets/${id}/capex`, 'POST', cost), params(id)))).toEqual({ status: 200, body: { entryId: 'je-2', capitalizedCosts: 2_000 } })
     const late = await json(await capex.POST(send(`assets/${id}/capex`, 'POST', { key: 'late', entryDate: '2032-01-05', amount: 10 }), params(id)))
     expect(late).toMatchObject({ status: 400, body: { error: expect.stringContaining('life ends in 2031-12') } })
-    expect((await json(await asset.GET(get(`assets/${id}`), params(id)))).body.capitalized_costs).toBe(2_000)
+    expect((await json(await asset.GET(get(`assets/${id}?as_of=2027-12-31`), params(id)))).body.capitalized_costs).toBe(2_000)
   })
 })
 
@@ -320,6 +320,60 @@ describe('asset payloads', () => {
     await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'maintenance', starts_at: '2027-04-01T00:00:00Z' }), params(id))
     expect((await events.POST(send(`assets/${id}/events`, 'POST', { kind: 'downtime', starts_at: '2027-03-01T00:00:00Z', ends_at: '2027-03-02T00:00:00Z', gpus_affected: 2 }), params(id))).status).toBe(201)
     expect((await json(await events.GET(get(`assets/${id}/events`), params(id)))).body.events.map((e: any) => e.kind)).toEqual(['downtime', 'maintenance'])
+  })
+})
+
+describe('asset valuation as of a date (#95)', () => {
+  // 335,000 in service from January 2027: 5,025 a month for twelve posted months, then 4,800 of capex
+  // in January 2028, depreciated prospectively over the 48 months left (+100 a month).
+  const setUp = async (over: object = {}) => {
+    const id = await createAsset(over)
+    await purchase.POST(send(`assets/${id}/purchase`, 'POST', { entryDate: '2027-01-05' }), params(id))
+    const acc = s.m.tables.chart_of_accounts.find((a: any) => a.code === `1650-${id.slice(0, 8)}`).id
+    for (let i = 1; i <= 12; i++) {
+      const month = `2027-${String(i).padStart(2, '0')}`
+      const eid = `dep-${month}`
+      s.m.tables.journal_entries.push({ id: eid, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', status: 'posted', entry_date: `${month}-28`, source_type: 'partnership_expense', source_ref: `gpu-dep:${id}:${month}` })
+      s.m.tables.journal_postings.push({ journal_entry_id: eid, fund_id: 'f', vehicle_id: 'v-gpu', book: 'actual', account_id: acc, amount: -5_025 })
+    }
+    await capex.POST(send(`assets/${id}/capex`, 'POST', { key: 'INV-1', entryDate: '2028-01-10', amount: 4_800 }), params(id))
+    return id
+  }
+  const value = async (id: string, q = '') => (await json(await asset.GET(get(`assets/${id}${q}`), params(id)))).body
+
+  it('after a mid-life capex the NBV follows the prospective schedule, not an overstated one', async () => {
+    const id = await setUp()
+    expect(await value(id, '?as_of=2028-01-31')).toMatchObject({
+      valuation_as_of: '2028-01-31', basis: 339_800, capitalized_costs: 4_800,
+      accumulated_book: 60_300 + 5_125, nbv_book: 339_800 - 65_425,
+      accumulated_tax: 65_425, nbv_tax: 274_375,
+      capex_events: [{ month: '2028-01', amount: 4_800, source_ref: `gpu-asset:${id}:capex:INV-1` }],
+    })
+    // The list returns the same figures, batched for the vehicle.
+    const listed = (await json(await assets.GET(get('assets?group=H200 SPV I&as_of=2028-01-31')))).body.assets.find((a: any) => a.id === id)
+    expect(listed).toMatchObject({ nbv_book: 274_375, capitalized_costs: 4_800 })
+  })
+
+  it('as_of before the capex excludes it', async () => {
+    const id = await setUp()
+    expect(await value(id, '?as_of=2027-12-31')).toMatchObject({
+      basis: 335_000, capitalized_costs: 0, accumulated_book: 60_300, nbv_book: 274_700, capex_events: [],
+    })
+  })
+
+  it('tax depreciation follows the asset\'s own method on the same basis', async () => {
+    const id = await setUp({ tax_method: 'macrs_5' })
+    // 2027: 20% of 335,000 (the capex came in 2028).
+    expect(await value(id, '?as_of=2027-12-31')).toMatchObject({ accumulated_tax: 67_000, nbv_tax: 268_000, nbv_book: 274_700 })
+  })
+
+  it('defaults to today and refuses an invalid date', async () => {
+    const id = await createAsset()
+    expect((await value(id)).valuation_as_of).toBe(new Date().toISOString().slice(0, 10))
+    for (const bad of ['2027-13-01', '2027-02-30', 'tomorrow']) {
+      expect((await asset.GET(get(`assets/${id}?as_of=${bad}`), params(id))).status, bad).toBe(400)
+      expect((await assets.GET(get(`assets?group=H200 SPV I&as_of=${bad}`))).status, bad).toBe(400)
+    }
   })
 })
 

@@ -1,23 +1,19 @@
 // ── GPU fleet (P1) ── The fleet's part of the period close (design §4.5): the monthly depreciation
-// the close proposes, and the two review checks it blocks on. Only a gpu_spv vehicle has any; every
+// the close proposes, and the review checks it blocks on. Only a gpu_spv vehicle has any; every
 // other vehicle gets nothing from here, so its close is unchanged.
 //
-// Each booked asset (purchase linked, in service) is read once: its capex, the depreciation already
-// posted by month and every gpu-dep entry under its ref, and the remaining-life schedule built on
-// that posted state (lib/gpu/depreciation.ts).
+// The vehicle's fleet is read in one pass (fleet-ledger.ts, one query per table), as of the period
+// end; the remaining-life schedule (lib/gpu/depreciation.ts) is built on that posted state.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { ACTUAL_BOOK } from '@/lib/accounting/books'
-import { assetAccountCode } from '@/lib/accounting/chart'
 import type { CloseEntrySuggestion } from '@/lib/accounting/close-suggestions'
 import { loadPostedLedger } from '@/lib/accounting/load'
-import { reversalRef } from '@/lib/accounting/reversal'
-import { monthOf } from '@/lib/forecast/months'
 import { isGpuSpv } from '@/lib/vehicle-kinds'
-import { ACCUMULATED_BASE, COST_BASE, accountIdsByCode, listAssets, loadCapexEvents, loadPostedDepreciation, type Lifecycle } from './assets'
+import { accountIdsByCode } from './assets'
 import { depreciableFromAsset, depreciationEntryDate, depreciationSchedule, nbvAsOf, type DepreciationLine } from './depreciation'
 import { assetBalances } from './disposal'
 import { buildDepreciationEntry, gpuSourceRef } from './entries'
+import { loadFleetLedger } from './fleet-ledger'
 import type { GpuAssetRow } from './types'
 
 export const DEPRECIATION_EXPENSE_CODE = '5300'
@@ -32,94 +28,85 @@ interface AssetState {
   registerNbv: (date: string) => number
 }
 
-async function isFleetVehicle(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<boolean> {
-  const { data, error } = await (admin as any).from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('id', vehicleId)
-  if (error) throw error
-  return isGpuSpv(((data as any[]) ?? [])[0]?.kind)
+interface FleetState {
+  /** Booked, in-service assets with their depreciation state. */
+  assets: AssetState[]
+  /** Assets whose purchase is posted but not linked from the register (the claim/recovery window). */
+  unlinked: GpuAssetRow[]
+  /** Every per-asset 1600-<a>/1650-<a> account id: only the fleet proposes entries on these. */
+  assetAccountIds: Set<string>
 }
 
-/** Every booked, in-service asset of the vehicle with its depreciation state. */
-async function loadAssetStates(admin: SupabaseClient, ctx: Lifecycle): Promise<AssetState[]> {
-  const out: AssetState[] = []
-  for (const asset of await listAssets(admin, ctx.fundId, ctx.vehicleId)) {
-    if (!asset.purchase_entry_id || !asset.in_service_date) continue
-    const costCode = assetAccountCode(COST_BASE, asset.id)
-    const accCode = assetAccountCode(ACCUMULATED_BASE, asset.id)
-    const ids = await accountIdsByCode(admin, ctx.fundId, ctx.vehicleId, [costCode, accCode])
-    const [capex, posted, refs] = await Promise.all([
-      loadCapexEvents(admin, ctx, asset.id, ids.get(costCode)!),
-      loadPostedDepreciation(admin, ctx, asset.id, ids.get(accCode)!),
-      depreciationRefs(admin, ctx, asset.id),
-    ])
-    const dep = depreciableFromAsset(asset, capex, posted)!
-    out.push({
-      asset, accumulatedAccountId: ids.get(accCode)!, schedule: depreciationSchedule(dep), posted, refs,
-      registerNbv: date => (asset.disposed_on && asset.disposed_on <= date ? 0 : nbvAsOf(dep, date)),
+/**
+ * The vehicle's fleet as of `asOf` (fleet-ledger.ts, one pass): the booked, in-service assets with
+ * their schedules, and any purchase booked but left unlinked from the register.
+ */
+async function loadFleetState(admin: SupabaseClient, fundId: string, vehicleId: string, asOf: string): Promise<FleetState> {
+  const ledger = await loadFleetLedger(admin, fundId, vehicleId, asOf)
+  const state: FleetState = { assets: [], unlinked: [], assetAccountIds: ledger.assetAccountIds }
+  for (const l of ledger.assets) {
+    if (!l.asset.purchase_entry_id) {
+      if (l.purchase) state.unlinked.push(l.asset)
+      continue
+    }
+    // Not yet bought as of `asOf` (its purchase is dated later): not part of this period's fleet.
+    if (!l.purchase || !l.asset.in_service_date) continue
+    if (!l.costAccountId || !l.accumulatedAccountId) throw new Error(`${l.asset.name} has no 1600/1650 accounts though its purchase is booked`)
+    const dep = depreciableFromAsset(l.asset, l.capex, l.posted)!
+    state.assets.push({
+      asset: l.asset, accumulatedAccountId: l.accumulatedAccountId, schedule: depreciationSchedule(dep), posted: l.posted, refs: l.refs,
+      registerNbv: date => (l.asset.disposed_on && l.asset.disposed_on <= date ? 0 : nbvAsOf(dep, date)),
     })
   }
-  return out
-}
-
-/** Every live gpu-dep entry for the asset, by month: unreversed (posted or draft), or reversed. */
-async function depreciationRefs(admin: SupabaseClient, ctx: Lifecycle, assetId: string): Promise<Map<string, { live: boolean; reversed: number }>> {
-  const prefix = `gpu-dep:${assetId}:`
-  const { data, error } = await (admin as any).from('journal_entries').select('id, source_ref')
-    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).neq('status', 'void')
-    .like('source_ref', `${prefix}%`).order('id')
-  if (error) throw error
-  const rows: { id: string; source_ref: string }[] = (data as any[]) ?? []
-  const out = new Map<string, { live: boolean; reversed: number }>()
-  if (!rows.length) return out
-  const { data: rev, error: revError } = await (admin as any).from('journal_entries').select('source_ref')
-    .eq('book', ACTUAL_BOOK).eq('fund_id', ctx.fundId).eq('vehicle_id', ctx.vehicleId).eq('status', 'posted')
-    .in('source_ref', rows.map(r => reversalRef(r.id))).order('id')
-  if (revError) throw revError
-  const reversed = new Set(((rev as any[]) ?? []).map(r => String(r.source_ref).slice('reversal:'.length)))
-  for (const r of rows) {
-    const month = r.source_ref.slice(prefix.length, prefix.length + 7)
-    const m = out.get(month) ?? { live: false, reversed: 0 }
-    if (reversed.has(r.id)) m.reversed++
-    else m.live = true
-    out.set(month, m)
-  }
-  return out
+  return state
 }
 
 /**
  * The depreciation the close proposes for [start, end], basis 'fleet': one entry per booked asset per
  * month due in the span with no live entry, at the remaining-life charge on the posted state, dated
  * min(month end, disposal date). A month booked and then reversed is proposed again under
- * `gpu-dep:<id>:<YYYY-MM>:r<n>`. Empty for any vehicle that is not a GPU SPV.
+ * `gpu-dep:<id>:<YYYY-MM>:r<n>`. Also the asset accounts, so the caller can drop any other proposal
+ * on them (the fleet is their only source). Null for any vehicle that is not a GPU SPV, and when the
+ * vehicle's kind cannot be read (suggestions are advice; the close's own checks fail closed).
  */
 export async function loadFleetCloseSuggestions(
-  admin: SupabaseClient, fundId: string, group: string, vehicleId: string, start: string, end: string,
-): Promise<CloseEntrySuggestion[]> {
-  if (!(await isFleetVehicle(admin, fundId, vehicleId))) return []
-  const ctx: Lifecycle = { fundId, group, vehicleId, userId: null }
-  const states = await loadAssetStates(admin, ctx)
-  if (!states.length) return []
-  const expense = (await accountIdsByCode(admin, fundId, vehicleId, [DEPRECIATION_EXPENSE_CODE])).get(DEPRECIATION_EXPENSE_CODE)!
-  const out: CloseEntrySuggestion[] = []
-  for (const s of states) {
-    for (const line of s.schedule) {
-      if (line.month < monthOf(start) || line.month > monthOf(end)) continue
-      const refs = s.refs.get(line.month)
-      if (refs?.live || line.amount <= 0) continue
-      const sourceRef = refs?.reversed ? `${gpuSourceRef.depreciation(s.asset.id, line.month)}:r${refs.reversed}` : gpuSourceRef.depreciation(s.asset.id, line.month)
-      const entry = buildDepreciationEntry({
-        fundId, assetId: s.asset.id, month: line.month, amount: line.amount, expenseAccountId: expense,
-        accumulatedAccountId: s.accumulatedAccountId, entryDate: depreciationEntryDate(line.month, s.asset.disposed_on),
-        memo: `Depreciation — ${s.asset.name} — ${line.month}`,
-      })
-      out.push({
-        id: sourceRef, sourceRef, basis: 'fleet', title: `Depreciation — ${s.asset.name}`,
-        detail: `${line.month} depreciation for ${s.asset.name}${refs?.reversed ? ' (re-proposed: the earlier entry was reversed)' : ''}.`,
-        entryDate: entry.entryDate, memo: entry.memo ?? '', sourceType: entry.sourceType ?? 'partnership_expense', required: true,
-        postings: entry.postings, evidence: { assetId: s.asset.id },
-      })
+  admin: SupabaseClient, fundId: string, vehicleId: string, start: string, end: string,
+): Promise<{ suggestions: CloseEntrySuggestion[]; assetAccountIds: Set<string> } | null> {
+  try {
+    const { data, error } = await (admin as any).from('fund_vehicles').select('kind').eq('fund_id', fundId).eq('id', vehicleId)
+    if (error || !isGpuSpv(((data as any[]) ?? [])[0]?.kind)) return null
+  } catch (e) {
+    console.warn('[fleet-close-suggestions] vehicle kind unread; no fleet suggestions', (e as Error)?.message)
+    return null
+  }
+  const state = await loadFleetState(admin, fundId, vehicleId, end)
+  const suggestions: CloseEntrySuggestion[] = []
+  if (state.assets.length) {
+    const expense = (await accountIdsByCode(admin, fundId, vehicleId, [DEPRECIATION_EXPENSE_CODE])).get(DEPRECIATION_EXPENSE_CODE)!
+    for (const s of state.assets) {
+      for (const line of s.schedule) {
+        // Due when its entry date (min(month end, disposal)) falls in the span: a period ending
+        // mid-month does not yet owe that month's charge.
+        const date = depreciationEntryDate(line.month, s.asset.disposed_on)
+        if (date < start || date > end) continue
+        const refs = s.refs.get(line.month)
+        if (s.posted.has(line.month) || refs?.live || line.amount <= 0) continue
+        const sourceRef = refs?.reversed ? `${gpuSourceRef.depreciation(s.asset.id, line.month)}:r${refs.reversed}` : gpuSourceRef.depreciation(s.asset.id, line.month)
+        const entry = buildDepreciationEntry({
+          fundId, assetId: s.asset.id, month: line.month, amount: line.amount, expenseAccountId: expense,
+          accumulatedAccountId: s.accumulatedAccountId, entryDate: depreciationEntryDate(line.month, s.asset.disposed_on),
+          memo: `Depreciation — ${s.asset.name} — ${line.month}`,
+        })
+        suggestions.push({
+          id: sourceRef, sourceRef, basis: 'fleet', title: `Depreciation — ${s.asset.name}`,
+          detail: `${line.month} depreciation for ${s.asset.name}${refs?.reversed ? ' (re-proposed: the earlier entry was reversed)' : ''}.`,
+          entryDate: entry.entryDate, memo: entry.memo ?? '', sourceType: entry.sourceType ?? 'partnership_expense', required: true,
+          postings: entry.postings, evidence: { assetId: s.asset.id },
+        })
+      }
     }
   }
-  return out
+  return { suggestions, assetAccountIds: state.assetAccountIds }
 }
 
 /** A close-review check row (the shape persistCloseReview stores). */
@@ -133,50 +120,61 @@ export interface FleetReviewCheck {
 }
 
 /**
- * The fleet's close review through `end`, blocking on either check:
+ * The fleet's close review through `end`, for a GPU SPV (`kind`, as the close already read it); null
+ * for anything else. Two blocker checks:
  *   - depreciation posted through the period end for every booked, in-service asset (a reversed
- *     month counts as not posted);
- *   - each asset's ledger NBV (1600-<a> − 1650-<a>, posted through `end`) equals the register's
- *     nbvAsOf (0 once disposed).
- * Null for any vehicle that is not a GPU SPV.
+ *     month counts as not posted), and no purchase booked but left unlinked from the register;
+ *   - each remaining asset's ledger NBV (1600-<a> − 1650-<a>, posted through `end`) equals the
+ *     register's nbvAsOf (0 once disposed). An asset already flagged above is not checked twice.
+ * A fleet that cannot be read is a blocker, never "nothing to check".
  */
 export async function fleetCloseReview(
-  admin: SupabaseClient, fundId: string, group: string, vehicleId: string, end: string,
+  admin: SupabaseClient, fundId: string, group: string, vehicleId: string | null, kind: string | null, end: string,
 ): Promise<{ blockers: string[]; checks: FleetReviewCheck[] } | null> {
-  if (!(await isFleetVehicle(admin, fundId, vehicleId))) return null
-  const ctx: Lifecycle = { fundId, group, vehicleId, userId: null }
-  const states = await loadAssetStates(admin, ctx)
-  const { accounts, postings } = await loadPostedLedger(admin, fundId, group, end)
+  if (!isGpuSpv(kind) || !vehicleId) return null
+  let state: FleetState
+  let ledger: Awaited<ReturnType<typeof loadPostedLedger>>
+  try {
+    ;[state, ledger] = await Promise.all([loadFleetState(admin, fundId, vehicleId, end), loadPostedLedger(admin, fundId, group, end)])
+  } catch (e) {
+    const blocker = `The GPU fleet could not be checked: ${(e as Error).message}. Try again before closing.`
+    return { blockers: [blocker], checks: [{ key: 'fleet_depreciation', section: 'GPU fleet', label: 'Depreciation posted through period end', status: 'blocked', detail: blocker, evidence: {} }] }
+  }
 
-  const missing = states.map(s => ({
-    asset: s.asset, months: s.schedule.map(l => l.month).filter(m => m <= monthOf(end) && !s.posted.has(m)),
+  const missing = state.assets.map(s => ({
+    // Only a month with a positive charge due needs a posting (after a capex reversal, a zero month does not).
+    // and only once its entry date (min(month end, disposal)) is on or before the period end.
+    asset: s.asset, months: s.schedule.filter(l => depreciationEntryDate(l.month, s.asset.disposed_on) <= end && l.amount > 0 && !s.posted.has(l.month)).map(l => l.month),
   })).filter(x => x.months.length)
-  const nbv = states.map(s => {
-    const { cost, accumulated } = assetBalances(accounts, postings, s.asset.id)
+  const flagged = new Set([...missing.map(x => x.asset.id), ...state.unlinked.map(a => a.id)])
+  const nbv = state.assets.filter(s => !flagged.has(s.asset.id)).map(s => {
+    const { cost, accumulated } = assetBalances(ledger.accounts, ledger.postings, s.asset.id)
     return { asset: s.asset, ledger: Math.round((cost - accumulated) * 100) / 100, register: s.registerNbv(end) }
   })
   const mismatched = nbv.filter(x => Math.abs(x.ledger - x.register) >= 0.005)
 
+  const depreciationProblems = [
+    ...missing.map(x => `depreciation is not posted through ${end} for ${x.asset.name} (${x.months.join(', ')})`),
+    ...state.unlinked.map(a => `${a.name}'s purchase is booked but not linked to the register; retry the purchase`),
+  ]
   const blockers: string[] = []
-  if (missing.length) {
-    blockers.push(`Depreciation is not posted through ${end} for ${missing.map(x => `${x.asset.name} (${x.months.join(', ')})`).join('; ')}. Post the proposed depreciation entries first.`)
-  }
+  if (depreciationProblems.length) blockers.push(`GPU fleet: ${depreciationProblems.join('; ')}. Post the proposed depreciation entries (and link any booked purchase) first.`)
   if (mismatched.length) {
-    blockers.push(`Fleet net book value does not agree with the register for ${mismatched.map(x => `${x.asset.name} (ledger ${x.ledger.toFixed(2)}, register ${x.register.toFixed(2)})`).join('; ')}.`)
+    blockers.push(`GPU fleet: net book value does not agree with the register for ${mismatched.map(x => `${x.asset.name} (ledger ${x.ledger.toFixed(2)}, register ${x.register.toFixed(2)})`).join('; ')}.`)
   }
   return {
     blockers,
     checks: [
       {
         key: 'fleet_depreciation', section: 'GPU fleet', label: 'Depreciation posted through period end',
-        status: missing.length ? 'blocked' : 'passed',
-        detail: missing.length ? blockers[0] : `Depreciation is posted through ${end} for all ${states.length} in-service asset${states.length === 1 ? '' : 's'}.`,
-        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })) },
+        status: depreciationProblems.length ? 'blocked' : 'passed',
+        detail: depreciationProblems.length ? blockers[0] : `Depreciation is posted through ${end} for all ${state.assets.length} in-service asset${state.assets.length === 1 ? '' : 's'}.`,
+        evidence: { missing: missing.map(x => ({ assetId: x.asset.id, months: x.months })), unlinked: state.unlinked.map(a => a.id) },
       },
       {
         key: 'fleet_nbv', section: 'GPU fleet', label: 'Fleet net book value ties to the register',
         status: mismatched.length ? 'blocked' : 'passed',
-        detail: mismatched.length ? blockers[blockers.length - 1] : `Ledger net book value equals the register for every asset (${nbv.reduce((t, x) => t + x.ledger, 0).toFixed(2)} in total).`,
+        detail: mismatched.length ? blockers[blockers.length - 1] : `Ledger net book value equals the register for every asset checked (${nbv.reduce((t, x) => t + x.ledger, 0).toFixed(2)} in total).`,
         evidence: { assets: nbv.map(x => ({ assetId: x.asset.id, ledger: x.ledger, register: x.register })) },
       },
     ],
