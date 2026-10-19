@@ -55,7 +55,15 @@ export const listEvents = (f: Fetcher, id: string) => call<{ events: GpuAssetEve
 
 // ── Bodies ─────────────────────────────────────────────────────────────────────────────────────
 
-const num = (s: string) => Number(s.replace(/[$,\s]/g, ''))
+/** A figure as typed: dollar signs, commas and spaces allowed ("1,000"); NaN when it is not a number. */
+export const parseNumber = (s: string) => (s.trim() === '' ? NaN : Number(s.replace(/[$,\s]/g, '')))
+const num = parseNumber
+
+/** Is `s` an amount the form may send: a number, zero or more (or more than zero when `positive`)? */
+export function validAmount(s: string, positive = false): boolean {
+  const n = parseNumber(s)
+  return Number.isFinite(n) && (positive ? n > 0 : n >= 0)
+}
 const blank = (s: string | undefined | null) => !s || !s.trim()
 
 /** The asset form as typed. Blank optional fields are left to the route's defaults. */
@@ -128,8 +136,26 @@ export function assetFormOf(a: GpuAsset): AssetForm {
 }
 
 /**
+ * Why the asset form cannot be saved yet, or null. On edit, salvage and useful life cannot be blank:
+ * the route keeps the stored value for a field that is not sent, so clearing one would save nothing
+ * while looking saved. (On create, blank salvage is the route's 10% default.)
+ */
+export function assetFormError(f: AssetForm, editing: boolean): string | null {
+  if (!f.name.trim()) return 'Enter a name.'
+  if (!Number.isInteger(parseNumber(f.gpu_count)) || parseNumber(f.gpu_count) <= 0) return 'GPUs must be a whole number above 0.'
+  if (!validAmount(f.hardware_cost)) return 'Enter the hardware cost.'
+  if (editing && !f.salvage_value.trim()) return 'Enter a salvage value (0 for none).'
+  if (editing && !f.useful_life_months.trim()) return 'Enter the useful life in months.'
+  for (const [k, label] of [['salvage_value', 'Salvage'], ['insurance_basis', 'Insurance basis'], ['tax_bonus_pct', 'Bonus %']] as const) {
+    if (f[k].trim() && !validAmount(f[k])) return `${label} must be a number, zero or more.`
+  }
+  return null
+}
+
+/**
  * A PATCH body: only the fields that differ from the row, so an edit that leaves the cost alone does
- * not trip the "cost is booked" refusal. Blank optional fields that were set are cleared to null.
+ * not trip the "cost is booked" refusal. Blank optional fields that were set are cleared to null; a
+ * cleared bonus is 0 (no bonus). Salvage and useful life cannot be cleared (assetFormError).
  */
 export function assetPatch(a: GpuAsset, f: AssetForm): Record<string, unknown> {
   const before = assetFormOf(a)
@@ -138,6 +164,7 @@ export function assetPatch(a: GpuAsset, f: AssetForm): Record<string, unknown> {
   for (const k of Object.keys(f) as (keyof AssetForm)[]) {
     if (f[k] === before[k]) continue
     if (k in full) out[k] = full[k]
+    else if (k === 'tax_bonus_pct') out[k] = 0
     else if (['asset_type_id', 'in_service_date', 'tax_life_years', 'insurance_basis', 'datacenter_contract_id', 'notes'].includes(k)) out[k] = null
   }
   return out

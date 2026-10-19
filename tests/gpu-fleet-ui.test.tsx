@@ -19,7 +19,7 @@ import { ErrorAlert } from '@/components/gpu/fleet-ui'
 import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMoves, todayIso } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
-  EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody, endContractBody, eventBody,
+  EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
   fleetPaths, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
 } from '@/components/gpu/fleet-api'
 import { parseAssetInput } from '@/lib/gpu/assets'
@@ -262,6 +262,34 @@ describe('Add asset', () => {
     expect(parseAssetInput(patch, true)).toEqual({ value: { notes: 'Rack 4' } })
     // Clearing an optional field sends null, which the route accepts.
     expect(assetPatch({ ...a, notes: 'Rack 4' }, { ...assetFormOf({ ...a, notes: 'Rack 4' }), notes: '' })).toEqual({ notes: null })
+  })
+})
+
+describe('the edit form never drops a cleared field silently', () => {
+  const a = asset({ tax_method: 'bonus', tax_bonus_pct: 0.6, tax_life_years: 5, salvage_value: 33_500, hardware_cost: 335_000 })
+
+  it('a cleared Bonus % is sent as 0', () => {
+    const patch = assetPatch(a, { ...assetFormOf(a), tax_bonus_pct: '' })
+    expect(patch).toEqual({ tax_bonus_pct: 0 })
+    expect(parseAssetInput(patch, true)).toEqual({ value: { tax_bonus_pct: 0 } })
+  })
+
+  it('a cleared Salvage or Useful life is refused by the form on edit (on create, blank salvage is the 10% default)', () => {
+    expect(assetFormError({ ...assetFormOf(a), salvage_value: '' }, true)).toBe('Enter a salvage value (0 for none).')
+    expect(assetFormError({ ...assetFormOf(a), useful_life_months: '' }, true)).toBe('Enter the useful life in months.')
+    expect(assetFormError({ ...EMPTY_ASSET_FORM, name: 'A', hardware_cost: '335,000' }, false)).toBeNull()
+    expect(assetFormError(assetFormOf(a), true)).toBeNull()
+  })
+})
+
+describe('money typed with commas', () => {
+  it('is accepted by every amount field and sent as a number', () => {
+    expect(validAmount('1,000')).toBe(true)
+    expect(validAmount('$12,000.50', true)).toBe(true)
+    expect(validAmount('0', true)).toBe(false)
+    expect(validAmount('')).toBe(false)
+    expect(validAmount('abc')).toBe(false)
+    expect(disposeBody('2026-06-30', '1,000')).toEqual({ disposedOn: '2026-06-30', proceeds: 1_000 })
   })
 })
 

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { DEPRECIATION_CONVENTIONS, TAX_METHODS, type DatacenterContractRow, type GpuAsset, type GpuAssetStatus, type GpuAssetTypeRow } from '@/lib/gpu/types'
 import {
-  EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, EMPTY_TYPE_FORM, assetBody, assetFormOf, assetPatch, capexSubmitter, contractBody,
+  EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, EMPTY_TYPE_FORM, assetBody, assetFormError, assetFormOf, assetPatch, capexSubmitter, contractBody, validAmount,
   disposeBody, endContractBody, fleetPaths, purchaseBody, rollBody, send, typeBody,
   type AssetForm, type CapexForm, type ContractForm, type Fetcher, type TypeForm,
 } from './fleet-api'
@@ -50,6 +50,7 @@ export const AssetDialog = whileOpen(function AssetDialogBody({ open, onOpenChan
   const set = (k: keyof AssetForm) => (e: { target: { value: string } }) => setForm(f => ({ ...f, [k]: e.target.value }))
 
   const editing = !!asset
+  const formError = assetFormError(form, editing)
   // What the route will refuse anyway, said up front: the cost once booked, the schedule once depreciated.
   const costLocked = editing && (asset!.status !== 'planned' || !!asset!.purchase_entry_id)
 
@@ -60,7 +61,7 @@ export const AssetDialog = whileOpen(function AssetDialogBody({ open, onOpenChan
       title={editing ? `Edit ${asset!.name}` : 'Add asset'}
       description={editing ? 'Changes the register. What is already booked to the ledger is corrected there, not here.' : 'One server. It starts planned; booking its purchase orders it.'}
       submitLabel={editing ? 'Save' : 'Add asset'}
-      canSubmit={!!form.name.trim() && Number(form.gpu_count) > 0 && form.hardware_cost.trim() !== ''}
+      canSubmit={!formError}
       onSubmit={async () => {
         const r = editing
           ? await send(fetcher, fleetPaths.asset(asset!.id), 'PATCH', assetPatch(asset!, form))
@@ -101,7 +102,7 @@ export const AssetDialog = whileOpen(function AssetDialogBody({ open, onOpenChan
         <Field id="asset-cost" label="Hardware cost" hint={costLocked ? 'Booked; correct it in the ledger.' : undefined}>
           <Input id="asset-cost" inputMode="decimal" className="text-right tabular-nums" value={form.hardware_cost} onChange={set('hardware_cost')} disabled={costLocked} />
         </Field>
-        <Field id="asset-salvage" label="Salvage" hint="Blank: 10% of hardware cost.">
+        <Field id="asset-salvage" label="Salvage" hint={editing ? 'Required; 0 for none.' : 'Blank: 10% of hardware cost.'}>
           <Input id="asset-salvage" inputMode="decimal" className="text-right tabular-nums" value={form.salvage_value} onChange={set('salvage_value')} />
         </Field>
         <Field id="asset-life" label="Useful life (months)"><Input id="asset-life" inputMode="numeric" className="text-right tabular-nums" value={form.useful_life_months} onChange={set('useful_life_months')} /></Field>
@@ -130,6 +131,7 @@ export const AssetDialog = whileOpen(function AssetDialogBody({ open, onOpenChan
         <Textarea id="asset-serials" rows={2} className="font-mono" value={form.serials} onChange={set('serials')} />
       </Field>
       <Field id="asset-notes" label="Notes"><Input id="asset-notes" value={form.notes} onChange={set('notes')} /></Field>
+      {formError && <p className="text-sm text-muted-foreground">{formError}</p>}
     </FormDialog>
   )
 })
@@ -206,7 +208,7 @@ export const DisposeDialog = whileOpen(function DisposeDialogBody({ open, onOpen
       title={`Dispose of ${asset.name}`}
       description="Clears the asset's cost and accumulated depreciation and books the gain or loss. Depreciation stops after the disposal month. This cannot be undone here."
       submitLabel="Dispose"
-      canSubmit={/^\d{4}-\d{2}-\d{2}$/.test(disposedOn) && proceeds.trim() !== '' && Number.isFinite(Number(proceeds))}
+      canSubmit={/^\d{4}-\d{2}-\d{2}$/.test(disposedOn) && validAmount(proceeds)}
       onSubmit={async () => {
         const r = await send(fetcher, fleetPaths.dispose(asset.id), 'POST', disposeBody(disposedOn, proceeds))
         if (!r.ok) return r.error
@@ -232,7 +234,7 @@ export const CapexDialog = whileOpen(function CapexDialogBody({ open, onOpenChan
       title="Capitalize a cost"
       description={`Installation, shipping or spares actually spent on ${asset.name}. It joins the asset's cost and depreciates over the remaining life.`}
       submitLabel="Capitalize"
-      canSubmit={Number(form.amount) > 0 && /^\d{4}-\d{2}-\d{2}$/.test(form.entryDate)}
+      canSubmit={validAmount(form.amount, true) && /^\d{4}-\d{2}-\d{2}$/.test(form.entryDate)}
       onSubmit={async () => {
         const r = await submitter.submit(form)
         if (!r.ok) return r.error
@@ -281,7 +283,7 @@ const ContractDialogBody = whileOpen(function ContractDialogForm({ open, onOpenC
           ? 'Saves the contract and its monthly accrual schedule through today; the close proposes each month.'
           : 'Saves the contract only. Its accrual schedule books to the ledger, which needs write access to Accounting; someone with it can roll the schedule from the contract list.'}
         submitLabel="Add contract"
-        canSubmit={!!form.facility.trim() && /^\d{4}-\d{2}-\d{2}$/.test(form.start_date) && form.monthly_fee.trim() !== ''}
+        canSubmit={!!form.facility.trim() && /^\d{4}-\d{2}-\d{2}$/.test(form.start_date) && validAmount(form.monthly_fee)}
         onSubmit={async () => {
           const r = await send<{ scheduleError?: { error: string } }>(fetcher, fleetPaths.contracts, 'POST', contractBody(form, canSchedule))
           if (!r.ok) return r.error
