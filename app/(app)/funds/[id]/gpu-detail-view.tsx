@@ -15,7 +15,7 @@ import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
-import { fleetTotals, todayIso, type FleetTotals } from '@/components/gpu/fleet-math'
+import { fleetTotals, todayIso, valuationDate, type FleetTotals } from '@/components/gpu/fleet-math'
 
 // ── GPU fleet (P5) ── The GPU SPV's lead page, in place of a fund's performance lead: what the fleet
 // is worth, what it earned, how busy it was, and how much of the investors' capital is still out.
@@ -54,11 +54,11 @@ export function GpuDetailView({
 
   // The register, for the NBV tile. This page renders only for a caller who can view the fleet
   // (funds/[id]/page.tsx), so the request is theirs to make.
-  const [fleet, setFleet] = useState<FleetTotals | { error: string } | null>(null)
+  const [fleet, setFleet] = useState<(FleetTotals & { valuedAsOf: string | null }) | { error: string } | null>(null)
   useEffect(() => {
     let cancelled = false
     void listVehicleAssets(browserFetch, vehicle, todayIso()).then(r => {
-      if (!cancelled) setFleet(r.ok ? fleetTotals(r.data.assets) : { error: r.error })
+      if (!cancelled) setFleet(r.ok ? { ...fleetTotals(r.data.assets), valuedAsOf: valuationDate(r.data.assets) } : { error: r.error })
     })
     return () => { cancelled = true }
   }, [vehicle])
@@ -87,7 +87,8 @@ export function GpuDetailView({
               value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbvBook, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
                 : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
-                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')}
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')
+                  + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />

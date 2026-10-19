@@ -18,7 +18,7 @@ import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { CapexEventsTable, ValuationCard } from '@/components/gpu/asset-detail'
 import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
 import { ErrorAlert, asOfCommit } from '@/components/gpu/fleet-ui'
-import { ZERO_TOTALS, fleetTotals, isOffBooks, mayCountLaterPurchases, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
+import { ZERO_TOTALS, fleetTotals, isOffBooks, mayCountLaterPurchases, valuationDate, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
@@ -680,6 +680,14 @@ describe('the firm-wide overview', () => {
     // Fleet NBV is the booked pack's, from the server: the planned 335,000 is not in it.
     expect(html).toContain(`>${money(1_081_950)}<`)
     expect(html).toContain(`tax book ${money(927_850)}`)
+  })
+
+  it('shows the date the server valued the registers as of, not the date it asked for', () => {
+    const html = view({ v1: { assets: PACK.map(p => ({ ...p, valuation_as_of: '2026-12-30' })) }, v2: { assets: [] } })
+    expect(html).toContain('Book, as of 2026-12-30')
+    expect(html).toContain('data-valuation-as-of="2026-12-30"')
+    expect(valuationDate([], '2026-12-31')).toBe('2026-12-31')
+    expect(valuationDate(PACK)).toBe(AS_OF)
     expect(html).toContain('LTM revenue')
     expect(html).toContain('Utilization')
   })

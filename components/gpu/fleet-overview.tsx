@@ -10,7 +10,7 @@ import { AddVehicleButton } from '@/components/add-vehicle-button'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets, mapBounded } from './fleet-api'
-import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, type FleetTotals, type ValuedAsset } from './fleet-math'
+import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, valuationDate, type FleetTotals, type ValuedAsset } from './fleet-math'
 
 // ── GPU fleet (P5) ── The firm-wide fleet: one card per GPU SPV with its GPUs, cost and book value,
 // and the totals across them. Each vehicle's register is its own request (a few at a time); one that
@@ -42,6 +42,8 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
   const failed = vehicles.filter(v => { const l = loaded[v.id]; return l && 'error' in l }).length
   const partial = pending > 0 || failed > 0
   const shown = (n: string) => (vehicles.length === 0 ? '—' : n)
+  // The date the server valued the loaded registers as of: shown, rather than the date asked for.
+  const valuedAsOf = valuationDate(Object.values(loaded).flatMap(l => ('assets' in l ? l.assets : [])), asOf)
   const partialNote = pending > 0 ? 'Loading…' : `Partial: ${failed} ${failed === 1 ? 'vehicle' : 'vehicles'} could not be loaded`
 
   return (
@@ -54,7 +56,7 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
           value={shown(money(totals.basis))}
           sub={partial ? partialNote : totals.planned > 0 ? `On the books; ${money(totals.planned)} more planned or unbooked` : 'Hardware and capitalized costs on the books'}
         />
-        <Metric label="Fleet NBV" value={shown(money(totals.nbvBook))} sub={partial ? partialNote : `Book, as of ${asOf}; tax book ${money(totals.nbvTax)}`} />
+        <Metric label="Fleet NBV" value={shown(money(totals.nbvBook))} sub={partial ? partialNote : `Book, as of ${valuedAsOf}; tax book ${money(totals.nbvTax)}`} data-valuation-as-of={valuedAsOf ?? undefined} />
         <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
         <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
       </div>

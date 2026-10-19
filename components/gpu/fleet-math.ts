@@ -94,6 +94,14 @@ export function fleetTotals(assets: ValuedAsset[]): FleetTotals {
 }
 
 /**
+ * The date the server valued these rows as of (valuation_as_of), or `fallback` when there are none.
+ * Shown beside the figures, so a page says the date the server used, not the one it asked for.
+ */
+export function valuationDate(assets: Pick<ValuedAsset, 'valuation_as_of'>[], fallback: string | null = null): string | null {
+  return assets.find(a => a.valuation_as_of)?.valuation_as_of ?? fallback
+}
+
+/**
  * Is the register valued as of a date before today? Then its totals may count an asset whose purchase
  * was booked after that date: the route reports such an asset in the unbooked shape (nothing
  * depreciated, NBV equal to basis), which the client cannot tell from one in service with no month end
