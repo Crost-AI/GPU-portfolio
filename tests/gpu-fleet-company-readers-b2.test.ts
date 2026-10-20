@@ -145,3 +145,16 @@ describe('filing an email under the fleet company (S1)', () => {
     expect(s.m.tables.inbound_emails[0].company_id).toBe('fleet')
   })
 })
+
+describe('moving an email off the fleet company (security review on #98)', () => {
+  it('reassigning or unmatching an email filed under the fleet company needs fleet write', async () => {
+    s.m.tables.inbound_emails[0].company_id = 'fleet'
+    s.ctx = FLEET_READ()
+    expect(await isNotFound(await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' })))).toBe(true)
+    expect(s.m.tables.inbound_emails[0].company_id).toBe('fleet')
+    s.ctx = FLEET_WRITE()
+    expect((await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' }))).status).toBe(200)
+    expect(s.m.tables.inbound_emails[0].company_id).toBe('vc')
+  })
+})
+const isNotFound = async (res: Response) => res.status === 404 && (await res.clone().json()).error === 'Not found'

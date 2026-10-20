@@ -5,7 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import type { InboundEmail, Metric, MetricValue, ParsingReview, Json } from '@/lib/types/database'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { fleetCompanyDenied } from '@/lib/access/fleet-company'
+import { fleetCompanyDenied, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 type MetricValueRow = Pick<
   MetricValue,
@@ -141,7 +141,7 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
   const { data: email } = await admin
     .from('inbound_emails')
-    .select('fund_id')
+    .select('fund_id, company_id')
     .eq('id', params.id)
     .maybeSingle()
 
@@ -154,6 +154,12 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const updates: Record<string, unknown> = {}
 
   if (companyId !== undefined) {
+    // ── GPU fleet (P3) ── An email filed under a fleet company is that company's: moving it off (or
+    // unmatching it) needs fleet write too, not only filing one under it (#91).
+    if ((email as { company_id?: string | null }).company_id && (email as { company_id?: string | null }).company_id !== companyId) {
+      const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: (email as { company_id: string }).company_id }, 'write')
+      if (fleetDenied) return fleetDenied
+    }
     if (companyId) {
       // Verify the company belongs to the same fund
       const { data: company } = await (admin as any)
