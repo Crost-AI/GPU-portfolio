@@ -230,8 +230,10 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   // A GPU SPV's end value goes through its waterfall too, as its distributions do (and as the
   // scenario engine splits its sale year): the investors' part is the terminal, the manager's part
   // counts in the plan's profit share. R4 is about the books, not a projection.
+  // A released contingency still held at the end keeps its character: returned before the tiers.
+  const heldContingency = Math.min(leftGross, cap.designatedLeft)
   const cashEnd = cash?.state?.investors.length && leftGross > 0 && last
-    ? distribute(cash.state, leftGross, lastDay(last), cash.terms).tiers : null
+    ? distribute(cash.state, leftGross, lastDay(last), cash.terms, undefined, heldContingency > 0 ? { contingencyReturn: heldContingency } : {}).tiers : null
   const terminal = cashEnd ? cashEnd.toLP : carryOn && wf.state && wf.terms ? runWaterfall(leftGross, wf.terms, wf.state).toLP : leftGross
   if (terminal > 0 && last) lpFlows.push({ t: t(last), amount: terminal })
 

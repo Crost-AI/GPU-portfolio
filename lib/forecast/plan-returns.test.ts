@@ -218,6 +218,31 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
       expect(r.totals.terminalCarry).toBe(0)
     })
 
+    it('a release still held at the end goes into the end value as contingency, before the tiers', () => {
+      // 100,000 unreturned, no pref, 90% of ROC to investors; the 50,000 released in January is
+      // held to the end by month edits paying nothing. As contingency it all returns to the
+      // investors: 50,000, not 45,000 / 5,000 through the ROC tier.
+      const roc = { ...PACK_TERMS, prefRate: 0, rocLpShare: 0.9, dayCount: '30_360' as const }
+      const zeroes = Object.fromEntries(gpuMonths.slice(0, 12).map(x => [x, 0]))
+      const held = planReturns({
+        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({ distributions: zeroes }),
+        otherFlows: m({}), invested: m({}), proceeds: m({ '2027-01': 50_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+        cashWaterfall: { terms: roc, history: [{ kind: 'contribution', date: '2026-12-31', lpEntityId: 'lp1', amount: 100_000 }], contingencyReturns: m({ '2027-01': 50_000 }) },
+      })
+      expect(held.totals.distributed).toBe(0)
+      expect(held.lp.terminal).toBe(50_000)
+      expect(held.totals.terminalCarry).toBe(0)
+      // A payout lag that carries the release past the window holds it the same way.
+      const lagged = planReturns({
+        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({ policy: { distributions: { lagMonths: 3 } } }),
+        otherFlows: m({}), invested: m({}), proceeds: m({ '2027-11': 50_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+        cashWaterfall: { terms: roc, history: [{ kind: 'contribution', date: '2026-12-31', lpEntityId: 'lp1', amount: 100_000 }], contingencyReturns: m({ '2027-11': 50_000 }) },
+      })
+      expect(lagged.totals.distributed).toBe(0)
+      expect(lagged.lp.terminal).toBe(50_000)
+      expect(lagged.totals.terminalCarry).toBe(0)
+    })
+
     it('a partial release under a reserve consumes the designation pro rata; the rest stays due', () => {
       // January owes 100,000, half of it contingency, but a 40,000 reserve lets only 60,000 out:
       // 30,000 of it is contingency, 20,000 stays due. December owes 2,040,000 and pays 2,000,000:

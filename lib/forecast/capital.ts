@@ -78,6 +78,8 @@ export interface CapitalResult {
   distributions: Map<MonthKey, number>
   /** Of each distribution, the part that pays out `designated` proceeds (absent without them). */
   designatedPaid: Map<MonthKey, number>
+  /** `designated` proceeds still unpaid when the window ends (held by a reserve, a lag or a month edit). */
+  designatedLeft: number
   endingCash: Map<MonthKey, number>
   warnings: string[]
 }
@@ -156,7 +158,10 @@ export function computeCapital(input: {
   })
   if (shortfall) warnings.push(`In ${shortfall} month${shortfall === 1 ? '' : 's'} cash falls below the reserve and the fund has no uncalled capital left to call`)
   if (owed > 0.005) warnings.push(`${roundCents(owed).toLocaleString('en-US')} of exit proceeds is not distributed by the end of the plan`)
-  return { calls, distributions, designatedPaid, endingCash, warnings }
+  // Designated proceeds not yet due by the end (a payout lag past the window) are still held too.
+  const notYetDue = input.months.slice(Math.max(0, input.months.length - policy.distributions.lagMonths))
+    .reduce((s, m) => s + (input.designated?.get(m) ?? 0), 0)
+  return { calls, distributions, designatedPaid, designatedLeft: roundCents(owedDesignated + notYetDue), endingCash, warnings }
 }
 
 export interface MonthlySplit {
