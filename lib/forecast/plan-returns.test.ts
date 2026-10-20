@@ -175,8 +175,9 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     const terms = { ...PACK_TERMS, dayCount: '30_360' as const }
     const history = [{ kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: 1_000_000 }]
     const r = planReturns({
-      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({}),
-      otherFlows: m({}), invested: m({}), proceeds: m({ '2027-01': 50_000, '2027-12': 2_000_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+      // The 50,000 is cash the raise left in the bank: released (owed) in January, not new cash.
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 50_000, uncalled: 0, settings: validateCapital({}),
+      otherFlows: m({}), invested: m({}), proceeds: m({ '2027-12': 2_000_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
       cashWaterfall: { terms, history, contingencyReturns: new Map([['2027-01', 50_000]]) as any },
     })
     // The engine, by hand: the January 50,000 is all contingency, so no pref is paid and it carries forward.
@@ -192,8 +193,9 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
   describe('the contingency keeps its character until it is actually paid', () => {
     const terms = { ...PACK_TERMS, dayCount: '30_360' as const }
     const history = [{ kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: 1_000_000 }]
+    // The released contingency is cash the raise left in the bank (opening cash), released — owed — in its month.
     const go = (settings: unknown, proceeds: Record<string, number>, release: Record<string, number>) => planReturns({
-      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital(settings),
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: Object.values(release).reduce((a, b) => a + b, 0), uncalled: 0, settings: validateCapital(settings),
       otherFlows: m({}), invested: m({}), proceeds: m(proceeds), terminalNav: 0, waterfallKind: 'distributable_cash',
       cashWaterfall: { terms, history, contingencyReturns: m(release) },
     })
@@ -209,7 +211,7 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     }
 
     it('a one-month payout lag: released in January, paid as contingency in February', () => {
-      const r = go({ policy: { distributions: { lagMonths: 1 } } }, { '2027-01': 50_000, '2027-11': 2_000_000 }, { '2027-01': 50_000 })
+      const r = go({ policy: { distributions: { lagMonths: 1 } } }, { '2027-11': 2_000_000 }, { '2027-01': 50_000 })
       expect(r.distributedToDate.slice(0, 2)).toEqual([0, 50_000])
       expect(r.distributedToDate[11]).toBe(2_050_000)
       const e = engine([['2027-02-28', 50_000, 50_000], ['2027-12-31', 2_000_000, 0]])
@@ -225,8 +227,8 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
       const roc = { ...PACK_TERMS, prefRate: 0, rocLpShare: 0.9, dayCount: '30_360' as const }
       const zeroes = Object.fromEntries(gpuMonths.slice(0, 12).map(x => [x, 0]))
       const held = planReturns({
-        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({ distributions: zeroes }),
-        otherFlows: m({}), invested: m({}), proceeds: m({ '2027-01': 50_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 50_000, uncalled: 0, settings: validateCapital({ distributions: zeroes }),
+        otherFlows: m({}), invested: m({}), proceeds: m({}), terminalNav: 0, waterfallKind: 'distributable_cash',
         cashWaterfall: { terms: roc, history: [{ kind: 'contribution', date: '2026-12-31', lpEntityId: 'lp1', amount: 100_000 }], contingencyReturns: m({ '2027-01': 50_000 }) },
       })
       expect(held.totals.distributed).toBe(0)
@@ -234,8 +236,8 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
       expect(held.totals.terminalCarry).toBe(0)
       // A payout lag that carries the release past the window holds it the same way.
       const lagged = planReturns({
-        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital({ policy: { distributions: { lagMonths: 3 } } }),
-        otherFlows: m({}), invested: m({}), proceeds: m({ '2027-11': 50_000 }), terminalNav: 0, waterfallKind: 'distributable_cash',
+        months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 50_000, uncalled: 0, settings: validateCapital({ policy: { distributions: { lagMonths: 3 } } }),
+        otherFlows: m({}), invested: m({}), proceeds: m({}), terminalNav: 0, waterfallKind: 'distributable_cash',
         cashWaterfall: { terms: roc, history: [{ kind: 'contribution', date: '2026-12-31', lpEntityId: 'lp1', amount: 100_000 }], contingencyReturns: m({ '2027-11': 50_000 }) },
       })
       expect(lagged.totals.distributed).toBe(0)
@@ -247,7 +249,7 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
       // January owes 100,000, half of it contingency, but a 40,000 reserve lets only 60,000 out:
       // 30,000 of it is contingency, 20,000 stays due. December owes 2,040,000 and pays 2,000,000:
       // 2,000,000 × 20,000 / 2,040,000 = 19,607.84 more.
-      const r = go({ policy: { distributions: { reserve: 40_000 } } }, { '2027-01': 100_000, '2027-12': 2_000_000 }, { '2027-01': 50_000 })
+      const r = go({ policy: { distributions: { reserve: 40_000 } } }, { '2027-01': 50_000, '2027-12': 2_000_000 }, { '2027-01': 50_000 })
       expect(r.distributedToDate[0]).toBe(60_000)
       expect(r.distributedToDate[11]).toBe(2_060_000)
       const e = engine([['2027-01-31', 60_000, 30_000], ['2027-12-31', 2_000_000, 19_607.84]])

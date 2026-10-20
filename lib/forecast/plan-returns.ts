@@ -52,8 +52,9 @@ export interface CashWaterfallInput {
   /** A pitch with nothing contributed on the books yet: the capital its scenario raises, at its start. */
   assumedContribution?: { date: string; amount: number } | null
   /**
-   * Unspent capex contingency released by month (R8): part of that month's proceeds, paid out as
-   * capital management pays them (computeCapital `designated`), before the tiers of each payment.
+   * Unspent capex contingency released by month (R8): cash already held (the raise kept it) that
+   * becomes payable that month — owed, not new cash — and is paid out as capital management pays
+   * (computeCapital `designated`), before the tiers of each payment.
    */
   contingencyReturns?: Map<MonthKey, number>
 }
@@ -175,8 +176,15 @@ export function planReturns(input: ReturnsInput): PlanReturns {
     cashFlows.set(m, roundCents((input.otherFlows.get(m) ?? 0) + (input.invested.get(m) ?? 0) + (input.proceeds.get(m) ?? 0)))
   }
   const gpu = input.waterfallKind === 'distributable_cash' ? input.cashWaterfall : undefined
+  // A released contingency is cash already in the bank (the raise kept it): it becomes payable in its
+  // month, so it joins what is owed, never the month's cash flow.
+  let owed = input.proceeds
+  if (gpu?.contingencyReturns?.size) {
+    owed = new Map(input.proceeds)
+    for (const [m, a] of gpu.contingencyReturns) owed.set(m, roundCents((owed.get(m) ?? 0) + a))
+  }
   const cap = computeCapital({
-    months: input.months, openingCash: input.openingCash, cashFlows, proceeds: input.proceeds, uncalled: input.uncalled, settings: input.settings,
+    months: input.months, openingCash: input.openingCash, cashFlows, proceeds: owed, uncalled: input.uncalled, settings: input.settings,
     ...(gpu?.contingencyReturns ? { designated: gpu.contingencyReturns } : {}),
   })
   const cash = gpu ? splitCashDistributions(cap.distributions, cap.calls, input.months, gpu, cap.designatedPaid) : null

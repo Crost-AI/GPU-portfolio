@@ -249,11 +249,31 @@ describe('R8 in the monthly plan: the unspent contingency is paid out in its ret
     const y5 = Number(firstPlanMonth.slice(0, 4)) + 4
     const paid = (x: typeof r) => x.base.distributedToDate[x.base.distributedToDate.length - 1]
     expect(Math.round((paid(r) - paid(pack)) * 100)).toBe(3_050_000)
+    // Exactly the engine's 30,500 more to the investors, and no phantom cash at the end: the release
+    // is cash the raise already holds, paid out, not added.
+    const toInvestors = (x: typeof r) => Math.round((x.base.lp.distributed + x.base.lp.terminal) * 100)
+    expect(toInvestors(r) - toInvestors(pack)).toBe(3_050_000)
+    expect(r.base.lp.terminal).toBe(pack.base.lp.terminal)
     expect(r.base.years.find(y => y.calendarYear === y5)!.distributed).toBeGreaterThan(pack.base.years.find(y => y.calendarYear === y5)!.distributed)
     expect(r.base.totals.carry).toBe(0)
     // And the opening books only the 100,000 consumed.
     const detail = await getPlan(ctx(books([plan({ fleet })]).admin), { vehicle: GPU, planId: 'p1' })
     expect(detail.entries.find(e => e.accountId === 'acct-5900' && e.kind === 'investment')!.postings[0].amount).toBe(100_000)
+  })
+})
+
+describe('R8 held to the end in the plan: the release is designated cash, never extra cash', () => {
+  it('Oversupply 50%, 100,000 spent, every payout from Y5 held: 30,500 more to the investors at the end, none to the manager', async () => {
+    const y5 = (() => { const [y, mm] = firstPlanMonth.split('-').map(Number); const t = y * 12 + mm - 1 + 48; return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}` })()
+    const months = Array.from({ length: 12 }, (_, k) => { const [y, mm] = y5.split('-').map(Number); const t = y * 12 + mm - 1 + k; return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}` })
+    const held = { distributions: Object.fromEntries(months.map(x => [x, 0])) }
+    const spent = packAssumptions('oversupply_50', { startMonth: firstPlanMonth as any, capex: { contingencyPct: 0.1, contingencySpent: 100_000 } })
+    const consumed = packAssumptions('oversupply_50', { startMonth: firstPlanMonth as any })
+    const r = await getPlanReturns(ctx(books([plan({ fleet: spent, capital: held })]).admin), { vehicle: GPU, planId: 'p1' })
+    const pack = await getPlanReturns(ctx(books([plan({ fleet: consumed, capital: held })]).admin), { vehicle: GPU, planId: 'p1' })
+    expect(Math.round((r.base.lp.terminal - pack.base.lp.terminal) * 100)).toBe(3_050_000)
+    expect(r.base.totals.terminalCarry).toBe(pack.base.totals.terminalCarry)
+    expect(r.base.totals.distributed).toBe(pack.base.totals.distributed)
   })
 })
 

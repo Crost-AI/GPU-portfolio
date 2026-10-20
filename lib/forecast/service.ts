@@ -1703,7 +1703,8 @@ export async function getPlanReturns(
       : e.kind === 'proceeds' || e.distributable || (distributesOperatingCash(v) && paidOutOnGpu(e)) ? proceeds : otherFlows
     into.set(m, roundCents((into.get(m) ?? 0) + c))
   }
-  addContingencyReleases(proceeds, compiled.cashWaterfall ?? null)
+  // The R8 release is NOT added here: it is cash the raise already put in the bank, and planReturns
+  // adds it to what capital management owes (never to the month's cash) from cashWaterfall.
   const opensAfter = lastDay(addMonths(built.first, -1))
   const openingCash = roundCents(compiled.ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
   const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name, planId: row.id })
