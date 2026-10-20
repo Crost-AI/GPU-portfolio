@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
 import { useVehicle, FundSwitcher } from '@/components/accounting-vehicle'
 import { AccountingBody, AccountingPageHeader } from '@/components/accounting-chrome'
 import { Metric } from '@/components/ui/metric'
-import { useAccess, useIsAdmin } from '@/components/access-context'
+import { useAccess, useCanRead, useIsAdmin } from '@/components/access-context'
+import { send, unreturnedCapital, vehicleFetcher, waterfallPaths, type PrefLedgerRow } from '@/components/gpu/waterfall-api'
 import { canSee } from '@/components/app-sidebar'
 import { ACCOUNTING_SECTIONS, type AccountingSection } from '@/lib/accounting/nav'
 import type { Domain } from '@/lib/access/domains'
@@ -63,6 +64,24 @@ export function GpuDetailView({
     return () => { cancelled = true }
   }, [vehicle])
 
+  // Unreturned capital, from the pref ledger the Waterfall page reads (lp_capital): asked for this
+  // URL's vehicle by name, not the context's, which this page pins only after its first render.
+  const readsCapital = useCanRead('lp_capital')
+  const fetcher = useMemo(() => vehicleFetcher(vehicle), [vehicle])
+  const [unreturned, setUnreturned] = useState<{ value: number | null; sub: string } | null>(null)
+  useEffect(() => {
+    if (!readsCapital) return
+    let cancelled = false
+    void send<PrefLedgerRow[]>(fetcher, waterfallPaths.prefLedger).then(r => {
+      if (cancelled) return
+      // A refusal is shown in the route's words: a 400 is either other terms or a replay that failed.
+      if (!r.ok) { setUnreturned({ value: null, sub: r.error }); return }
+      const value = Array.isArray(r.data) ? unreturnedCapital(r.data) : null
+      setUnreturned({ value, sub: value == null ? 'The pref ledger has no per-investor lines' : 'From the preferred return ledger' })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, readsCapital])
+
   return (
     <>
       <AccountingPageHeader
@@ -92,7 +111,11 @@ export function GpuDetailView({
             />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
-            <Metric label="Unreturned capital" value="—" sub="Fills in with the waterfall (P5-3)" />
+            <Metric
+              label="Unreturned capital"
+              value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}
+              sub={!readsCapital ? 'Needs access to investors\u2019 capital' : unreturned?.sub ?? 'Loading'}
+            />
           </div>
 
           {links.length > 0 && (
