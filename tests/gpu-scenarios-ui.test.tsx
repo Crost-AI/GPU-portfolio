@@ -22,6 +22,8 @@ import { scenarioComparison, scenarioDetail } from '@/lib/gpu/report'
 import { PACK_SCENARIOS, type PackScenarioId } from '@/lib/gpu/fixtures/pack-v3'
 import { PACK_SCENARIO_TERMS, packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
 import type { FleetScenariosResponse } from '@/lib/forecast/service'
+import { FleetAssumptionsForm } from '@/components/gpu/fleet-assumptions-form'
+import { fromFleetForm, saveFleetPlan, staleMessage, toFleetForm } from '@/components/gpu/fleet-assumptions'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
@@ -215,5 +217,91 @@ describe('the cell formatter', () => {
     expect(formatReportValue(null, 'usd', money)).toBe('—')
     expect(formatReportValue(null, 'usd', money, true)).toBe('—')
     expect(formatReportValue(1234, 'usd', money, true)).toBe('—')
+  })
+})
+
+describe('the Forecast Fleet tab', () => {
+  it('round-trips the pack’s assumptions through the form unchanged', () => {
+    for (const id of IDS) {
+      const a = packAssumptions(id)
+      expect(fromFleetForm(toFleetForm(a)), id).toEqual({ fleet: a })
+    }
+  })
+
+  it('round-trips per-type utilization, overrides, the register and a contingency return too', () => {
+    const a = packAssumptions('base', {
+      assets: 'register',
+      utilization: { h200_nvl: [0.6, 0.65, 0.7, 0.75, 0.8], b200: [0.75, 0.75, 0.75, 0.75, 0.75], b300: [0.5, 0.55, 0.6, 0.65, 0.7] },
+      overrides: { feeRate: 0.04, prefRate: 0.07, carryRate: 0.25, rocLpShare: 0.9 },
+      capex: { contingencyPct: 0.1, contingencySpent: 100_000, returnYear: 3 },
+      cadence: 'quarterly',
+    })
+    expect(fromFleetForm(toFleetForm(a))).toEqual({ fleet: a })
+  })
+
+  it('refuses what the form cannot read, by field', () => {
+    expect(fromFleetForm({ ...toFleetForm(packAssumptions('base')), startMonth: '2027-13' })).toEqual({ error: 'Start month must be YYYY-MM.' })
+    expect(fromFleetForm({ ...toFleetForm(packAssumptions('base')), utilization: 'lots' })).toEqual({ error: 'Utilization must be a number.' })
+  })
+
+  it('saving sends { expectedRevision, fleet } as a PATCH and hands back the recompiled plan', async () => {
+    const calls: { url: string; init?: RequestInit }[] = []
+    const fetcher = async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ plan: { id: 'p1', revision: 8 } }), { status: 200 })
+    }
+    const saved = vi.fn()
+    const reload = vi.fn(async () => null)
+    const fleet = packAssumptions('base')
+    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet, reload, saved })).toBeNull()
+    expect(calls[0].url).toBe('/api/accounting/forecast/p1')
+    expect(calls[0].init?.method).toBe('PATCH')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ expectedRevision: 7, fleet })
+    expect(saved).toHaveBeenCalledWith({ plan: { id: 'p1', revision: 8 } })
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('a stale-revision 409 reloads the plan and says so', async () => {
+    const routeError = 'The plan changed since you loaded it (revision 7 is now 8). Reload and try again.'
+    const fetcher = async () => new Response(JSON.stringify({ error: routeError }), { status: 409 })
+    const reload = vi.fn(async () => null)
+    const saved = vi.fn()
+    const message = await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved })
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(saved).not.toHaveBeenCalled()
+    expect(message).toBe(staleMessage(routeError))
+    expect(message).toMatch(/latest assumptions have been loaded/)
+  })
+
+  it('another refusal (the engine’s input error) comes back in the route’s words, without a reload', async () => {
+    const fetcher = async () => new Response(JSON.stringify({ error: 'saleYear must be between 1 and years' }), { status: 400 })
+    const reload = vi.fn(async () => null)
+    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved: () => {} }))
+      .toBe('saleYear must be between 1 and years')
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('the form, in a real DOM, saves exactly what it loaded, and shows a stale message', async () => {
+    const fleet = packAssumptions('base')
+    const onSave = vi.fn(async () => staleMessage('The plan changed since you loaded it.'))
+    render(wrap(<FleetAssumptionsForm fleet={fleet} canEdit onSave={onSave} />))
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    expect(await screen.findByText(/The plan changed since you loaded it\. The latest assumptions have been loaded/)).toBeTruthy()
+    expect(onSave).toHaveBeenCalledWith(fleet)
+  })
+
+  it('an edit reaches the save: utilization 75 becomes 80', async () => {
+    const onSave = vi.fn(async () => null)
+    render(wrap(<FleetAssumptionsForm fleet={packAssumptions('base')} canEdit onSave={onSave} />))
+    fireEvent.change(screen.getByLabelText('Utilization, %'), { target: { value: '80' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    await screen.findByText('Saved. The plan has been recompiled.')
+    expect(onSave.mock.calls[0][0]).toMatchObject({ utilization: 0.8 })
+  })
+
+  it('without write access the form is read-only', () => {
+    render(wrap(<FleetAssumptionsForm fleet={packAssumptions('base')} canEdit={false} onSave={async () => null} />))
+    expect((screen.getByLabelText('Utilization, %') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Save fleet assumptions' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
