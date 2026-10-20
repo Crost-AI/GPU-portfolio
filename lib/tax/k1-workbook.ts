@@ -14,7 +14,7 @@
 // Pure and testable: it takes a computed package and lays it out. No tax logic here.
 
 import * as XLSX from 'xlsx'
-import { K1_BOX, K1_CATEGORIES, K1_SUBSET_OF, type K1Category } from '@/lib/accounting/k1-allocation'
+import { K1_ALL_CATEGORIES, K1_BOX, K1_CATEGORIES, K1_SUBSET_OF, type K1Category, type K1Lines } from '@/lib/accounting/k1-allocation'
 import { TAX_FORM_LABEL, type TaxFormType } from './forms'
 
 const NUM = '#,##0.00;(#,##0.00)'
@@ -56,7 +56,7 @@ export interface K1WorkbookPartner {
   tinLast4?: string | null
   country?: string | null
   taxClassification?: string | null
-  lines: Record<K1Category, number>
+  lines: K1Lines
   capitalAccount: {
     beginning: number
     contributions: number
@@ -120,6 +120,8 @@ function coverSheet(input: K1WorkbookInput): XLSX.WorkSheet {
 
 /** One row per partner, one column per K-1 line. The sheet a preparer actually keys from. */
 function partnerSheet(input: K1WorkbookInput): XLSX.WorkSheet {
+  // Every base line, and a box 1 or box 10 column only when some partner has an amount on it.
+  const categories = K1_ALL_CATEGORIES.filter(c => (K1_CATEGORIES as K1Category[]).includes(c) || input.partners.some(p => (p.lines[c] ?? 0) !== 0))
   // Subset lines are labelled as such in the header, so nobody adds 6b to 6a or double-counts
   // the §1061 disclosure that is already inside box 8.
   const header: Row = [
@@ -131,7 +133,7 @@ function partnerSheet(input: K1WorkbookInput): XLSX.WorkSheet {
     'TIN last 4',
     'Country',
     'Classification',
-    ...K1_CATEGORIES.map(c => {
+    ...categories.map(c => {
       const subsetOf = K1_SUBSET_OF[c]
       return subsetOf
         ? `${label(c)} (box ${K1_BOX[c]}, included in box ${K1_BOX[subsetOf]})`
@@ -150,7 +152,7 @@ function partnerSheet(input: K1WorkbookInput): XLSX.WorkSheet {
       p.tinLast4 ?? '',
       p.country ?? '',
       p.taxClassification ?? '',
-      ...K1_CATEGORIES.map(c => money(p.lines[c] ?? 0)),
+      ...categories.map(c => money(p.lines[c] ?? 0)),
     ])
   }
 
@@ -159,11 +161,11 @@ function partnerSheet(input: K1WorkbookInput): XLSX.WorkSheet {
     rows.push([
       'Total',
       '', '', '', '', '', '', '',
-      ...K1_CATEGORIES.map(c => money(input.partners.reduce((s, p) => s + (p.lines[c] ?? 0), 0))),
+      ...categories.map(c => money(input.partners.reduce((s, p) => s + (p.lines[c] ?? 0), 0))),
     ])
   }
 
-  return sheet(rows, [28, 28, 16, 14, 10, 10, 10, 18, ...K1_CATEGORIES.map(() => 20)])
+  return sheet(rows, [28, 28, 16, 14, 10, 10, 10, 18, ...categories.map(() => 20)])
 }
 
 /** Part II item L, per partner, with both variances beside it. */
@@ -240,6 +242,8 @@ export function buildK1Workbook(input: K1WorkbookInput): XLSX.WorkBook {
 
 function label(c: K1Category): string {
   const map: Record<K1Category, string> = {
+    ordinaryBusinessIncome: 'Ordinary business income (loss)',
+    section1231Gain: 'Net section 1231 gain (loss)',
     interest: 'Interest income',
     ordinaryDividends: 'Ordinary dividends',
     qualifiedDividends: 'Qualified dividends',
@@ -265,6 +269,9 @@ function labelFundItem(k: string): string {
     longTermGainWithinApiPeriod: 'Long-term gain on assets held under three years (included above)',
     otherIncome: 'Other income',
     deductions: 'Deductions',
+    businessIncome: 'Business income (gross)',
+    businessDeductions: 'Business deductions',
+    section1231Gain: 'Section 1231 gain (loss)',
   }
   return map[k] ?? k
 }

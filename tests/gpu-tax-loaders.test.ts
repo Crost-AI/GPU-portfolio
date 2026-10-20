@@ -3,6 +3,10 @@ import { loadK1Year } from '@/lib/accounting/k1-load'
 import { loadActualBookYear, postTaxAdjustments } from '@/lib/accounting/book-tax-run'
 import { buildAllocationEntry } from '@/lib/accounting/allocation-actions'
 import { GPU_SPV_CHART } from '@/lib/accounting/chart'
+import { allocateK1, k1CategoriesIn } from '@/lib/accounting/k1-allocation'
+import { buildK1Html } from '@/lib/tax/k1-pdf'
+import { buildK1Workbook } from '@/lib/tax/k1-workbook'
+import * as XLSX from 'xlsx'
 
 /**
  * ── GPU fleet (P1c) ── The tax loaders read a GPU SPV's chart by subtype. Its codes collide with the
@@ -75,6 +79,51 @@ describe('the K-1 loader reads a GPU SPV by subtype', () => {
     expect(inputs.notDerivable.map(n => n.line)).toEqual(['§1231 gain (10)', 'Depreciation convention'])
     const a = inputs.partners.find(x => x.lpEntityId === 'lp-a')!
     expect([a.operatingIncome, a.realizedGains, a.expenses]).toEqual([60_600, 3_000, totalExpense * 0.6])
+  })
+})
+
+describe('box 1 and box 10 on a GPU SPV K-1', () => {
+  it('are present, follow their buckets and tie to the capital account with zero variance', async () => {
+    const inputs = await loadK1Year(fakeAdmin(), 'f', 'H200 SPV I', 2027)
+    if ('error' in inputs) throw new Error(inputs.error)
+    const { partners, unallocated } = allocateK1(inputs)
+    expect(unallocated).toEqual({})
+    const a = partners.find(p => p.lpEntityId === 'lp-a')!
+    const b = partners.find(p => p.lpEntityId === 'lp-b')!
+    // Box 1: 60% of rental 100,000 less 60% of 46,000 of expenses; box 10: 60% of the 5,000 gain.
+    expect(a.lines).toMatchObject({ ordinaryBusinessIncome: 32_400, section1231Gain: 3_000, interest: 600, deductions: 0 })
+    expect(b.lines).toMatchObject({ ordinaryBusinessIncome: 21_600, section1231Gain: 2_000, interest: 400, deductions: 0 })
+    for (const p of [a, b]) {
+      expect(p.tieOut.variance).toBe(0)
+      expect(k1CategoriesIn(p.lines).slice(0, 1)).toEqual(['ordinaryBusinessIncome'])
+      expect(k1CategoriesIn(p.lines)).toContain('section1231Gain')
+    }
+    const html = buildK1Html({ fundName: 'F', fundLogo: null, fundAddress: null, vehicle: 'H200 SPV I', taxYear: 2027, version: 1, status: 'draft', partnerName: 'lp-a', lines: a.lines, capitalAccount: { beginning: 0, contributions: 0, distributions: 0, netIncome: 0, ending: 0 } })
+    expect(html).toContain('Ordinary business income (loss)')
+    expect(html).toContain('Net section 1231 gain (loss)')
+    const wb = buildK1Workbook({ fundName: 'F', vehicle: 'H200 SPV I', taxYear: 2027, version: 1, status: 'draft', generatedAt: '2028-01-01T00:00:00Z', fundCharacter: null, warnings: [],
+      partners: partners.map(p => ({ lpEntityId: p.lpEntityId, name: p.lpEntityId, lines: p.lines, capitalAccount: p.capitalAccount, tieOutVariance: 0, rollForwardVariance: 0 })) })
+    const sheet = XLSX.utils.sheet_to_json(wb.Sheets['K-1 lines'], { header: 1 }) as any[][]
+    expect(sheet[0]).toEqual(expect.arrayContaining(['Ordinary business income (loss) (box 1)', 'Net section 1231 gain (loss) (box 10)']))
+  })
+})
+
+describe('carry on a GPU SPV moves box 1 and box 10 character', () => {
+  it('a carry recipient reports the business income and §1231 gain it was allocated, and nothing is lost', () => {
+    const zero = { beginningCapital: 0, contributions: 0, distributions: 0, carriedInterest: 0, endingCapital: 0 }
+    const { partners, unallocated } = allocateK1({
+      fund: { interest: 0, ordinaryDividends: 0, qualifiedDividends: 0, shortTermGain: 0, longTermGain: 0, longTermGainWithinApiPeriod: 0, otherIncome: 0, deductions: 0,
+        businessIncome: 10_000, businessDeductions: 2_000, section1231Gain: 2_000 },
+      partners: [
+        { ...zero, lpEntityId: 'lp', operatingIncome: 10_000, realizedGains: 2_000, expenses: 2_000, carriedInterest: 2_000 },
+        { ...zero, lpEntityId: 'gp', operatingIncome: 0, realizedGains: 0, expenses: 0, carriedInterest: -2_000 },
+      ],
+    })
+    expect(unallocated).toEqual({})
+    const gp = partners.find(p => p.lpEntityId === 'gp')!
+    // Profit pool: box 1 8,000 and box 10 2,000, so 2,000 of carry is 1,600 of box 1 and 400 of box 10.
+    expect(gp.lines).toMatchObject({ ordinaryBusinessIncome: 1_600, section1231Gain: 400 })
+    for (const p of partners) expect(p.tieOut.variance).toBe(0)
   })
 })
 

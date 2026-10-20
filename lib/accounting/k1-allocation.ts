@@ -30,7 +30,10 @@ import { allocateAmount } from './allocation'
  * one: it invites a preparer to trust a zero that means "never computed". Rental income,
  * guaranteed payments, §179, foreign taxes and the rest are absent for that reason.
  */
-export type K1Category =
+export type K1Category = K1BaseCategory | K1OptionalCategory
+
+/** The lines every K-1 carries, zero or not. */
+export type K1BaseCategory =
   | 'interest'
   | 'ordinaryDividends'
   | 'qualifiedDividends'
@@ -43,12 +46,23 @@ export type K1Category =
   | 'distributionsProperty'
   | 'distributionsOther'
 
+/**
+ * ── GPU fleet (P1c) ── Lines only a trade or business produces (a GPU SPV): present on a K-1 only
+ * when nonzero, so a fund's K-1 keeps exactly the lines it always had.
+ */
+export type K1OptionalCategory = 'ordinaryBusinessIncome' | 'section1231Gain'
+export const K1_OPTIONAL_CATEGORIES: readonly K1OptionalCategory[] = ['ordinaryBusinessIncome', 'section1231Gain']
+const isOptional = (c: K1Category): c is K1OptionalCategory => (K1_OPTIONAL_CATEGORIES as readonly string[]).includes(c)
+
+/** Box order: the order every surface lists lines in. */
 export const K1_BOX: Record<K1Category, string> = {
+  ordinaryBusinessIncome: '1',
   interest: '5',
   ordinaryDividends: '6a',
   qualifiedDividends: '6b',
   shortTermGain: '8',
   longTermGain: '9a',
+  section1231Gain: '10',
   // Reported to an API holder as a statement attached to the K-1 rather than in a numbered box.
   section1061Recharacterized: '20AH',
   otherIncome: '11',
@@ -58,7 +72,15 @@ export const K1_BOX: Record<K1Category, string> = {
   distributionsOther: '19C',
 }
 
-export const K1_CATEGORIES = Object.keys(K1_BOX) as K1Category[]
+/** Every category, base and optional, in box order. */
+export const K1_ALL_CATEGORIES = Object.keys(K1_BOX) as K1Category[]
+/** The base categories: the lines every K-1 carries. */
+export const K1_CATEGORIES = K1_ALL_CATEGORIES.filter(c => !isOptional(c)) as K1BaseCategory[]
+
+/** The categories a set of lines reports: every base line, and an optional one only when nonzero. */
+export function k1CategoriesIn(lines: Partial<Record<K1Category, number>>): K1Category[] {
+  return K1_ALL_CATEGORIES.filter(c => !isOptional(c) || (lines[c] ?? 0) !== 0)
+}
 
 /**
  * Lines that are a SUBSET of another line rather than an addition to it.
@@ -75,7 +97,7 @@ export const K1_SUBSET_OF: Partial<Record<K1Category, K1Category>> = {
   section1061Recharacterized: 'shortTermGain',
 }
 
-export type K1Lines = Record<K1Category, number>
+export type K1Lines = Record<K1BaseCategory, number> & Partial<Record<K1OptionalCategory, number>>
 
 export function emptyLines(): K1Lines {
   return Object.fromEntries(K1_CATEGORIES.map(c => [c, 0])) as K1Lines
@@ -172,8 +194,8 @@ export function incomeTotal(lines: K1Lines): number {
   const isSubset = (c: K1Category) => c in K1_SUBSET_OF
   const isDistribution = (c: K1Category) => c.startsWith('distributions')
   return roundCents(
-    K1_CATEGORIES.filter(c => !isSubset(c) && !isDistribution(c)).reduce(
-      (s, c) => s + (c === 'deductions' ? -lines[c] : lines[c]),
+    K1_ALL_CATEGORIES.filter(c => !isSubset(c) && !isDistribution(c)).reduce(
+      (s, c) => s + (c === 'deductions' ? -lines[c] : (lines[c] ?? 0)),
       0,
     ),
   )
@@ -244,6 +266,26 @@ export function allocateK1(input: AllocateK1Input): AllocateK1Result {
     if (left !== 0) unallocated[s.category] = left
   }
 
+  // ── GPU fleet (P1c) ── Box 1 is the business's income less its deductions, each following its own
+  // bucket, so a partner's box 1 is exactly their operating income less the expenses they bore.
+  // Box 10 follows realized gains. Only a GPU SPV's loader supplies these; a fund's K-1 never sees them.
+  if (fund.businessIncome !== undefined || fund.businessDeductions !== undefined) {
+    const income = splitByBucket(fund.businessIncome ?? 0, partners, byIncome)
+    const deductions = splitByBucket(fund.businessDeductions ?? 0, partners, byExpense)
+    const net = new Map<string, number>()
+    for (const p of partners) {
+      net.set(p.lpEntityId, roundCents((income.allocated.get(p.lpEntityId) ?? 0) - (deductions.allocated.get(p.lpEntityId) ?? 0)))
+    }
+    allocatedByCategory.set('ordinaryBusinessIncome', net)
+    const left = roundCents(income.unallocated - deductions.unallocated)
+    if (left !== 0) unallocated.ordinaryBusinessIncome = left
+  }
+  if (fund.section1231Gain !== undefined) {
+    const { allocated, unallocated: left } = splitByBucket(fund.section1231Gain, partners, byGain)
+    allocatedByCategory.set('section1231Gain', allocated)
+    if (left !== 0) unallocated.section1231Gain = left
+  }
+
   // CARRY MOVES CHARACTER, NOT JUST MONEY.
   //
   // Carried interest is a reallocation of PROFIT between partners, and profit arrives already
@@ -267,7 +309,7 @@ export function allocateK1(input: AllocateK1Input): AllocateK1Result {
   // not include the recipient — a carry recipient with no capital account of their own, a
   // vehicle loaded without its GP — the character would simply disappear from every K-1 and the
   // fund's total would quietly fall short. Report the residue instead.
-  for (const c of K1_CATEGORIES) {
+  for (const c of K1_ALL_CATEGORIES) {
     let residue = 0
     for (const shift of Array.from(carryTransfer.values())) residue = roundCents(residue + (shift[c] ?? 0))
     // A negative residue means more was taken than given: that much character has no home.
@@ -278,13 +320,15 @@ export function allocateK1(input: AllocateK1Input): AllocateK1Result {
     const lines = emptyLines()
     const shift = carryTransfer.get(p.lpEntityId) ?? {}
     for (const [category, map] of Array.from(allocatedByCategory.entries())) {
-      lines[category] = roundCents((map.get(p.lpEntityId) ?? 0) + (shift[category] ?? 0))
+      const amount = roundCents((map.get(p.lpEntityId) ?? 0) + (shift[category] ?? 0))
+      // An optional line is on the K-1 only when it has something to say.
+      if (!isOptional(category) || amount !== 0) lines[category] = amount
     }
     // The transfer can name categories the bucket allocation never produced — §1061's disclosure
     // line has no fund-level amount to split, it only exists once carry moves. Iterating the
     // allocated map alone silently dropped it.
     for (const category of Object.keys(shift) as K1Category[]) {
-      if (!allocatedByCategory.has(category)) lines[category] = roundCents(shift[category] ?? 0)
+      if (!allocatedByCategory.has(category) && (!isOptional(category) || shift[category])) lines[category] = roundCents(shift[category] ?? 0)
     }
 
     // Distributions are the partner's own frozen amounts, not a share of anything — they were
@@ -363,7 +407,7 @@ function transferCarryCharacter(
   if (totalCarry === 0) return out
 
   // The profit pool, by character, as allocated before any transfer.
-  const PROFIT: K1Category[] = ['interest', 'ordinaryDividends', 'otherIncome', 'shortTermGain', 'longTermGain']
+  const PROFIT: K1Category[] = ['interest', 'ordinaryDividends', 'otherIncome', 'shortTermGain', 'longTermGain', 'ordinaryBusinessIncome', 'section1231Gain']
   const poolByCategory = new Map<K1Category, number>()
   let pool = 0
   for (const c of PROFIT) {

@@ -3,6 +3,10 @@ import { loadK1Year } from '@/lib/accounting/k1-load'
 import { allocateK1 } from '@/lib/accounting/k1-allocation'
 import { loadActualBookYear, postTaxAdjustments } from '@/lib/accounting/book-tax-run'
 import { buildAllocationEntry } from '@/lib/accounting/allocation-actions'
+import { emptyLines, k1CategoriesIn } from '@/lib/accounting/k1-allocation'
+import { buildK1Html } from '@/lib/tax/k1-pdf'
+import { buildK1Workbook } from '@/lib/tax/k1-workbook'
+import * as XLSX from 'xlsx'
 
 /**
  * ── GPU fleet (P1c) ── A VC fund's tax output is unchanged by the GPU SPV tax work. The expected
@@ -318,5 +322,24 @@ describe('a VC fund tax output is unchanged (snapshot from main)', () => {
         },
       }
     `)
+  })
+})
+
+describe('box 1 and box 10 appear only when nonzero (P1c)', () => {
+  it('a VC K-1 gets no new line: same keys, no box 1 or box 10 on the PDF or the workbook', async () => {
+    const inputs = await loadK1Year(fakeAdmin(), 'f', 'Fund I', 2027)
+    if ('error' in inputs) throw new Error(inputs.error)
+    const { partners } = allocateK1(inputs)
+    for (const p of partners) {
+      expect(Object.keys(p.lines).sort()).toEqual(Object.keys(emptyLines()).sort())
+      expect(k1CategoriesIn(p.lines)).not.toContain('ordinaryBusinessIncome')
+      expect(k1CategoriesIn(p.lines)).not.toContain('section1231Gain')
+      const html = buildK1Html({ fundName: 'F', fundLogo: null, fundAddress: null, vehicle: 'Fund I', taxYear: 2027, version: 1, status: 'draft', partnerName: p.lpEntityId, lines: p.lines, capitalAccount: { beginning: 0, contributions: 0, distributions: 0, netIncome: 0, ending: 0 } })
+      expect(html).not.toMatch(/business income|section 1231/i)
+    }
+    const wb = buildK1Workbook({ fundName: 'F', vehicle: 'Fund I', taxYear: 2027, version: 1, status: 'draft', generatedAt: '2028-01-01T00:00:00Z', fundCharacter: null, warnings: [],
+      partners: partners.map(p => ({ lpEntityId: p.lpEntityId, name: p.lpEntityId, lines: p.lines, capitalAccount: p.capitalAccount, tieOutVariance: 0, rollForwardVariance: 0 })) })
+    const header = (XLSX.utils.sheet_to_json(wb.Sheets['K-1 lines'], { header: 1 }) as any[][])[0]
+    expect(header.join('|')).not.toMatch(/box 1\)|box 10\)/)
   })
 })
