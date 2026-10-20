@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
-import { A, B, GROUP, gpuTaxYear } from '@/tests/helpers/gpu-tax-year'
+import { A, B, GROUP, gpuTaxYear, ledgerWriter } from '@/tests/helpers/gpu-tax-year'
+import { IN_CHUNK } from '@/lib/accounting/load'
 import { loadFleetTaxYear } from '@/lib/gpu/tax-adjustments'
 import { proposeFleetAdjustments } from '@/lib/accounting/book-tax'
 import { buildFleetDifferenceEntry, buildTaxAdjustmentEntries } from '@/lib/accounting/book-tax-entries'
@@ -50,6 +51,44 @@ describe('the fleet tax year measures book depreciation by journal date', () => 
     const y2028 = await loadFleetTaxYear(admin, 'f', 'v-gpu', 2028)
     expect(y2027.depreciation.find(l => l.assetId === A)).toMatchObject({ book: 16_500, tax: 20_000, difference: 3_500 })
     expect(y2028.depreciation.find(l => l.assetId === A)).toMatchObject({ book: 19_500, tax: 32_000, difference: 12_500 })
+  })
+})
+
+describe('a large fleet reads its depreciation in chunks', () => {
+  it('every server keeps its book depreciation when the 1650 accounts span several `in` filters', async () => {
+    const t = gpuTaxYear()
+    const { je } = ledgerWriter(t as any)
+    // 250 more servers, set up before A and B, each bought in January 2027 with one month (1,500) on
+    // the books: their 1650 accounts fill the first chunk, so A's and B's land in a later one than 5300.
+    const extra = Array.from({ length: 250 }, (_, i) => `${(0xc0000000 + i).toString(16)}-0000-4000-8000-000000000000`)
+    for (const [i, id] of extra.entries()) {
+      const code = (base: string) => `${base}-${id.slice(0, 8)}`
+      t.gpu_assets.unshift({ ...t.gpu_assets.find(a => a.id === A)!, id, name: `X${i}`, created_at: '2026-12-01T00:00:00Z' })
+      for (const [base, subtype] of [['1600', 'fixed_asset'], ['1650', 'accumulated_depreciation']]) {
+        t.chart_of_accounts.push({ id: code(base), fund_id: 'f', vehicle_id: 'v-gpu', code: code(base), name: base, type: 'asset', subtype, lp_entity_id: null })
+      }
+      je('manual', '2027-01-15', `gpu-asset:${id}:purchase`, [[code('1600'), 100_000], ['g-1000', -100_000]])
+      je('depreciation', '2027-01-31', `gpu-dep:${id}:2027-01`, [['g-5300', 1_500], [code('1650'), -1_500]])
+    }
+    const m = memoryAdmin(t)
+    const from = m.admin.from.bind(m.admin)
+    const filters: number[] = []
+    m.admin.from = (table: string) => {
+      const q = from(table)
+      if (table !== 'journal_postings') return q
+      const inner = q.in
+      q.in = (k: string, vs: unknown[]) => { if (k === 'account_id') filters.push(vs.length); return inner(k, vs) }
+      return q
+    }
+    const fleet = await loadFleetTaxYear(m.admin as any, 'f', 'v-gpu', 2027)
+    expect(filters.length).toBeGreaterThan(1)
+    expect(Math.max(...filters)).toBeLessThanOrEqual(IN_CHUNK)
+    // Every extra server: 1,500 on the books against MACRS 20,000.
+    expect(fleet.depreciation.filter(l => extra.includes(l.assetId)).map(l => [l.book, l.tax])).toEqual(extra.map(() => [1_500, 20_000]))
+    expect(fleet.depreciation.filter(l => l.assetId === A || l.assetId === B)).toEqual([
+      { assetId: A, name: 'H200 #1', accumulatedAccountId: acc(A), book: 18_000, tax: 20_000, difference: 2_000 },
+      { assetId: B, name: 'H200 #2', accumulatedAccountId: acc(B), book: 13_500, tax: 0, difference: -13_500 },
+    ])
   })
 })
 

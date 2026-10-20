@@ -22,7 +22,7 @@
 // purchased, or its purchase reversed) has nothing to adjust.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchAllRows } from '@/lib/accounting/load'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { loadFleetLedger } from './fleet-ledger'
 import { taxDepreciationByYear } from './valuation'
 
@@ -97,11 +97,13 @@ export async function loadFleetTaxYear(
   // the gain) is not depreciation and never touches expense, so it is not counted.
   const expenseIds = new Set(depreciationAccounts.map(a => a.id))
   const accumulatedIds = assets.map(l => l.accumulatedAccountId).filter((id): id is string => !!id)
+  // Chunked (a fleet's 1650 accounts, sold servers' included, outgrow one URL), and every chunk is
+  // read before `expensed` is built: an entry's expense leg and its 1650 leg can land in different chunks.
   const movements = accumulatedIds.length && expenseIds.size
-    ? (await fetchAllRows<any>((f, t) => (admin as any).from('journal_postings')
+    ? (await fetchAllRowsIn<any>([...expenseIds, ...accumulatedIds], (chunk, f, t) => (admin as any).from('journal_postings')
         .select('journal_entry_id, account_id, amount, journal_entries!inner(entry_date, status, book)')
         .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual')
-        .in('account_id', [...accumulatedIds, ...expenseIds]).order('id').range(f, t)))
+        .in('account_id', chunk).range(f, t)))
       .filter(r => r.journal_entries?.status === 'posted' && r.journal_entries?.book === 'actual' && String(r.journal_entries?.entry_date) <= yearEnd)
     : []
   const expensed = new Set(movements.filter(r => expenseIds.has(r.account_id)).map(r => r.journal_entry_id))
