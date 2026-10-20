@@ -291,7 +291,7 @@ describe('the Forecast Fleet tab', () => {
   })
 
   it('an edit reaches the save: utilization 75 becomes 80', async () => {
-    const onSave = vi.fn(async () => null)
+    const onSave = vi.fn(async (_fleet: FleetAssumptions) => null)
     render(wrap(<FleetAssumptionsForm fleet={packAssumptions('base')} canEdit onSave={onSave} />))
     fireEvent.change(screen.getByLabelText('Utilization, %'), { target: { value: '80' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
