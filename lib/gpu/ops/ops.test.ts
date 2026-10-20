@@ -992,3 +992,44 @@ describe('Codex C1 without a database key on reversal: refs', () => {
     expect(entriesWith('reversal:')).toEqual([])
   })
 })
+
+// ── PR A follow-up (Codex r2, post.ts:178): a transient failure reading the original entry, after
+// the predecessor is claimed posted -> reversing, before any reversal exists.
+describe('a reversal claim abandoned before its entry exists', () => {
+  it('a failed original-entry read puts both rows back; the retry reverses once and posts the correction', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged').id
+    const old = byAsset('a-1', 'posted')
+    // The first journal read of the holder path is the original entry's (originalEntry).
+    s.m.failNext('journal_entries', 'select', 'connection reset')
+    await expect(postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })).rejects.toMatchObject({ message: 'connection reset' })
+    // Nothing is stranded: the predecessor is posted again, the correction staged, both unclaimed.
+    expect(old).toMatchObject({ status: 'posted', claim_token: null })
+    expect(earnings().find(e => e.id === fix)).toMatchObject({ status: 'staged', claim_token: null })
+    expect(entriesWith('reversal:')).toEqual([])
+    // The importer accepts the period again (no claimed row), and the retry completes.
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })
+    expect(r).toMatchObject({ posted: [{ id: fix }], reversed: [{ id: old.id, reversalId: expect.any(String) }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(earnings().map(e => e.status).sort()).toEqual(['posted', 'reversed'])
+  })
+
+  it('a claim abandoned by a request that died (no throw handler ran) is taken over after the lease and completed', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const old = byAsset('a-1', 'posted')
+    Object.assign(old, { status: 'reversing', claim_token: 'dead', claimed_at: ago(30_000) })
+    // Inside the lease: in progress, nothing moves.
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
+    expect(old).toMatchObject({ status: 'reversing', claim_token: 'dead' })
+    // After the lease: taken over, reversed once, correction posted. No SQL needed.
+    old.claimed_at = ago(180_000)
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ reversed: [{ id: old.id }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(old.status).toBe('reversed')
+  })
+})
