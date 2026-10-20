@@ -9,9 +9,8 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { AddVehicleButton } from '@/components/add-vehicle-button'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
-import type { GpuAsset } from '@/lib/gpu/types'
 import { browserFetch, listVehicleAssets, mapBounded } from './fleet-api'
-import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, type FleetTotals } from './fleet-math'
+import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, valuationDate, type FleetTotals, type ValuedAsset } from './fleet-math'
 
 // ── GPU fleet (P5) ── The firm-wide fleet: one card per GPU SPV with its GPUs, cost and book value,
 // and the totals across them. Each vehicle's register is its own request (a few at a time); one that
@@ -19,9 +18,12 @@ import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, type FleetTotals } from 
 
 export interface FleetVehicle { id: string; name: string; active: boolean }
 
-export type Loaded = { assets: GpuAsset[] } | { error: string }
+export type Loaded = { assets: ValuedAsset[] } | { error: string }
 
-/** The page as it renders for a set of loaded registers: no fetching, so it can be rendered on its own. */
+/**
+ * The page as it renders for a set of loaded registers: no fetching, so it can be rendered on its own.
+ * Every figure is the server's valuation as of `asOf`, the date the registers were fetched for.
+ */
 export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: {
   vehicles: FleetVehicle[]
   loaded: Record<string, Loaded>
@@ -33,13 +35,15 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
 
   const per = new Map(vehicles.map(v => {
     const l = loaded[v.id]
-    return [v.id, l && 'assets' in l ? fleetTotals(l.assets, asOf) : null]
+    return [v.id, l && 'assets' in l ? fleetTotals(l.assets) : null]
   }))
   const totals = [...per.values()].reduce<FleetTotals>((t, x) => (x ? addTotals(t, x) : t), ZERO_TOTALS)
   const pending = vehicles.filter(v => !loaded[v.id]).length
   const failed = vehicles.filter(v => { const l = loaded[v.id]; return l && 'error' in l }).length
   const partial = pending > 0 || failed > 0
   const shown = (n: string) => (vehicles.length === 0 ? '—' : n)
+  // The date the server valued the loaded registers as of: shown, rather than the date asked for.
+  const valuedAsOf = valuationDate(Object.values(loaded).flatMap(l => ('assets' in l ? l.assets : [])), asOf)
   const partialNote = pending > 0 ? 'Loading…' : `Partial: ${failed} ${failed === 1 ? 'vehicle' : 'vehicles'} could not be loaded`
 
   return (
@@ -48,11 +52,11 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
         <Metric label="GPU SPVs" value={vehicles.length.toLocaleString()} sub={`${totals.inService} servers in service`} />
         <Metric label="GPUs" value={shown(totals.gpus.toLocaleString())} sub={partial ? partialNote : `${totals.assets} servers`} />
         <Metric
-          label="Fleet cost"
-          value={shown(money(totals.cost))}
-          sub={partial ? partialNote : totals.planned > 0 ? `Booked; ${money(totals.planned)} more planned` : 'Booked hardware and capitalized costs'}
+          label="Fleet basis"
+          value={shown(money(totals.basis))}
+          sub={partial ? partialNote : totals.planned > 0 ? `On the books; ${money(totals.planned)} more not on the books yet` : 'Hardware and capitalized costs on the books'}
         />
-        <Metric label="Fleet NBV" value={shown(money(totals.nbv))} sub={partial ? partialNote : 'Book value today'} />
+        <Metric label="Fleet NBV" value={shown(money(totals.nbvBook))} sub={partial ? partialNote : `Book, as of ${valuedAsOf}; tax book ${money(totals.nbvTax)}`} data-valuation-as-of={valuedAsOf ?? undefined} />
         <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
         <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
       </div>
@@ -84,9 +88,10 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
                     {([
                       ['GPUs', t.gpus.toLocaleString()],
                       ['In service', `${t.inService} of ${t.assets}`],
-                      ['Cost', money(t.cost)],
+                      ['Basis', money(t.basis)],
                       ...(t.planned > 0 ? [['Planned', money(t.planned)] as const] : []),
-                      ['NBV', money(t.nbv)],
+                      ['NBV', money(t.nbvBook)],
+                      ['Tax NBV', money(t.nbvTax)],
                     ] as const).map(([k, val]) => (
                       <div key={k} className="flex items-baseline justify-between gap-2">
                         <dt className="text-muted-foreground">{k}</dt>
@@ -110,20 +115,22 @@ export function FleetOverview({ vehicles }: { vehicles: FleetVehicle[] }) {
   const canAdd = useCanWrite('fleet')
 
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({})
+  // Today in the user's own zone, sent explicitly: the route's own default is the UTC date.
+  const [asOf] = useState(todayIso)
   useEffect(() => {
     let cancelled = false
     void mapBounded(vehicles, 4, async v => {
-      const r = await listVehicleAssets(browserFetch, v.name)
+      const r = await listVehicleAssets(browserFetch, v.name, asOf)
       if (!cancelled) setLoaded(prev => ({ ...prev, [v.id]: r.ok ? { assets: r.data.assets } : { error: r.error } }))
     })
     return () => { cancelled = true }
-  }, [vehicles])
+  }, [vehicles, asOf])
 
   return (
     <FleetOverviewView
       vehicles={vehicles}
       loaded={loaded}
-      asOf={todayIso()}
+      asOf={asOf}
       addButton={canAdd ? <AddVehicleButton onCreated={() => router.refresh()} /> : null}
     />
   )

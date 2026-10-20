@@ -399,3 +399,28 @@ export async function capitalCallCandidates(admin: SupabaseClient, fundId: strin
     })
     .filter(c => c.amount > 0)
 }
+
+// ── GPU fleet (P3) ──
+export interface PayoutCandidate {
+  payoutId: string
+  amount: number
+  payoutDate: string
+  reference: string | null
+  status: 'expected'
+}
+
+/**
+ * A GPU SPV's expected marketplace payouts — what an inflow can be matched to, the way
+ * capitalCallCandidates offers recorded calls. Empty for any other vehicle (no rows), so a fund's
+ * bank page is unchanged. Matching one books Dr 1000 / Cr 1150 (lib/gpu/ops/payouts.ts matchPayout).
+ */
+export async function marketplacePayoutCandidates(admin: SupabaseClient, fundId: string, group: string): Promise<PayoutCandidate[]> {
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  if (!vehicleId) return []
+  const { data, error } = await (admin as any).from('gpu_payouts')
+    .select('id, amount, payout_date, reference')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'expected')
+    .order('payout_date').order('id')
+  if (error) throw new Error(`gpu_payouts read failed: ${error.message}`)
+  return ((data as any[]) ?? []).map(p => ({ payoutId: p.id, amount: Number(p.amount), payoutDate: p.payout_date, reference: p.reference ?? null, status: 'expected' as const }))
+}

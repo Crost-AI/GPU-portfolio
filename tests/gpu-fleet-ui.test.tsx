@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { useState } from 'react'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -14,37 +15,49 @@ import path from 'node:path'
 
 import { CurrencyProvider, formatCurrencyFull } from '@/components/currency-context'
 import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
-import { DepreciationTable, trueUpIndex } from '@/components/gpu/asset-detail'
+import { CapexEventsTable, ValuationCard } from '@/components/gpu/asset-detail'
 import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
-import { ErrorAlert } from '@/components/gpu/fleet-ui'
-import { assetFigures, assetSchedule, fleetTotals, offersBookedActions, statusMoves, todayIso } from '@/components/gpu/fleet-math'
+import { ErrorAlert, asOfCommit } from '@/components/gpu/fleet-ui'
+import { ZERO_TOTALS, fleetTotals, isOffBooks, valuationDate, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
-  fleetPaths, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
+  eventFormError, fleetPaths, getAsset, listAssets, listVehicleAssets, localToUtc, mapBounded, nowLocalInput, rollBody, send, statusBody, utcToLocalLabel, type Fetcher,
 } from '@/components/gpu/fleet-api'
 import { parseAssetInput } from '@/lib/gpu/assets'
 import { parseContractInput } from '@/lib/gpu/opex'
-import type { DatacenterContractRow, GpuAsset } from '@/lib/gpu/types'
+import type { DatacenterContractRow } from '@/lib/gpu/types'
 
 const money = (n: number) => formatCurrencyFull(n, 'USD')
 
-const asset = (over: Partial<GpuAsset>): GpuAsset => ({
+const AS_OF = '2026-12-31'
+
+/**
+ * A register row as GET /api/fleet/assets?as_of returns it: the row plus the server's valuation. The
+ * valuation fields are fixture values, deliberately not derivable from the row, so a test passes only
+ * if the page shows what the server sent rather than recomputing it.
+ */
+const asset = (over: Partial<ValuedAsset>): ValuedAsset => ({
   id: 'a', fund_id: 'f', vehicle_id: 'v', asset_type_id: null, name: 'Server', serials: [], vendor_id: null,
   status: 'in_service', gpu_count: 8, hardware_cost: 0, purchase_date: '2026-01-01', in_service_date: '2026-01-01',
   useful_life_months: 60, salvage_value: 0, depreciation_convention: 'full_month', tax_method: 'book', tax_bonus_pct: 0,
   tax_life_years: null, insurance_basis: null, datacenter_contract_id: null, purchase_entry_id: 'je', disposed_on: null,
-  disposal_proceeds: null, disposal_entry_id: null, notes: null, capitalized_costs: 0, ...over,
+  disposal_proceeds: null, disposal_entry_id: null, notes: null,
+  basis: 0, capitalized_costs: 0, accumulated_book: 0, nbv_book: 0, accumulated_tax: 0, nbv_tax: 0,
+  valuation_as_of: AS_OF, capex_events: [], on_books_as_of: true, ...over,
 })
 
-// The pack's three servers: 8 GPUs each, 60-month life, 10% salvage, in service 1 January 2026.
+// The pack's three servers, with the server's valuation as of 31 December 2026 (book after 12 months
+// on the plan; the H200 on bonus for tax). Figures as the route reports them.
 const PACK = [
-  asset({ id: 'h200', name: 'H200 NVL', hardware_cost: 335_000, salvage_value: 33_500 }),
-  asset({ id: 'b200', name: 'B200', hardware_cost: 410_000, salvage_value: 41_000 }),
-  asset({ id: 'b300', name: 'B300', hardware_cost: 560_000, salvage_value: 56_000 }),
+  asset({ id: 'h200', name: 'H200 NVL', hardware_cost: 335_000, basis: 335_000, accumulated_book: 60_300, nbv_book: 274_700,
+    tax_method: 'bonus', accumulated_tax: 214_400, nbv_tax: 120_600 }),
+  asset({ id: 'b200', name: 'B200', hardware_cost: 410_000, basis: 410_000, accumulated_book: 73_800, nbv_book: 336_200,
+    accumulated_tax: 73_800, nbv_tax: 336_200 }),
+  asset({ id: 'b300', name: 'B300', hardware_cost: 560_000, basis: 572_000, capitalized_costs: 12_000, accumulated_book: 100_950,
+    nbv_book: 471_050, accumulated_tax: 100_950, nbv_tax: 471_050,
+    capex_events: [{ month: '2026-03', amount: 12_000, source_ref: 'gpu-asset:b300:capex:inv-881', posted_at: '2026-03-14T15:20:00Z' }] }),
 ]
-const MONTHLY = { h200: 5_025, b200: 6_150, b300: 8_400 }
-const AFTER_12 = '2026-12-31'
 
 /** A fetcher that answers each call from the queue, recording what was sent. */
 function fakeFetcher(...responses: { status: number; body: unknown }[]) {
@@ -60,7 +73,7 @@ function fakeFetcher(...responses: { status: number; body: unknown }[]) {
 const register = (props: Partial<Parameters<typeof RegisterTable>[0]> = {}) => renderToStaticMarkup(
   <CurrencyProvider currency="USD">
     <RegisterTable
-      assets={PACK} types={[]} contracts={[]} asOf={AFTER_12} vehicleId="v1" canWriteFleet canBook
+      assets={PACK} types={[]} contracts={[]} vehicleId="v1" canWriteFleet canBook
       onPurchase={() => {}} onDispose={() => {}} onDelete={() => {}} onMove={() => {}}
       {...props}
     />
@@ -74,47 +87,236 @@ const button = (html: string, id: string, label: string) => {
 }
 
 describe('the fleet register', () => {
-  it('shows each server and its NBV after 12 months: cost less 12 monthly charges', () => {
+  /** The cell `col` of asset `id`'s row, by its data attribute. */
+  const cell = (html: string, id: string, col: string) =>
+    html.match(new RegExp(`data-asset="${id}"[\\s\\S]*?data-col="${col}" data-value="([^"]*)"`))?.[1]
+
+  it('shows each server\u2019s book and tax figures exactly as the server reports them', () => {
     const html = register()
     for (const a of PACK) {
       expect(html).toContain(a.name)
-      const nbv = a.hardware_cost - 12 * MONTHLY[a.id as keyof typeof MONTHLY]
-      expect(html, a.id).toMatch(new RegExp(`data-asset="${a.id}"[\\s\\S]*?data-nbv="${nbv}"`))
-      expect(html).toContain(money(nbv))
+      expect(cell(html, a.id, 'basis'), a.id).toBe(String(a.basis))
+      expect(cell(html, a.id, 'accumulated_book'), a.id).toBe(String(a.accumulated_book))
+      expect(cell(html, a.id, 'nbv_book'), a.id).toBe(String(a.nbv_book))
+      expect(cell(html, a.id, 'accumulated_tax'), a.id).toBe(String(a.accumulated_tax))
+      expect(cell(html, a.id, 'nbv_tax'), a.id).toBe(String(a.nbv_tax))
+      expect(html).toContain(money(a.nbv_book))
     }
-    expect(assetFigures(PACK[0], AFTER_12)).toMatchObject({ cost: 335_000, accumulated: 60_300, nbv: 274_700, remainingMonths: 48 })
   })
 
-  it('totals the fleet: GPUs, cost and NBV', () => {
+  it('heads the second pair Tax book and says what date the figures are valued as of', () => {
+    const html = register()
+    expect(html).toMatch(/>Book<\/th>[\s\S]*?>Tax book<\/th>/)
+    expect(html).toContain(`data-valuation-as-of="${AS_OF}"`)
+    expect(html).toContain('Valued as of')
+  })
+
+  it('totals the server\u2019s figures: GPUs, basis, book and tax', () => {
     const html = register()
     expect(html).toMatch(/data-total="gpus"[^>]*>24</)
-    expect(html).toContain(`data-total="cost">${money(1_305_000)}`)
-    expect(html).toContain(`data-total="nbv">${money(1_305_000 - 12 * (5_025 + 6_150 + 8_400))}`)
+    expect(html).toContain(`data-total="basis">${money(1_317_000)}`)
+    expect(html).toContain(`data-total="accumulated_book">${money(235_050)}`)
+    expect(html).toContain(`data-total="nbv_book">${money(1_081_950)}`)
+    expect(html).toContain(`data-total="accumulated_tax">${money(389_150)}`)
+    expect(html).toContain(`data-total="nbv_tax">${money(927_850)}`)
+    expect(fleetTotals(PACK)).toEqual({
+      assets: 3, gpus: 24, basis: 1_317_000, planned: 0, accumulatedBook: 235_050, nbvBook: 1_081_950,
+      accumulatedTax: 389_150, nbvTax: 927_850, inService: 3,
+    })
   })
 
   it('leaves a disposed server out of the totals and shows it no book value', () => {
-    const fleet = [...PACK, asset({ id: 'old', name: 'Old', hardware_cost: 100_000, status: 'disposed', disposed_on: '2026-06-30' })]
-    expect(fleetTotals(fleet, AFTER_12)).toMatchObject({ assets: 3, gpus: 24, cost: 1_305_000 })
-    expect(register({ assets: fleet })).toMatch(/data-asset="old"[\s\S]*?data-nbv=""/)
+    const fleet = [...PACK, asset({ id: 'old', name: 'Old', hardware_cost: 100_000, basis: 100_000, status: 'disposed', disposed_on: '2026-06-30' })]
+    expect(fleetTotals(fleet)).toMatchObject({ assets: 3, gpus: 24, basis: 1_317_000 })
+    expect(cell(register({ assets: fleet }), 'old', 'nbv_book')).toBe('')
   })
 
-  it('counts a planned, unbooked asset as planned cost: no book value and no simulated depreciation', () => {
-    // In service on paper, but its purchase is not booked: the ledger holds nothing for it.
-    const plan = asset({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000, salvage_value: 33_500 })
-    expect(assetFigures(plan, AFTER_12)).toEqual({ cost: 335_000, booked: false, accumulated: 0, nbv: null, remainingMonths: null })
-    expect(assetSchedule(plan)).toEqual([])
-    expect(fleetTotals([plan], AFTER_12)).toMatchObject({ cost: 0, planned: 335_000, nbv: 0 })
-    // Beside the booked pack, it adds to Planned and nothing else.
-    expect(fleetTotals([...PACK, plan], AFTER_12)).toMatchObject({ cost: 1_305_000, planned: 335_000, nbv: 1_070_100 })
-    const html = register({ assets: [...PACK, plan] })
-    expect(html).toMatch(/data-asset="plan"[\s\S]*?data-cost=""[\s\S]*?data-planned="335000"[\s\S]*?data-nbv=""/)
-    expect(html).toContain(`data-total="planned">${money(335_000)}`)
-    expect(html).toContain(`data-total="nbv">${money(1_070_100)}`)
+  describe('an asset disposed of on 2026-06-30 is judged at the valuation date, not by its status today', () => {
+    // Its status is disposed now; the server values it at each date by disposed_on <= as_of.
+    const sold = (asOf: string, nbvBook: number, nbvTax: number) => asset({
+      id: 'sold', name: 'Sold H100', status: 'disposed', disposed_on: '2026-06-30', hardware_cost: 300_000, basis: 300_000,
+      accumulated_book: 300_000 - nbvBook, nbv_book: nbvBook, accumulated_tax: 300_000 - nbvTax, nbv_tax: nbvTax, valuation_as_of: asOf,
+    })
+    const atDate = (asOf: string, a: ValuedAsset) => PACK.map(p => ({ ...p, valuation_as_of: asOf })).concat(a)
+
+    it('before (2026-03-31): included, with its historical NBV, in the row and the totals', () => {
+      const a = sold('2026-03-31', 285_000, 240_000)
+      const html = register({ assets: atDate('2026-03-31', a) })
+      expect(cell(html, 'sold', 'nbv_book')).toBe('285000')
+      expect(cell(html, 'sold', 'nbv_tax')).toBe('240000')
+      expect(cell(html, 'sold', 'basis')).toBe('300000')
+      expect(fleetTotals(atDate('2026-03-31', a))).toMatchObject({ assets: 4, gpus: 32, basis: 1_617_000, nbvBook: 1_366_950, nbvTax: 1_167_850 })
+      expect(html).toContain(`data-total="nbv_book">${money(1_366_950)}`)
+    })
+
+    it.each(['2026-06-30', '2026-09-30'])('on or after (%s): excluded, and its row shows a dash', asOf => {
+      const a = sold(asOf, 0, 0)
+      const html = register({ assets: atDate(asOf, a) })
+      expect(cell(html, 'sold', 'nbv_book')).toBe('')
+      expect(cell(html, 'sold', 'basis')).toBe('')
+      expect(fleetTotals(atDate(asOf, a))).toMatchObject({ assets: 3, gpus: 24, basis: 1_317_000, nbvBook: 1_081_950 })
+      expect(html).toContain(`data-total="nbv_book">${money(1_081_950)}`)
+    })
+
+    it('write actions follow the status today: a disposed asset offers no Purchase or Dispose at any date', () => {
+      const html = register({ assets: atDate('2026-03-31', sold('2026-03-31', 285_000, 240_000)) })
+      expect(button(html, 'sold', 'Purchase')).toBeNull()
+      expect(button(html, 'sold', 'Dispose')).toBeNull()
+    })
+
+    it('/fleet and the lead page total the same way (both use fleetTotals)', () => {
+      const html = renderToStaticMarkup(
+        <CurrencyProvider currency="USD">
+          <FleetOverviewView vehicles={[{ id: 'v1', name: 'H200 SPV I', active: true }]} loaded={{ v1: { assets: atDate('2026-03-31', sold('2026-03-31', 285_000, 240_000)) } }} asOf="2026-03-31" />
+        </CurrencyProvider>,
+      )
+      expect(html).toContain(`>${money(1_366_950)}<`)
+      expect(readFileSync(path.join(process.cwd(), 'app/(app)/funds/[id]/gpu-detail-view.tsx'), 'utf8')).toContain('fleetTotals(r.data.assets)')
+    })
   })
 
-  it('adds capitalized costs to cost and NBV', () => {
-    const a = asset({ hardware_cost: 335_000, salvage_value: 33_500, capitalized_costs: 12_000 })
-    expect(assetFigures(a, AFTER_12)).toMatchObject({ cost: 347_000, nbv: 286_700 })
+  describe('on the books follows the route\u2019s on_books_as_of (#108), not a client rule', () => {
+    // The route reports an off-book asset with every value 0 and its basis; the page sums what it sends.
+    const offBook = (over: Partial<ValuedAsset>) => asset({ on_books_as_of: false, accumulated_book: 0, nbv_book: 0, accumulated_tax: 0, nbv_tax: 0, ...over })
+
+    it('planned (false): basis under Planned, captioned Planned, nothing in the totals', () => {
+      const plan = offBook({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000, basis: 335_000 })
+      expect(fleetTotals([...PACK, plan])).toMatchObject({ basis: 1_317_000, planned: 335_000, nbvBook: 1_081_950, nbvTax: 927_850 })
+      const html = register({ assets: [...PACK, plan] })
+      expect(cell(html, 'plan', 'nbv_book')).toBe('')
+      expect(html).toMatch(/data-asset="plan"[\s\S]*?data-col="planned" data-value="335000"[^>]*>[^<]*<span[^>]*>Planned</)
+      expect(html).toContain(`data-total="planned">${money(335_000)}`)
+    })
+
+    it('purchased after the as-of date (false): the same, captioned Not on the books at this date', () => {
+      const later = offBook({ id: 'later', status: 'in_service', purchase_entry_id: 'je-later', basis: 410_000 })
+      expect(isOffBooks(later)).toBe(true)
+      expect(offBooksLabel(later)).toBe('Not on the books at this date')
+      expect(fleetTotals([...PACK, later])).toMatchObject({ planned: 410_000, nbvBook: 1_081_950, inService: 4, gpus: 32 })
+      expect(register({ assets: [...PACK, later] })).toMatch(/data-asset="later"[\s\S]*?data-col="planned" data-value="410000"[^>]*>[^<]*<span[^>]*>Not on the books at this date</)
+    })
+
+    it('an unlinked but posted purchase (true) is counted: the route recognises it, so the page does too', () => {
+      const unlinked = asset({ id: 'ul', status: 'ordered', purchase_entry_id: null, basis: 410_000, accumulated_book: 6_150, nbv_book: 403_850, nbv_tax: 403_850 })
+      expect(isOffBooks(unlinked)).toBe(false)
+      expect(fleetTotals([...PACK, unlinked])).toMatchObject({ basis: 1_727_000, planned: 0, nbvBook: 1_485_800 })
+      expect(cell(register({ assets: [...PACK, unlinked] }), 'ul', 'nbv_book')).toBe('403850')
+    })
+
+    it('in service (true) is counted at the route\u2019s figures', () => {
+      expect(isOffBooks(PACK[0])).toBe(false)
+      expect(cell(register(), 'h200', 'nbv_book')).toBe('274700')
+    })
+
+    it('disposed on or before the as-of date (true, values 0): excluded and shown as a dash', () => {
+      const gone = asset({ id: 'gone', status: 'disposed', disposed_on: '2026-06-30', basis: 300_000, nbv_book: 0, nbv_tax: 0, accumulated_book: 300_000 })
+      expect(isOffBooks(gone)).toBe(false)
+      expect(fleetTotals([...PACK, gone])).toMatchObject({ assets: 3, basis: 1_317_000, nbvBook: 1_081_950 })
+      expect(cell(register({ assets: [...PACK, gone] }), 'gone', 'nbv_book')).toBe('')
+    })
+
+    it('counts follow status: an off-book asset in service counts in GPUs and in service, and adds 0 to book and tax', () => {
+      const running = offBook({ id: 'run', status: 'in_service', gpu_count: 8, basis: 400_000 })
+      expect(fleetTotals([running])).toEqual({ ...ZERO_TOTALS, assets: 1, gpus: 8, inService: 1, planned: 400_000 })
+    })
+
+    it('the earlier-date caveat and its TODO are gone: the flag answers the question', () => {
+      const html = register({ assets: PACK.map(p => ({ ...p, valuation_as_of: '2020-01-31' })) })
+      expect(html).not.toContain('data-earlier-date-caveat')
+      expect(readFileSync(path.join(process.cwd(), 'components/gpu/fleet-math.ts'), 'utf8')).not.toContain('TODO(gpu-P1 on_books_as_of)')
+    })
+  })
+})
+
+describe('the as-of date is sent on every assets fetch', () => {
+  it.each([
+    ['the register', (f: Fetcher) => listAssets(f, '2026-06-30'), '/api/fleet/assets?as_of=2026-06-30'],
+    ['one asset', (f: Fetcher) => getAsset(f, 'b300', '2026-06-30'), '/api/fleet/assets/b300?as_of=2026-06-30'],
+    ['a named vehicle (/fleet, the lead page)', (f: Fetcher) => listVehicleAssets(f, 'H200 SPV I', '2026-06-30'), '/api/fleet/assets?group=H200%20SPV%20I&as_of=2026-06-30'],
+  ])('%s', async (_label, run, path) => {
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { assets: [] } })
+    await run(fetcher)
+    expect(calls[0].path).toBe(path)
+  })
+
+  it('a bad as-of comes back as the route\u2019s 400 in its words', async () => {
+    const { fetcher } = fakeFetcher({ status: 400, body: { error: 'as_of must be a date, YYYY-MM-DD' } })
+    expect(await listAssets(fetcher, '2026-02-30')).toEqual({ ok: false, status: 400, error: 'as_of must be a date, YYYY-MM-DD' })
+  })
+
+  it('no assets fetch can be made without an as-of: it is a required argument of every helper (checked by tsc)', async () => {
+    // Every page fetches assets only through these three helpers, so none can fall back on the
+    // route's UTC default. The @ts-expect-error lines fail `tsc --noEmit` if as-of ever becomes optional.
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { assets: [] } }, { status: 200, body: {} }, { status: 200, body: { assets: [] } })
+    // @ts-expect-error as-of is required
+    await listAssets(fetcher)
+    // @ts-expect-error as-of is required
+    await getAsset(fetcher, 'b300')
+    // @ts-expect-error as-of is required
+    await listVehicleAssets(fetcher, 'H200 SPV I')
+    // At runtime the missing date reaches the request as a literal, which the route refuses with its 400.
+    expect(calls.map(c => new URL(c.path, 'http://x').searchParams.get('as_of'))).toEqual(['undefined', 'undefined', 'undefined'])
+  })
+
+  it('the as-of field commits only a complete, real date; partial and impossible ones are held back', () => {
+    for (const v of ['', '2026', '2026-0', '2026-02', '2026-02-3', '2026-13-01', '2026-02-30', '2026-04-31', '20260331']) {
+      expect(asOfCommit(v), v).toBeNull()
+    }
+    expect(asOfCommit('2026-03-31')).toBe('2026-03-31')
+    expect(asOfCommit('2028-02-29')).toBe('2028-02-29')
+    expect(asOfCommit('2026-02-29')).toBeNull()
+  })
+
+  it('the client depreciation path is gone: fleet-math does not import lib/gpu/depreciation', () => {
+    expect(readFileSync(path.join(process.cwd(), 'components/gpu/fleet-math.ts'), 'utf8')).not.toMatch(/@\/lib\/gpu\/depreciation/)
+  })
+})
+
+describe('the asset\u2019s book, tax and capex', () => {
+  const view = (a: ValuedAsset) => renderToStaticMarkup(<CurrencyProvider currency="USD"><ValuationCard asset={a} /></CurrencyProvider>)
+  const col = (html: string, c: string) => html.match(new RegExp(`data-col="${c}">([^<]*)<`))?.[1]
+
+  it('shows the server\u2019s basis, book and tax book figures, and the date they are valued as of', () => {
+    const html = view(PACK[0])
+    expect(col(html, 'basis')).toBe(money(335_000))
+    expect(col(html, 'accumulated_book')).toBe(money(60_300))
+    expect(col(html, 'nbv_book')).toBe(money(274_700))
+    expect(col(html, 'accumulated_tax')).toBe(money(214_400))
+    expect(col(html, 'nbv_tax')).toBe(money(120_600))
+    expect(html).toContain('Tax book')
+    expect(html).toContain('(Bonus)')
+    expect(html).toContain(`data-valuation-as-of="${AS_OF}"`)
+  })
+
+  it('a planned asset (off the books) shows its basis and no book or tax value', () => {
+    const html = view(asset({ status: 'planned', purchase_entry_id: null, on_books_as_of: false, basis: 335_000, nbv_book: 0, nbv_tax: 0 }))
+    expect(col(html, 'basis')).toBe(money(335_000))
+    expect(col(html, 'nbv_book')).toBe('—')
+    expect(col(html, 'nbv_tax')).toBe('—')
+    expect(html).toContain(`Planned: not purchased as of ${AS_OF}`)
+  })
+
+  it('an asset purchased later says it is not on the books as of the date: its purchase is not recognised then', () => {
+    const html = view(asset({ status: 'in_service', purchase_entry_id: 'je', on_books_as_of: false, basis: 410_000, nbv_book: 0, nbv_tax: 0 }))
+    expect(html).toContain(`Not on the books as of ${AS_OF}: its purchase is not recognised at this date.`)
+    expect(html).not.toMatch(/Unbooked|not linked/)
+    expect(col(html, 'nbv_book')).toBe('—')
+  })
+
+  it('an unlinked but posted purchase is on the books: the card shows its figures', () => {
+    const html = view(asset({ status: 'ordered', purchase_entry_id: null, on_books_as_of: true, basis: 410_000, accumulated_book: 6_150, nbv_book: 403_850, nbv_tax: 403_850 }))
+    expect(col(html, 'nbv_book')).toBe(money(403_850))
+    expect(html).not.toContain('Not on the books')
+  })
+
+  it('lists the capex events: month, amount, source ref and when posted', () => {
+    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><CapexEventsTable events={PACK[2].capex_events} /></CurrencyProvider>)
+    const row = html.match(/<tr[^>]*data-capex="gpu-asset:b300:capex:inv-881"[\s\S]*?<\/tr>/)?.[0] ?? ''
+    expect(row).toContain('>2026-03<')
+    expect(row).toContain(`>${money(12_000)}<`)
+    expect(row).toContain('>gpu-asset:b300:capex:inv-881<')
+    expect(html).toContain(utcToLocalLabel('2026-03-14T15:20:00Z'))
+    expect(renderToStaticMarkup(<CurrencyProvider currency="USD"><CapexEventsTable events={[]} /></CurrencyProvider>)).toContain('Nothing capitalized as of this date')
   })
 })
 
@@ -310,34 +512,80 @@ describe('Capitalize a cost', () => {
     expect(calls[0]).toMatchObject({ path: '/api/fleet/assets/h200/capex', body: { amount: 12_000, entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false } })
   })
 
-  it('the real dialog takes one key per opening: whileOpen mounts its body on open, and not while closed', () => {
-    // Each static render is a fresh mount, exactly what reopening the dialog is (whileOpen unmounts
-    // the body on close). The submitter, and so the key, is made once per mount.
-    let n = 0
-    const newKey = () => `key-${++n}`
-    const render = (open: boolean) => renderToStaticMarkup(
-      <CurrencyProvider currency="USD">
-        <CapexDialog open={open} onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} asset={PACK[0]} newKey={newKey} />
-      </CurrencyProvider>,
-    )
-    render(false)
-    expect(n).toBe(0)
-    render(true)
-    expect(n).toBe(1)
-    render(true)
-    expect(n).toBe(2)
+  // Each static render is a fresh mount, exactly what reopening the dialog is: whileOpen unmounts the
+  // body on close and mounts it again on open, and the submitter (so the key) lives for one mount.
+  const renderCapex = (open: boolean, newKey?: () => string) => renderToStaticMarkup(
+    <CurrencyProvider currency="USD">
+      <CapexDialog open={open} onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} asset={PACK[0]} newKey={newKey} />
+    </CurrencyProvider>,
+  )
+
+  it('the real dialog makes two distinct keys across two openings, and none while closed (default crypto key)', () => {
+    const spy = vi.spyOn(globalThis.crypto, 'randomUUID')
+    try {
+      renderCapex(false)
+      expect(spy).not.toHaveBeenCalled()
+      renderCapex(true)
+      renderCapex(true)
+      const keys = spy.mock.results.map(r => r.value as string)
+      expect(keys).toHaveLength(2)
+      expect(new Set(keys).size).toBe(2)
+      expect(keys.every(k => /^[A-Za-z0-9_-]{1,64}$/.test(k))).toBe(true) // the route's CAPEX_KEY
+    } finally {
+      spy.mockRestore()
+    }
   })
 
-  it('a probe through the same whileOpen and hook sees the key held for the mount and renewed on the next', () => {
+  it('the dialog body takes its submitter only through useCapexSubmitter (structural: the key lives in the hook\u2019s state)', () => {
+    // A full behavioural guard (type into the real dialog, assert one key) needs a DOM test environment,
+    // which this repo does not have yet; it is proposed separately. Until then: the body may not build a
+    // submitter itself, and the hook below is tested behaviourally across re-renders.
+    const src = readFileSync(path.join(process.cwd(), 'components/gpu/fleet-dialogs.tsx'), 'utf8')
+    const start = src.indexOf('function CapexDialogBody(')
+    const body = src.slice(start, src.indexOf('\n})\n', start))
+    expect(start).toBeGreaterThan(-1)
+    expect(body).toMatch(/const submitter = useCapexSubmitter\(/)
+    expect(body).not.toMatch(/\bcapexSubmitter\(/) // the hook is useCapexSubmitter (capital C); a direct call is lowercase
+    const hook = src.slice(src.indexOf('export function useCapexSubmitter('), src.indexOf('export const CapexDialog'))
+    expect(hook).toMatch(/useState\(\(\) => capexSubmitter\(/)
+  })
+
+  it('the key survives re-renders within one opening (typing in the form must not mint a new key)', () => {
+    // A render-phase state update re-runs the component in the same mount, as each keystroke does.
+    const seen: string[] = []
     let n = 0
     const Probe = whileOpen(function Probe(p: { open: boolean; onOpenChange: () => void; fetcher: Fetcher; onDone: () => void }) {
+      const [renders, setRenders] = useState(0)
       const s = useCapexSubmitter(p.fetcher, 'h200', () => `key-${++n}`)
-      return <i>{s.key()}|{s.key()}</i>
+      seen.push(s.key())
+      if (renders < 2) setRenders(renders + 1)
+      return null
     })
-    const props = { onOpenChange: () => {}, fetcher: (async () => new Response('{}')) as Fetcher, onDone: () => {} }
-    expect(renderToStaticMarkup(<Probe open={false} {...props} />)).toBe('')
-    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-1|key-1</i>')
-    expect(renderToStaticMarkup(<Probe open {...props} />)).toBe('<i>key-2|key-2</i>')
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={async () => new Response('{}')} onDone={() => {}} />)
+    expect(seen).toEqual(['key-1', 'key-1', 'key-1'])
+  })
+
+  it('within one opening, a retry after a 409 sends the same key the opening made', async () => {
+    // The dialog's own hook, mounted by the same whileOpen, with its submitter taken out of the mount so
+    // the test can submit twice as the dialog's Capitalize button does.
+    let held: ReturnType<typeof useCapexSubmitter> | null = null
+    let n = 0
+    const { fetcher, calls } = fakeFetcher(
+      { status: 409, body: { error: 'This cost is being booked by another request', inProgress: true } },
+      { status: 200, body: { entryId: 'je' } },
+    )
+    const Probe = whileOpen(function Probe(p: { open: boolean; onOpenChange: () => void; fetcher: Fetcher; onDone: () => void }) {
+      held = useCapexSubmitter(p.fetcher, 'h200', () => `key-${++n}`)
+      return null
+    })
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={fetcher} onDone={() => {}} />)
+    const form = { amount: '12,000', entryDate: '2026-02-10', memo: 'Rack installation', invoiced: false }
+    expect((await held!.submit(form)).ok).toBe(false)
+    expect((await held!.submit(form)).ok).toBe(true)
+    expect(calls.map(c => c.body.key)).toEqual(['key-1', 'key-1'])
+    // A second opening is a new mount, so a new cost with a new key.
+    renderToStaticMarkup(<Probe open onOpenChange={() => {}} fetcher={fetcher} onDone={() => {}} />)
+    expect(held!.key()).toBe('key-2')
   })
 })
 
@@ -398,87 +646,72 @@ describe('events', () => {
     expect(body).toEqual({ kind: 'note', starts_at: new Date('2026-03-01T00:00').toISOString(), ends_at: null, gpus_affected: null })
   })
 
+  it('refuses a value that is not a real date or time before converting it, so the form never throws', () => {
+    expect(() => localToUtc('2026-13-40T10:00')).toThrow(RangeError)
+    expect(eventFormError({ starts_at: '2026-13-40T10:00', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '2026-02-30T10:00', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '', ends_at: '' })).toBe('Enter a valid start date and time.')
+    expect(eventFormError({ starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T25:00' })).toMatch(/valid end date/)
+    expect(eventFormError({ starts_at: '2026-03-01T12:00', ends_at: '2026-03-01T10:00' })).toBe('The end must be on or after the start.')
+    expect(eventFormError({ starts_at: '2026-03-01T10:00', ends_at: '2026-03-01T12:00' })).toBeNull()
+    expect(eventFormError({ starts_at: '2026-03-01', ends_at: '' })).toBeNull()
+    // A bare date is local midnight on both sides, never UTC midnight against a local time.
+    expect(eventFormError({ starts_at: '2026-03-01', ends_at: '2026-03-01T00:30' })).toBeNull()
+    expect(eventFormError({ starts_at: '2026-03-01T00:30', ends_at: '2026-03-01' })).toBe('The end must be on or after the start.')
+  })
+
+  it('the event form checks before it converts or goes busy, and always leaves busy', () => {
+    const s = readFileSync(path.join(process.cwd(), 'components', 'gpu', 'asset-detail.tsx'), 'utf8')
+    const body = s.slice(s.indexOf('async function record'), s.indexOf('return (', s.indexOf('async function record')))
+    expect(body.indexOf('eventFormError(form)')).toBeGreaterThan(-1)
+    expect(body.indexOf('eventFormError(form)')).toBeLessThan(body.indexOf('setBusy(true)'))
+    expect(body.indexOf('setBusy(true)')).toBeLessThan(body.indexOf('eventBody(form)'))
+    expect(body).toMatch(/finally \{\s*setBusy\(false\)/)
+  })
+
   it('shows a stored instant back as the same wall-clock time it was entered at', () => {
     expect(utcToLocalLabel(localToUtc('2026-03-01T10:00'))).toBe('2026-03-01 10:00')
     expect(nowLocalInput(new Date(2026, 2, 1, 9, 5))).toBe('2026-03-01T09:05')
   })
 })
 
-describe('the asset’s depreciation schedule', () => {
-  // The plan's P1b fixture: the $1,305,000 fleet as one server, 60 months, 10% salvage.
-  const fleet = asset({ hardware_cost: 1_305_000, salvage_value: 130_500 })
-
-  it('has 60 rows and ends at salvage, NBV 130,500 at month 60', () => {
-    const lines = assetSchedule(fleet)
-    expect(lines).toHaveLength(60)
-    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} convention="full_month" lifeMonths={60} /></CurrencyProvider>)
-    expect(html.match(/data-month="/g)).toHaveLength(60)
-    expect(html).toMatch(/data-month="60"[\s\S]*?data-nbv="130500"/)
-    expect(html).toMatch(/data-month="1"[\s\S]*?data-nbv="1285425"/)
-  })
-
-  it('takes today as the local calendar date, not the UTC one', () => {
+describe('today', () => {
+  it('is the local calendar date, not the UTC one (the as-of default)', () => {
     const d = new Date()
     const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     expect(todayIso()).toBe(local)
-  })
-
-  it('marks the final-month true-up when rounding leaves a different last charge', () => {
-    const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3 })
-    const lines = assetSchedule(odd)
-    expect(lines.map(l => l.amount)).toEqual([333.33, 333.33, 333.34])
-    const html = renderToStaticMarkup(<CurrencyProvider currency="USD"><DepreciationTable lines={lines} convention="full_month" lifeMonths={3} /></CurrencyProvider>)
-    expect(html).toContain('final-month true-up')
-  })
-
-  const table = (a: GpuAsset) => renderToStaticMarkup(
-    <CurrencyProvider currency="USD"><DepreciationTable lines={assetSchedule(a)} convention={a.depreciation_convention} lifeMonths={a.useful_life_months} /></CurrencyProvider>,
-  )
-
-  it('mid_month: half months at both ends are the plan, not a true-up', () => {
-    const even = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 3, depreciation_convention: 'mid_month' })
-    const lines = assetSchedule(even)
-    expect(lines.map(l => l.amount)).toEqual([166.67, 333.33, 333.33, 166.67])
-    expect(trueUpIndex(lines, 'mid_month', 3)).toBeNull()
-    expect(table(even)).not.toContain('final-month true-up')
-  })
-
-  it('mid_month: a last half month that differs from half a regular month is the true-up', () => {
-    const odd = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 7, depreciation_convention: 'mid_month' })
-    const lines = assetSchedule(odd)
-    expect(lines).toHaveLength(8)
-    expect(lines[7].amount).toBe(71.41)
-    expect(trueUpIndex(lines, 'mid_month', 7)).toBe(7)
-    expect(table(odd)).toMatch(/data-month="8"[\s\S]*?final-month true-up/)
-  })
-
-  it('a schedule cut short by disposal has no true-up: its last line is the disposal month', () => {
-    const sold = asset({ hardware_cost: 1_000, salvage_value: 0, useful_life_months: 7, status: 'disposed', disposed_on: '2026-03-15' })
-    const lines = assetSchedule(sold)
-    expect(lines).toHaveLength(3)
-    expect(trueUpIndex(lines, 'full_month', 7)).toBeNull()
-    expect(table(sold)).not.toContain('final-month true-up')
   })
 })
 
 describe('the firm-wide overview', () => {
   const vehicles = [{ id: 'v1', name: 'H200 SPV I', active: true }, { id: 'v2', name: 'B300 SPV II', active: true }]
   const view = (loaded: Parameters<typeof FleetOverviewView>[0]['loaded']) => renderToStaticMarkup(
-    <CurrencyProvider currency="USD"><FleetOverviewView vehicles={vehicles} loaded={loaded} asOf={AFTER_12} /></CurrencyProvider>,
+    <CurrencyProvider currency="USD"><FleetOverviewView vehicles={vehicles} loaded={loaded} asOf={AS_OF} /></CurrencyProvider>,
   )
 
   it('shows a vehicle that failed to load on its own card, and says the totals are partial', () => {
     const html = view({ v1: { assets: PACK }, v2: { error: 'Could not read the record' } })
     expect(html).toMatch(/data-vehicle="v2"[\s\S]*?role="alert"[^>]*>Could not read the record</)
     expect(html).toContain('Partial: 1 vehicle could not be loaded')
-    expect(html).toContain(money(1_070_100))
+    expect(html).toContain(money(1_081_950))
   })
 
   it('totals every vehicle when all load, with planned cost said apart', () => {
-    const plan = asset({ id: 'plan', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000 })
+    const plan = asset({ id: 'plan', status: 'planned', purchase_entry_id: null, on_books_as_of: false, hardware_cost: 335_000, basis: 335_000, nbv_book: 0 })
     const html = view({ v1: { assets: PACK }, v2: { assets: [plan] } })
     expect(html).not.toContain('Partial')
-    expect(html).toContain(`Booked; ${money(335_000)} more planned`)
+    expect(html).toContain(`On the books; ${money(335_000)} more not on the books yet`)
+    // Fleet NBV is the booked pack's, from the server: the planned 335,000 is not in it.
+    expect(html).toContain(`>${money(1_081_950)}<`)
+    expect(html).toContain(`tax book ${money(927_850)}`)
+  })
+
+  it('shows the date the server valued the registers as of, not the date it asked for', () => {
+    const html = view({ v1: { assets: PACK.map(p => ({ ...p, valuation_as_of: '2026-12-30' })) }, v2: { assets: [] } })
+    expect(html).toContain('Book, as of 2026-12-30')
+    expect(html).toContain('data-valuation-as-of="2026-12-30"')
+    expect(valuationDate([], '2026-12-31')).toBe('2026-12-31')
+    expect(valuationDate(PACK)).toBe(AS_OF)
     expect(html).toContain('LTM revenue')
     expect(html).toContain('Utilization')
   })

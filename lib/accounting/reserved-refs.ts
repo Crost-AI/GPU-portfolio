@@ -15,6 +15,9 @@
 export const RESERVED_SOURCE_REF_PREFIXES = [
   // GPU fleet
   'gpu-asset:', 'gpu-dep:', 'fleet:',
+  // GPU fleet (P3): an operations row's revenue entry and a marketplace payout's cash entry, which
+  // postEarnings and matchPayout find by ref and complete their rows from.
+  'marketplace:', 'marketplace-payout:',
   // ── GPU fleet (P2) ── the gross-revenue fee true-up counts every live `gpu-fee:<vehicle>:<YYYY-MM>`
   // entry as fee already booked for that month (lib/gpu/fee.ts), so a typed one would shrink the fee.
   // intercompany_transactions.source_ref carries the same value, but on the charge register, which
@@ -73,7 +76,11 @@ export function assertUserRefAllowed(ref: unknown, opts: { allowRoundTrip?: bool
  */
 // ── GPU fleet (P2) ── the fee true-up reads the amounts under its `gpu-fee:` ref as fee already
 // booked, so a draft there must be the one the true-up wrote, too.
-export const EDIT_LOCKED_PREFIXES = ['gpu-asset:', 'gpu-dep:', 'gpu-fee:'] as const
+export const EDIT_LOCKED_PREFIXES = [
+  'gpu-asset:', 'gpu-dep:', 'gpu-fee:',
+  // GPU fleet (P3): an operations row or a payout is completed from the entry under its ref.
+  'marketplace:', 'marketplace-payout:',
+] as const
 
 export function isEditLockedRef(ref: unknown): boolean {
   return typeof ref === 'string' && EDIT_LOCKED_PREFIXES.some(p => ref.startsWith(p))
