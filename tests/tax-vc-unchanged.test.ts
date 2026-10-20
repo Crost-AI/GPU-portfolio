@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { loadK1Year } from '@/lib/accounting/k1-load'
 import { allocateK1 } from '@/lib/accounting/k1-allocation'
 import { loadActualBookYear, postTaxAdjustments } from '@/lib/accounting/book-tax-run'
@@ -7,6 +8,17 @@ import { emptyLines, k1CategoriesIn } from '@/lib/accounting/k1-allocation'
 import { buildK1Html } from '@/lib/tax/k1-pdf'
 import { buildK1Workbook } from '@/lib/tax/k1-workbook'
 import * as XLSX from 'xlsx'
+import { memoryAdmin } from '@/tests/helpers/memory-admin'
+
+// The PDF is the HTML the renderer is handed; nothing here launches a browser.
+vi.mock('@/lib/tax/k1-pdf', async orig => {
+  const m = await orig<typeof import('@/lib/tax/k1-pdf')>()
+  return { ...m, generateK1Pdf: async (d: any) => Buffer.from(m.buildK1Html(d)) }
+})
+
+import { generateK1Package } from '@/lib/tax/k1-package'
+import { buildK1WorkbookForPackage } from '@/lib/tax/k1-export'
+import { k1Document } from '@/lib/reports/documents'
 
 /**
  * ── GPU fleet (P1c) ── A VC fund's tax output is unchanged by the GPU SPV tax work. The expected
@@ -341,5 +353,202 @@ describe('box 1 and box 10 appear only when nonzero (P1c)', () => {
       partners: partners.map(p => ({ lpEntityId: p.lpEntityId, name: p.lpEntityId, lines: p.lines, capitalAccount: p.capitalAccount, tieOutVariance: 0, rollForwardVariance: 0 })) })
     const header = (XLSX.utils.sheet_to_json(wb.Sheets['K-1 lines'], { header: 1 }) as any[][])[0]
     expect(header.join('|')).not.toMatch(/box 1\)|box 10\)/)
+  })
+})
+
+describe('the stored K-1 package, its workbook and its PDFs are unchanged (snapshot from main)', () => {
+  // generateK1Package writes the package, partner and line rows; the workbook export and each
+  // partner's PDF are then built from those STORED rows, as the app serves them. The rows are inline
+  // snapshots; the workbook (every sheet, every cell) and the PDF HTML are SHA-256 of their content.
+  // All captured by running this file on main @ 43e8101f.
+  it('package rows, workbook cells and PDF content', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2028-02-01T00:00:00Z'))
+    try {
+      const inserted: Record<string, any[]> = {}
+      const base = fakeAdmin()
+      const admin = { ...base, from: (table: string) => ({
+        ...base.from(table),
+        insert: (payload: any) => {
+          inserted[table] = [...(inserted[table] ?? []), ...(Array.isArray(payload) ? payload : [payload])]
+          const done: any = {
+            select: () => done,
+            single: () => Promise.resolve({ data: { id: 'pkg-1' }, error: null }),
+            then: (resolve: (v: any) => void, reject?: any) => Promise.resolve({ data: null, error: null }).then(resolve, reject),
+          }
+          return done
+        },
+      }) }
+      const pkg = await generateK1Package(admin as any, 'f', 'Fund I', 'u', 2027)
+      if ('error' in pkg) throw new Error(pkg.error)
+      expect({ package: inserted.k1_packages, partners: inserted.k1_partners, lines: inserted.k1_lines }).toMatchInlineSnapshot(`
+        {
+          "lines": [
+            {
+              "amount": 900,
+              "category": "interest",
+              "fund_id": "f",
+              "lp_entity_id": "lp-a",
+              "package_id": "pkg-1",
+            },
+            {
+              "amount": 300,
+              "category": "otherIncome",
+              "fund_id": "f",
+              "lp_entity_id": "lp-a",
+              "package_id": "pkg-1",
+            },
+            {
+              "amount": 21600,
+              "category": "deductions",
+              "fund_id": "f",
+              "lp_entity_id": "lp-a",
+              "package_id": "pkg-1",
+            },
+            {
+              "amount": 600,
+              "category": "interest",
+              "fund_id": "f",
+              "lp_entity_id": "lp-b",
+              "package_id": "pkg-1",
+            },
+            {
+              "amount": 200,
+              "category": "otherIncome",
+              "fund_id": "f",
+              "lp_entity_id": "lp-b",
+              "package_id": "pkg-1",
+            },
+            {
+              "amount": 14400,
+              "category": "deductions",
+              "fund_id": "f",
+              "lp_entity_id": "lp-b",
+              "package_id": "pkg-1",
+            },
+          ],
+          "package": [
+            {
+              "created_by": "u",
+              "fund_character": {
+                "deductions": 36000,
+                "interest": 1500,
+                "longTermGain": 0,
+                "longTermGainWithinApiPeriod": 0,
+                "ordinaryDividends": 0,
+                "otherIncome": 500,
+                "qualifiedDividends": 0,
+                "shortTermGain": 0,
+              },
+              "fund_id": "f",
+              "status": "draft",
+              "tax_year": 2027,
+              "vehicle_id": "veh-1",
+              "version": 1,
+              "warnings": [
+                {
+                  "detail": "No tax form on file.",
+                  "kind": "tax_form",
+                  "lpEntityId": "lp-a",
+                },
+                {
+                  "detail": "Lines total -20400.00 against 9600.00 of allocated activity.",
+                  "kind": "tie_out",
+                  "lpEntityId": "lp-a",
+                },
+                {
+                  "detail": "No tax form on file.",
+                  "kind": "tax_form",
+                  "lpEntityId": "lp-b",
+                },
+                {
+                  "detail": "Lines total -13600.00 against 6400.00 of allocated activity.",
+                  "kind": "tie_out",
+                  "lpEntityId": "lp-b",
+                },
+              ],
+            },
+          ],
+          "partners": [
+            {
+              "beginning_capital": 0,
+              "contributions": 600000,
+              "distributions": 0,
+              "ending_capital": 609600,
+              "form_standing": "missing",
+              "form_type": null,
+              "fund_id": "f",
+              "lp_entity_id": "lp-a",
+              "net_income": 9600,
+              "other_changes": 0,
+              "package_id": "pkg-1",
+              "roll_forward_variance": 0,
+              "tie_out_variance": -30000,
+            },
+            {
+              "beginning_capital": 0,
+              "contributions": 400000,
+              "distributions": 0,
+              "ending_capital": 406400,
+              "form_standing": "missing",
+              "form_type": null,
+              "fund_id": "f",
+              "lp_entity_id": "lp-b",
+              "net_income": 6400,
+              "other_changes": 0,
+              "package_id": "pkg-1",
+              "roll_forward_variance": 0,
+              "tie_out_variance": -20000,
+            },
+          ],
+        }
+      `)
+
+      const stored = memoryAdmin({
+        k1_packages: inserted.k1_packages.map(r => ({ id: 'pkg-1', ...r })),
+        k1_partners: inserted.k1_partners,
+        k1_lines: inserted.k1_lines,
+        funds: [{ id: 'f', name: 'Fund' }],
+        fund_vehicles: TABLES.fund_vehicles,
+        lp_entities: [{ id: 'lp-a', fund_id: 'f', entity_name: 'Partner A' }, { id: 'lp-b', fund_id: 'f', entity_name: 'Partner B' }],
+        lp_tax_forms: [],
+      }).admin as any
+      const { wb, filename } = await buildK1WorkbookForPackage(stored, 'f', { id: 'pkg-1', ...inserted.k1_packages[0] })
+      const cells = wb.SheetNames.map(n => [n, XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true })])
+      const pdfs = []
+      for (const lp of ['lp-a', 'lp-b']) {
+        const doc = await k1Document(stored, 'f', 'pkg-1', lp)
+        if (!doc) throw new Error(`no K-1 for ${lp}`)
+        pdfs.push([doc.fileName, Buffer.from(doc.body as any).toString('utf8')])
+      }
+      const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex')
+      expect({ filename, sheets: wb.SheetNames, workbook: sha(cells), pdfs: pdfs.map(([name, html]) => [name, sha(html)]) }).toMatchInlineSnapshot(`
+        {
+          "filename": "k1-Fund-I-2027-v1",
+          "pdfs": [
+            [
+              "k1-2027-v1.pdf",
+              "173b704866f972fc573d56dbbb8a409e808abf58661e8fa14fabe82fb1bbcfde",
+            ],
+            [
+              "k1-2027-v1.pdf",
+              "7afcb281bf26c6e524b771a438d0f94f7a56b5fca5e8a735958f402cfcb11ff7",
+            ],
+          ],
+          "sheets": [
+            "Read first",
+            "K-1 lines",
+            "Capital accounts",
+            "Fund character",
+          ],
+          "workbook": "948f92fba69265f172556e0e07a1ee9cb465b78b14bd24701f4ed0e64394513d",
+        }
+      `)
+      // Not vacuous: the hashed content carries the figures.
+      expect(JSON.stringify(cells)).toMatch(/Interest income/)
+      expect(pdfs[0][1]).toMatch(/Interest income/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
