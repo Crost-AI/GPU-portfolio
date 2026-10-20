@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { assetLedgerState, assetRefsError, capitalizedCostsOf, parseAssetInput, taxClassError } from '@/lib/gpu/assets'
 import { fleetRowRequest } from '@/lib/gpu/http'
+import { parseAsOf, valueAssets } from '@/lib/gpu/valuation'
 import type { GpuAssetRow } from '@/lib/gpu/types'
 
 // ── GPU fleet (P1) ── One server (`fleet` domain). The row's own vehicle is the entity checked.
@@ -10,11 +11,15 @@ type Params = { params: Promise<{ id: string }> }
 /** The status moves a person may make through PATCH. */
 const OPERATIONAL_MOVES: Record<string, string[]> = { ordered: ['in_service'], in_service: ['offline'], offline: ['in_service'] }
 
-export async function GET(_req: NextRequest, props: Params) {
+// GET ?as_of=YYYY-MM-DD (default today): the row with its valuation as of then (lib/gpu/valuation.ts).
+export async function GET(req: NextRequest, props: Params) {
   const { id } = await props.params
+  const asOf = parseAsOf(req.nextUrl.searchParams.get('as_of'))
+  if (!asOf) return NextResponse.json({ error: 'as_of must be a date, YYYY-MM-DD' }, { status: 400 })
   const r = await fleetRowRequest<GpuAssetRow>('read', 'gpu_assets', id)
   if (r instanceof NextResponse) return r
-  return NextResponse.json({ ...r.row, capitalized_costs: await capitalizedCostsOf(r.req.admin, r.req.ctx, id) })
+  const values = await valueAssets(r.req.admin, r.req.fundId, r.req.vehicleId, [r.row], asOf)
+  return NextResponse.json({ ...r.row, ...values.get(id) })
 }
 
 // PATCH — edit the register row. A disposed asset is closed. What the LEDGER holds decides the rest

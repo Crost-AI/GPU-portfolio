@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { assetRefsError, listAssets, parseAssetInput } from '@/lib/gpu/assets'
+import { assetRefsError, listAssetRows, parseAssetInput } from '@/lib/gpu/assets'
 import { fleetRequest } from '@/lib/gpu/http'
+import { parseAsOf, valueAssets } from '@/lib/gpu/valuation'
 
 // ── GPU fleet (P1) ── A GPU SPV's register (`fleet` domain). GET ?group= lists it in a stable order,
 // each row with its capitalized costs read from the ledger; POST adds a server.
 
 const CREATABLE_STATUSES: string[] = ['planned', 'in_service', 'offline']
 
+// ?as_of=YYYY-MM-DD (default today): each row carries its valuation as of then (lib/gpu/valuation.ts),
+// with capitalized_costs as of the same date.
 export async function GET(req: NextRequest) {
+  const asOf = parseAsOf(req.nextUrl.searchParams.get('as_of'))
+  if (!asOf) return NextResponse.json({ error: 'as_of must be a date, YYYY-MM-DD' }, { status: 400 })
   const r = await fleetRequest('read', req.nextUrl.searchParams.get('group'))
   if (r instanceof NextResponse) return r
-  return NextResponse.json({ assets: await listAssets(r.admin, r.fundId, r.vehicleId) })
+  // The register rows once; the valuation reads the vehicle's ledger once and supplies capitalized_costs.
+  const rows = await listAssetRows(r.admin, r.fundId, r.vehicleId)
+  const values = await valueAssets(r.admin, r.fundId, r.vehicleId, rows, asOf)
+  return NextResponse.json({ assets: rows.map(row => ({ ...row, ...values.get(row.id) })) })
 }
 
 export async function POST(req: NextRequest) {

@@ -3,11 +3,12 @@ import { ACTUAL_BOOK } from './books'
 import { persistEntry } from './persist'
 import type { JournalEntry, Posting } from './types'
 import { vehicleIdByName } from './vehicle-id'
+import { loadFleetCloseSuggestions } from '@/lib/gpu/close-checks'
 
 export interface CloseEntrySuggestion {
   id: string
   sourceRef: string
-  basis: 'schedule' | 'recurring_pattern'
+  basis: 'schedule' | 'recurring_pattern' | 'fleet'
   title: string
   detail: string
   entryDate: string
@@ -15,7 +16,7 @@ export interface CloseEntrySuggestion {
   sourceType: string
   required: boolean
   postings: Posting[]
-  evidence: { priorEntryIds?: string[]; scheduleId?: string }
+  evidence: { priorEntryIds?: string[]; scheduleId?: string; assetId?: string }
 }
 
 const iso = (date: Date) => date.toISOString().slice(0, 10)
@@ -136,6 +137,11 @@ export async function loadCloseEntrySuggestions(
       evidence: { priorEntryIds: [previous.id, latest.id] },
     })
   }
+  // ── GPU fleet (P1) ── On a GPU SPV, each server's monthly depreciation (lib/gpu/close-checks.ts), and
+  // the fleet is the only source of entries on the per-asset 1600/1650 accounts: a recurring-pattern
+  // copy of past depreciation is dropped. Nothing changes for any other vehicle.
+  const fleet = await loadFleetCloseSuggestions(admin, fundId, vehicleId, start, end)
+  if (fleet) out.splice(0, out.length, ...out.filter(x => !(x.basis === 'recurring_pattern' && x.postings.some(p => fleet.assetAccountIds.has(p.accountId)))), ...fleet.suggestions)
   return out.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.title.localeCompare(b.title))
 }
 
