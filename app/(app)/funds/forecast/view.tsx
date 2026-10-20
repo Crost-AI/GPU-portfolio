@@ -78,10 +78,11 @@ const TAB_LABEL: Record<ForecastTab, string> = { charts: 'Charts', investments: 
 /**
  * The tabs a vehicle of `kind` gets, in order. A management company has no portfolio. ── GPU fleet
  * (P5) ── A GPU SPV has no deal portfolio either: its Investments tab is the Fleet tab, and the
- * construction view is never mounted for it.
+ * construction view is never mounted for it. Its Capital planning tab is left out too (P5-5): that
+ * tab's content is the construction view's, so on a GPU SPV it was empty.
  */
 export function forecastTabsFor(kind: string | null | undefined): ForecastTab[] {
-  if (isGpuSpv(kind)) return ['charts', 'fleet', 'capital', 'financials']
+  if (isGpuSpv(kind)) return ['charts', 'fleet', 'financials']
   return kind !== 'manco' ? ['charts', 'investments', 'capital', 'financials'] : ['charts', 'financials', 'capital']
 }
 
