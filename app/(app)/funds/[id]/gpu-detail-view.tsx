@@ -16,6 +16,9 @@ import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
+import { getVehicleKpis } from '@/components/gpu/revenue-api'
+import { LtmTiles, currentMonth } from '@/components/gpu/fleet-kpis'
+import type { Kpi } from '@/lib/gpu/kpis'
 import { fleetTotals, todayIso, valuationDate, type FleetTotals } from '@/components/gpu/fleet-math'
 
 // ── GPU fleet (P5) ── The GPU SPV's lead page, in place of a fund's performance lead: what the fleet
@@ -60,6 +63,17 @@ export function GpuDetailView({
     let cancelled = false
     void listVehicleAssets(browserFetch, vehicle, todayIso()).then(r => {
       if (!cancelled) setFleet(r.ok ? { ...fleetTotals(r.data.assets), valuedAsOf: valuationDate(r.data.assets) } : { error: r.error })
+    })
+    return () => { cancelled = true }
+  }, [vehicle])
+
+  // Revenue and utilization over the trailing twelve months (GET /api/fleet/kpis, fleet read: this
+  // page renders only for a caller who can view the fleet).
+  const [ltm, setLtm] = useState<{ kpi: Kpi } | { error: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void getVehicleKpis(browserFetch, vehicle, currentMonth()).then(r => {
+      if (!cancelled) setLtm(r.ok ? { kpi: r.data.ltm } : { error: r.error })
     })
     return () => { cancelled = true }
   }, [vehicle])
@@ -109,8 +123,7 @@ export function GpuDetailView({
                   + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')
                   + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
-            <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
-            <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
+            <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base="Last 12 months" />
             <Metric
               label="Unreturned capital"
               value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}

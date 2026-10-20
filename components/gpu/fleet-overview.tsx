@@ -10,6 +10,9 @@ import { AddVehicleButton } from '@/components/add-vehicle-button'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets, mapBounded } from './fleet-api'
+import { combineLtm, getVehicleKpis } from './revenue-api'
+import { LtmTiles } from './fleet-kpis'
+import type { Kpi } from '@/lib/gpu/kpis'
 import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, valuationDate, type FleetTotals, type ValuedAsset } from './fleet-math'
 
 // ── GPU fleet (P5) ── The firm-wide fleet: one card per GPU SPV with its GPUs, cost and book value,
@@ -24,11 +27,13 @@ export type Loaded = { assets: ValuedAsset[] } | { error: string }
  * The page as it renders for a set of loaded registers: no fetching, so it can be rendered on its own.
  * Every figure is the server's valuation as of `asOf`, the date the registers were fetched for.
  */
-export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: {
+export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null, kpis = {} }: {
   vehicles: FleetVehicle[]
   loaded: Record<string, Loaded>
   asOf: string
   addButton?: React.ReactNode
+  /** Each vehicle's trailing-twelve-month KPIs, or why not, as they arrive. */
+  kpis?: Record<string, { kpi: Kpi } | { error: string }>
 }) {
   const currency = useCurrency()
   const money = (n: number) => formatCurrencyFull(n, currency)
@@ -57,8 +62,15 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null }: 
           sub={partial ? partialNote : totals.planned > 0 ? `On the books; ${money(totals.planned)} more planned or unbooked` : 'Hardware and capitalized costs on the books'}
         />
         <Metric label="Fleet NBV" value={shown(money(totals.nbvBook))} sub={partial ? partialNote : `Book, as of ${valuedAsOf}; tax book ${money(totals.nbvTax)}`} data-valuation-as-of={valuedAsOf ?? undefined} />
-        <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
-        <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
+        {(() => {
+          // Every vehicle's figure, or a partial note: a sum over some vehicles is not the fleet's.
+          const got = vehicles.map(v => kpis[v.id]).filter((k): k is { kpi: Kpi } => !!k && 'kpi' in k).map(k => k.kpi)
+          const missing = vehicles.length - got.length
+          const failedKpis = vehicles.filter(v => { const k = kpis[v.id]; return k && 'error' in k }).length
+          if (vehicles.length === 0) return <LtmTiles ltm={null} error="No GPU SPVs yet" />
+          if (missing > 0) return <LtmTiles ltm={null} error={failedKpis > 0 ? `Partial: ${failedKpis} ${failedKpis === 1 ? 'vehicle' : 'vehicles'} could not be loaded` : 'Loading…'} />
+          return <LtmTiles ltm={combineLtm(got)} base="Last 12 months, every GPU SPV" />
+        })()}
       </div>
 
       {vehicles.length === 0 ? (
@@ -115,6 +127,7 @@ export function FleetOverview({ vehicles }: { vehicles: FleetVehicle[] }) {
   const canAdd = useCanWrite('fleet')
 
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({})
+  const [kpis, setKpis] = useState<Record<string, { kpi: Kpi } | { error: string }>>({})
   // Today in the user's own zone, sent explicitly: the route's own default is the UTC date.
   const [asOf] = useState(todayIso)
   useEffect(() => {
@@ -122,6 +135,11 @@ export function FleetOverview({ vehicles }: { vehicles: FleetVehicle[] }) {
     void mapBounded(vehicles, 4, async v => {
       const r = await listVehicleAssets(browserFetch, v.name, asOf)
       if (!cancelled) setLoaded(prev => ({ ...prev, [v.id]: r.ok ? { assets: r.data.assets } : { error: r.error } }))
+    })
+    const month = asOf.slice(0, 7)
+    void mapBounded(vehicles, 4, async v => {
+      const r = await getVehicleKpis(browserFetch, v.name, month)
+      if (!cancelled) setKpis(prev => ({ ...prev, [v.id]: r.ok ? { kpi: r.data.ltm } : { error: r.error } }))
     })
     return () => { cancelled = true }
   }, [vehicles, asOf])
@@ -131,6 +149,7 @@ export function FleetOverview({ vehicles }: { vehicles: FleetVehicle[] }) {
       vehicles={vehicles}
       loaded={loaded}
       asOf={asOf}
+      kpis={kpis}
       addButton={canAdd ? <AddVehicleButton onCreated={() => router.refresh()} /> : null}
     />
   )
