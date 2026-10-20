@@ -72,6 +72,7 @@
     "xlsx": "file:vendor/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@testing-library/react": "16.3.3",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20",
     "@types/react": "^19.2.18",
@@ -81,6 +82,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.8",
+    "happy-dom": "21.0.3",
     "json-schema-to-typescript": "^15.0.4",
     "postcss": "^8",
     "tailwindcss": "^3",
