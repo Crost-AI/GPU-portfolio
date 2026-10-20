@@ -76,6 +76,10 @@ export function validateCapital(raw: unknown): CapitalSettings {
 export interface CapitalResult {
   calls: Map<MonthKey, number>
   distributions: Map<MonthKey, number>
+  /** Of each distribution, the part that pays out `designated` proceeds (absent without them). */
+  designatedPaid: Map<MonthKey, number>
+  /** `designated` proceeds still unpaid when the window ends (held by a reserve, a lag or a month edit). */
+  designatedLeft: number
   endingCash: Map<MonthKey, number>
   warnings: string[]
 }
@@ -92,11 +96,19 @@ export function computeCapital(input: {
   proceeds: Map<MonthKey, number>
   uncalled: number
   settings: CapitalSettings
+  /**
+   * A part of `proceeds` that keeps its own character when paid out (a GPU SPV's unspent capex
+   * contingency, R8): it falls due with the proceeds it is part of, and each payment consumes it
+   * pro rata to what is owed, the rest staying due.
+   */
+  designated?: Map<MonthKey, number>
 }): CapitalResult {
   const { policy } = input.settings
   const calls = new Map<MonthKey, number>()
   const distributions = new Map<MonthKey, number>()
+  const designatedPaid = new Map<MonthKey, number>()
   const endingCash = new Map<MonthKey, number>()
+  let owedDesignated = 0
   const warnings: string[] = []
   let cash = roundCents(input.openingCash)
   let uncalled = Math.max(0, roundCents(input.uncalled))
@@ -108,6 +120,7 @@ export function computeCapital(input: {
     // Proceeds become payable `lagMonths` after they arrive.
     const dueFrom = input.months[i - policy.distributions.lagMonths]
     if (dueFrom) owed = roundCents(owed + (input.proceeds.get(dueFrom) ?? 0))
+    if (dueFrom) owedDesignated = roundCents(owedDesignated + (input.designated?.get(dueFrom) ?? 0))
 
     // Call first, so a month's investments are funded before anything is paid out.
     let call = 0
@@ -122,6 +135,7 @@ export function computeCapital(input: {
     uncalled = Math.max(0, roundCents(uncalled - call))
     cash = roundCents(cash + call)
 
+    const owedBefore = owed
     let dist = 0
     if (input.settings.distributions[m] != null) {
       dist = input.settings.distributions[m]
@@ -135,11 +149,19 @@ export function computeCapital(input: {
 
     if (call) calls.set(m, call)
     if (dist) distributions.set(m, dist)
+    if (dist && owedDesignated > 0) {
+      const paid = owedBefore > 0 ? Math.min(owedDesignated, dist, roundCents(dist * owedDesignated / owedBefore)) : Math.min(owedDesignated, dist)
+      owedDesignated = roundCents(owedDesignated - paid)
+      if (paid) designatedPaid.set(m, paid)
+    }
     endingCash.set(m, cash)
   })
   if (shortfall) warnings.push(`In ${shortfall} month${shortfall === 1 ? '' : 's'} cash falls below the reserve and the fund has no uncalled capital left to call`)
   if (owed > 0.005) warnings.push(`${roundCents(owed).toLocaleString('en-US')} of exit proceeds is not distributed by the end of the plan`)
-  return { calls, distributions, endingCash, warnings }
+  // Designated proceeds not yet due by the end (a payout lag past the window) are still held too.
+  const notYetDue = input.months.slice(Math.max(0, input.months.length - policy.distributions.lagMonths))
+    .reduce((s, m) => s + (input.designated?.get(m) ?? 0), 0)
+  return { calls, distributions, designatedPaid, designatedLeft: roundCents(owedDesignated + notYetDue), endingCash, warnings }
 }
 
 export interface MonthlySplit {

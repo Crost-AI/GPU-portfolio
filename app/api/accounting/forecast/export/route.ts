@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
-import { getSeries, getSeriesWithRules, getVariance } from '@/lib/forecast/service'
+import { getFleetReport, getSeries, getSeriesWithRules, getVariance } from '@/lib/forecast/service'
 import { forecastRequest } from '@/lib/forecast/http'
 import { seriesCsv, varianceCsv } from '@/lib/forecast/export'
 import { buildForecastWorkbook, buildVarianceWorkbook } from '@/lib/forecast/workbook'
@@ -8,7 +8,8 @@ import { rateLimit } from '@/lib/rate-limit'
 
 // CSV of exactly what the series route (or, with kind=variance, the variance route) returns for the
 // same parameters. With format=xlsx, the same numbers as an Excel model: totals, net income and the
-// cash roll-forward as formulas, and rule-driven forecast months as formulas over an Assumptions sheet.
+// cash roll-forward as formulas, and rule-driven forecast months as formulas over an Assumptions sheet;
+// a GPU SPV fleet plan also gets its scenario's Headline, Series and Detail sheets.
 
 const version = (v: string | null, fallback: string | null) => {
   const x = v ?? fallback
@@ -73,7 +74,9 @@ export async function GET(req: NextRequest) {
       if (!['month', 'quarter', 'year'].includes(interval)) return NextResponse.json({ error: "interval must be 'month', 'quarter' or 'year'" }, { status: 400 })
       // Every formula is written at the monthly grain; quarters and years are SUMs of months.
       const { series, rules, accounts } = await getSeriesWithRules(ctx, { ...input, interval: 'month' })
-      const wb = buildForecastWorkbook({ monthly: series, rules, accounts, interval, meta: await meta() })
+      // A GPU SPV fleet plan adds its scenario sheets (Headline, Series, Detail) to the same workbook.
+      const fleet = series.plan ? await getFleetReport(ctx, { vehicle, planId: series.plan.id, versionId: series.version?.id ?? null }) : null
+      const wb = buildForecastWorkbook({ monthly: series, rules, accounts, interval, meta: await meta(), fleet })
       return xlsx(wb, `${series.vehicle}-${series.plan?.name ?? 'actuals'}-${q.get('start')}-${q.get('end')}`)
     }
     const series = await getSeries(ctx, { ...input, interval: (q.get('interval') as any) || undefined })
