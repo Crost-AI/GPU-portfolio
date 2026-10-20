@@ -14,12 +14,13 @@ import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAssetEventRow, typ
 import { eventBody, eventFormError, fleetPaths, getAsset, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
 import { bookingGate, disposedAsOf, isOffBooks, offBooksLabel, offBooksReason, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
 import { AsOfControl, ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
+import { AssetKpiCard } from './fleet-kpis'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
 
 // ── GPU fleet (P5) ── One server: what it is, its book and tax value as of a date (the server's
 // valuation), what has been capitalized into it, and its downtime and maintenance log. Listings,
-// monthly revenue and documents arrive with P5-4.
+// documents arrive later; monthly revenue and utilization come from GET /api/fleet/kpis (P5-4).
 
 const th = 'whitespace-nowrap px-3 py-2 font-medium'
 const num = 'px-3 py-2 text-right tabular-nums'
@@ -313,8 +314,8 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
       <ShellSection title="Listings" description="Where the server is offered for rent, and at what rate.">
         <EmptyState compact>No listings yet.</EmptyState>
       </ShellSection>
-      <ShellSection title="Monthly revenue & utilization" description="Entered per period on the Revenue & payouts page.">
-        <EmptyState compact>No periods entered for this asset yet.</EmptyState>
+      <ShellSection title="Monthly revenue & utilization" description="Entered per period on the Revenue & payouts page; staged rows count until they are posted or ignored.">
+        <AssetKpiCard fetcher={lf} assetId={asset.id} />
       </ShellSection>
       <ShellSection title="Documents" description="Invoices, shipping, warranty and datacenter paperwork.">
         <EmptyState compact>No documents attached yet.</EmptyState>
