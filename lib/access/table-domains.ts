@@ -331,6 +331,11 @@ export const TABLE_RULES: Record<string, TableRule> = {
   gpu_asset_events: { scope: 'service', note: 'Manual per-server downtime and maintenance log; served by the fleet routes.' },
   datacenter_contracts: { scope: 'service', note: 'Datacenter contracts and their accrual schedule link; served by the fleet routes.' },
   gpu_fleet_settings: { scope: 'service', note: 'Per-vehicle fleet settings (capex contingency budget); served by the fleet routes.' },
+  // ── GPU fleet (P3) ──
+  // Manual operations entry and payouts; same posture as the P1 block above.
+  gpu_import_runs: { scope: 'service', note: 'One operations paste or form submission per row; written by /api/fleet/ops/import.' },
+  gpu_earnings: { scope: 'service', note: 'Per-asset per-period revenue, hours, fee and downtime; served and posted by the fleet ops routes.' },
+  gpu_payouts: { scope: 'service', note: 'Marketplace payouts and their bank match; served by /api/fleet/ops/payouts.' },
   // ---- Deliberately public -------------------------------------------------------------------
   site_content: { scope: 'public', note: 'Legacy: the in-app marketing page that read it moved to hemrock.com (tdavidson/content). Table kept; nothing reads or writes it.' },
 

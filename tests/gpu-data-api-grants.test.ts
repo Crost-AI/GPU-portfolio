@@ -19,6 +19,10 @@ const SERVICE_ROLE_ONLY = [
   'gpu_asset_events',
   'datacenter_contracts',
   'gpu_fleet_settings',
+  // ── GPU fleet (P3) ──
+  'gpu_import_runs',
+  'gpu_earnings',
+  'gpu_payouts',
   // ── GPU fleet (P2) ── fee terms: read by the accounting-gated fee-terms route and by the close.
   'vehicle_fee_terms',
 ]
@@ -104,6 +108,27 @@ describe('fleet entries are booked once', () => {
   it('a partial unique index covers the gpu-asset: and gpu-dep: source refs', () => {
     const sql = readFileSync(join(MIGRATIONS, '20261019110000_gpu_assets.sql'), 'utf8')
     expect(sql).toMatch(/create unique index if not exists journal_entries_gpu_fleet_once\s+on public\.journal_entries \(fund_id, vehicle_id, book, source_ref\)\s+where \(source_ref like 'gpu-asset:%' or source_ref like 'gpu-dep:%'\) and status <> 'void';/)
+  })
+})
+
+// ── GPU fleet (P3) ──
+describe('operations entries are booked once', () => {
+  const sql = () => readFileSync(join(MIGRATIONS, '20261019300000_gpu_ops_earnings.sql'), 'utf8')
+
+  it('a second partial unique index covers the marketplace: and marketplace-payout: source refs', () => {
+    expect(sql()).toMatch(/create unique index if not exists journal_entries_gpu_ops_once\s+on public\.journal_entries \(fund_id, vehicle_id, book, source_ref\)\s+where \(source_ref like 'marketplace:%' or source_ref like 'marketplace-payout:%'\) and status <> 'void';/)
+  })
+
+  it('one staged row per asset-period, a dedup hash unique per vehicle among live rows, one payout per bank row', () => {
+    expect(sql()).toMatch(/create unique index gpu_earnings_one_staged\s+on public\.gpu_earnings \(fund_id, vehicle_id, asset_id, period_start, period_end\)\s+where status = 'staged';/)
+    expect(sql()).toMatch(/create unique index gpu_earnings_live_hash\s+on public\.gpu_earnings \(fund_id, vehicle_id, dedup_hash\)\s+where status not in \('ignored', 'reversed'\);/)
+    expect(sql()).not.toContain('unique (fund_id, vehicle_id, dedup_hash)')
+    expect(sql()).toMatch(/create unique index gpu_payouts_one_per_bank_txn\s+on public\.gpu_payouts \(bank_transaction_id\)\s+where bank_transaction_id is not null;/)
+  })
+
+  it('ships manual and csv sources only, and no marketplace account tables (decision Q1)', () => {
+    expect(sql()).toContain("check (source in ('manual', 'csv'))")
+    expect(sql()).not.toMatch(/marketplace_accounts|marketplace_listings/)
   })
 })
 

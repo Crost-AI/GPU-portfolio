@@ -144,6 +144,14 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/vehicle-gp-links': { domain: 'accounting' },
   'api/vehicles': { domain: 'accounting' },
 
+  // ── GPU fleet (P3) ──
+  // Manual operations entry, payouts and KPIs for a GPU SPV. Each handler also refuses a vehicle
+  // that is not a GPU SPV (404), and posting revenue or matching a payout needs `accounting` write
+  // in the handler (DOMAIN_META.fleet).
+  'api/fleet/ops/import': { domain: 'fleet' },
+  'api/fleet/ops/earnings': { domain: 'fleet' },
+  'api/fleet/ops/payouts': { domain: 'fleet' },
+  'api/fleet/kpis': { domain: 'fleet' },
   // ── Management company ─────────────────────────────────────────────────────
   // The firm's own operating entity, on its own books. A separate domain from `accounting`
   // because a manco ledger carries firm payroll and partner compensation, and — unlike a K-1,

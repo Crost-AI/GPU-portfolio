@@ -40,6 +40,8 @@ import { lotIssues, isLotMethod, type LotMethod } from '@/lib/portfolio/lots'
 import { buildSoiPositions, type SoiCompany } from './soi'
 import { fundCurrency } from './currency'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
+// ── GPU fleet (P3) ──
+import { gpuOpsCloseIssues } from '@/lib/gpu/ops/close-checks'
 import { allocateAmountCumulatively } from './allocation'
 import { postingsInPeriod } from './statements'
 import { computeCapitalAccounts, bucketForSourceType, emptyAccount, type CapitalAccount } from './capital-account'
@@ -940,6 +942,19 @@ export async function checkReadiness(
   // books use and a fund may have a deliberate reason for it, so this reports the disagreement
   // rather than overruling it. See lib/portfolio/lots.ts.
   warnings.push(...await loadLotIssues(admin, fundId, group, end))
+
+  // ── GPU fleet (P3) ── The operations subledger (revenue entered per server per period) against
+  // the ledger. A GPU SPV only; a read that fails is a blocker, same rule as the FoF and wallet
+  // checks above.
+  if (kind === 'gpu_spv') {
+    try {
+      const ops = await gpuOpsCloseIssues(admin, fundId, group, vehicleId!, start, end)
+      blockers.push(...ops.blockers)
+      warnings.push(...ops.warnings)
+    } catch (e) {
+      blockers.push(`The GPU operations entries could not be checked: ${(e as Error).message}. Try again before closing.`)
+    }
+  }
 
   if (bankRows.length > 0) {
     const total = roundCents(bankRows.reduce((s, t) => s + Number(t.amount), 0))
