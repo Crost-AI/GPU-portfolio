@@ -20,6 +20,8 @@ export interface AssetValuation {
   accumulated_tax: number
   nbv_tax: number
   valuation_as_of: string
+  /** A purchase is recognised as of the date (the condition that starts depreciation). False: every NBV and accumulated figure is 0. */
+  on_books_as_of: boolean
   capex_events: { month: string; amount: number; source_ref: string; posted_at: string | null }[]
 }
 
@@ -41,8 +43,10 @@ export function parseAsOf(raw: string | null): string | null {
  *   - tax: the asset's tax method on independent tax inputs (the hardware and each capex its own tax
  *     asset from its own month, but never before the server entered service), summed through the tax
  *     year containing `asOf`; tax_method 'book' reports the book figures.
- *   - nothing is depreciated before the purchase is recognised as of `asOf`; each charge counts from
- *     its entry date (min(month end, disposal)); on or after the disposal, both NBVs are 0.
+ *   - an asset whose purchase is not recognised as of `asOf` (planned, unbooked, or bought later) is
+ *     not on the books: on_books_as_of false and every NBV and accumulated figure 0 (basis and
+ *     capitalized costs are still reported). Each charge counts from its entry date
+ *     (min(month end, disposal)); on or after the disposal, both NBVs are 0.
  */
 export async function valueAssets(
   admin: SupabaseClient, fundId: string, vehicleId: string, rows: GpuAssetRow[], asOf: string,
@@ -86,11 +90,15 @@ export async function valueAssets(
       }).filter(y => y.year <= year).reduce((s, y) => s + cents(y.amount), 0), 0)
       nbvTax = disposed ? 0 : Math.max(0, basisCents - accTax)
     }
+    // Not on the books as of the date (planned, unbooked, or bought later): there is no carrying value
+    // to report, so the NBVs and accumulated figures are 0 and Σ nbv_book ties to the ledger's 1600/1650.
+    const onBooks = !!l.purchase
     out.set(a.id, {
       basis: dollars(basisCents), capitalized_costs: dollars(capexCents),
-      accumulated_book: dollars(accBook), nbv_book: dollars(nbvBook),
-      accumulated_tax: dollars(accTax), nbv_tax: dollars(nbvTax),
+      accumulated_book: onBooks ? dollars(accBook) : 0, nbv_book: onBooks ? dollars(nbvBook) : 0,
+      accumulated_tax: onBooks ? dollars(accTax) : 0, nbv_tax: onBooks ? dollars(nbvTax) : 0,
       valuation_as_of: asOf,
+      on_books_as_of: onBooks,
       capex_events: l.capex.map(e => ({ month: e.month, amount: e.amount, source_ref: e.source_ref, posted_at: e.posted_at })),
     })
   }

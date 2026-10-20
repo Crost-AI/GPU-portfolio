@@ -370,17 +370,42 @@ describe('asset valuation as of a date (#95)', () => {
   const listed = async (id: string, asOf: string) =>
     (await json(await assets.GET(get(`assets?group=H200 SPV I&as_of=${asOf}`)))).body.assets.find((a: any) => a.id === id)
 
-  it('nothing depreciates before the purchase is recognised: an unbooked asset, and a date before a later purchase', async () => {
-    const unbooked = await createAsset()
-    for (const v of [await value(unbooked, '?as_of=2027-01-31'), await listed(unbooked, '2027-01-31')]) {
-      expect(v).toMatchObject({ accumulated_book: 0, nbv_book: 335_000, accumulated_tax: 0, nbv_tax: 335_000 })
+  it('an asset not on the books as of the date reports zero NBV and on_books_as_of false (P1b-2c)', async () => {
+    const zeros = { accumulated_book: 0, nbv_book: 0, accumulated_tax: 0, nbv_tax: 0, on_books_as_of: false }
+    // Planned: never purchased. Basis and capitalized costs are still reported.
+    const planned = await createAsset()
+    for (const v of [await value(planned, '?as_of=2027-01-31'), await listed(planned, '2027-01-31')]) {
+      expect(v).toMatchObject({ ...zeros, basis: 335_000, capitalized_costs: 0 })
     }
+    // Linked purchase dated after the date asked about.
     const later = await createAsset({ name: 'later' })
     await purchase.POST(send(`assets/${later}/purchase`, 'POST', { entryDate: '2027-03-05' }), params(later))
     for (const v of [await value(later, '?as_of=2027-01-31'), await listed(later, '2027-01-31')]) {
-      expect(v).toMatchObject({ accumulated_book: 0, nbv_book: 335_000 })
+      expect(v).toMatchObject({ ...zeros, basis: 335_000 })
     }
-    expect(await value(later, '?as_of=2027-03-31')).toMatchObject({ accumulated_book: 3 * 5_025 })
+    // Recognised: unchanged, and on the books.
+    expect(await value(later, '?as_of=2027-03-31')).toMatchObject({ accumulated_book: 3 * 5_025, nbv_book: 335_000 - 3 * 5_025, on_books_as_of: true })
+  })
+
+  it('Σ nbv_book over a fleet equals the ledger\'s Σ(1600-a − 1650-a) as of the date', async () => {
+    const booked = await setUp()                                   // purchased, 12 months posted, capex in 2028-01
+    await createAsset({ name: 'planned' })                         // never purchased
+    const later = await createAsset({ name: 'later' })
+    await purchase.POST(send(`assets/${later}/purchase`, 'POST', { entryDate: '2028-03-05' }), params(later))
+    // Dates where every charge due is posted (the register then holds no projection the ledger lacks).
+    for (const asOf of ['2027-01-15', '2027-06-30', '2027-12-31']) {
+      const rows = (await json(await assets.GET(get(`assets?group=H200 SPV I&as_of=${asOf}`)))).body.assets
+      const register = Math.round(rows.reduce((t: number, a: any) => t + a.nbv_book * 100, 0))
+      const dated = new Map(s.m.tables.journal_entries.map((e: any) => [e.id, e.entry_date]))
+      const assetAccounts = new Set(s.m.tables.chart_of_accounts.filter((a: any) => /^16[05]0-/.test(a.code)).map((a: any) => a.id))
+      const ledger = Math.round(s.m.tables.journal_postings
+        .filter((p: any) => assetAccounts.has(p.account_id) && (dated.get(p.journal_entry_id) ?? '') <= asOf)
+        .reduce((t: number, p: any) => t + p.amount * 100, 0))
+      expect(register, asOf).toBe(ledger)
+      expect(register, asOf).toBeGreaterThan(0)
+      expect(rows.find((a: any) => a.id === booked).on_books_as_of).toBe(true)
+      expect(rows.filter((a: any) => !a.on_books_as_of).every((a: any) => a.nbv_book === 0)).toBe(true)
+    }
   })
 
   it('straight-line tax runs on its own inputs, not the posted book charges', async () => {
