@@ -7,7 +7,9 @@ import { memoryAdmin } from './helpers/memory-admin'
 const mocks = vi.hoisted(() => ({ admin: null as any }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u1' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => mocks.admin }))
-vi.mock('@/lib/api-helpers', () => ({ assertWriteAccess: async () => ({ fundId: 'f1', userId: 'u1', role: 'admin' }) }))
+vi.mock('@/lib/api-helpers', () => ({ assertWriteAccess: async () => ({ fundId: 'f1', userId: 'u1', role: 'member' }) }))
+const scope = vi.hoisted(() => ({ vehicles: { all: true, ids: [] as string[] } }))
+vi.mock('@/lib/access/effective', async orig => ({ ...(await orig<typeof import('@/lib/access/effective')>()), loadAccessContext: async () => ({ vehicles: scope.vehicles }) }))
 
 import { POST } from '@/app/api/lp-letters/templates/route'
 import { GPU_QUARTERLY_STYLE_GUIDE, GPU_QUARTERLY_TEMPLATE_NAME } from '@/lib/lp-letters/gpu-template'
@@ -16,6 +18,7 @@ const post = (body: unknown) => POST(new NextRequest('http://x/api/lp-letters/te
 let tables: Record<string, any[]>
 
 beforeEach(() => {
+  scope.vehicles = { all: true, ids: [] }
   const m = memoryAdmin({ fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'Fund I', kind: 'fund' }], lp_letter_templates: [] })
   mocks.admin = m.admin
   tables = m.tables
@@ -36,6 +39,14 @@ describe('seeding the GPU quarterly template', () => {
     const again = await post({ template: 'gpu_quarterly' })
     expect(again.status).toBe(200)
     expect(tables.lp_letter_templates).toHaveLength(1)
+  })
+
+  it("a GPU SPV outside the caller's entities does not count", async () => {
+    tables.fund_vehicles.push({ id: 'v2', fund_id: 'f1', name: 'GPU SPV I', kind: 'gpu_spv' })
+    scope.vehicles = { all: false, ids: ['v1'] }
+    expect((await post({ template: 'gpu_quarterly' })).status).toBe(400)
+    scope.vehicles = { all: false, ids: ['v1', 'v2'] }
+    expect((await post({ template: 'gpu_quarterly' })).status).toBe(201)
   })
 
   it('leaves the default path as it was', async () => {
