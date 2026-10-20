@@ -2,6 +2,7 @@
 // call (lib/lp-letters/service.ts), with the caller's visible entities, so a letter of an entity
 // they can't see is not found here either.
 
+import { hasAccess } from '@/lib/access/effective'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
@@ -37,9 +38,11 @@ async function periodOf(ctx: AgentToolContext, input: any): Promise<LetterPeriod
   return { vehicle, year, quarter, yearEnd: !!input?.year_end }
 }
 
-const briefOpts = (input: any) => ({
+const briefOpts = (input: any, ctx: AgentToolContext) => ({
   template: typeof input?.template === 'string' ? input.template : null,
   guidance: typeof input?.guidance === 'string' ? input.guidance.slice(0, 4000) : null,
+  // A GPU SPV letter's profit share (paid, and the accrued memo) is the manager's economics.
+  showCarry: hasAccess(ctx.access, 'gp_economics', 'read'),
 })
 
 const summary = (l: any) => ({
@@ -70,7 +73,7 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
-    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), briefOpts(input))
+    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), briefOpts(input, ctx))
     return { template: template.name, ...brief }
   },
 
@@ -81,7 +84,7 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     if (!given && await rateLimit({ key: `lp-letter-gen:${userId}`, limit: 5, windowSeconds: 300 })) {
       throw new Error('Too many letters drafted in the last few minutes. Try again shortly.')
     }
-    const opts = briefOpts(input)
+    const opts = briefOpts(input, ctx)
     const loaded = await loadLetterBrief(ctx.admin, ctx.fundId, p, opts)
     const { brief, investorNames } = loaded
     const text = given ?? await writeWithFundAI(ctx.admin, ctx.fundId, userId, brief)

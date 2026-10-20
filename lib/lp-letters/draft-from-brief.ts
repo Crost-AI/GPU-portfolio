@@ -14,6 +14,10 @@ import { aggregatePortfolioData, type PortfolioPreview } from './aggregate'
 import { buildPortfolioTableHtml } from './generate'
 import { createLetter } from './service'
 import { DEFAULT_STYLE_GUIDE } from './default-template'
+import { GPU_QUARTERLY_STYLE_GUIDE, GPU_QUARTERLY_TEMPLATE_NAME } from './gpu-template'
+import { vehicleKindByName } from '@/lib/accounting/vehicle-domain'
+import { isGpuSpv } from '@/lib/vehicle-kinds'
+import { loadFleetLetterData } from '@/lib/gpu/letter'
 import { sanitizeLetterHtml } from '@/lib/sanitize'
 import { done, dbFail, type Outcome } from '@/lib/service-outcome'
 import { createFundAIProvider } from '@/lib/ai'
@@ -81,9 +85,10 @@ export interface LetterTemplate { id: string | null; name: string; styleGuide: s
 /**
  * The letter template whose style guide sets a letter's structure: the one asked for (by id or
  * name), else the fund's default, else the built-in default. A name that matches nothing is an
- * error, so a typo doesn't quietly fall back.
+ * error, so a typo doesn't quietly fall back. A GPU SPV's letter defaults to the fund's
+ * "GPU quarterly" template, else the built-in one; no other entity's letter ever takes it.
  */
-export async function resolveTemplate(admin: Admin, fundId: string, ref?: string | null): Promise<LetterTemplate> {
+export async function resolveTemplate(admin: Admin, fundId: string, ref?: string | null, opts: { gpu?: boolean } = {}): Promise<LetterTemplate> {
   const { data } = await (admin as any).from('lp_letter_templates').select('id, name, style_guide, is_default').eq('fund_id', fundId)
   const rows = ((data ?? []) as any[]).filter(t => t.style_guide)
   if (ref?.trim()) {
@@ -91,6 +96,10 @@ export async function resolveTemplate(admin: Admin, fundId: string, ref?: string
     const hit = rows.find(t => t.id === ref.trim() || String(t.name).toLowerCase() === want)
     if (!hit) throw new Error(`No letter template "${ref}". Templates: ${rows.map(t => t.name).join(', ') || 'none saved yet'}.`)
     return { id: hit.id, name: hit.name, styleGuide: hit.style_guide }
+  }
+  if (opts.gpu) {
+    const gpu = rows.find(t => String(t.name).toLowerCase() === GPU_QUARTERLY_TEMPLATE_NAME.toLowerCase())
+    return gpu ? { id: gpu.id, name: gpu.name, styleGuide: gpu.style_guide } : { id: null, name: GPU_QUARTERLY_TEMPLATE_NAME, styleGuide: GPU_QUARTERLY_STYLE_GUIDE }
   }
   const def = rows.find(t => t.is_default)
   return def ? { id: def.id, name: def.name, styleGuide: def.style_guide } : { id: null, name: 'Default', styleGuide: DEFAULT_STYLE_GUIDE }
@@ -104,17 +113,26 @@ export interface LoadedBrief {
 }
 
 export async function loadLetterBrief(
-  admin: Admin, fundId: string, p: LetterPeriod, opts: { template?: string | null; guidance?: string | null } = {},
+  admin: Admin, fundId: string, p: LetterPeriod,
+  opts: {
+    template?: string | null; guidance?: string | null
+    /** The writer sees the manager's economics (gp_economics): a GPU SPV letter's profit share, paid and accrued (memo). */
+    showCarry?: boolean
+  } = {},
 ): Promise<LoadedBrief> {
-  const template = await resolveTemplate(admin, fundId, opts.template)
+  const gpu = isGpuSpv(await vehicleKindByName(admin, fundId, p.vehicle))
+  const template = await resolveTemplate(admin, fundId, opts.template, { gpu })
   const preview = await aggregatePortfolioData(admin as any, fundId, p.year, p.quarter, p.vehicle, !!p.yearEnd)
   const ids = preview.companies.map(c => c.investment.companyId)
   const [updates, names] = await Promise.all([
     quarterUpdates(admin, fundId, ids, p.year, p.quarter),
     investorNames(admin, fundId),
   ])
+  // A GPU SPV's investors' position and fleet, as at the quarter end (or the books' latest, if sooner).
+  const qEnd = quarterBounds(p.year, p.quarter).end
+  const fleet = gpu ? await loadFleetLetterData(admin, fundId, p.vehicle, preview.asOf && preview.asOf < qEnd ? preview.asOf : qEnd, { showCarry: opts.showCarry === true }) : null
   const brief = buildLetterBrief({
-    preview, year: p.year, quarter: p.quarter, updates, investorNames: names, styleGuide: template.styleGuide, guidance: opts.guidance,
+    preview, year: p.year, quarter: p.quarter, updates, investorNames: names, styleGuide: template.styleGuide, guidance: opts.guidance, fleet,
   })
   return { brief, preview, investorNames: names, template }
 }
