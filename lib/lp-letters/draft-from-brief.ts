@@ -116,8 +116,13 @@ export async function loadLetterBrief(
   admin: Admin, fundId: string, p: LetterPeriod,
   opts: {
     template?: string | null; guidance?: string | null
-    /** The writer sees the manager's economics (gp_economics): a GPU SPV letter's profit share, paid and accrued (memo). */
+    /** The writer sees the manager's economics (gp_economics): a GPU SPV letter's profit share PAID. */
     showCarry?: boolean
+    /**
+     * Add the accrued profit-share memo (a GP display). Only for a brief that is SHOWN to a caller with
+     * gp_economics, never one a saved draft is written from: a letter goes to investors.
+     */
+    accruedMemo?: boolean
   } = {},
 ): Promise<LoadedBrief> {
   const gpu = isGpuSpv(await vehicleKindByName(admin, fundId, p.vehicle))
@@ -130,7 +135,7 @@ export async function loadLetterBrief(
   ])
   // A GPU SPV's investors' position and fleet, as at the quarter end (or the books' latest, if sooner).
   const qEnd = quarterBounds(p.year, p.quarter).end
-  const fleet = gpu ? await loadFleetLetterData(admin, fundId, p.vehicle, preview.asOf && preview.asOf < qEnd ? preview.asOf : qEnd, { showCarry: opts.showCarry === true }) : null
+  const fleet = gpu ? await loadFleetLetterData(admin, fundId, p.vehicle, preview.asOf && preview.asOf < qEnd ? preview.asOf : qEnd, { showCarry: opts.showCarry === true, accruedMemo: opts.showCarry === true && opts.accruedMemo === true }) : null
   const brief = buildLetterBrief({
     preview, year: p.year, quarter: p.quarter, updates, investorNames: names, styleGuide: template.styleGuide, guidance: opts.guidance, fleet,
   })

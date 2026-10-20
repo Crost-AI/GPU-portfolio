@@ -11,11 +11,9 @@ export const GPU_QUARTERLY_STYLE_GUIDE = `## Investor Letter Style Guide (GPU qu
 2. Opening: "Dear Investors" + one paragraph on the quarter
 3. Fleet: servers in service, utilisation and uptime where the brief states them; revenue for the quarter
 4. Distributions and your position: capital returned to date, capital still unreturned, preferred return paid and
-   carried forward, the manager's profit share PAID, DPI and IRR to date
-5. Profit share: "Paid" as booked, and "Accrued (memo, not booked)" only where the brief carries it — always labelled
-   a memo, never described as earned, owed or paid
-6. Outlook: the projected outcome only where the brief states one, labelled as a forecast
-7. Closing: placeholder for the manager's outlook
+   carried forward, the manager's profit share PAID to date, DPI and IRR to date
+5. Outlook: the projected outcome only where the brief states one, labelled as a forecast
+6. Closing: placeholder for the manager's outlook
 
 ### Tone
 - Professional, plain, numbers first

@@ -41,7 +41,7 @@ async function periodOf(ctx: AgentToolContext, input: any): Promise<LetterPeriod
 const briefOpts = (input: any, ctx: AgentToolContext) => ({
   template: typeof input?.template === 'string' ? input.template : null,
   guidance: typeof input?.guidance === 'string' ? input.guidance.slice(0, 4000) : null,
-  // A GPU SPV letter's profit share (paid, and the accrued memo) is the manager's economics.
+  // A GPU SPV letter's profit share PAID is the manager's economics (the accrued memo never goes in a draft).
   showCarry: hasAccess(ctx.access, 'gp_economics', 'read'),
 })
 
@@ -73,7 +73,8 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
-    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), briefOpts(input, ctx))
+    // Shown to this caller, not saved: the accrued profit-share memo may ride along with gp_economics.
+    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), { ...briefOpts(input, ctx), accruedMemo: true })
     return { template: template.name, ...brief }
   },
 

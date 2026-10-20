@@ -15,6 +15,16 @@ vi.mock('@/lib/accounting/capital-source', () => ({ loadCapitalPostings: async (
 vi.mock('@/lib/accounting/distributions', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/distributions')>()), loadContingencyByDate: async () => new Map(), lastReserve: async () => null,
 }))
+vi.mock('@/lib/accounting/vehicle-domain', async orig => ({
+  ...(await orig<typeof import('@/lib/accounting/vehicle-domain')>()), vehicleKindByName: async (_a: unknown, _f: unknown, name: string) => (name === 'GPU SPV I' ? 'gpu_spv' : 'fund'),
+}))
+vi.mock('@/lib/lp-letters/aggregate', async orig => ({
+  ...(await orig<typeof import('@/lib/lp-letters/aggregate')>()),
+  aggregatePortfolioData: async (_a: unknown, _f: unknown, _y: number, _q: number, vehicle: string) => ({
+    asOf: '2029-12-31', fundName: 'Hemrock', fundCurrency: 'USD', periodLabel: 'Q4 2029', portfolioGroup: vehicle, companies: [], fundMetrics: null,
+    totals: { totalInvested: 0, totalFmv: 0, totalRealized: 0, portfolioMoic: null, activeCount: 0, exitedCount: 0, writtenOffCount: 0 },
+  }),
+}))
 vi.mock('@/lib/accounting/load', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/load')>()),
   loadPostedLedger: async () => ({
@@ -24,7 +34,7 @@ vi.mock('@/lib/accounting/load', async orig => ({
 }))
 
 import { fleetBrief, buildLetterBrief } from '@/lib/lp-letters/brief'
-import { resolveTemplate } from '@/lib/lp-letters/draft-from-brief'
+import { loadLetterBrief, resolveTemplate } from '@/lib/lp-letters/draft-from-brief'
 import { GPU_QUARTERLY_STYLE_GUIDE, GPU_QUARTERLY_TEMPLATE_NAME } from '@/lib/lp-letters/gpu-template'
 import { DEFAULT_STYLE_GUIDE } from '@/lib/lp-letters/default-template'
 import { loadFleetLetterData } from '@/lib/gpu/letter'
@@ -44,15 +54,17 @@ const BASE_Y3 = [
 beforeEach(() => { mocks.terms = CASH_TERMS; mocks.capital = BASE_Y3; mocks.ledger = [{ accountId: '1600', amount: 1_305_000, currency: 'USD' }, { accountId: '1650', amount: -704_700, currency: 'USD' }] })
 
 describe('loadFleetLetterData', () => {
-  it("the investors' position, paid profit share and the accrued memo at book NAV (equipment 600,300)", async () => {
-    const f = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true }))!
+  it("the investors' position, paid profit share and, only when asked for, the accrued memo at book NAV (600,300)", async () => {
+    const f = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true, accruedMemo: true }))!
     const p = f.report.position
     expect(p.contributed).toBe(PACK_INPUTS.capital)
     expect(p.capitalReturned).toBe(PACK_INPUTS.capital)
     expect(p.unreturned).toBe(0)
     expect(p.managerProfitSharePaid).toBe(156_052.87)
     expect(f.profitShare!.paid).toBe(156_052.87)
-    expect(f.profitShare!.accrued.carryMemo).toBe(180_090)
+    expect(f.profitShare!.accrued!.carryMemo).toBe(180_090)
+    const paidOnly = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true }))!
+    expect(paidOnly.profitShare).toEqual({ paid: 156_052.87, accrued: null })
     // The investors' own cash flows only (the manager's 156,052.87 is not theirs), no residual value.
     const own = BASE_Y3.filter(x => x.lpEntityId === 'lp1').map(x => ({ date: new Date(`${x.entryDate}T00:00:00Z`), amount: x.amount }))
     expect(f.irrToDate).toBe(xirr(own))
@@ -75,17 +87,39 @@ describe("the brief's fleet block", () => {
   const preview = { asOf: '2029-12-31', fundName: 'Hemrock', fundCurrency: 'USD', periodLabel: 'Q4 2029', portfolioGroup: 'GPU SPV I', companies: [], fundMetrics: null,
     totals: { totalInvested: 0, totalFmv: 0, totalRealized: 0, portfolioMoic: null, activeCount: 0, exitedCount: 0, writtenOffCount: 0 } } as any
 
-  it('labels the accrued profit share a memo, beside the paid one, and says so in the basis notes', async () => {
-    const f = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true }))!
+  it('a brief shown to a gp_economics caller may carry the accrued memo, labelled a memo beside the paid figure', async () => {
+    const f = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true, accruedMemo: true }))!
     const brief = buildLetterBrief({ preview, year: 2029, quarter: 4, updates: new Map(), styleGuide: GPU_QUARTERLY_STYLE_GUIDE, fleet: f })
     expect(brief.fleet!.profit_share!.map(x => x.label)).toEqual([
       'Manager profit share PAID to date (booked)',
       'Manager profit share ACCRUED at book NAV, 2029-12-31 (memo, not booked)',
     ])
     expect(brief.fleet!.profit_share!.map(x => x.value)).toEqual(['$156K', '$180K'])
-    expect(brief.basis_notes.some(n => /ACCRUED figure is a memo/.test(n))).toBe(true)
+    expect(brief.basis_notes.some(n => /ACCRUED figure is a memo/.test(n) && /does not belong in a letter/.test(n))).toBe(true)
     expect(brief.missing_information).toContain('Fleet KPIs for Q4 2029 (revenue, utilisation, uptime): not entered for the quarter.')
     expect(brief.missing_information).toContain('A projected outcome from the forecast: not available for this letter yet.')
+  })
+
+  it("a saved draft's brief, for a gp_economics writer, carries the PAID profit share and no accrued figure", async () => {
+    const { admin } = memoryAdmin({ company_updates: [], lp_investors: [], lp_letter_templates: [] })
+    // lp_draft_letter's options: the writer sees carry; no accrued memo is asked for.
+    const { brief, template } = await loadLetterBrief(admin as any, 'f1', { vehicle: 'GPU SPV I', year: 2029, quarter: 4 }, { showCarry: true })
+    expect(template.name).toBe(GPU_QUARTERLY_TEMPLATE_NAME)
+    expect(brief.fleet!.profit_share!.map(x => x.label)).toEqual(['Manager profit share PAID to date (booked)'])
+    expect(JSON.stringify(brief)).not.toMatch(/ACCRUED|accrued|\$180K|180,090/)
+    // The brief shown back to the same caller (lp_letter_brief) may carry it.
+    const shown = await loadLetterBrief(admin as any, 'f1', { vehicle: 'GPU SPV I', year: 2029, quarter: 4 }, { showCarry: true, accruedMemo: true })
+    expect(shown.brief.fleet!.profit_share!.map(x => x.value)).toEqual(['$156K', '$180K'])
+    // And never without the grant, whatever is asked.
+    const noGp = await loadLetterBrief(admin as any, 'f1', { vehicle: 'GPU SPV I', year: 2029, quarter: 4 }, { showCarry: false, accruedMemo: true })
+    expect('profit_share' in noGp.brief.fleet!).toBe(false)
+  })
+
+  it('a VC letter has no fleet block and keeps its default template', async () => {
+    const { admin } = memoryAdmin({ company_updates: [], lp_investors: [], lp_letter_templates: [] })
+    const { brief, template } = await loadLetterBrief(admin as any, 'f1', { vehicle: 'Fund I', year: 2029, quarter: 4 }, { showCarry: true, accruedMemo: true })
+    expect('fleet' in brief).toBe(false)
+    expect(template.styleGuide).toBe(DEFAULT_STYLE_GUIDE)
   })
 
   it('carries no profit share at all for a writer without gp_economics', async () => {

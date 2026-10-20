@@ -73,8 +73,8 @@ export interface FleetBrief {
   /** The fleet for the quarter, as entered (P3); empty until it is. */
   fleet: Figure[]
   /**
-   * The manager's profit share: PAID (booked) and ACCRUED (a memo, never booked). Present only for
-   * a writer who sees the manager's economics.
+   * The manager's profit share PAID (booked; Q8), for a writer who sees the manager's economics. The
+   * ACCRUED memo is added only to a brief that is shown, never one a saved draft is written from.
    */
   profit_share?: Figure[]
   projected?: Figure[]
@@ -129,7 +129,7 @@ export function fleetBrief(f: FleetLetterData, currency: string, period: string)
     const a = f.profitShare.accrued
     brief.profit_share = [
       { label: 'Manager profit share PAID to date (booked)', value: fmt(f.profitShare.paid, currency), basis: 'cash' },
-      { label: `Manager profit share ACCRUED at book NAV, ${a.asOf} (memo, not booked)`, value: fmt(a.carryMemo, currency), basis: 'cash' },
+      ...(a ? [{ label: `Manager profit share ACCRUED at book NAV, ${a.asOf} (memo, not booked)`, value: fmt(a.carryMemo, currency), basis: 'cash' as const }] : []),
     ]
   }
   if (f.projected) {
@@ -339,8 +339,9 @@ export function buildLetterBrief(input: BriefInput): LetterBrief {
       ...(fleet ? [
         'The investors\' position is the distributable-cash waterfall replayed on the distributions so far: preferred return on ' +
           'capital not yet returned, return of capital, then the profit split. Figures are for the investors together, not any one.',
-        ...(fleet.brief.profit_share ? ['The manager\'s profit share is booked only when a distribution pays it. The ACCRUED figure is a memo: ' +
-          'what it would be if the book NAV were distributed today. It is not booked, not owed and must be called a memo.'] : []),
+        ...(fleet.brief.profit_share ? ['The manager\'s profit share is booked only when a distribution pays it: the figure here is what has been PAID.'] : []),
+        ...(fleet.brief.profit_share?.some(x => /ACCRUED/.test(x.label)) ? ['The ACCRUED figure is a memo: what the profit share would be if the book NAV were ' +
+          'distributed today. It is not booked and not owed, and it is for the manager\'s view only: it does not belong in a letter to investors.'] : []),
       ] : []),
     ],
     fund_figures: fundFigures,

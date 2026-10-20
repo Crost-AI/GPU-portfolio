@@ -1,7 +1,8 @@
 // What a GPU SPV's quarterly investor letter is written from (pivot plan §5.4): the investors'
 // position replayed from the books through the distributable-cash waterfall, IRR to date on their
-// actual cash flows, and — for a writer who sees the manager's economics — the profit share paid
-// and the accrued memo (lib/gpu/accrued.ts). Vehicle-level throughout: no investor's own figures.
+// actual cash flows, and — for a writer who sees the manager's economics — the profit share PAID
+// (Q8). The accrued memo (lib/gpu/accrued.ts) is a GP display, never in a letter: only the
+// ephemeral brief returned to a gp_economics caller carries it. Vehicle-level throughout.
 //
 // The brief (lib/lp-letters/brief.ts fleetBrief) turns this into labelled figures.
 
@@ -22,8 +23,11 @@ export interface FleetLetterData {
   report: QuarterlyReportData
   /** Investors' IRR to date on their actual contributions and distributions; null with too few flows. */
   irrToDate: number | null
-  /** The profit share as booked and as a memo; null for a writer without gp_economics. */
-  profitShare: { paid: number; accrued: AccruedProfitShare } | null
+  /**
+   * The profit share as booked; null for a writer without gp_economics. `accrued` (the memo) only when
+   * asked for: never in a brief a saved draft is written from.
+   */
+  profitShare: { paid: number; accrued: AccruedProfitShare | null } | null
   /**
    * The projected outcome from the primary fleet plan. TODO(gpu-P4 B1, #99): read it from the plan's
    * returns (getPlanReturns on the primary fleet plan, GET /api/accounting/forecast/fleet-scenarios)
@@ -34,7 +38,7 @@ export interface FleetLetterData {
 
 /** Null when the vehicle has no distributable-cash terms: there is no waterfall position to report. */
 export async function loadFleetLetterData(
-  admin: SupabaseClient, fundId: string, vehicle: string, asOf: string, opts: { showCarry: boolean },
+  admin: SupabaseClient, fundId: string, vehicle: string, asOf: string, opts: { showCarry: boolean; accruedMemo?: boolean },
 ): Promise<FleetLetterData | null> {
   const terms = await loadCarryTerms(admin, fundId, vehicle)
   if (terms.kind !== 'distributable_cash') return null
@@ -62,9 +66,13 @@ export async function loadFleetLetterData(
 
   let profitShare: FleetLetterData['profitShare'] = null
   if (opts.showCarry) {
-    const [ledger, reserve] = await Promise.all([loadPostedLedger(admin, fundId, vehicle, asOf), lastReserve(admin, fundId, vehicle)])
-    const nav = gpuBookNav(ledger.accounts, ledger.postings, reserve ?? 0)
-    profitShare = { paid: position.managerProfitSharePaid, accrued: accruedProfitShare({ events, terms: dated, bookNav: nav.bookNav, asOf }) }
+    let accrued: AccruedProfitShare | null = null
+    if (opts.accruedMemo) {
+      const [ledger, reserve] = await Promise.all([loadPostedLedger(admin, fundId, vehicle, asOf), lastReserve(admin, fundId, vehicle)])
+      const nav = gpuBookNav(ledger.accounts, ledger.postings, reserve ?? 0)
+      accrued = accruedProfitShare({ events, terms: dated, bookNav: nav.bookNav, asOf })
+    }
+    profitShare = { paid: position.managerProfitSharePaid, accrued }
   }
   return {
     report: quarterlyReportData({ position, kpis: null, planVsActual: null }),
