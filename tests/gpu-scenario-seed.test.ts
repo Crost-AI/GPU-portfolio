@@ -41,8 +41,9 @@ const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounti
 const ACCESS: AccessContext = { fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, features: FEATURES, grants: { accounting: 'write' }, defaults: {} }
 
 /** A memory database whose forecast_save / forecast_publish do what the SQL does to the rows these tests read. */
-function books(failRulesSaveOf: string | null = null) {
+function books(failRulesSaveOf: string | null = null, failPublishOnce = false) {
   let failing = failRulesSaveOf
+  let failPublish = failPublishOnce
   const written = new Set<string>()
   const { admin, tables } = memoryAdmin({
     chart_of_accounts: GPU_SPV_CHART.map(a => ({ id: `acct-${a.code}`, fund_id: 'f1', vehicle_id: 'v1', code: a.code, name: a.name, type: a.type, subtype: a.subtype ?? null, is_active: true })),
@@ -63,6 +64,7 @@ function books(failRulesSaveOf: string | null = null) {
       return { data: plan.revision, error: null }
     }
     if (name === 'forecast_publish') {
+      if (failPublish) { failPublish = false; return { data: null, error: { message: 'connection reset' } } }
       const id = `ver${++n}`
       tables.forecast_versions.push({ id, fund_id: 'f1', plan_id: plan.id, version_no: 1, status: args.p_status, fleet: args.p_fleet ?? plan.fleet, start_month: plan.start_month, end_month: plan.end_month, published_at: '2026-10-19' })
       return { data: { id, versionNo: 1 }, error: null }
@@ -129,18 +131,51 @@ describe('createPitchScenarios', () => {
     expect(b.rpc.mock.calls.length).toBe(writes)
   })
 
-  it('finishes a run that stopped half-way: only the missing scenarios are created, none twice', async () => {
+  const flowsOf = (b: ReturnType<typeof books>, name: string) => {
+    const p = b.tables.forecast_plans.find(x => x.name === name)!
+    return b.tables.forecast_rules.filter(r => r.plan_id === p.id && r.method === 'linked_fleet').map(r => r.params.flow).sort()
+  }
+
+  it("a failed rule save (Balanced): the next run saves that plan's rules and creates the rest, none twice", async () => {
     const b = books('Balanced')
     await expect(createPitchScenarios(ctx(b.admin), 'GPU SPV I')).rejects.toBeTruthy()
     // Base case done; Balanced inserted with its fleet but its rules never saved.
     expect(b.tables.forecast_plans.map(p => p.name)).toEqual(['Base case', 'Balanced'])
-    expect(b.tables.forecast_plans.every(p => p.fleet != null)).toBe(true)
+    expect(flowsOf(b, 'Balanced')).toEqual([])
     const again = await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
     expect(again.created).toBe(true)
     expect(b.tables.forecast_plans.map(p => p.name).sort()).toEqual(PITCH_ORDER.map(id => PACK_SCENARIOS[id].label).sort())
+    for (const id of PITCH_ORDER) expect(flowsOf(b, PACK_SCENARIOS[id].label), id).toEqual([...FLEET_FLOWS].sort())
     // Base was published once, by the first run.
     expect(b.rpc.mock.calls.filter(c => c[0] === 'forecast_publish')).toHaveLength(1)
     expect(again.baseVersionId).toBeNull()
+    expect((await createPitchScenarios(ctx(b.admin), 'GPU SPV I')).created).toBe(false)
+  })
+
+  it('a failed Base publish: the next run publishes Base on the plan that is there', async () => {
+    const b = books(null, true)
+    await expect(createPitchScenarios(ctx(b.admin), 'GPU SPV I')).rejects.toBeTruthy()
+    expect(b.tables.forecast_plans.map(p => p.name)).toEqual(['Base case'])
+    expect(b.tables.forecast_versions).toEqual([])
+    const again = await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
+    expect(again.baseVersionId).toBe(b.tables.forecast_versions[0].id)
+    expect(b.tables.forecast_versions).toHaveLength(1)
+    expect(b.tables.forecast_plans.filter(p => p.name === 'Base case')).toHaveLength(1)
+    expect(b.tables.forecast_plans).toHaveLength(6)
+  })
+
+  it("never overwrites a scenario someone has edited: only flows on accounts with no rule are added", async () => {
+    const b = books()
+    await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
+    const bal = b.tables.forecast_plans.find(p => p.name === 'Balanced')!
+    // Someone replaces Balanced's datacenter rule with their own, and its insurance rule is lost.
+    const dc = b.tables.forecast_rules.find(r => r.plan_id === bal.id && r.params.flow === 'datacenter')!
+    Object.assign(dc, { method: 'fixed', params: { amount: 9_000 } })
+    b.tables.forecast_rules = b.tables.forecast_rules.filter(r => !(r.plan_id === bal.id && r.params?.flow === 'insurance'))
+    await createPitchScenarios(ctx(b.admin), 'GPU SPV I')
+    expect(b.tables.forecast_rules.find(r => r.plan_id === bal.id && r.account_id === dc.account_id)).toMatchObject({ method: 'fixed', params: { amount: 9_000 } })
+    expect(flowsOf(b, 'Balanced')).toContain('insurance')
+    expect(b.tables.forecast_plans).toHaveLength(6)
   })
 
   it('books no journal entries (the #86 ground rule): forecast_* only, through forecast_save and forecast_publish', async () => {
