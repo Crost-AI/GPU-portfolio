@@ -16,6 +16,9 @@ import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
+import { getVehicleKpis } from '@/components/gpu/revenue-api'
+import { LtmTiles, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
+import type { Kpi } from '@/lib/gpu/kpis'
 import { fleetTotals, todayIso, valuationDate, type FleetTotals } from '@/components/gpu/fleet-math'
 
 // ── GPU fleet (P5) ── The GPU SPV's lead page, in place of a fund's performance lead: what the fleet
@@ -64,6 +67,17 @@ export function GpuDetailView({
     return () => { cancelled = true }
   }, [vehicle])
 
+  // Revenue and utilization over the trailing twelve months (GET /api/fleet/kpis, fleet read: this
+  // page renders only for a caller who can view the fleet).
+  const [ltm, setLtm] = useState<{ kpi: Kpi } | { error: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void getVehicleKpis(browserFetch, vehicle, lastCompleteMonth()).then(r => {
+      if (!cancelled) setLtm(r.ok ? { kpi: r.data.ltm } : { error: r.error })
+    })
+    return () => { cancelled = true }
+  }, [vehicle])
+
   // Unreturned capital, from the pref ledger the Waterfall page reads (lp_capital): asked for this
   // URL's vehicle by name, not the context's, which this page pins only after its first render.
   const readsCapital = useCanRead('lp_capital')
@@ -106,11 +120,10 @@ export function GpuDetailView({
               value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbvBook, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
                 : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
-                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} not on the books yet` : '')
                   + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
-            <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
-            <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
+            <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base={ltmCaption(lastCompleteMonth())} />
             <Metric
               label="Unreturned capital"
               value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}
