@@ -10,7 +10,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadK1Year } from '@/lib/accounting/k1-load'
-import { allocateK1, capitalAccountFoots, K1_CATEGORIES } from '@/lib/accounting/k1-allocation'
+import { allocateK1, capitalAccountFoots, K1_ALL_CATEGORIES } from '@/lib/accounting/k1-allocation'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { currentForm, formStanding, partnerFormStatus, type TaxFormRecord } from './forms'
 
@@ -199,7 +199,7 @@ export async function generateK1Package(
   }
 
   const lineRows = allocation.partners.flatMap(p =>
-    K1_CATEGORIES.filter(c => p.lines[c] !== 0).map(c => ({
+    K1_ALL_CATEGORIES.filter(c => (p.lines[c] ?? 0) !== 0).map(c => ({
       package_id: packageId,
       fund_id: fundId,
       lp_entity_id: p.lpEntityId,
@@ -360,7 +360,7 @@ async function staleAgainstBooks(admin: SupabaseClient, fundId: string, pkg: any
       || differs(c.beginning, Number(s.beginning_capital)) || differs(c.contributions, Number(s.contributions))
       || differs(c.distributions, Number(s.distributions)) || differs(c.netIncome, Number(s.net_income))
       || differs(c.ending, Number(s.ending_capital))
-      || K1_CATEGORIES.some(cat => differs(p.lines[cat] ?? 0, linesOf.get(p.lpEntityId)?.get(cat) ?? 0))
+      || K1_ALL_CATEGORIES.some(cat => differs(p.lines[cat] ?? 0, linesOf.get(p.lpEntityId)?.get(cat) ?? 0))
     if (moved) out.push({ kind: 'stale', detail: s ? 'Figures differ from the books as they now stand.' : 'A partner with activity this year is not in the draft.', lpEntityId: p.lpEntityId })
   }
   for (const id of storedById.keys()) out.push({ kind: 'stale', detail: 'In the draft, but no longer has activity on the books for this year.', lpEntityId: id })

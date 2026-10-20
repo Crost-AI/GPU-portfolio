@@ -50,6 +50,8 @@ export function bucketForSourceType(sourceType: string | null | undefined): Roll
     case 'expense':
     case 'partnership_expense':
     case 'organizational_expense':
+    // ── GPU fleet (P1c) ── the tax book's depreciation difference, allocated like the depreciation.
+    case 'tax_adj_depreciation':
       return 'expenses'
     case 'income':
       // Interest, dividends, and other operating income — distinct from investment
@@ -57,6 +59,8 @@ export function bucketForSourceType(sourceType: string | null | undefined): Roll
       return 'operatingIncome'
     case 'realized_gain':
     case 'gain':
+    // ── GPU fleet (P1c) ── the tax book's disposal-basis difference, allocated like the gain.
+    case 'tax_adj_disposal':
       return 'realizedGains'
     case 'valuation':
     case 'unrealized':

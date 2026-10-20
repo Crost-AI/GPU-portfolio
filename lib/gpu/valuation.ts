@@ -5,7 +5,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { depreciableFromAsset, nbvAsOf } from './depreciation'
-import { loadFleetLedger } from './fleet-ledger'
+import { loadFleetLedger, type AssetLedger } from './fleet-ledger'
 import { taxDepreciationSchedule } from './tax-depreciation'
 import type { GpuAssetRow } from './types'
 
@@ -34,6 +34,36 @@ export function parseAsOf(raw: string | null): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
   const d = new Date(`${raw}T00:00:00Z`)
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw ? null : raw
+}
+
+/**
+ * An asset's tax depreciation in cents by calendar year, on independent tax inputs (no book postings,
+ * no salvage): the hardware placed in service on its in-service date, and each capex its own tax
+ * asset with the parent's method and class, placed in service in its month, or with the hardware
+ * when it was incurred before the server entered service (installation, shipping). A capex reversed
+ * in the ledger drops out with its reversal. Empty before the server has an in-service date.
+ */
+export function taxDepreciationByYear(l: AssetLedger): Map<number, number> {
+  const a = l.asset
+  const out = new Map<number, number>()
+  if (!a.in_service_date) return out
+  const reversed = new Set(l.capex.filter(e => e.reverses).map(e => e.reverses!))
+  const serviceStart = a.in_service_date
+  const pieces = [
+    { basis: Number(a.hardware_cost), inServiceDate: serviceStart },
+    ...l.capex.filter(e => !e.reverses && !reversed.has(e.entry_id)).map(e => {
+      const own = `${e.month}-01`
+      return { basis: e.amount, inServiceDate: own > serviceStart ? own : serviceStart }
+    }),
+  ]
+  for (const p of pieces) {
+    for (const y of taxDepreciationSchedule({
+      id: a.id, basis: p.basis, salvage: 0, lifeMonths: a.useful_life_months, inServiceDate: p.inServiceDate,
+      convention: a.depreciation_convention, disposedOn: a.disposed_on,
+      taxMethod: a.tax_method, taxBonusPct: Number(a.tax_bonus_pct ?? 0), taxLifeYears: a.tax_life_years,
+    })) out.set(y.year, (out.get(y.year) ?? 0) + cents(y.amount))
+  }
+  return out
 }
 
 /**
@@ -69,25 +99,8 @@ export async function valueAssets(
     let accTax = accBook
     let nbvTax = nbvBook
     if (a.tax_method !== 'book' && dep) {
-      // Tax on independent inputs (no book postings, no salvage): the hardware placed in service on
-      // its in-service date, and each capex its own tax asset with the parent's method and class,
-      // placed in service in its month, or with the hardware when it was incurred before the server
-      // entered service (installation, shipping). A capex reversed by the date drops out with its reversal.
-      const reversed = new Set(l.capex.filter(e => e.reverses).map(e => e.reverses!))
-      const serviceStart = a.in_service_date!
-      const pieces = [
-        { basis: Number(a.hardware_cost), inServiceDate: serviceStart },
-        ...l.capex.filter(e => !e.reverses && !reversed.has(e.entry_id)).map(e => {
-          const own = `${e.month}-01`
-          return { basis: e.amount, inServiceDate: own > serviceStart ? own : serviceStart }
-        }),
-      ]
       const year = Number(asOf.slice(0, 4))
-      accTax = pieces.reduce((t, p) => t + taxDepreciationSchedule({
-        id: a.id, basis: p.basis, salvage: 0, lifeMonths: a.useful_life_months, inServiceDate: p.inServiceDate,
-        convention: a.depreciation_convention, disposedOn: a.disposed_on,
-        taxMethod: a.tax_method, taxBonusPct: Number(a.tax_bonus_pct ?? 0), taxLifeYears: a.tax_life_years,
-      }).filter(y => y.year <= year).reduce((s, y) => s + cents(y.amount), 0), 0)
+      accTax = Array.from(taxDepreciationByYear(l).entries()).filter(([y]) => y <= year).reduce((t, [, c]) => t + c, 0)
       nbvTax = disposed ? 0 : Math.max(0, basisCents - accTax)
     }
     // Not on the books as of the date (planned, unbooked, or bought later): there is no carrying value

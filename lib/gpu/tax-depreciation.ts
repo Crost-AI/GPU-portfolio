@@ -1,8 +1,8 @@
 // Tax depreciation for a GPU server, kept separately from book (decision Q7), pure.
 //
 // The SPV takes bonus/MACRS on its return while the books depreciate straight line to salvage, so
-// each asset carries its own tax method and the difference per tax year is a book-to-tax item.
-// Wiring that difference into the book-to-tax run and K-1s is a follow-up (#68).
+// each asset carries its own tax method and the difference per tax year is a book-to-tax item, which
+// the book-to-tax run posts per server (tax-adjustments.ts, #68).
 //
 // HALF-YEAR CONVENTION ONLY. The mid-quarter convention (§168(d)(3): more than 40% of a year's
 // depreciable basis placed in service in Q4, Pub. 946 Tables A-2 to A-5) is not supported; a fleet

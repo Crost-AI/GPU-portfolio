@@ -16,6 +16,7 @@ import { computeCapitalAccounts, type CapitalPosting } from './capital-account'
 import { fetchAllRows } from './load'
 import { txnsForVehicle } from './soi'
 import { vehicleIdByName } from './vehicle-id'
+import { readVehicleKindByName } from './vehicle-domain'
 import { disposalBasis, isLotMethod, type LotMethod } from '@/lib/portfolio/lots'
 import { splitGains, type DisposalGain, type GainSplit } from './holding-period'
 import { grossProceeds } from '@/lib/portfolio/proceeds'
@@ -76,7 +77,7 @@ export async function loadK1Year(
 
   const { data: accts } = await admin
     .from('chart_of_accounts' as any)
-    .select('id, code, lp_entity_id')
+    .select('id, code, type, subtype, lp_entity_id')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
   const acctRows = (accts as any[]) ?? []
@@ -135,6 +136,16 @@ export async function loadK1Year(
   // --- Fund character -------------------------------------------------------
   const inYear = (r: any) =>
     r.journal_entries?.entry_date >= yearStart && r.journal_entries?.entry_date <= yearEnd
+
+  // ── GPU fleet (P1c) ── A GPU SPV's chart reuses the fund chart's codes for other things (4000 is
+  // rental revenue, 5200/5250 insurance and repairs), so its character is read by SUBTYPE.
+  // Fail closed: a kind that could not be read is not a fund — the fund-chart reading would take a
+  // GPU SPV's rental revenue for realized gains.
+  const kind = await readVehicleKindByName(admin, fundId, group)
+  if (kind.error) return { error: `Could not read the kind of "${group}", so its chart cannot be read for tax. Try again.` }
+  if (kind.kind === 'gpu_spv') {
+    return { fund: gpuCharacter(acctRows, posted.filter(inYear)), partners, undeterminedGain: 0, notDerivable: gpuNotDerivable(acctRows, posted.filter(inYear)) }
+  }
   const onCode = (r: any, code: string) => codeById.get(r.account_id) === code
   // Income accounts are credited, so a credit balance is negative under this ledger's sign
   // convention. Income is the negation.
@@ -215,6 +226,71 @@ export async function loadK1Year(
     undeterminedGain: gains.undetermined,
     notDerivable,
   }
+}
+
+/** The signed total of `rows` on the accounts `pick` selects (debits positive). */
+function sumBy(acctRows: any[], rows: any[], pick: (a: any) => boolean): number {
+  const ids = new Set(acctRows.filter(pick).map(a => a.id as string))
+  return roundCents(rows.filter(r => ids.has(r.account_id)).reduce((s, r) => s + Number(r.amount), 0))
+}
+
+const GPU_INCOME_SUBTYPES = new Set(['rental_revenue', 'interest_income', 'disposal_gain'])
+
+/**
+ * ── GPU fleet (P1c) ── A trade or business: rental revenue less every expense (management fee,
+ * datacenter, processing, insurance, repairs, depreciation, the rest) is ordinary business income,
+ * box 1; a server's disposal is §1231, box 10; interest stays portfolio income, box 5. Nothing is
+ * a box 13 deduction — those are the separately stated ones, and an operating cost is not.
+ */
+function gpuCharacter(acctRows: any[], inYear: any[]): FundYearCharacter {
+  const income = (pick: (a: any) => boolean) => roundCents(-sumBy(acctRows, inYear, a => a.type === 'income' && pick(a)))
+  return {
+    interest: income(a => a.subtype === 'interest_income'),
+    ordinaryDividends: 0,
+    qualifiedDividends: 0,
+    shortTermGain: 0,
+    longTermGain: 0,
+    longTermGainWithinApiPeriod: 0,
+    otherIncome: income(a => !GPU_INCOME_SUBTYPES.has(a.subtype)),
+    deductions: 0,
+    businessIncome: income(a => a.subtype === 'rental_revenue'),
+    businessDeductions: sumBy(acctRows, inYear, a => a.type === 'expense'),
+    section1231Gain: income(a => a.subtype === 'disposal_gain'),
+  }
+}
+
+function gpuNotDerivable(acctRows: any[], inYear: any[]): { line: string; reason: string }[] {
+  const out: { line: string; reason: string }[] = []
+  if (sumBy(acctRows, inYear, a => a.subtype === 'disposal_gain') !== 0) {
+    out.push({
+      line: '§1231 gain (10)',
+      reason:
+        'Box 10 carries the whole gain or loss on disposal of equipment. The part of a gain up to the ' +
+        'depreciation taken on the server is §1245 ordinary income, which the preparer splits out on Form 4797 Part III.',
+    })
+  }
+  // 5400 "Professional & organizational" takes the SPV's formation and offering costs along with its
+  // ordinary professional fees, and the books cannot tell them apart. Box 1 deducts all of it; the
+  // §709 part is amortized (or §195 start-up) and syndication costs are never deductible.
+  const professional = sumBy(acctRows, inYear, a => a.type === 'expense' && a.subtype === 'partnership_expense')
+  if (professional !== 0) {
+    out.push({
+      line: 'Ordinary business income (1)',
+      reason:
+        `Box 1 deducts all ${professional.toFixed(2)} of professional and organizational costs (5400) in full. ` +
+        'Any organizational costs in it are capitalised under §709 (up to 5,000 deducted, the rest amortized over 180 months) ' +
+        'and any syndication costs are not deductible at all; the preparer splits them out and adjusts box 1.',
+    })
+  }
+  if (sumBy(acctRows, inYear, a => a.subtype === 'depreciation') !== 0) {
+    out.push({
+      line: 'Depreciation convention',
+      reason:
+        'Tax depreciation uses the half-year convention. If more than 40% of the year\'s depreciable basis ' +
+        'was placed in service in the fourth quarter, §168(d)(3) requires mid-quarter, which this app does not compute.',
+    })
+  }
+  return out
 }
 
 /** Each partner's distributions for the year, split by K-1 box 19 form. */

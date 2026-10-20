@@ -15,7 +15,7 @@
 
 import { renderHtmlToPdf } from '@/lib/lp-report-pdf'
 import { pdfFontCss, PDF_SANS, PDF_DISPLAY } from '@/lib/pdf-fonts'
-import { K1_BOX, K1_CATEGORIES, K1_SUBSET_OF, type K1Category, type K1Lines } from '@/lib/accounting/k1-allocation'
+import { K1_BOX, K1_SUBSET_OF, k1CategoriesIn, type K1Category, type K1Lines } from '@/lib/accounting/k1-allocation'
 
 function esc(s: string): string {
   return String(s ?? '')
@@ -31,6 +31,8 @@ function money(v: number): string {
 }
 
 const LINE_LABEL: Record<K1Category, string> = {
+  ordinaryBusinessIncome: 'Ordinary business income (loss)',
+  section1231Gain: 'Net section 1231 gain (loss)',
   interest: 'Interest income',
   ordinaryDividends: 'Ordinary dividends',
   qualifiedDividends: 'Qualified dividends',
@@ -76,8 +78,9 @@ export function buildK1Html(d: K1PdfData): string {
   const { displayFont } = d
 
   const isDistribution = (c: K1Category) => c.startsWith('distributions')
-  const incomeLines = K1_CATEGORIES.filter(c => !isDistribution(c))
-  const distributionLines = K1_CATEGORIES.filter(isDistribution)
+  // A box 1 or box 10 line only when it has an amount (a GPU SPV), so a fund's K-1 keeps its lines.
+  const incomeLines = k1CategoriesIn(d.lines).filter(c => !isDistribution(c))
+  const distributionLines = k1CategoriesIn(d.lines).filter(isDistribution)
 
   const row = (c: K1Category) => {
     const subsetOf = K1_SUBSET_OF[c]

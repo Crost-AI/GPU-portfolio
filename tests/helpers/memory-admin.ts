@@ -2,9 +2,9 @@
 // An in-memory stand-in for the Supabase admin client, for tests whose flow crosses several
 // tables (post an entry, adopt its transactions, link a bank row). Implements the query-builder
 // subset lib/accounting uses — select (with `journal_postings(...)` embedded under
-// `journal_entries`), eq/match/neq/in/is/not-is/like/contains/gt/gte/lt/lte, order, range, limit, insert, upsert
+// `journal_entries`, and `journal_entries(...)` under `journal_postings`), eq/match/neq/in/is/not-is/like/contains/gt/gte/lt/lte, order, range, limit, insert, upsert
 // (ignoreDuplicates), update, delete, maybeSingle, single, count+head — over plain arrays.
-// Not a database: no RLS, no triggers, no joins beyond the one embed.
+// Not a database: no RLS, no triggers, no joins beyond these embeds.
 
 export type Row = Record<string, any>
 type Op = 'insert' | 'update' | 'delete'
@@ -14,6 +14,11 @@ const EMBEDS: Record<string, Record<string, string>> = {
   journal_entries: { journal_postings: 'journal_entry_id' },
   accounting_schedules: { accounting_schedule_lines: 'schedule_id' },
   forecast_entries: { forecast_postings: 'entry_id' },
+}
+
+/** The other direction: a child row embedding its parent (`journal_entries!inner(...)` under `journal_postings`). */
+const PARENT_EMBEDS: Record<string, Record<string, string>> = {
+  journal_postings: { journal_entries: 'journal_entry_id' },
 }
 
 export interface MemoryAdminOptions {
@@ -100,6 +105,12 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
       const out = { ...row }
       for (const [child, fk] of Object.entries(EMBEDS[table] ?? {})) {
         if (cols.includes(`${child}(`)) out[child] = (tables[child] ?? []).filter(c => c[fk] === row.id).map(c => ({ ...c }))
+      }
+      // A row seeded with its parent inline keeps it; one carrying the foreign key gets it looked up.
+      for (const [parent, fk] of Object.entries(PARENT_EMBEDS[table] ?? {})) {
+        if (!new RegExp(`\\b${parent}(!inner)?\\(`).test(cols) || row[fk] == null) continue
+        const found = (tables[parent] ?? []).find(p => p.id === row[fk])
+        if (found) out[parent] = { ...found }
       }
       return out
     }
