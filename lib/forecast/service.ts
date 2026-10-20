@@ -1770,7 +1770,8 @@ export async function getPlanReturns(
   // flagged by carryRestricted). Distributions keep carry inside them, as they always have.
   if (!seesCarry(ctx.access)) {
     base.years = base.years.map(y => ({ ...y, carry: 0 }))
-    base.totals = { ...base.totals, carry: 0 }
+    // The end value's manager share is the profit share too (a GPU SPV's terminalCarry).
+    base.totals = { ...base.totals, carry: 0, ...(base.totals.terminalCarry != null ? { terminalCarry: 0 } : {}) }
     if (simulation) simulation = { ...simulation, carry: { p10: 0, p25: 0, p50: 0, p75: 0, p90: 0, mean: 0 } }
   }
   return {

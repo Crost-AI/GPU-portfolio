@@ -146,6 +146,10 @@ describe('createPitchScenarios', () => {
     expect(again.created).toBe(true)
     expect(b.tables.forecast_plans.map(p => p.name).sort()).toEqual(PITCH_ORDER.map(id => PACK_SCENARIOS[id].label).sort())
     for (const id of PITCH_ORDER) expect(flowsOf(b, PACK_SCENARIOS[id].label), id).toEqual([...FLEET_FLOWS].sort())
+    // And the resumed plan compiles its fleet: Balanced's rental revenue is in its draft.
+    const balanced = b.tables.forecast_plans.find(p => p.name === 'Balanced')!
+    const saves = b.rpc.mock.calls.filter(c => c[0] === 'forecast_save' && c[1].p_plan_id === balanced.id && c[1].p_rule_upserts.length)
+    expect(saves.at(-1)![1].p_entries.some((e: any) => e.account_id === 'acct-4000')).toBe(true)
     // Base was published once, by the first run.
     expect(b.rpc.mock.calls.filter(c => c[0] === 'forecast_publish')).toHaveLength(1)
     expect(again.baseVersionId).toBeNull()

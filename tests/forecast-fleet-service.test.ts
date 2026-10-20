@@ -306,6 +306,11 @@ describe("a GPU SPV plan's returns", () => {
     const b = books([plan()])
     const r = await getPlanReturns(ctx(b.admin, NO_GP), { vehicle: GPU, planId: 'p1' })
     expect(r.base.totals.carry).toBe(0)
+    // The end value's manager share is hidden too (19,826.59 with the grant).
+    expect(r.base.totals.terminalCarry).toBe(0)
+    expect(r.base.years.every(y => y.carry === 0)).toBe(true)
+    const shown = await getPlanReturns(ctx(books([plan()]).admin), { vehicle: GPU, planId: 'p1' })
+    expect(shown.base.totals.terminalCarry).toBe(19_826.59)
     expect(r.carryRestricted).toBe(true)
   })
 })
