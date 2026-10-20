@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { buildStatementPackage } from '@/lib/accounting/statement-package'
+import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 
 // GET — the full statement package for a vehicle, scoped to a statement period:
 //   ?preset=this_quarter|last_quarter|ytd|prior_year|itd   — or —
@@ -34,6 +35,8 @@ export async function GET(req: NextRequest) {
   // is reading partner capital — so `accounting` now implies `lp_capital` outright
   // (see DOMAIN_META.lp_capital.impliedBy) and this package is whole again.
 
-  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams)
+  // A GPU SPV's accrued profit share is a memo of the manager's economics: only with gp_economics.
+  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams, { accruedMemo: hasAccess(access, 'gp_economics', 'read') })
   return NextResponse.json(pkg.comparisons ? { ...pkg.payload, comparisons: pkg.comparisons } : pkg.payload)
 }

@@ -4,6 +4,10 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 import { DEFAULT_STYLE_GUIDE, DEFAULT_TEMPLATE_NAME } from '@/lib/lp-letters/default-template'
+import { GPU_QUARTERLY_STYLE_GUIDE, GPU_QUARTERLY_TEMPLATE_NAME } from '@/lib/lp-letters/gpu-template'
+import { GPU_SPV_KIND } from '@/lib/vehicle-kinds'
+import { loadAccessContext } from '@/lib/access/effective'
+import { visibleVehicleIds } from '@/lib/access/scope'
 import { extractFromBuffer } from '@/lib/parsing/extractAttachmentText'
 import { createFundAIProvider } from '@/lib/ai'
 import { logAIUsage } from '@/lib/ai/usage'
@@ -102,6 +106,27 @@ export async function POST(req: NextRequest) {
 
   // JSON body — create default template
   const body = await req.json().catch(() => ({}))
+
+  // { template: 'gpu_quarterly' }: the GPU SPV investor letter, for a fund that has a GPU SPV only.
+  // Not the fund's default: a GPU SPV's letter picks it by name (draft-from-brief resolveTemplate).
+  if (body.template === 'gpu_quarterly') {
+    // A GPU SPV among the caller's own entities: one they cannot see is neither confirmed nor used.
+    const visible = visibleVehicleIds(await loadAccessContext(admin, fundId, writeCheck.userId, writeCheck.role))
+    let q = (admin as any).from('fund_vehicles').select('id').eq('fund_id', fundId).eq('kind', GPU_SPV_KIND)
+    if (visible) q = q.in('id', visible.length ? visible : ['00000000-0000-0000-0000-000000000000'])
+    const { data: gpu } = await q.limit(1)
+    if (!(gpu as any[] | null)?.length) return NextResponse.json({ error: 'The GPU quarterly template is for a fund with a GPU SPV.' }, { status: 400 })
+    const { data: existing } = await (admin as any).from('lp_letter_templates').select('*').eq('fund_id', fundId).eq('name', GPU_QUARTERLY_TEMPLATE_NAME).maybeSingle()
+    if (existing) return NextResponse.json(existing)
+    const { data, error } = await admin
+      .from('lp_letter_templates')
+      .insert({ fund_id: fundId, name: GPU_QUARTERLY_TEMPLATE_NAME, style_guide: GPU_QUARTERLY_STYLE_GUIDE, source_type: 'default', is_default: false })
+      .select()
+      .single()
+    if (error) return dbError(error, 'lp-letters-templates')
+    return NextResponse.json(data, { status: 201 })
+  }
+
   const name = body.name ?? DEFAULT_TEMPLATE_NAME
 
   const { data, error } = await admin
