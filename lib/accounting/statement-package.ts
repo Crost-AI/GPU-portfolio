@@ -36,6 +36,11 @@ import { listAssets } from '@/lib/gpu/assets'
 import { fleetSchedule, type FleetScheduleRow } from '@/lib/gpu/fleet-schedule'
 import type { GpuAsset, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { vehicleIdByName } from './vehicle-id'
+import { loadCarryTerms, type VehicleCarryTerms } from './carry'
+import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from './distributions'
+import { cashWaterfallEvents, cashWaterfallTerms } from './distribution-waterfall'
+import { accruedProfitShare, type AccruedProfitShare } from '@/lib/gpu/accrued'
+import { gpuBookNav } from '@/lib/gpu/book-nav'
 
 /** The JSON body the statements route returns — the on-screen statement set. */
 export interface StatementPayload {
@@ -63,6 +68,13 @@ export interface StatementPayload {
    * kind, as `fof` is, so their packages are byte-identical.
    */
   fleetSchedule?: FleetScheduleRow[]
+  /**
+   * A GPU SPV's accrued profit share: a DISPLAY MEMO (lib/gpu/accrued.ts), never booked — it changes
+   * no balance in any statement above. Present only when the caller asked for it and may see the
+   * manager's economics (the statements route, with gp_economics); absent from every export, PDF and
+   * tax/K-1 path, which never ask.
+   */
+  accruedProfitShare?: AccruedProfitShare & { memo: 'not booked' }
 }
 
 export interface StatementPackage {
@@ -127,6 +139,8 @@ export interface LedgerData {
   kind: string | null
   /** A GPU SPV's register, for the fleet schedule's detail; absent for every other kind. */
   fleet?: { assets: GpuAsset[]; types: GpuAssetTypeRow[] }
+  /** What the accrued profit-share memo is computed from, loaded only when asked for (a GPU SPV). */
+  accruedMemo?: { terms: VehicleCarryTerms; contingencyByDate: Map<string, number>; reserve: number }
 }
 
 /** Min entryDate across postings, ignoring nulls. */
@@ -144,7 +158,11 @@ export async function loadLedgerData(
   admin: SupabaseClient,
   fundId: string,
   group: string,
-  opts: { basis?: StatementBasis } = {},
+  opts: {
+    basis?: StatementBasis
+    /** Load what the accrued profit-share memo needs (a GPU SPV, a caller with gp_economics). Off by default. */
+    accruedMemo?: boolean
+  } = {},
 ): Promise<LedgerData> {
   const [
     { accounts, postings, capitalPostings, sourcedPostings }, names,
@@ -233,10 +251,18 @@ export async function loadLedgerData(
       : [[], []]
     fleet = { assets, types }
   }
+  let accruedMemo: LedgerData['accruedMemo']
+  if (isGpuSpv(kind) && opts.accruedMemo) {
+    const [terms, contingencyByDate, reserve] = await Promise.all([
+      loadCarryTerms(admin, fundId, group), loadContingencyByDate(admin, fundId, group), lastReserve(admin, fundId, group),
+    ])
+    if (terms.kind === 'distributable_cash') accruedMemo = { terms, contingencyByDate, reserve: reserve ?? 0 }
+  }
   return {
     accounts, postings, capitalPostings, sourcedPostings, names,
     kind,
     ...(fleet ? { fleet } : {}),
+    ...(accruedMemo ? { accruedMemo } : {}),
     fofRaw,
     feeds, observations, levelWarning,
     walletRows: walletRowsKept, balances, chainWarning,
@@ -328,6 +354,7 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
     ...(data.fofRaw ? { fof: fofExhibits(data.fofRaw, period.end) } : {}),
     // Absent for every kind but a GPU SPV, likewise.
     ...(isGpuSpv(data.kind) ? { fleetSchedule: fleetSchedule(data.accounts, cumulative, data.fleet?.assets ?? [], data.fleet?.types ?? []) } : {}),
+    ...(isGpuSpv(data.kind) && data.accruedMemo ? { accruedProfitShare: accruedMemoFor(data, cumulative, period.end ?? new Date().toISOString().slice(0, 10)) } : {}),
     cashFlows: data.cashAccount
       ? statementOfCashFlows(
           data.cashAccount.id, inPeriodSourced, data.accounts,
@@ -337,6 +364,16 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
         )
       : null,
   }
+}
+
+/** The memo as at `asOf`: the distributions so far replayed, book NAV distributed hypothetically. */
+function accruedMemoFor(data: LedgerData, cumulative: LedgerData['postings'], asOf: string): AccruedProfitShare & { memo: 'not booked' } {
+  const m = data.accruedMemo!
+  const h = loadWaterfallHistory(data.capitalPostings, new Set(m.terms.recipients.map(r => r.lpEntityId)), asOf, m.contingencyByDate)
+  const cash = cashWaterfallTerms(m.terms)
+  const terms = cash.dayCount === 'periodic' ? { ...cash, dayCount: '30_360' as const } : cash
+  const nav = gpuBookNav(data.accounts, cumulative, m.reserve)
+  return { ...accruedProfitShare({ events: cashWaterfallEvents(h.contributions, h.priors, asOf), terms, bookNav: nav.bookNav, asOf }), memo: 'not booked' }
 }
 
 /**
@@ -350,8 +387,10 @@ export async function buildStatementPackage(
   fundId: string,
   group: string,
   sp: URLSearchParams,
+  /** The accrued profit-share memo (a GPU SPV): only for a caller with gp_economics; off by default. */
+  opts: { accruedMemo?: boolean } = {},
 ): Promise<StatementPackage> {
-  const data = await loadLedgerData(admin, fundId, group, { basis: basisFromParam(sp.get('basis')) })
+  const data = await loadLedgerData(admin, fundId, group, { basis: basisFromParam(sp.get('basis')), accruedMemo: opts.accruedMemo })
   return buildStatementPackageFromData(data, sp)
 }
 

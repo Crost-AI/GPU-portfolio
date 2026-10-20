@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CHART, GPU_SPV_CHART, assetAccountCode } from './chart'
+import { NO_CARRY } from './carry'
 import { computePayload, loadLedgerData, type LedgerData } from './statement-package'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import type { Account } from './types'
@@ -166,5 +167,38 @@ describe('loadLedgerData reads the register for a GPU SPV only', () => {
     expect(gpu.fleet?.types.map(t => t.code)).toEqual(['b200'])
     const fund = await loadLedgerData(admin as any, 'f1', 'Fund I')
     expect('fleet' in fund).toBe(false)
+  })
+})
+
+describe('the accrued profit-share memo in the statement package (gp_economics only, never booked)', () => {
+  const memoTerms = { ...NO_CARRY, kind: 'distributable_cash' as const, prefRate: 0.08, carryRate: 0.3, prefDayCount: '30_360' as const, rocLpShare: 1, recipients: [{ lpEntityId: 'mgr', pct: 100 }] }
+  // Contributed 1,000,000 on 5 Jan 2027 (the call entry above, per LP 'lp1'); no distribution yet.
+  const withMemo = (reserve = 0) => ({ ...ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), accruedMemo: { terms: memoTerms, contingencyByDate: new Map(), reserve } })
+
+  it('is present when loaded for it, and changes no balance in any statement', () => {
+    const plain = computePayload(ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), YEAR)
+    const memo = computePayload(withMemo(), YEAR)
+    expect(memo.accruedProfitShare).toMatchObject({ asOf: '2027-12-31', memo: 'not booked' })
+    // Book NAV: cash 648,000 − owed 335,000 (2000) + equipment 330,000 = 643,000; under the capital, so nothing accrues.
+    expect(memo.accruedProfitShare!.bookNav).toBe(643_000)
+    expect(memo.accruedProfitShare!.carryMemo).toBe(0)
+    const { accruedProfitShare: _m, ...rest } = memo
+    expect(rest).toEqual(plain)
+  })
+
+  it('is absent unless asked for: by default, as every export, PDF and tax/K-1 loader reads', () => {
+    expect('accruedProfitShare' in computePayload(ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), YEAR)).toBe(false)
+    // A fund never carries it, asked or not.
+    expect('accruedProfitShare' in computePayload({ ...ledger(chart(DEFAULT_CHART), 'fund', VC_ENTRIES), accruedMemo: withMemo().accruedMemo }, YEAR)).toBe(false)
+  })
+
+  it('loadLedgerData loads it only when asked, for a GPU SPV', async () => {
+    const { admin } = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'GPU SPV I', kind: 'gpu_spv' }],
+      vehicle_waterfall_terms: [{ fund_id: 'f1', vehicle_id: 'v1', kind: 'distributable_cash', carry_rate: 0.3, pref_rate: 0.08, catchup_rate: 1, pref_compounds: false, carry_recipients: [{ lp_entity_id: 'mgr', pct: 100 }], pref_day_count: '30_360', roc_lp_share: 1 }],
+      gpu_assets: [], gpu_asset_types: [], distributions: [],
+    })
+    expect('accruedMemo' in (await loadLedgerData(admin as any, 'f1', 'GPU SPV I'))).toBe(false)
+    expect((await loadLedgerData(admin as any, 'f1', 'GPU SPV I', { accruedMemo: true })).accruedMemo?.terms.kind).toBe('distributable_cash')
   })
 })
