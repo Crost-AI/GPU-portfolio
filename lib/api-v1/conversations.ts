@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ChatMessage } from '@/lib/ai/types'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { hiddenFleetCompanyIds, refuseFleetCompany } from '@/lib/access/fleet-company'
+import { hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
@@ -74,31 +74,40 @@ export async function listConversations(
   principal: AnalystPrincipal,
   options: { limit: number; cursor?: string | null },
 ) {
-  let query: any = admin
-    .from('analyst_conversations')
-    .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
-    .eq('fund_id', principal.fundId)
-    .eq('user_id', principal.userId)
-    .order('updated_at', { ascending: false })
-    .order('id', { ascending: false })
-    .limit(options.limit + 1)
-
-  if (options.cursor) {
-    const cursor = decodeCursor(options.cursor)
-    query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
+  const build = (cursorRaw: string | null | undefined) => {
+    let query: any = admin
+      .from('analyst_conversations')
+      .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
+      .eq('fund_id', principal.fundId)
+      .eq('user_id', principal.userId)
+      .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(options.limit + 1)
+    if (cursorRaw) {
+      const cursor = decodeCursor(cursorRaw)
+      query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
+    }
+    return query
   }
 
-  const { data, error } = await query
-  if (error) throw new Error(error.message)
-  const rows = (data ?? []) as ConversationRow[]
+  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out (#91),
+  // and never takes a place in the page: the read continues past hidden threads (keyset cursor).
+  const hidden = await hiddenFleetIdsInFund(admin, principal.fundId, principal.userId)
+  const rows: ConversationRow[] = []
+  let cursorRaw = options.cursor ?? null
+  for (;;) {
+    const { data, error } = await build(cursorRaw)
+    if (error) throw new Error(error.message)
+    const fetched = (data ?? []) as ConversationRow[]
+    for (const r of fetched) if (!r.company_id || !hidden.has(r.company_id)) rows.push(r)
+    if (rows.length > options.limit || fetched.length <= options.limit || !hidden.size) break
+    cursorRaw = encodeCursor(fetched[fetched.length - 1])
+  }
   const hasMore = rows.length > options.limit
-  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out (#91).
-  const fetched = rows.slice(0, options.limit)
-  const hidden = await hiddenFleetCompanyIds(admin, principal.fundId, principal.userId, fetched.map(r => r.company_id).filter((v): v is string => !!v))
-  const page = hidden.size ? fetched.filter(r => !r.company_id || !hidden.has(r.company_id)) : fetched
+  const page = rows.slice(0, options.limit)
   return {
     conversations: page.map(compact),
-    nextCursor: hasMore && fetched.length ? encodeCursor(fetched[fetched.length - 1]) : null,
+    nextCursor: hasMore && page.length ? encodeCursor(page[page.length - 1]) : null,
   }
 }
 

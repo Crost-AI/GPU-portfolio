@@ -202,6 +202,53 @@ describe('fleet companies after a GPU SPV merge', () => {
   })
 })
 
+// The lead on #98 r3: the merge itself, end to end (lib/vehicles-merge.ts with the real retag).
+describe('mergeVehicles and the fleet company', () => {
+  const ALL = { vehicles: { all: true, ids: [] } } as any
+  const who = { fundId: 'f', userId: 'u', access: ALL }
+  const activeFleet = () => m.tables.companies.filter((c: any) => c.holding_type === 'gpu_fleet' && c.status === 'active')
+
+  it('two GPU SPVs: exactly one active fleet company remains, and the retired one keeps its metric values', async () => {
+    const { mergeVehicles } = await import('@/lib/vehicles-merge')
+    m.tables.fund_vehicles.push({ id: 'v-gpu2', fund_id: 'f', name: 'GPU II', kind: 'gpu_spv', aliases: [] })
+    const target = await ensureFleetCompany(m.admin, 'f', 'GPU I', 'u')
+    const source = await ensureFleetCompany(m.admin, 'f', 'GPU II', 'u')
+    const sourceMetric = m.tables.metrics.find((x: any) => x.company_id === source && x.slug === 'gpu-revenue')!
+    m.tables.metric_values.push({ id: 'mv-old', fund_id: 'f', company_id: source, metric_id: sourceMetric.id, period_year: 2026, period_month: 8, value_number: 25_920 })
+
+    const out = await mergeVehicles(m.admin, who, 'v-gpu2', 'v-gpu')
+    expect(out.ok).toBe(true)
+    expect(activeFleet().map((c: any) => c.id)).toEqual([target])
+    expect(m.tables.companies.find((c: any) => c.id === source)).toMatchObject({ status: 'exited', name: 'Fleet — GPU II (merged into GPU I)' })
+    expect(m.tables.metric_values.find((v: any) => v.id === 'mv-old')).toMatchObject({ company_id: source, metric_id: sourceMetric.id, value_number: 25_920 })
+    expect(m.tables.fund_vehicles.map((v: any) => v.id)).not.toContain('v-gpu2')
+  })
+
+  it('a GPU SPV into a VC fund vehicle is refused (409) and no fleet company changes', async () => {
+    const { mergeVehicles } = await import('@/lib/vehicles-merge')
+    const fleetId = await ensureFleetCompany(m.admin, 'f', 'GPU I', 'u')
+    const before = structuredClone(m.tables.companies)
+    const out = await mergeVehicles(m.admin, who, 'v-gpu', 'v-fund')
+    expect(out).toMatchObject({ ok: false, status: 409 })
+    expect(m.tables.companies).toEqual(before)
+    expect(activeFleet().map((c: any) => c.id)).toEqual([fleetId])
+    expect(m.tables.fund_vehicles.map((v: any) => v.id)).toEqual(['v-gpu', 'v-fund'])
+  })
+
+  it('a VC fund into a VC fund is unchanged: companies retag, no fleet company is created, renamed or retired', async () => {
+    const { mergeVehicles } = await import('@/lib/vehicles-merge')
+    const fleetId = await ensureFleetCompany(m.admin, 'f', 'GPU I', 'u')
+    m.tables.fund_vehicles.push({ id: 'v-fund2', fund_id: 'f', name: 'Fund II', kind: 'fund', aliases: [] })
+    m.tables.companies.push({ id: 'vc2', fund_id: 'f', name: 'Beta', holding_type: 'company', portfolio_group: ['Fund II'] })
+    const fleetBefore = structuredClone(m.tables.companies.filter((c: any) => c.holding_type === 'gpu_fleet'))
+    const out = await mergeVehicles(m.admin, who, 'v-fund2', 'v-fund')
+    expect(out.ok).toBe(true)
+    expect(m.tables.companies.find((c: any) => c.id === 'vc2')!.portfolio_group).toEqual(['Fund I'])
+    expect(m.tables.companies.filter((c: any) => c.holding_type === 'gpu_fleet')).toEqual(fleetBefore)
+    expect(activeFleet().map((c: any) => c.id)).toEqual([fleetId])
+  })
+})
+
 describe('the merge wires the reconciliation', () => {
   it('reads the target’s fleet company before the retag and reconciles after it, for GPU SPVs only', async () => {
     const { readFileSync } = await import('node:fs')

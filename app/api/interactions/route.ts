@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { filterByCompany } from '@/lib/access/scope'
-import { hiddenFleetCompanyIds } from '@/lib/access/fleet-company'
+import { firstVisibleRows, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -24,37 +24,37 @@ export async function GET(req: NextRequest) {
   const companyId = req.nextUrl.searchParams.get('company_id')
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '50', 10), 200)
 
-  let query = admin
-    .from('interactions')
-    .select('id, fund_id, company_id, email_id, user_id, tags, subject, summary, intro_contacts, body_preview, interaction_date, created_at')
-    .eq('fund_id', membership.fund_id)
-    .order('interaction_date', { ascending: false })
-    .limit(limit)
-
   // Interactions about companies the caller can see, and those about no company.
   const scope = await loadEntityScopeForUser(admin, user.id)
-  query = filterByCompany(query, scope ? scope.companyIds : [], { keepUnlinked: true })
-
-  if (tag) {
-    query = query.contains('tags', [tag])
+  const build = () => {
+    let query = admin
+      .from('interactions')
+      .select('id, fund_id, company_id, email_id, user_id, tags, subject, summary, intro_contacts, body_preview, interaction_date, created_at')
+      .eq('fund_id', membership.fund_id)
+      .order('interaction_date', { ascending: false })
+    query = filterByCompany(query, scope ? scope.companyIds : [], { keepUnlinked: true })
+    if (tag) {
+      query = query.contains('tags', [tag])
+    }
+    if (companyId) {
+      query = query.eq('company_id', companyId)
+    }
+    return query
   }
-  if (companyId) {
-    query = query.eq('company_id', companyId)
-  }
 
-  const { data: interactions, error } = await query
+  // ── GPU fleet (P3) ── interactions about a fleet company the caller may not read are left out
+  // (#91) without taking a place in the limit: the read pages past them.
+  const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
+  const { data: interactions, error } = fleetHidden.size
+    ? await firstVisibleRows<any>((f, t) => build().order('id').range(f, t), limit, fleetHidden)
+    : await build().limit(limit)
 
   if (error) {
     return dbError(error, 'interactions')
   }
 
-  // ── GPU fleet (P3) ── interactions about a fleet company the caller may not read are left out (#91).
-  const fleetHidden = await hiddenFleetCompanyIds(admin, membership.fund_id, user.id,
-    (interactions ?? []).map((r: any) => r.company_id).filter(Boolean) as string[])
-  const visibleInteractions = fleetHidden.size ? (interactions ?? []).filter((r: any) => !r.company_id || !fleetHidden.has(r.company_id)) : interactions
-
   // Batch-load company names
-  const companyIds = Array.from(new Set((visibleInteractions ?? []).map(i => (i as any).company_id).filter(Boolean))) as string[]
+  const companyIds = Array.from(new Set((interactions ?? []).map(i => (i as any).company_id).filter(Boolean))) as string[]
   const companyNameMap: Record<string, string> = {}
   if (companyIds.length > 0) {
     const { data: companies } = await admin
@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const result = (visibleInteractions ?? []).map((i: any) => ({
+  const result = (interactions ?? []).map((i: any) => ({
     ...i,
     company_name: i.company_id ? companyNameMap[i.company_id] ?? null : null,
   }))

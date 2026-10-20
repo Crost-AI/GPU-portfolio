@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeNotesQuery } from '@/lib/notes/entity'
-import { hiddenFleetCompanyIds } from '@/lib/access/fleet-company'
+import { firstVisibleRows, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -22,26 +22,32 @@ export async function GET(req: NextRequest) {
 
   const filter = req.nextUrl.searchParams.get('filter')
 
-  let query = admin
-    .from('company_notes')
-    .select('*')
-    .eq('fund_id', membership.fund_id)
-    .order('pinned_at', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false })
-    .limit(200)
-
   // Notes for the caller's entities (and, about a company, a company of theirs). See lib/notes/entity.ts.
   const scope = await loadEntityScopeForUser(admin, user.id)
   if (!scope) return NextResponse.json([])
-  query = scopeNotesQuery(query, scope)
 
-  if (filter === 'general') {
-    query = query.is('company_id', null)
-  } else if (filter === 'mentions') {
-    query = query.contains('mentioned_user_ids', [user.id])
+  const build = () => {
+    let query = admin
+      .from('company_notes')
+      .select('*')
+      .eq('fund_id', membership.fund_id)
+      .order('pinned_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+    query = scopeNotesQuery(query, scope)
+    if (filter === 'general') {
+      query = query.is('company_id', null)
+    } else if (filter === 'mentions') {
+      query = query.contains('mentioned_user_ids', [user.id])
+    }
+    return query
   }
 
-  const { data: notes, error } = await query as {
+  // ── GPU fleet (P3) ── notes about a fleet company the caller may not read are left out (#91), and
+  // they never take a place in the 200: the read pages past them (id breaks ties so pages are stable).
+  const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
+  const { data: notes, error } = (fleetHidden.size
+    ? await firstVisibleRows((f, t) => build().order('id').range(f, t), 200, fleetHidden)
+    : await build().limit(200)) as {
     data: { id: string; content: string; user_id: string; company_id: string | null; mentioned_user_ids: string[] | null; created_at: string; updated_at: string }[] | null
     error: { message: string } | null
   }
@@ -71,13 +77,8 @@ export async function GET(req: NextRequest) {
     nameMap[m.user_id] = m.display_name
   }
 
-  // ── GPU fleet (P3) ── notes about a fleet company the caller may not read are left out (#91).
-  const fleetHidden = await hiddenFleetCompanyIds(admin, membership.fund_id, user.id,
-    (notes ?? []).map((r: any) => r.company_id).filter(Boolean) as string[])
-  const visibleNotes = fleetHidden.size ? (notes ?? []).filter((r: any) => !r.company_id || !fleetHidden.has(r.company_id)) : notes
-
   // Batch-load company names
-  const companyIds = Array.from(new Set((visibleNotes ?? []).map(n => n.company_id).filter(Boolean))) as string[]
+  const companyIds = Array.from(new Set((notes ?? []).map(n => n.company_id).filter(Boolean))) as string[]
   const companyNameMap: Record<string, string> = {}
   if (companyIds.length > 0) {
     const { data: companies } = await admin
@@ -92,7 +93,7 @@ export async function GET(req: NextRequest) {
   // Look up user emails
   const result = []
   const emailCache: Record<string, string> = {}
-  for (const note of visibleNotes ?? []) {
+  for (const note of notes ?? []) {
     if (!emailCache[note.user_id]) {
       const { data: { user: noteUser } } = await admin.auth.admin.getUserById(note.user_id)
       emailCache[note.user_id] = noteUser?.email ?? 'Unknown'

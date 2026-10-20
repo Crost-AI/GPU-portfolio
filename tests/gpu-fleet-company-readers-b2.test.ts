@@ -31,6 +31,7 @@ import { GET as oneUpdate } from '@/app/api/company-updates/[id]/route'
 import { GET as artifact } from '@/app/api/company-updates/[id]/artifacts/[artifactId]/route'
 import { GET as notes } from '@/app/api/notes/route'
 import { GET as interactions } from '@/app/api/interactions/route'
+import { GET as analystThreads } from '@/app/api/analyst/conversations/route'
 import { PATCH as patchEmail } from '@/app/api/emails/[id]/route'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { getConversation, listConversations } from '@/lib/api-v1/conversations'
@@ -119,6 +120,54 @@ describe('notes and interactions (B2)', () => {
     s.ctx = FLEET_READ()
     expect(await noteIds()).toEqual(['n-fleet', 'n-gen', 'n-vc'])
     expect(await interactionIds()).toEqual(['i-fleet', 'i-vc'])
+  })
+})
+
+// Codex r3 on #98: hidden rows are skipped BEFORE the limit, so a page full of fleet rows cannot
+// push a visible row out of the list.
+describe('hidden fleet rows never take a place in the limit', () => {
+  const day = (n: number) => `2026-08-${String(n).padStart(2, '0')}`
+  const ts = (i: number) => `2026-10-10T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`
+
+  it('notes: 200 fleet notes ahead of a visible one; the visible note just beyond them is returned', async () => {
+    for (let i = 0; i < 200; i++) s.m.tables.company_notes.push({ id: `n-h${i}`, fund_id: 'f', company_id: 'fleet', user_id: 'u', content: 'x', created_at: ts(i), pinned_at: null })
+    s.m.tables.company_notes.push({ id: 'n-late', fund_id: 'f', company_id: 'vc', user_id: 'u', content: 'y', created_at: '2026-09-01', pinned_at: null })
+    const ids = ((await (await notes(req('/api/notes'))).json()) as any[]).map(n => n.id)
+    expect(ids).toEqual(['n-vc', 'n-gen', 'n-late'])
+    s.ctx = FLEET_READ()
+    expect(((await (await notes(req('/api/notes'))).json()) as any[])).toHaveLength(200)
+  })
+
+  it('interactions: a limit-full of fleet rows ahead of a visible one; the visible one is returned, in order', async () => {
+    for (let i = 0; i < 200; i++) s.m.tables.interactions.push({ id: `i-h${i}`, fund_id: 'f', company_id: 'fleet', interaction_date: ts(i), tags: [] })
+    s.m.tables.interactions.push({ id: 'i-late', fund_id: 'f', company_id: 'vc', interaction_date: day(1), tags: [] })
+    const ids = ((await (await interactions(req('/api/interactions?limit=200'))).json()) as any[]).map(i => i.id)
+    expect(ids).toEqual(['i-vc', 'i-late'])
+  })
+
+  it('analyst threads: 20 fleet threads ahead of a visible one; the visible one is returned', async () => {
+    s.m.tables.analyst_conversations = []
+    for (let i = 0; i < 20; i++) s.m.tables.analyst_conversations.push({ id: `c-h${i}`, fund_id: 'f', user_id: 'u', company_id: 'fleet', updated_at: ts(i) })
+    s.m.tables.analyst_conversations.push({ id: 'c-late', fund_id: 'f', user_id: 'u', company_id: 'vc', updated_at: day(1) })
+    const body = await (await analystThreads(req('/api/analyst/conversations'))).json()
+    expect(body.conversations.map((c: any) => c.id)).toEqual(['c-late'])
+  })
+
+  it('v1 conversations: pages and their cursors skip hidden threads and keep the order', async () => {
+    const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+    const iso = (i: number) => `2026-10-10T00:00:${String(i).padStart(2, '0')}.000Z`
+    s.m.tables.analyst_conversations = []
+    for (let i = 0; i < 5; i++) s.m.tables.analyst_conversations.push({ id: uuid(10 + i), fund_id: 'f', user_id: 'u', company_id: 'fleet', title: 'h', updated_at: iso(10 + i), created_at: iso(0) })
+    for (const [n, company] of [[9, 'vc'], [8, null], [7, 'vc']] as const) {
+      s.m.tables.analyst_conversations.push({ id: uuid(n), fund_id: 'f', user_id: 'u', company_id: company, title: `t${n}`, updated_at: iso(n), created_at: iso(0) })
+    }
+    const principal = { userId: 'u', fundId: 'f', role: 'member', access: NO_FLEET() } as any
+    const first = await listConversations(s.m.admin, principal, { limit: 2 })
+    expect(first.conversations.map((c: any) => c.id)).toEqual([uuid(9), uuid(8)])
+    expect(first.nextCursor).not.toBeNull()
+    const second = await listConversations(s.m.admin, principal, { limit: 2, cursor: first.nextCursor })
+    expect(second.conversations.map((c: any) => c.id)).toEqual([uuid(7)])
+    expect(second.nextCursor).toBeNull()
   })
 })
 

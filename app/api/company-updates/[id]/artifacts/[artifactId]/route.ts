@@ -5,7 +5,7 @@ import { resolveFund } from '@/lib/api-helpers'
 import { getCompanyUpdate, getCompanyUpdateArtifact } from '@/lib/company-updates/search'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { updateVisible } from '@/lib/company-updates/scope'
-import { withoutHiddenFleet } from '@/lib/access/fleet-company'
+import { hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 /**
  * One artifact: its complete extracted text with chunk locators, or — with `?download=1` — a
@@ -34,9 +34,9 @@ export async function GET(
     // An attachment is its update's: visible only when the update's company is the caller's.
     const scope = await loadEntityScopeForUser(admin, user.id)
     const parent = await getCompanyUpdate(admin as any, { fundId: fund.fundId, updateId: params.id })
-    // ── GPU fleet (P3) ── without the fleet companies this caller may not read (#91).
-    const visible = scope ? await withoutHiddenFleet(admin, fund.fundId, scope.access, scope.companyIds) : []
-    if (!parent || !updateVisible(parent, visible)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // ── GPU fleet (P3) ── nor about a fleet company this caller may not read (#91).
+    const fleetHidden = await hiddenFleetIdsInFund(admin, fund.fundId, user.id)
+    if (!parent || !updateVisible(parent, scope ? scope.companyIds : []) || (parent.company_id && fleetHidden.has(parent.company_id))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     if (req.nextUrl.searchParams.get('download') === '1') {
       if (!artifact.storage_path) {

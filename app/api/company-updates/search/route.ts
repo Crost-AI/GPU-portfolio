@@ -27,7 +27,8 @@ export async function GET(req: NextRequest) {
     const requested = parseSearchParams(fund.fundId, Object.fromEntries(req.nextUrl.searchParams.entries()))
     // Only the caller's companies: the search RPC filters on exactly the ids it is given.
     const scope = await loadEntityScopeForUser(admin, user.id)
-  // ── GPU fleet (P3) ── without the fleet companies this caller may not read (#91).
+    // ── GPU fleet (P3) ── without the fleet companies this caller may not read (#91). The set is
+    // applied after parsing, so it is never subject to the 200-id cap on a requested company_ids.
     const visible = scope ? await withoutHiddenFleet(admin, fund.fundId, scope.access, scope.companyIds) : []
     const params = scopeSearchParams(requested, visible)
     if (!params) {

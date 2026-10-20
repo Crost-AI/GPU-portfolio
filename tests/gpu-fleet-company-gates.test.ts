@@ -94,15 +94,15 @@ describe('every resolveCompany call that writes resolves at write level', () => 
 // each handler that reads one must apply the fleet gate.
 describe('per-row fleet gates outside the company routes', () => {
   const GATED: [string, string, RegExp][] = [
-    ['app/api/analyst/conversations/route.ts', 'GET', /hiddenFleetCompanyIds\(/],
+    ['app/api/analyst/conversations/route.ts', 'GET', /firstVisibleRows<any>\(\(f, t\) => build\(\)\.order\('id'\)\.range\(f, t\), 20, fleetHidden\)/],
     ['app/api/analyst/conversations/route.ts', 'POST', /fleetCompanyDenied\(scope\.access, companyCheck\.holding_type\)/],
     ['app/api/analyst/conversations/[id]/route.ts', 'GET', /refuseFleetCompany\(admin, user\.id, \{ companyId \}, 'read'\)/],
     // Claude review on #98, B2 and S1.
     ['app/api/company-updates/search/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
-    ['app/api/company-updates/[id]/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
-    ['app/api/company-updates/[id]/artifacts/[artifactId]/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
-    ['app/api/notes/route.ts', 'GET', /hiddenFleetCompanyIds\(admin, membership\.fund_id, user\.id/],
-    ['app/api/interactions/route.ts', 'GET', /hiddenFleetCompanyIds\(admin, membership\.fund_id, user\.id/],
+    ['app/api/company-updates/[id]/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, fund\.fundId, user\.id\)[\s\S]*fleetHidden\.has\(/],
+    ['app/api/company-updates/[id]/artifacts/[artifactId]/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, fund\.fundId, user\.id\)[\s\S]*fleetHidden\.has\(/],
+    ['app/api/notes/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, membership\.fund_id, user\.id\)[\s\S]*firstVisibleRows/],
+    ['app/api/interactions/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, membership\.fund_id, user\.id\)[\s\S]*firstVisibleRows/],
     ['app/api/emails/[id]/route.ts', 'PATCH', /fleetCompanyDenied\(scope\.access, company\.holding_type, 'write'\)/],
   ]
   it.each(GATED)('%s %s applies the fleet gate', (file, method, gate) => {
@@ -123,7 +123,7 @@ describe('per-row fleet gates in the agent and the v1 API', () => {
     const v1 = src('lib/api-v1/conversations.ts')
     const list = v1.slice(v1.indexOf('export async function listConversations'), v1.indexOf('export async function getConversation'))
     const get = v1.slice(v1.indexOf('export async function getConversation'), v1.indexOf('export async function deleteConversation'))
-    expect(list).toMatch(/hiddenFleetCompanyIds\(admin, principal\.fundId, principal\.userId/)
+    expect(list).toMatch(/hiddenFleetIdsInFund\(admin, principal\.fundId, principal\.userId\)/)
     expect(get).toMatch(/refuseFleetCompany\(admin, principal\.userId, \{ companyId: row\.company_id \}, 'read'\)/)
   })
 })

@@ -522,7 +522,7 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // A user's own conversations, scoped by user_id in the route.
   // ── GPU fleet (P3) ── 'any' stays: these serve a member their own threads. The gate is per row
   // inside: a thread about a fleet company is listed and returned only while the caller can read
-  // the fleet (#91; refuseFleetCompany / hiddenFleetCompanyIds).
+  // the fleet (#91; refuseFleetCompany / hiddenFleetIdsInFund).
   'api/analyst/conversations': { domain: 'portfolio', level: 'any' },
   'api/analyst/conversations/[id]': { domain: 'portfolio', level: 'any' },
   // Personal preferences, not fund data.

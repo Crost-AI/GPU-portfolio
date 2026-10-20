@@ -42,6 +42,32 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
   const like = (v: unknown, pattern: string) => new RegExp(
     '^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$',
   ).test(String(v ?? ''))
+  // A PostgREST `or` filter: comma-separated `col.op.value` terms, with nested and(...)/or(...).
+  const COMPARE: Record<string, (a: any, b: string) => boolean> = {
+    eq: (a, b) => String(a) === b, neq: (a, b) => String(a) !== b,
+    lt: (a, b) => String(a) < b, lte: (a, b) => String(a) <= b, gt: (a, b) => String(a) > b, gte: (a, b) => String(a) >= b,
+    is: (a, b) => (a ?? null) === (b === 'null' ? null : b),
+  }
+  const splitTop = (s: string) => {
+    const parts: string[] = []
+    let depth = 0, at = 0
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(') depth++
+      else if (s[i] === ')') depth--
+      else if (s[i] === ',' && depth === 0) { parts.push(s.slice(at, i)); at = i + 1 }
+    }
+    return [...parts, s.slice(at)]
+  }
+  const orTerm = (t: string): ((r: Row) => boolean) => {
+    const group = /^(and|or)\((.*)\)$/.exec(t)
+    if (group) {
+      const ps = splitTop(group[2]).map(orTerm)
+      return group[1] === 'and' ? r => ps.every(p => p(r)) : r => ps.some(p => p(r))
+    }
+    const [k, op, ...rest] = t.split('.')
+    if (!COMPARE[op]) throw new Error(`memoryAdmin: or(${op}) unsupported`)
+    return r => COMPARE[op](r[k], rest.join('.'))
+  }
   const UNIQUE = { code: '23505', message: 'duplicate key value violates unique constraint' }
 
   function from(table: string) {
@@ -128,6 +154,7 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
         if (op !== 'is') throw new Error(`memoryAdmin: not(${op}) unsupported`)
         filters.push(r => (r[k] ?? null) !== v); return q
       },
+      or: (expr: string) => { filters.push(orTerm(`or(${expr})`)); return q },
       like: (k: string, p: string) => { filters.push(r => like(r[k], p)); return q },
       ilike: (k: string, p: string) => { filters.push(r => like(String(r[k] ?? '').toLowerCase(), p.toLowerCase())); return q },
       contains: (k: string, vs: unknown[]) => { filters.push(r => Array.isArray(r[k]) && vs.every(v => r[k].includes(v))); return q },

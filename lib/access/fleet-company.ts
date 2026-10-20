@@ -50,32 +50,12 @@ export async function refuseFleetCompany(
 }
 
 /**
- * Of `companyIds`, the fleet companies this caller may not reach at `need`: for filtering a list of
- * rows about companies (a member's saved Analyst threads). Reads nothing beyond the companies'
- * holding_type when none of them is a fleet company.
- */
-export async function hiddenFleetCompanyIds(
-  admin: SupabaseClient, fundId: string, userId: string, companyIds: string[], need: 'read' | 'write' = 'read',
-): Promise<Set<string>> {
-  const ids = Array.from(new Set(companyIds.filter(Boolean)))
-  if (!ids.length) return new Set()
-  const { data: rows, error } = await (admin as any).from('companies').select('id, holding_type')
-    .eq('fund_id', fundId).in('id', ids)
-  if (error) throw error
-  const fleet = ((rows as any[]) ?? []).filter(r => r.holding_type === FLEET_HOLDING_TYPE).map(r => r.id as string)
-  if (!fleet.length) return new Set()
-  const { data: member } = await (admin as any).from('fund_members').select('role').eq('fund_id', fundId).eq('user_id', userId).maybeSingle()
-  if (!member) return new Set(fleet)
-  const access = await loadAccessContext(admin, fundId, userId, member.role)
-  return fleetCompanyDenied(access, FLEET_HOLDING_TYPE, need) ? new Set(fleet) : new Set()
-}
-
-/**
  * A reader's visible company set without the fleet companies this caller may not read: what the
- * entity-scoped fund-wide readers (company-updates search, notes, interactions, the agent's
- * get_updates) pass on instead of their bare scope. `visible` null = every company in the fund;
- * when the fund has a hidden fleet company that becomes the explicit list of every other company.
- * A fund without a fleet company costs one read and returns `visible` unchanged.
+ * company-updates search and the agent's get_updates pass on instead of their bare scope. `visible`
+ * null = every company in the fund; when the fund has a hidden fleet company that becomes the
+ * explicit list of every other company — an internal scope, applied after the request is parsed
+ * (scopeSearchParams), so it can exceed the 200-id cap on a requested company_ids list. A fund
+ * without a fleet company costs one read and returns `visible` unchanged.
  */
 export async function withoutHiddenFleet(
   admin: SupabaseClient, fundId: string, access: AccessContext | null | undefined, visible: string[] | null,
@@ -97,4 +77,43 @@ export async function withoutHiddenFleet(
     if (rows.length < 1000) break
   }
   return all
+}
+
+/**
+ * The fund's fleet companies this caller may not read: every one of them, or none. Empty — after one
+ * read — for a fund with no fleet company, so a VC fund's lists take the path they always took.
+ */
+export async function hiddenFleetIdsInFund(admin: SupabaseClient, fundId: string, userId: string): Promise<Set<string>> {
+  const { data, error } = await (admin as any).from('companies').select('id')
+    .eq('fund_id', fundId).eq('holding_type', FLEET_HOLDING_TYPE)
+  if (error) throw error
+  const fleet = ((data as any[]) ?? []).map(r => r.id as string)
+  if (!fleet.length) return new Set()
+  const { data: member } = await (admin as any).from('fund_members').select('role').eq('fund_id', fundId).eq('user_id', userId).maybeSingle()
+  if (!member) return new Set(fleet)
+  const access = await loadAccessContext(admin, fundId, userId, member.role)
+  return fleetCompanyDenied(access, FLEET_HOLDING_TYPE, 'read') ? new Set(fleet) : new Set()
+}
+
+/**
+ * The first `limit` rows of an ordered query that are not about a hidden company — paging past
+ * hidden rows, so they never crowd visible ones out of the limit and the order is kept. `page(from,
+ * to)` builds the full query (filters and order, with a unique tie-break) plus `.range(from, to)`.
+ */
+export async function firstVisibleRows<T extends { company_id?: string | null }>(
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>, limit: number, hidden: Set<string>,
+): Promise<{ data: T[]; error: any }> {
+  const out: T[] = []
+  for (let from = 0; out.length < limit; from += limit) {
+    const { data, error } = await page(from, from + limit - 1)
+    if (error) return { data: out, error }
+    const rows = data ?? []
+    for (const r of rows) {
+      if (r.company_id && hidden.has(r.company_id)) continue
+      out.push(r)
+      if (out.length === limit) break
+    }
+    if (rows.length < limit) break
+  }
+  return { data: out, error: null }
 }
