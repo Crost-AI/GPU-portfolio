@@ -496,9 +496,10 @@ async function capitalEntries(
   const openingCash = roundCents(ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
   const result = computeCapital({
     months, openingCash, cashFlows, proceeds, uncalled: model?.actuals.uncalledCapital ?? 0, settings,
+    ...(cash?.contingencyReturns ? { designated: cash.contingencyReturns } : {}),
   })
   const split = cash
-    ? splitCashDistributions(result.distributions, result.calls, months, cash).byMonth
+    ? splitCashDistributions(result.distributions, result.calls, months, cash, result.designatedPaid).byMonth
     : splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
   // Who the carry goes to is the fund's setting (Allocation terms → Carry, "Carry accrues to"):
   // usually its GP entity, but any partner or associate vehicle, in any split.

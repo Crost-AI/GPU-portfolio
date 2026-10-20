@@ -51,7 +51,10 @@ export interface CashWaterfallInput {
   history: WaterfallEvent[]
   /** A pitch with nothing contributed on the books yet: the capital its scenario raises, at its start. */
   assumedContribution?: { date: string; amount: number } | null
-  /** Unspent capex contingency released by month (R8): paid out that month, before the tiers. */
+  /**
+   * Unspent capex contingency released by month (R8): part of that month's proceeds, paid out as
+   * capital management pays them (computeCapital `designated`), before the tiers of each payment.
+   */
   contingencyReturns?: Map<MonthKey, number>
 }
 
@@ -69,6 +72,8 @@ export function splitCashDistributions(
   calls: Map<MonthKey, number>,
   months: MonthKey[],
   input: CashWaterfallInput,
+  /** Of each distribution, the contingency it pays (computeCapital `designatedPaid`). */
+  contingencyPaid: Map<MonthKey, number> = new Map(),
 ): { byMonth: Map<MonthKey, MonthlySplit>; warnings: string[]; state: CashWaterfallState | null; terms: CashWaterfallTerms } {
   const byMonth = new Map<MonthKey, MonthlySplit>()
   const warnings: string[] = []
@@ -91,7 +96,7 @@ export function splitCashDistributions(
       if (!warnings.length) warnings.push('No investor has contributed, so distributions are shown undivided — there is no capital for the waterfall to return')
       continue
     }
-    const c = Math.min(d, input.contingencyReturns?.get(m) ?? 0)
+    const c = Math.min(d, contingencyPaid.get(m) ?? 0)
     const split = distribute(state, d, date, terms, undefined, c > 0 ? { contingencyReturn: c } : {})
     state = split.state
     byMonth.set(m, { toLp: split.tiers.toLP, carry: split.tiers.toGP, toGpStake: 0 })
@@ -141,7 +146,14 @@ export interface YearRow { calendarYear: number; called: number; distributed: nu
 
 export interface PlanReturns {
   years: YearRow[]
-  totals: { called: number; distributed: number; carry: number; toLp: number; invested: number; proceeds: number }
+  totals: {
+    called: number; distributed: number
+    /** The profit share: the distributions' and, on a GPU SPV, the end value's (`terminalCarry`). */
+    carry: number
+    toLp: number; invested: number; proceeds: number
+    /** A GPU SPV: the manager's share of the end value, which no `years` row pays (in `carry` too). */
+    terminalCarry?: number
+  }
   /** The LPs' net figures (their share; carry deducted). */
   lp: { called: number; distributed: number; terminal: number; tvpi: number | null; dpi: number | null; irr: number | null }
   /** The calendar year half of the forecast distributions have been paid. */
@@ -162,11 +174,12 @@ export function planReturns(input: ReturnsInput): PlanReturns {
   for (const m of input.months) {
     cashFlows.set(m, roundCents((input.otherFlows.get(m) ?? 0) + (input.invested.get(m) ?? 0) + (input.proceeds.get(m) ?? 0)))
   }
+  const gpu = input.waterfallKind === 'distributable_cash' ? input.cashWaterfall : undefined
   const cap = computeCapital({
     months: input.months, openingCash: input.openingCash, cashFlows, proceeds: input.proceeds, uncalled: input.uncalled, settings: input.settings,
+    ...(gpu?.contingencyReturns ? { designated: gpu.contingencyReturns } : {}),
   })
-  const cash = input.waterfallKind === 'distributable_cash' && input.cashWaterfall
-    ? splitCashDistributions(cap.distributions, cap.calls, input.months, input.cashWaterfall) : null
+  const cash = gpu ? splitCashDistributions(cap.distributions, cap.calls, input.months, gpu, cap.designatedPaid) : null
   const wf = cash ? { byMonth: cash.byMonth, state: null, terms: null, lpShare: 1 } : runMonthlyWaterfall(cap.distributions, cap.calls, input.months, input.waterfall)
   // The cash waterfall's split is already the investors' net.
   const carryOn = cash ? true : !!wf.state
@@ -236,6 +249,7 @@ export function planReturns(input: ReturnsInput): PlanReturns {
     totals: {
       called: sumMap(cap.calls), distributed: roundCents(totalDist), carry: roundCents(years.reduce((s, y) => s + y.carry, 0) + (cashEnd?.toGP ?? 0)),
       toLp: roundCents(lpDistributed), invested: roundCents(years.reduce((s, y) => s + y.invested, 0)), proceeds: roundCents(years.reduce((s, y) => s + y.proceeds, 0)),
+      ...(cash ? { terminalCarry: roundCents(cashEnd?.toGP ?? 0) } : {}),
     },
     lp: {
       called: lpCalled, distributed: lpDistributed, terminal: roundCents(terminal),

@@ -189,6 +189,51 @@ describe("a GPU SPV's returns: the distributable-cash waterfall (waterfallKind '
     expect(r.lp.distributed).toBe(Math.round((jan.tiers.toLP + dec.tiers.toLP) * 100) / 100)
   })
 
+  describe('the contingency keeps its character until it is actually paid', () => {
+    const terms = { ...PACK_TERMS, dayCount: '30_360' as const }
+    const history = [{ kind: 'contribution' as const, date: '2026-12-31', lpEntityId: 'lp1', amount: 1_000_000 }]
+    const go = (settings: unknown, proceeds: Record<string, number>, release: Record<string, number>) => planReturns({
+      months: gpuMonths.slice(0, 12), asOfMonth: '2026-12' as any, openingCash: 0, uncalled: 0, settings: validateCapital(settings),
+      otherFlows: m({}), invested: m({}), proceeds: m(proceeds), terminalNav: 0, waterfallKind: 'distributable_cash',
+      cashWaterfall: { terms, history, contingencyReturns: m(release) },
+    })
+    /** The engine by hand: each payment with the contingency it carries. */
+    const engine = (payments: [string, number, number][]) => {
+      let state = contribute(emptyState('2026-12-31'), history[0])
+      let toLp = 0, toGp = 0
+      for (const [date, d, c] of payments) {
+        const x = distribute(state, d, date, terms, undefined, c ? { contingencyReturn: c } : {})
+        state = x.state; toLp += x.tiers.toLP; toGp += x.tiers.toGP
+      }
+      return { toLp: Math.round(toLp * 100) / 100, toGp: Math.round(toGp * 100) / 100 }
+    }
+
+    it('a one-month payout lag: released in January, paid as contingency in February', () => {
+      const r = go({ policy: { distributions: { lagMonths: 1 } } }, { '2027-01': 50_000, '2027-11': 2_000_000 }, { '2027-01': 50_000 })
+      expect(r.distributedToDate.slice(0, 2)).toEqual([0, 50_000])
+      expect(r.distributedToDate[11]).toBe(2_050_000)
+      const e = engine([['2027-02-28', 50_000, 50_000], ['2027-12-31', 2_000_000, 0]])
+      expect(r.lp.distributed).toBe(e.toLp)
+      expect(r.totals.carry).toBe(e.toGp)
+      expect(r.totals.terminalCarry).toBe(0)
+    })
+
+    it('a partial release under a reserve consumes the designation pro rata; the rest stays due', () => {
+      // January owes 100,000, half of it contingency, but a 40,000 reserve lets only 60,000 out:
+      // 30,000 of it is contingency, 20,000 stays due. December owes 2,040,000 and pays 2,000,000:
+      // 2,000,000 × 20,000 / 2,040,000 = 19,607.84 more.
+      const r = go({ policy: { distributions: { reserve: 40_000 } } }, { '2027-01': 100_000, '2027-12': 2_000_000 }, { '2027-01': 50_000 })
+      expect(r.distributedToDate[0]).toBe(60_000)
+      expect(r.distributedToDate[11]).toBe(2_060_000)
+      const e = engine([['2027-01-31', 60_000, 30_000], ['2027-12-31', 2_000_000, 19_607.84]])
+      expect(r.lp.distributed).toBe(e.toLp)
+      // The 40,000 reserve left at the end is valued through the waterfall on top: terminalCarry.
+      expect(Math.round((r.totals.carry - r.totals.terminalCarry!) * 100) / 100).toBe(e.toGp)
+      expect(r.years.reduce((s, y) => s + y.carry, 0)).toBeCloseTo(e.toGp, 6)
+      expect(r.totals.terminalCarry).toBe(12_000)
+    })
+  })
+
   it('the fund kinds ignore cashWaterfall unless the kind says distributable_cash', () => {
     const vc = { ...run(), warnings: [] }
     const asFund = planReturns({
