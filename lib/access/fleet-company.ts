@@ -95,42 +95,13 @@ export async function hiddenFleetIdsInFund(admin: SupabaseClient, fundId: string
   return fleetCompanyDenied(access, FLEET_HOLDING_TYPE, 'read') ? new Set(fleet) : new Set()
 }
 
-/** Most rows a hidden-fleet list reads before it returns what it has: bounds the reads one request can cause. */
-export const FLEET_HIDDEN_SCAN_CAP = 5000
-/** PostgREST's max_rows: a page never asks for more, so a short page always means the end. */
-const MAX_PAGE = 1000
-
 /**
- * The size of page `index` of a list that skips hidden rows: at least 200 whatever the caller's
- * limit, doubling each page up to max_rows, and never past the scan cap.
+ * Leave out, in the query itself, the rows about a hidden company — so they never take a place in a
+ * limit and no read is spent on them. Rows about no company stay: `not.in` alone would drop them,
+ * since a comparison with null is never true. `hidden` is a fund's fleet companies (a handful of
+ * ids), so the list is short. A no-op when nothing is hidden.
  */
-export function fleetPageSize(minRows: number, index: number, scanned: number): number {
-  return Math.max(1, Math.min(Math.max(minRows, 200) * 2 ** index, MAX_PAGE, FLEET_HIDDEN_SCAN_CAP - scanned))
-}
-
-/**
- * The first `limit` rows of an ordered query that are not about a hidden company — paging past
- * hidden rows, so they never crowd visible ones out of the limit and the order is kept. `page(from,
- * to)` builds the full query (filters and order, with a unique tie-break) plus `.range(from, to)`.
- * Reads at most FLEET_HIDDEN_SCAN_CAP rows, then returns what it has.
- */
-export async function firstVisibleRows<T extends { company_id?: string | null }>(
-  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>, limit: number, hidden: Set<string>,
-): Promise<{ data: T[]; error: any }> {
-  const out: T[] = []
-  let scanned = 0
-  for (let i = 0; out.length < limit && scanned < FLEET_HIDDEN_SCAN_CAP; i++) {
-    const size = fleetPageSize(limit, i, scanned)
-    const { data, error } = await page(scanned, scanned + size - 1)
-    if (error) return { data: out, error }
-    const rows = data ?? []
-    scanned += rows.length
-    for (const r of rows) {
-      if (r.company_id && hidden.has(r.company_id)) continue
-      out.push(r)
-      if (out.length === limit) break
-    }
-    if (rows.length < size) break
-  }
-  return { data: out, error: null }
+export function excludeHiddenCompanies<Q extends { or: Function }>(query: Q, hidden: Set<string>, column = 'company_id'): Q {
+  if (!hidden.size) return query
+  return query.or(`${column}.is.null,${column}.not.in.(${Array.from(hidden).join(',')})`) as Q
 }

@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { firstVisibleRows, fleetCompanyDenied, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
+import { excludeHiddenCompanies, fleetCompanyDenied, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -49,11 +49,9 @@ export async function GET(req: NextRequest) {
 
   // ── GPU fleet (P3) ── A thread about a fleet company is listed only while the caller can read the
   // fleet (#91): a grant revoked, or gpu_fleet switched off, hides the saved transcript too. Hidden
-  // threads never take a place in the 20: the read pages past them.
+  // threads are left out in the query, so they never take a place in the 20.
   const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
-  const { data, error } = fleetHidden.size
-    ? await firstVisibleRows<any>((f, t) => build().order('id').range(f, t), 20, fleetHidden)
-    : await build().limit(20)
+  const { data, error } = await excludeHiddenCompanies(build(), fleetHidden).limit(20)
   if (error) return dbError(error, 'analyst-conversations')
 
   return NextResponse.json({ conversations: data })

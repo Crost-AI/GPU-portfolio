@@ -35,7 +35,6 @@ import { GET as analystThreads } from '@/app/api/analyst/conversations/route'
 import { PATCH as patchEmail } from '@/app/api/emails/[id]/route'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { getConversation, listConversations } from '@/lib/api-v1/conversations'
-import { FLEET_HIDDEN_SCAN_CAP, firstVisibleRows } from '@/lib/access/fleet-company'
 
 const ctx = (over: Partial<AccessContext>): AccessContext => ({
   fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] },
@@ -172,47 +171,57 @@ describe('hidden fleet rows never take a place in the limit', () => {
   })
 })
 
-// Security review on 4f08c2db (query amplification): skipping hidden rows reads pages of at least
-// 200 whatever the caller's limit, growing to max_rows, and stops at FLEET_HIDDEN_SCAN_CAP rows.
-describe('the hidden-row scan is bounded', () => {
-  const ts = (i: number) => `2026-10-10T${String(Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`
-
-  it('interactions?limit=1 behind 1000 hidden rows: the visible row comes back in at most 5 page reads', async () => {
-    for (let i = 0; i < 1000; i++) s.m.tables.interactions.push({ id: `i-h${i}`, fund_id: 'f', company_id: 'fleet', interaction_date: ts(i), tags: [] })
-    s.m.tables.interactions = s.m.tables.interactions.filter((r: any) => r.id !== 'i-vc')
-    s.m.tables.interactions.push({ id: 'i-late', fund_id: 'f', company_id: 'vc', interaction_date: '2026-09-01', tags: [] })
+// Security review on 4f08c2db, then Codex r4: the exclusion is in the query, so however many hidden
+// rows come first, the visible ones are returned, in one read, by every list.
+describe('hidden rows are excluded in the query', () => {
+  const HIDDEN = 6000
+  const ts = (i: number) => new Date(Date.UTC(2026, 9, 10) + i * 1000).toISOString()
+  const countReads = (table: string) => {
     const from = s.m.admin.from
-    let reads = 0
-    s.m.admin.from = (t: string) => { if (t === 'interactions') reads++; return from(t) }
+    const seen = { n: 0 }
+    s.m.admin.from = (t: string) => { if (t === table) seen.n++; return from(t) }
+    return seen
+  }
+
+  it('notes: a visible note behind 6000 hidden ones is returned, in one read', async () => {
+    for (let i = 0; i < HIDDEN; i++) s.m.tables.company_notes.push({ id: `n-h${i}`, fund_id: 'f', company_id: 'fleet', user_id: 'u', content: 'x', created_at: ts(i), pinned_at: null })
+    const reads = countReads('company_notes')
+    const ids = ((await (await notes(req('/api/notes'))).json()) as any[]).map(n => n.id)
+    expect(ids).toEqual(['n-vc', 'n-gen'])
+    expect(reads.n).toBe(1)
+  })
+
+  it('interactions?limit=1: a visible row behind 6000 hidden ones is returned, in one read', async () => {
+    for (let i = 0; i < HIDDEN; i++) s.m.tables.interactions.push({ id: `i-h${i}`, fund_id: 'f', company_id: 'fleet', interaction_date: ts(i), tags: [] })
+    const reads = countReads('interactions')
     const ids = ((await (await interactions(req('/api/interactions?limit=1'))).json()) as any[]).map(i => i.id)
-    expect(ids).toEqual(['i-late'])
-    expect(reads).toBeGreaterThan(0)
-    expect(reads).toBeLessThanOrEqual(5)
+    expect(ids).toEqual(['i-vc'])
+    expect(reads.n).toBe(1)
   })
 
-  it('at the cap the list returns a partial page instead of reading on', async () => {
-    const rows = [...Array.from({ length: 6000 }, (_, i) => ({ id: `h${i}`, company_id: 'fleet' })), { id: 'v', company_id: 'vc' }]
-    const ranges: [number, number][] = []
-    const out = await firstVisibleRows(async (a, b) => { ranges.push([a, b]); return { data: rows.slice(a, b + 1), error: null } }, 1, new Set(['fleet']))
-    expect(out).toEqual({ data: [], error: null })
-    expect(ranges.reduce((n, [a, b]) => n + b - a + 1, 0)).toBe(FLEET_HIDDEN_SCAN_CAP)
-    expect(ranges.every(([a, b]) => b - a + 1 >= 200 && b - a + 1 <= 1000)).toBe(true)
+  it('the Analyst list: a visible thread behind 6000 hidden ones is returned', async () => {
+    for (let i = 0; i < HIDDEN; i++) s.m.tables.analyst_conversations.push({ id: `c-h${i}`, fund_id: 'f', user_id: 'u', company_id: 'fleet', updated_at: ts(i) })
+    const body = await (await analystThreads(req('/api/analyst/conversations'))).json()
+    expect(body.conversations.map((c: any) => c.id)).toEqual(['c-vc'])
   })
 
-  it('v1: at the cap the page comes back short with a cursor past the last row read, and the next page carries on', async () => {
+  it('v1: visible threads behind 6000 hidden ones are returned, and the cursor pages through them', async () => {
     const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
-    const iso = (i: number) => new Date(Date.UTC(2026, 9, 10) + i * 1000).toISOString()
     s.m.tables.analyst_conversations = []
-    const hiddenCount = FLEET_HIDDEN_SCAN_CAP + 10
-    for (let i = 0; i < hiddenCount; i++) s.m.tables.analyst_conversations.push({ id: uuid(100 + i), fund_id: 'f', user_id: 'u', company_id: 'fleet', updated_at: iso(10 + i), created_at: iso(0) })
-    for (const n of [3, 2]) s.m.tables.analyst_conversations.push({ id: uuid(n), fund_id: 'f', user_id: 'u', company_id: 'vc', updated_at: iso(n), created_at: iso(0) })
+    for (let i = 0; i < HIDDEN; i++) s.m.tables.analyst_conversations.push({ id: uuid(100 + i), fund_id: 'f', user_id: 'u', company_id: 'fleet', updated_at: ts(10 + i), created_at: ts(0) })
+    for (const [n, company] of [[3, 'vc'], [2, null], [1, 'vc']] as const) {
+      s.m.tables.analyst_conversations.push({ id: uuid(n), fund_id: 'f', user_id: 'u', company_id: company, updated_at: ts(n), created_at: ts(0) })
+    }
     const principal = { userId: 'u', fundId: 'f', role: 'member', access: NO_FLEET() } as any
     const first = await listConversations(s.m.admin, principal, { limit: 2 })
-    expect(first.conversations).toEqual([])
-    expect(first.nextCursor).not.toBeNull()
+    expect(first.conversations.map((c: any) => c.id)).toEqual([uuid(3), uuid(2)])
     const second = await listConversations(s.m.admin, principal, { limit: 2, cursor: first.nextCursor })
-    expect(second.conversations.map((c: any) => c.id)).toEqual([uuid(3), uuid(2)])
+    expect(second.conversations.map((c: any) => c.id)).toEqual([uuid(1)])
     expect(second.nextCursor).toBeNull()
+    // With fleet read nothing is excluded: the fleet threads, newest, come first.
+    s.ctx = FLEET_READ()
+    const all = await listConversations(s.m.admin, { ...principal, access: FLEET_READ() }, { limit: 2 })
+    expect(all.conversations.map((c: any) => c.id)).toEqual([uuid(100 + HIDDEN - 1), uuid(100 + HIDDEN - 2)])
   })
 })
 
@@ -228,12 +237,16 @@ describe('the v1 API’s conversations', () => {
 })
 
 describe('filing an email under the fleet company (S1)', () => {
-  it('needs fleet write: 403 for a fleet reader, allowed for a fleet writer; a VC company is unchanged', async () => {
+  it('needs fleet write: not found for a fleet reader (the body names nothing), allowed for a fleet writer; a VC company is unchanged', async () => {
     s.ctx = FLEET_READ()
     const denied = await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'fleet' }), p({ id: 'em-9' }))
-    expect(denied.status).toBe(403)
+    expect(await isNotFound(denied)).toBe(true)
+    expect(await denied.text()).not.toMatch(/fleet|GPU/i)
     expect(s.m.tables.inbound_emails[0].company_id).toBeNull()
+    s.ctx = NO_FLEET()
+    expect(await isNotFound(await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'fleet' }), p({ id: 'em-9' })))).toBe(true)
     expect((await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' }))).status).toBe(200)
+    s.m.tables.inbound_emails[0].company_id = null
     s.ctx = FLEET_WRITE()
     expect((await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'fleet' }), p({ id: 'em-9' }))).status).toBe(200)
     expect(s.m.tables.inbound_emails[0].company_id).toBe('fleet')
@@ -244,7 +257,9 @@ describe('moving an email off the fleet company (security review on #98)', () =>
   it('reassigning or unmatching an email filed under the fleet company needs fleet write', async () => {
     s.m.tables.inbound_emails[0].company_id = 'fleet'
     s.ctx = FLEET_READ()
-    expect(await isNotFound(await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' })))).toBe(true)
+    const denied = await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' }))
+    expect(await isNotFound(denied)).toBe(true)
+    expect(await denied.text()).not.toMatch(/fleet|GPU/i)
     expect(s.m.tables.inbound_emails[0].company_id).toBe('fleet')
     s.ctx = FLEET_WRITE()
     expect((await patchEmail(req('/api/emails/em-9', 'PATCH', { companyId: 'vc' }), p({ id: 'em-9' }))).status).toBe(200)

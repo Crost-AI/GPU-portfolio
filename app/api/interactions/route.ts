@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { filterByCompany } from '@/lib/access/scope'
-import { firstVisibleRows, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -43,11 +43,9 @@ export async function GET(req: NextRequest) {
   }
 
   // ── GPU fleet (P3) ── interactions about a fleet company the caller may not read are left out
-  // (#91) without taking a place in the limit: the read pages past them.
+  // in the query (#91), so they never take a place in the limit.
   const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
-  const { data: interactions, error } = fleetHidden.size
-    ? await firstVisibleRows<any>((f, t) => build().order('id').range(f, t), limit, fleetHidden)
-    : await build().limit(limit)
+  const { data: interactions, error } = await excludeHiddenCompanies(build(), fleetHidden).limit(limit)
 
   if (error) {
     return dbError(error, 'interactions')

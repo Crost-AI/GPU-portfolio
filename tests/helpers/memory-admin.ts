@@ -64,9 +64,21 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
       const ps = splitTop(group[2]).map(orTerm)
       return group[1] === 'and' ? r => ps.every(p => p(r)) : r => ps.some(p => p(r))
     }
-    const [k, op, ...rest] = t.split('.')
-    if (!COMPARE[op]) throw new Error(`memoryAdmin: or(${op}) unsupported`)
-    return r => COMPARE[op](r[k], rest.join('.'))
+    const [k, ...parts] = t.split('.')
+    const negate = parts[0] === 'not'
+    const [op, ...rest] = negate ? parts.slice(1) : parts
+    const value = rest.join('.')
+    // As in SQL, a comparison with NULL is never true, negated or not; only `is` matches it.
+    let test: (r: Row) => boolean
+    if (op === 'in') {
+      const list = value.replace(/^\(|\)$/g, '').split(',')
+      test = r => r[k] != null && list.includes(String(r[k])) !== negate
+    } else if (COMPARE[op]) {
+      test = op === 'is' ? r => COMPARE.is(r[k], value) !== negate : r => r[k] != null && COMPARE[op](r[k], value) !== negate
+    } else {
+      throw new Error(`memoryAdmin: or(${op}) unsupported`)
+    }
+    return test
   }
   const UNIQUE = { code: '23505', message: 'duplicate key value violates unique constraint' }
 

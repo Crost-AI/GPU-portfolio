@@ -5,7 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import type { InboundEmail, Metric, MetricValue, ParsingReview, Json } from '@/lib/types/database'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { fleetCompanyDenied, refuseFleetCompany } from '@/lib/access/fleet-company'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 type MetricValueRow = Pick<
   MetricValue,
@@ -175,10 +175,10 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
         return NextResponse.json({ error: 'Invalid company' }, { status: 400 })
       }
       // ── GPU fleet (P3) ── Filing an email under a fleet company makes its next reprocess write that
-      // company's metrics and updates: fleet write (#91).
-      if (!scope || fleetCompanyDenied(scope.access, company.holding_type, 'write')) {
-        return NextResponse.json({ error: 'Filing an email under the GPU fleet company needs write access to GPU fleet.' }, { status: 403 })
-      }
+      // company's metrics and updates: fleet write (#91). Refused as not found, like moving one off it,
+      // so a member without fleet learns nothing about the company.
+      const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId }, 'write')
+      if (fleetDenied) return fleetDenied
     } else {
       // Unmatching an email makes it an admin-triage item; a member would lose it.
       const scope = await loadEntityScopeForUser(admin, user.id)

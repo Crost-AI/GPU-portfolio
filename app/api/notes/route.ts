@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeNotesQuery } from '@/lib/notes/entity'
-import { firstVisibleRows, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -42,12 +42,10 @@ export async function GET(req: NextRequest) {
     return query
   }
 
-  // ── GPU fleet (P3) ── notes about a fleet company the caller may not read are left out (#91), and
-  // they never take a place in the 200: the read pages past them (id breaks ties so pages are stable).
+  // ── GPU fleet (P3) ── notes about a fleet company the caller may not read are left out in the
+  // query (#91), so they never take a place in the 200.
   const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
-  const { data: notes, error } = (fleetHidden.size
-    ? await firstVisibleRows((f, t) => build().order('id').range(f, t), 200, fleetHidden)
-    : await build().limit(200)) as {
+  const { data: notes, error } = await excludeHiddenCompanies(build(), fleetHidden).limit(200) as {
     data: { id: string; content: string; user_id: string; company_id: string | null; mentioned_user_ids: string[] | null; created_at: string; updated_at: string }[] | null
     error: { message: string } | null
   }

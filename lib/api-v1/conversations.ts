@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ChatMessage } from '@/lib/ai/types'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { FLEET_HIDDEN_SCAN_CAP, fleetPageSize, hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
@@ -74,49 +74,31 @@ export async function listConversations(
   principal: AnalystPrincipal,
   options: { limit: number; cursor?: string | null },
 ) {
-  const build = (cursorRaw: string | null | undefined, size: number) => {
-    let query: any = admin
-      .from('analyst_conversations')
-      .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
-      .eq('fund_id', principal.fundId)
-      .eq('user_id', principal.userId)
-      .order('updated_at', { ascending: false })
-      .order('id', { ascending: false })
-      .limit(size)
-    if (cursorRaw) {
-      const cursor = decodeCursor(cursorRaw)
-      query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
-    }
-    return query
+  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out in
+  // the query (#91), so it never takes a place in a page and the keyset cursor is unaffected.
+  const hidden = await hiddenFleetIdsInFund(admin, principal.fundId, principal.userId)
+  let query: any = admin
+    .from('analyst_conversations')
+    .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
+    .eq('fund_id', principal.fundId)
+    .eq('user_id', principal.userId)
+    .order('updated_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(options.limit + 1)
+  query = excludeHiddenCompanies(query, hidden)
+  if (options.cursor) {
+    const cursor = decodeCursor(options.cursor)
+    query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
   }
 
-  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out (#91),
-  // and never takes a place in the page: the read continues past hidden threads (keyset cursor), in
-  // pages of at least 200, for at most FLEET_HIDDEN_SCAN_CAP rows. At the cap the page is returned
-  // short, with a cursor past the last row read, so the next request carries on from there.
-  const hidden = await hiddenFleetIdsInFund(admin, principal.fundId, principal.userId)
-  const rows: ConversationRow[] = []
-  let cursorRaw = options.cursor ?? null
-  let scanned = 0
-  let lastRead: ConversationRow | undefined
-  let capped = false
-  for (let i = 0; ; i++) {
-    const size = hidden.size ? fleetPageSize(options.limit + 1, i, scanned) : options.limit + 1
-    const { data, error } = await build(cursorRaw, size)
-    if (error) throw new Error(error.message)
-    const fetched = (data ?? []) as ConversationRow[]
-    scanned += fetched.length
-    lastRead = fetched[fetched.length - 1] ?? lastRead
-    for (const r of fetched) if (!r.company_id || !hidden.has(r.company_id)) rows.push(r)
-    if (rows.length > options.limit || fetched.length < size || !hidden.size) break
-    if (scanned >= FLEET_HIDDEN_SCAN_CAP) { capped = true; break }
-    cursorRaw = encodeCursor(lastRead!)
-  }
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  const rows = (data ?? []) as ConversationRow[]
   const hasMore = rows.length > options.limit
   const page = rows.slice(0, options.limit)
   return {
     conversations: page.map(compact),
-    nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : capped && lastRead ? encodeCursor(lastRead) : null,
+    nextCursor: hasMore && page.length ? encodeCursor(page[page.length - 1]) : null,
   }
 }
 
