@@ -180,6 +180,12 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/fleet/assets/[id]/events': { domain: 'fleet' },
   'api/fleet/datacenter-contracts': { domain: 'fleet' },
   'api/fleet/datacenter-contracts/[id]': { domain: 'fleet' },
+  // ── GPU fleet (P4) ──
+  // A GPU SPV's scenarios are forecast plans, so `accounting` like every forecast route — behind the
+  // gpu_fleet switch, as the Scenarios page is: a GPU SPV exists only with it on, and the seed must
+  // not be reachable while it is off. The handler refuses a vehicle that is not a GPU SPV, and nulls
+  // the manager's figures without gp_economics.
+  'api/accounting/forecast/fleet-scenarios': { domain: 'accounting', feature: 'gpu_fleet' },
 
   // ── GP economics — the carve-out. These used to sit behind the single `accounting` key,
   //    so anyone who could reconcile the bank could read the partners' carry.

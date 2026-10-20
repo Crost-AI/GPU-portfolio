@@ -36,12 +36,21 @@ import type { Account, Posting } from '@/lib/accounting/types'
 import { addMonths, firstDay, isMonthKey, lastDay, monthDiff, monthOf, monthRange, type Interval, type MonthKey } from './months'
 import { RuleError, validateRule, type RuleMethod } from './rules'
 import { CashTimingError, validateCashTiming, type CashTiming, type CompiledEntry } from './compile'
-import { actualsByAccount, buildPlan, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
+import { actualsByAccount, buildPlan, FLEET_RAISE_MEMO, planWindow, type BuiltPlan, type PlanKind, type PlanOverrideRow, type PlanRuleRow } from './plan'
 import { buildReport, type FlowEntry, type Report, type ReportView } from './report'
 import { computeVariance, largestVariances, type VarianceResult } from './variance'
-import { cycleLabel, loadFeeLinks, loadLinkedDrivers, seesCarry, seesFund, seesManco } from './linked'
+import { cycleLabel, loadFeeLinks, loadFleet, loadLinkedDrivers, materializeFleet, seesCarry, seesFund, seesManco, type FleetLoad } from './linked'
+import { redactScenarioResult, type Cadence, type FleetScenarioResult, type RedactedScenarioResult } from '@/lib/gpu/scenario'
+import { scenarioComparison, scenarioDetail, type ScenarioComparison, type ScenarioDetail } from '@/lib/gpu/report'
+import { splitCashDistributions, type CashWaterfallInput } from './plan-returns'
+import { loadCapitalPostings } from '@/lib/accounting/capital-source'
+import { loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
+import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
+import type { CashWaterfallTerms } from '@/lib/gpu/waterfall'
 import { historyWindow, MAX_HISTORY_MONTHS, MIN_HISTORY_MONTHS, suggestRule, type RuleSuggestion } from './suggest'
-import { isManagementCompany } from '@/lib/vehicle-kinds'
+import { isGpuSpv, isManagementCompany } from '@/lib/vehicle-kinds'
+import { FleetAssumptionsError, fleetOpening, validateFleetAssumptions } from '@/lib/gpu/fleet-forecast'
+import type { FleetAssumptions } from '@/lib/gpu/scenario'
 
 export interface ForecastServiceContext {
   admin: SupabaseClient
@@ -154,11 +163,20 @@ async function loadVehicle(ctx: ForecastServiceContext, vehicle: string, need: '
 
 const thisMonth = () => new Date().toISOString().slice(0, 7)
 
+/** A GPU SPV pitch plan's Y1: its fleet states its own servers (not the register). Null otherwise. */
+function pitchStartOf(v: VehicleCtx, fleet: unknown): MonthKey | null {
+  const f = fleet as { assets?: unknown; startMonth?: unknown } | null
+  return isGpuSpv(v.kind) && f && f.assets !== 'register' && isMonthKey(f.startMonth) ? f.startMonth : null
+}
+
 /**
  * The cutoff a plan compiles against and why. Default: the last closed month. With nothing closed,
  * the month before this one — labelled unclosed everywhere it shows, never passed off as final.
  */
-function resolveCutoff(planCutoff: string | null, v: VehicleCtx): { cutoff: MonthKey; warnings: string[] } {
+function resolveCutoff(planCutoff: string | null, v: VehicleCtx, pitchStart: MonthKey | null = null): { cutoff: MonthKey; warnings: string[] } {
+  // A pitch (its servers its own, no books closed yet) stays anchored on its fleet's Y1, so its window
+  // keeps the capital raise and the purchase however many months pass before the books start.
+  if (!planCutoff && pitchStart && !v.closedThrough) return { cutoff: addMonths(pitchStart, -1), warnings: [] }
   if (planCutoff) {
     const m = monthOf(planCutoff)
     const warnings = v.closedThrough && m <= v.closedThrough ? [] : [`Actuals through ${m} include months that are not closed`]
@@ -194,6 +212,8 @@ export interface PlanSummary {
   hasConstruction: boolean
   /** Capital management: call and distribution policy, and month edits (lib/forecast/capital.ts). */
   capital: CapitalSettings
+  /** A GPU SPV scenario's fleet assumptions (lib/gpu/scenario.ts); null on every other plan. */
+  fleet: FleetAssumptions | null
   status: 'active' | 'archived'
   revision: number
   compiledAt: string | null
@@ -234,7 +254,7 @@ export interface VersionView {
   publishedAt: string
 }
 
-const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, construction, capital, is_primary, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
+const PLAN_COLS = 'id, vehicle_id, kind, name, scenario, fiscal_year, start_month, end_month, horizon_months, actuals_cutoff, opening_settlement_months, include_construction, adjustments, construction, capital, fleet, is_primary, status, revision, compiled_at, compiled_cutoff, compiled_closed_through, created_at, updated_at'
 
 /** A stored capital setting, read leniently (a bad row reads as the default rather than breaking the plan). */
 function safeCapital(raw: unknown): CapitalSettings {
@@ -245,7 +265,7 @@ function mapPlan(r: any, vehicle: string): PlanSummary {
   return {
     id: r.id, vehicle, kind: r.kind, name: r.name, scenario: r.scenario ?? null, fiscalYear: r.fiscal_year ?? null,
     startMonth: monthOf(r.start_month), endMonth: monthOf(r.end_month), horizonMonths: r.horizon_months ?? null,
-    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, isPrimary: r.is_primary === true, hasConstruction: r.construction != null, capital: safeCapital(r.capital), status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
+    actualsCutoff: r.actuals_cutoff ?? null, openingSettlementMonths: r.opening_settlement_months ?? 1, includeConstruction: r.include_construction === true, adjustments: (r.adjustments as Adjustments) ?? NO_ADJUSTMENTS, isPrimary: r.is_primary === true, hasConstruction: r.construction != null, capital: safeCapital(r.capital), fleet: (r.fleet as FleetAssumptions | null) ?? null, status: r.status, revision: r.revision, compiledAt: r.compiled_at ?? null,
     compiledCutoff: r.compiled_cutoff ?? null, createdAt: r.created_at, updatedAt: r.updated_at,
   }
 }
@@ -325,9 +345,11 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
   const adj = validateAdjustments(plan.adjustments ?? NO_ADJUSTMENTS, v.accounts)
   const applied = applyAdjustments(result.built.entries, adj, { first: result.built.first, last: result.built.last }, v.currency)
   // Then the fund's capital management, on the plan's cash after everything else.
-  const cap = await capitalEntries(ctx, v, plan, applied.entries, { first: result.built.first, last: result.built.last }, result.ledgerPostings, result.isGpEntity)
+  const cash = await cashWaterfallFor(ctx, v, result.cutoff, result.fleet)
+  const cap = await capitalEntries(ctx, v, plan, applied.entries, { first: result.built.first, last: result.built.last }, result.ledgerPostings, result.isGpEntity, cash)
   return {
     ...result,
+    cashWaterfall: cash,
     built: { ...result.built, entries: cap.entries },
     generated: result.built.entries,
     capital: cap.capital,
@@ -336,7 +358,7 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
 }
 
 async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, rules: RuleView[], overrides: OverrideView[]) {
-  const { cutoff, warnings } = resolveCutoff(plan.actuals_cutoff, v)
+  const { cutoff, warnings } = resolveCutoff(plan.actuals_cutoff, v, pitchStartOf(v, plan.fleet))
   // Before any work: a window past the cap (a plan stored before it was enforced) is refused, not
   // compiled month by month.
   const win = planWindow({
@@ -349,7 +371,7 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
     loadPostedLedger(ctx.admin, ctx.fundId, v.name, lastDay(cutoff)),
     // Always: construction feeds every plan with a portfolio (no switch — plans/plan-unified-plan.md),
     // and it is THIS plan's construction (a downside case has its own exits).
-    loadLinkedDrivers(ctx, v, ruleRows, true, plan.id ?? null),
+    loadLinkedDrivers(ctx, v, ruleRows, true, plan.id ?? null, plan.fleet ?? null),
   ])
   const built = buildPlan({
     kind: plan.kind,
@@ -370,12 +392,13 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
     linked: drivers.linked,
     construction: drivers.construction,
     gpShare: drivers.gpShare,
+    fleetOpening: drivers.fleet?.pitch ? fleetOpening(drivers.fleet.assumptions, drivers.fleet.result) : null,
   })
   // An entity that keeps no books here has no actuals to be unclosed: its plan starts from nothing
   // recorded (opening cash zero), which is what the warning should say.
   const noBooks = ledger.postings.length === 0 && !v.closedThrough
   const cutoffWarnings = noBooks ? [`No books are kept for ${v.name} here, so the plan starts from nothing recorded — calls fund what it spends from the first month`] : warnings
-  return { built, cutoff, ledgerPostings: ledger.postings, isGpEntity: !!drivers.gpShare, warnings: [...new Set([...cutoffWarnings, ...drivers.warnings, ...built.warnings])] }
+  return { built, cutoff, ledgerPostings: ledger.postings, isGpEntity: !!drivers.gpShare, fleet: drivers.fleet ?? null, warnings: [...new Set([...cutoffWarnings, ...drivers.warnings, ...built.warnings])] }
 }
 
 /**
@@ -384,9 +407,58 @@ async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, pl
  * split each distribution through the waterfall, and book them. Not for a management company (no
  * partners' capital to call) or a GP entity (its calls and distributions are its share of the fund's).
  */
+/**
+ * A GPU SPV distributes its operating cash, not only exit proceeds (pivot plan §5.1): every cash
+ * movement outside capital is what its distribution policy pays out, above the reserve.
+ */
+const distributesOperatingCash = (v: VehicleCtx) => isGpuSpv(v.kind)
+
+/**
+ * A GPU SPV's distributable-cash waterfall for the forecast: the vehicle's terms (the fleet
+ * scenario's, overrides applied, when the vehicle has none yet) and its history on the books through
+ * the cutoff — contributions by investor, prior distributions with any contingency they returned. A
+ * pitch with nothing contributed yet assumes its scenario's capital raised, the month before Y1.
+ */
+async function cashWaterfallFor(ctx: ForecastServiceContext, v: VehicleCtx, cutoff: MonthKey, fleet: FleetLoad | null): Promise<CashWaterfallInput | null> {
+  if (!isGpuSpv(v.kind)) return null
+  const asOf = lastDay(cutoff)
+  const [carry, { postings }, contingencyByDate] = await Promise.all([
+    loadCarryTerms(ctx.admin, ctx.fundId, v.name),
+    loadCapitalPostings(ctx.admin, ctx.fundId, v.name, asOf),
+    loadContingencyByDate(ctx.admin, ctx.fundId, v.name),
+  ])
+  const h = loadWaterfallHistory(postings, new Set(carry.recipients.map(r => r.lpEntityId)), asOf, contingencyByDate)
+  const o = fleet?.assumptions.overrides ?? {}
+  const base: CashWaterfallTerms | null = carry.kind === 'distributable_cash' ? cashWaterfallTerms(carry) : fleet?.terms.waterfall ?? null
+  if (!base) return null
+  const terms: CashWaterfallTerms = {
+    ...base,
+    prefRate: o.prefRate ?? base.prefRate, carryRate: o.carryRate ?? base.carryRate, rocLpShare: o.rocLpShare ?? base.rocLpShare,
+    recipients: base.recipients.length ? base.recipients : fleet?.terms.waterfall.recipients ?? [],
+  }
+  return {
+    terms,
+    history: cashWaterfallEvents(h.contributions, h.priors, asOf),
+    assumedContribution: fleet ? { date: lastDay(addMonths(fleet.assumptions.startMonth, -1)), amount: fleet.result.returns.capitalRaised } : null,
+    ...(fleet?.monthly.contingencyRelease ? { contingencyReturns: new Map([[fleet.monthly.contingencyRelease.month, fleet.monthly.contingencyRelease.amount]]) } : {}),
+  }
+}
+
+/**
+ * What a GPU SPV's distribution policy pays out of an entry's cash: its operating cash and sale, not
+ * the capital raised nor the equipment and contingency it was spent on (fleetOpeningEntries).
+ */
+const paidOutOnGpu = (e: CompiledEntry) => e.kind !== 'investment' && e.kind !== 'capital_call'
+
+/** The R8 release adds to what is paid out in its month: the cash is the raise's, held until then. */
+function addContingencyReleases(proceeds: Map<MonthKey, number>, cash: CashWaterfallInput | null) {
+  for (const [m, amount] of cash?.contingencyReturns ?? []) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + amount))
+}
+
 async function capitalEntries(
   ctx: ForecastServiceContext, v: VehicleCtx, plan: any, entries: CompiledEntry[],
   window: { first: MonthKey; last: MonthKey }, ledgerPostings: Posting[], isGpEntity: boolean,
+  cash: CashWaterfallInput | null = null,
 ): Promise<{ entries: CompiledEntry[]; warnings: string[]; capital: CapitalSettings }> {
   // Calls and distributions typed into the cash statement before they were capital edits were kept
   // as hand entries ('cell-called-YYYY-MM', 'cell-distributed-YYYY-MM'): read them as month edits.
@@ -415,16 +487,20 @@ async function capitalEntries(
     if (!c) continue
     cashFlows.set(m, roundCents((cashFlows.get(m) ?? 0) + c))
     // Exit proceeds, and cash that belongs to the investors (an unused prepaid fee refunded), are paid out.
-    if (e.kind === 'proceeds' || e.distributable) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
+    if (e.kind === 'proceeds' || e.distributable || (distributesOperatingCash(v) && paidOutOnGpu(e))) proceeds.set(m, roundCents((proceeds.get(m) ?? 0) + c))
   }
+  addContingencyReleases(proceeds, cash)
   // Cash in the bank when the plan's window opens — the books through the month before it (a
   // budget's window can start before the cutoff; a rolling forecast's starts just after it).
   const opensAfter = lastDay(addMonths(window.first, -1))
   const openingCash = roundCents(ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
   const result = computeCapital({
     months, openingCash, cashFlows, proceeds, uncalled: model?.actuals.uncalledCapital ?? 0, settings,
+    ...(cash?.contingencyReturns ? { designated: cash.contingencyReturns } : {}),
   })
-  const split = splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
+  const split = cash
+    ? splitCashDistributions(result.distributions, result.calls, months, cash, result.designatedPaid).byMonth
+    : splitDistributions(result.distributions, result.calls, months, model?.actuals.waterfall)
   // Who the carry goes to is the fund's setting (Allocation terms → Carry, "Carry accrues to"):
   // usually its GP entity, but any partner or associate vehicle, in any split.
   const carryTo = [...split.values()].some(s => s.carry > 0) ? await carryRecipientLabel(ctx, v.name) : ''
@@ -636,6 +712,10 @@ export interface CreatePlanInput {
   includeConstruction?: boolean
   /** 'blank', or 'actuals' (budget: last year's months; forecast: 3-month run rate), or another plan's rules. */
   seed?: { from: 'blank' | 'suggested' | 'last_year' | 'actuals' | 'plan'; planId?: string; lookbackMonths?: number }
+  /** A GPU SPV scenario's fleet assumptions, stored with the plan row itself. */
+  fleet?: unknown
+  /** Start the fleet's Y1 in the plan's first month (its own `startMonth` is replaced). */
+  fleetStartsAtPlan?: boolean
 }
 
 export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanInput): Promise<PlanDetail> {
@@ -676,6 +756,17 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
     endMonth = addMonths(cutoff, horizon)
   }
 
+  let fleet: FleetAssumptions | null = null
+  if (input.fleet != null) {
+    if (!isGpuSpv(v.kind)) throw new ForecastError('Only a GPU SPV plan holds fleet assumptions')
+    try {
+      fleet = validateFleetAssumptions(input.fleetStartsAtPlan ? { ...(input.fleet as object), startMonth } : input.fleet)
+    } catch (e) {
+      if (e instanceof FleetAssumptionsError) throw new ForecastError(e.message)
+      throw e
+    }
+  }
+
   const seed = normaliseSeed(input.seed)
   const seeded = await seedRules(ctx, v, input.kind, seed, cutoff, fiscalYear)
   // A copied plan keeps its source's rules; any other gets the fund's fee and expense rules.
@@ -688,14 +779,18 @@ export async function createPlan(ctx: ForecastServiceContext, input: CreatePlanI
   const hasPrimary = !!(await primaryPlanRow(ctx.admin, ctx.fundId, v.id))
   // A copy is the whole plan as a new scenario: its calls/distributions policy and month edits, and
   // its hand edits, come with its rules and construction.
-  let copied: { capital?: unknown; adjustments?: unknown } = {}
+  let copied: { capital?: unknown; adjustments?: unknown; fleet?: unknown } = {}
   if (seed.from === 'plan' && seed.planId) {
-    const { data: src } = await (ctx.admin as any).from('forecast_plans').select('capital, adjustments')
+    const { data: src } = await (ctx.admin as any).from('forecast_plans').select('capital, adjustments, fleet')
       .eq('fund_id', ctx.fundId).eq('vehicle_id', v.id).eq('id', seed.planId).maybeSingle()
-    if (src) copied = { ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}) }
+    if (src) copied = {
+      ...(src.capital != null ? { capital: src.capital } : {}), ...(src.adjustments != null ? { adjustments: src.adjustments } : {}),
+      // A fleet scenario's copy is a fleet scenario: its rules name the fleet's flows.
+      ...(src.fleet != null && isGpuSpv(v.kind) ? { fleet: src.fleet } : {}),
+    }
   }
   const { data: inserted, error } = await (ctx.admin as any).from('forecast_plans').insert({
-    construction, is_primary: !hasPrimary, ...copied, revision: 0,
+    construction, is_primary: !hasPrimary, ...copied, ...(fleet ? { fleet } : {}), revision: 0,
     fund_id: ctx.fundId, vehicle_id: v.id, kind: input.kind, name, scenario,
     fiscal_year: fiscalYear, start_month: firstDay(startMonth), end_month: firstDay(endMonth), horizon_months: horizon,
     actuals_cutoff: cutoffDate, seed, created_by: ctx.userId || null, include_construction: true,
@@ -923,7 +1018,8 @@ async function constructionCostTerms(ctx: ForecastServiceContext, v: VehicleCtx)
  * construction held — on any account that does not already have a rule.
  */
 async function withCostRules(ctx: ForecastServiceContext, v: VehicleCtx, rules: RuleView[]): Promise<RuleView[]> {
-  if (isManagementCompany(v.kind)) return rules
+  // A GPU SPV's fee and costs are its fleet scenario's (linked_fleet), not a fund's construction terms.
+  if (isManagementCompany(v.kind) || isGpuSpv(v.kind)) return rules
   const costs = await constructionCostTerms(ctx, v)
   if (!costs) return rules
   const taken = new Set(rules.map(r => r.accountId))
@@ -965,6 +1061,8 @@ export interface SavePlanInput {
   adjustments?: unknown
   /** Replace the plan's capital settings whole: policy and month edits (lib/forecast/capital.ts). */
   capital?: unknown
+  /** Replace a GPU SPV plan's fleet assumptions whole (lib/gpu/fleet-forecast.ts); null removes them. */
+  fleet?: unknown
 }
 
 /**
@@ -1036,6 +1134,17 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
       working.capital = cap
     } catch (e) {
       if (e instanceof CapitalError) throw new ForecastError(e.message)
+      throw e
+    }
+  }
+  if (input.fleet !== undefined) {
+    if (!isGpuSpv(v.kind)) throw new ForecastError('Only a GPU SPV plan holds fleet assumptions')
+    try {
+      const fleet = input.fleet === null ? null : validateFleetAssumptions(input.fleet)
+      patch.fleet = fleet
+      working.fleet = fleet
+    } catch (e) {
+      if (e instanceof FleetAssumptionsError) throw new ForecastError(e.message)
       throw e
     }
   }
@@ -1116,7 +1225,7 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
   {
     const win = planWindow({
       kind: working.kind, fiscalYear: working.fiscal_year, startMonth: monthOf(working.start_month), endMonth: monthOf(working.end_month),
-      horizonMonths: working.horizon_months, cutoff: resolveCutoff(working.actuals_cutoff, v).cutoff,
+      horizonMonths: working.horizon_months, cutoff: resolveCutoff(working.actuals_cutoff, v, pitchStartOf(v, working.fleet)).cutoff,
     })
     if (p.endMonth != null && win.last < win.first) throw new ForecastError('endMonth is before the first forecast month')
     assertPlanWindow(win.first, win.last)
@@ -1164,7 +1273,7 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
   const label = optionalText(input.label, 'label', MAX_LABEL)
   const notes = optionalText(input.notes, 'notes', MAX_NOTES)
   const { rules, overrides } = await loadInputs(ctx, row.id)
-  const { built, cutoff } = await compile(ctx, v, row, rules, overrides)
+  const { built, cutoff, fleet } = await compile(ctx, v, row, rules, overrides)
   // A version freezes BOTH halves: the exits and deals it assumed, with its capital policy — written
   // by forecast_publish in the version's own INSERT (versions are immutable; an UPDATE afterwards is
   // refused). A plan with no construction of its own yet freezes the one it compiled from.
@@ -1177,6 +1286,9 @@ export async function publishPlan(ctx: ForecastServiceContext, input: PublishInp
     p_entries: entriesJson(built.entries),
     p_construction: construction ?? null,
     p_capital: row.capital ?? {},
+    // The fleet it assumed, frozen whole: the servers and the terms it ran on, so the version's
+    // scenario never reruns against a register or terms changed since (null on every other plan).
+    p_fleet: fleet ? materializeFleet(fleet) : row.fleet ?? null,
   })
   if (error) rpcError(error)
   return { versionId: (data as any).id as string, versionNo: (data as any).versionNo as number }
@@ -1284,7 +1396,7 @@ async function seriesDetail(ctx: ForecastServiceContext, v: VehicleCtx, input: S
     } else {
       // The stored entries were compiled against compiled_cutoff, so that is the boundary they
       // join the actuals at. If today's cutoff differs, say so rather than re-cut silently.
-      const resolved = resolveCutoff(row.actuals_cutoff, v)
+      const resolved = resolveCutoff(row.actuals_cutoff, v, pitchStartOf(v, row.fleet))
       cutoff = row.compiled_cutoff ? monthOf(row.compiled_cutoff) : resolved.cutoff
       warnings.push(...resolved.warnings)
       if (cutoff !== resolved.cutoff) {
@@ -1422,6 +1534,7 @@ function describeRule(r: RuleView): string {
       case 'seasonal': return `Repeating 12-month profile from ${p.anchor}${p.annualGrowth ? `, +${p.annualGrowth * 100}%/yr` : ''}`
       case 'linked_fee': return 'Linked management fee'
       case 'linked_construction': return `Portfolio construction ${p.flow}`
+      case 'linked_fleet': return `Fleet scenario ${String(p.flow).replace('_', ' ')}`
       case 'management_fee': return `Management fee ${(p.rate * 100).toFixed(2)}% on ${p.basis} capital for ${p.termYears} years${p.stepDownYear ? `, ${(p.stepDownRate * 100).toFixed(2)}% from year ${p.stepDownYear}` : ''}`
       default: return r.method
     }
@@ -1581,13 +1694,17 @@ export async function getPlanReturns(
   const invested = new Map<MonthKey, number>()
   const proceeds = new Map<MonthKey, number>()
   for (const e of built.entries) {
-    if (CAPITAL_KINDS.has(e.kind)) continue
+    // A pitch's capital raise is the plan's opening funding, not a call capital management made.
+    if (CAPITAL_KINDS.has(e.kind) && e.memo !== FLEET_RAISE_MEMO) continue
     const m = e.entryDate.slice(0, 7) as MonthKey
     const c = cashOf(e)
     if (!c) continue
-    const into = e.kind === 'investment' ? invested : e.kind === 'proceeds' || e.distributable ? proceeds : otherFlows
+    const into = e.kind === 'investment' ? invested
+      : e.kind === 'proceeds' || e.distributable || (distributesOperatingCash(v) && paidOutOnGpu(e)) ? proceeds : otherFlows
     into.set(m, roundCents((into.get(m) ?? 0) + c))
   }
+  // The R8 release is NOT added here: it is cash the raise already put in the bank, and planReturns
+  // adds it to what capital management owes (never to the month's cash) from cashWaterfall.
   const opensAfter = lastDay(addMonths(built.first, -1))
   const openingCash = roundCents(compiled.ledgerPostings.filter(p => cashIds.has(p.accountId) && (p.entryDate ?? '') <= opensAfter).reduce((s, p) => s + p.amount, 0))
   const model = await getConstructionModel({ admin: ctx.admin, fundId: ctx.fundId, access: ctx.access }, { vehicle: v.name, planId: row.id })
@@ -1598,8 +1715,17 @@ export async function getPlanReturns(
   const common = {
     months, asOfMonth: compiled.cutoff, openingCash, uncalled: model.actuals.uncalledCapital ?? 0,
     settings: compiled.capital ?? safeCapital(row.capital), otherFlows, waterfall: model.actuals.waterfall,
+    // A GPU SPV: its distributable-cash waterfall, the end value through it too (lib/forecast/plan-returns.ts).
+    ...(compiled.cashWaterfall ? { waterfallKind: 'distributable_cash' as const, cashWaterfall: compiled.cashWaterfall } : {}),
   }
-  const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) })
+  // A GPU SPV's revenue is received the month after (1150): what is still receivable when the plan
+  // ends is valued at the end with the cash left, through the waterfall like the rest.
+  const receivableIds = new Set(isGpuSpv(v.kind) ? v.accounts.filter(a => a.subtype === 'marketplace_receivable' && !a.lpEntityId && !a.companyId).map(a => a.id) : [])
+  const openReceivable = receivableIds.size ? roundCents(
+    compiled.ledgerPostings.filter(p => receivableIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0)
+    + built.entries.flatMap(e => e.postings).filter(p => receivableIds.has(p.accountId)).reduce((s, p) => s + p.amount, 0),
+  ) : 0
+  const base = planReturns({ ...common, invested, proceeds, terminalNav: navAt(gross?.years) + openReceivable })
 
   let simulation: PlanReturnsResponse['simulation'] = null
   const sim = model.assumptions.simulation
@@ -1645,7 +1771,8 @@ export async function getPlanReturns(
   // flagged by carryRestricted). Distributions keep carry inside them, as they always have.
   if (!seesCarry(ctx.access)) {
     base.years = base.years.map(y => ({ ...y, carry: 0 }))
-    base.totals = { ...base.totals, carry: 0 }
+    // The end value's manager share is the profit share too (a GPU SPV's terminalCarry).
+    base.totals = { ...base.totals, carry: 0, ...(base.totals.terminalCarry != null ? { terminalCarry: 0 } : {}) }
     if (simulation) simulation = { ...simulation, carry: { p10: 0, p25: 0, p50: 0, p75: 0, p90: 0, mean: 0 } }
   }
   return {
@@ -1654,6 +1781,96 @@ export async function getPlanReturns(
     gross: { moic: model.forecast.returns.estimatedGrossMoic ?? null, reserveLeft: model.forecast.capital.remaining ?? null },
     callReserve: common.settings.policy.calls.reserve,
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fleet scenarios — a GPU SPV's plans side by side (gpu-P4 B1, the gpu-P5 contract)
+// ---------------------------------------------------------------------------------------------
+
+export interface FleetScenariosResponse {
+  /** Per plan id, the engine's result with the manager's figures null for a caller without gp_economics. */
+  results: Record<string, RedactedScenarioResult>
+  /** Columns are plan ids, in `plans` order. */
+  comparison: ScenarioComparison
+  /** The requested plan, else the primary; null when there are no fleet plans. */
+  detail: ScenarioDetail | null
+  /** The detail plan's distribution cadence; null with no detail. */
+  cadence: Cadence | null
+  primaryPlanId: string | null
+  /** The fleet plans, for labelling the comparison's columns. */
+  plans: { id: string; name: string; scenario: string | null; isPrimary: boolean }[]
+  warnings: string[]
+}
+
+/**
+ * Every active fleet plan of a GPU SPV, each run through the scenario engine once, as the
+ * Scenarios page reads them. `results` is empty when the vehicle has none (the page offers the
+ * seed). The raw result carries every manager figure, so it is redacted here, before it leaves the
+ * server (redactScenarioResult), as the comparison and detail are (showCarry).
+ */
+export async function getFleetScenarios(ctx: ForecastServiceContext, input: { vehicle: string; planId?: string | null }): Promise<FleetScenariosResponse> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  const showCarry = seesCarry(ctx.access)
+  const { data, error } = await (ctx.admin as any).from('forecast_plans').select(PLAN_COLS)
+    .eq('fund_id', ctx.fundId).eq('vehicle_id', v.id).eq('status', 'active').order('created_at', { ascending: true })
+  if (error) throw error
+  const rows = ((data as any[]) ?? []).filter(r => r.fleet != null)
+  if (input.planId && !rows.some(r => r.id === input.planId)) throw new ForecastError('No such fleet plan for this vehicle', 404)
+  const raw: Record<string, FleetScenarioResult> = {}
+  const warnings: string[] = []
+  for (const r of rows) {
+    const { fleet, warnings: w } = await loadFleet(ctx, v, r.fleet)
+    warnings.push(...w.map(x => `${r.name}: ${x}`))
+    if (fleet) raw[r.id] = fleet.result
+  }
+  const plans = rows.filter(r => raw[r.id]).map(r => ({ id: r.id, name: r.name, scenario: r.scenario ?? null, isPrimary: r.is_primary === true }))
+  const primaryPlanId = plans.find(p => p.isPrimary)?.id ?? null
+  const detailId = input.planId ?? primaryPlanId ?? plans[0]?.id ?? null
+  const detailResult = detailId ? raw[detailId] : undefined
+  return {
+    results: Object.fromEntries(Object.entries(raw).map(([id, r]) => [id, redactScenarioResult(r, showCarry)])),
+    comparison: scenarioComparison(raw, { showCarry }),
+    detail: detailResult ? scenarioDetail(detailResult, { showCarry }) : null,
+    cadence: detailResult?.cadence ?? null,
+    primaryPlanId,
+    plans,
+    warnings: [...new Set(warnings)],
+  }
+}
+
+/**
+ * One fleet plan's scenario tables for the forecast workbook (Headline, Series, Detail), redacted
+ * for the caller — a published version's frozen fleet when one is asked for. Null when the plan, or
+ * the version, has no fleet.
+ */
+export async function getFleetReport(
+  ctx: ForecastServiceContext, input: { vehicle: string; planId: string; versionId?: string | null },
+): Promise<{ comparison: ScenarioComparison; detail: ScenarioDetail; stale: boolean } | null> {
+  const v = await loadVehicle(ctx, input.vehicle, 'read')
+  if (!isGpuSpv(v.kind)) return null
+  const row = await loadPlanRow(ctx, v, input.planId)
+  let fleet: unknown = row.fleet
+  if (input.versionId) {
+    const { data, error } = await (ctx.admin as any).from('forecast_versions').select('fleet')
+      .eq('fund_id', ctx.fundId).eq('plan_id', row.id).eq('id', input.versionId).maybeSingle()
+    if (error) throw error
+    fleet = data?.fleet ?? null
+  }
+  // A version runs from its frozen fleet alone; the draft from the plan's, on today's register and terms.
+  const { fleet: run } = await loadFleet(ctx, v, fleet, { frozen: !!input.versionId })
+  if (!run) return null
+  const showCarry = seesCarry(ctx.access)
+  // A draft's Monthly sheet is its STORED entries, compiled at its last save; these sheets run on
+  // today's terms and register. When compiling now would give other entries, say so on the sheets
+  // (getPlan's freshness test). A version is frozen whole, so it is never stale.
+  let stale = false
+  if (!input.versionId) {
+    const { rules, overrides } = await loadInputs(ctx, row.id)
+    const [{ built, cutoff }, stored] = await Promise.all([compile(ctx, v, row, rules, overrides), loadEntries(ctx, row.id, null)])
+    stale = (row.compiled_cutoff != null && monthOf(row.compiled_cutoff) !== cutoff)
+      || entriesFingerprint(built.entries.map(e => ({ date: e.entryDate, postings: e.postings }))) !== entriesFingerprint(stored.map(e => ({ date: e.date, postings: e.postings })))
+  }
+  return { comparison: scenarioComparison({ [row.name]: run.result }, { showCarry }), detail: scenarioDetail(run.result, { showCarry }), stale }
 }
 
 /** "GP I LLC" or "GP I LLC 60%, Jane Doe 40%" — the fund's carry recipients; null when it names none. */

@@ -13,6 +13,7 @@ type FailOp = Op | 'select'
 const EMBEDS: Record<string, Record<string, string>> = {
   journal_entries: { journal_postings: 'journal_entry_id' },
   accounting_schedules: { accounting_schedule_lines: 'schedule_id' },
+  forecast_entries: { forecast_postings: 'entry_id' },
 }
 
 /** The other direction: a child row embedding its parent (`journal_entries!inner(...)` under `journal_postings`). */
