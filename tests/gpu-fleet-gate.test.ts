@@ -47,7 +47,8 @@ const ID = '00000000-0000-4000-8000-000000000001'
 describe('the fleet gate', () => {
   it('maps every fleet route to the fleet domain', () => {
     const fleet = Object.entries(ROUTE_DOMAINS).filter(([k]) => k.startsWith('api/fleet/'))
-    expect(fleet.length).toBe(9)
+    // 9 register routes (P1) + 4 operations routes (P3: ops/import, ops/earnings, ops/payouts, kpis).
+    expect(fleet.length).toBe(13)
     expect(fleet.every(([, v]) => v.domain === 'fleet')).toBe(true)
   })
 

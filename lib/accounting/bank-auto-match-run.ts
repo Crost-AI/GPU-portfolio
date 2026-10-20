@@ -17,6 +17,10 @@ import { loadEntityNames } from './load'
 import { buildFundingEntry, buildDistributionSettlementEntry } from './entries'
 import { persistEntry, accountIdByCode } from './persist'
 import { matchTransaction, type OpenBalance } from './bank-auto-match'
+// ── GPU fleet (P3) ──
+import { marketplacePayoutCandidates, type PayoutCandidate } from './bank-match'
+import { isPayoutCandidate, matchPayout } from '@/lib/gpu/ops/payouts'
+import { RECEIVABLE_CODE as MARKETPLACE_RECEIVABLE_CODE } from '@/lib/gpu/ops/types'
 
 export interface AutoMatchOutcome {
   matched: { txnId: string; lpEntityId: string; name: string; amount: number; by: string }[]
@@ -24,6 +28,15 @@ export interface AutoMatchOutcome {
   ambiguous: { txnId: string; amount: number; description: string | null; candidates: OpenBalance[] }[]
   /** Transactions with no open balance at that amount. Left exactly as they were. */
   unmatched: number
+  // ── GPU fleet (P3) ── Present only on a GPU SPV (a chart with 1150), so every other vehicle's
+  // outcome has exactly the keys it had before.
+  /** Inflows matched to an expected marketplace payout and posted (Dr 1000 / Cr 1150). */
+  payouts?: { txnId: string; payoutId: string; amount: number; entryId: string }[]
+  /**
+   * Inflows that fit several expected payouts, or one payout AND a partner's open call at the same
+   * amount (`lpCandidates`) — a human picks.
+   */
+  ambiguousPayouts?: { txnId: string; amount: number; description: string | null; candidates: PayoutCandidate[]; lpCandidates?: OpenBalance[] }[]
 }
 
 const CENT = 0.005
@@ -79,9 +92,38 @@ export async function autoMatchOpenCapital(
 
   const out: AutoMatchOutcome = { matched: [], ambiguous: [], unmatched: 0 }
 
+  // ── GPU fleet (P3) ── Only a GPU SPV's chart has 1150, so for every other vehicle `payouts` stays
+  // null and the loop below is the one it always was: no extra read, no extra key in the outcome.
+  // Unlike a capital settlement, a payout match POSTS (matchPayout): the payout was declared by a
+  // person recording it, and its counter-account is a receivable the posted earnings created.
+  let payouts: PayoutCandidate[] | null = null
+  if (codes.has(MARKETPLACE_RECEIVABLE_CODE)) {
+    payouts = await marketplacePayoutCandidates(admin, fundId, group)
+    out.payouts = []
+    out.ambiguousPayouts = []
+  }
+
   for (const t of ((txns as any[]) ?? [])) {
     const amount = Number(t.amount)
     const inflow = amount > 0
+    if (payouts && inflow) {
+      const fits = payouts.filter(p => isPayoutCandidate({ amount: p.amount, payout_date: p.payoutDate }, t))
+      // A payout is booked only when no partner's open call fits the same inflow: a wire that could
+      // be either is a person's call, never the order of this loop.
+      const lp = fits.length ? matchTransaction(amount, t.description, openOf(receivables)) : null
+      const lpCandidates = !lp || lp.kind === 'none' ? [] : lp.kind === 'ambiguous' ? lp.candidates : openOf(receivables).filter(o => o.lpEntityId === lp.lpEntityId)
+      if (fits.length > 1 || lpCandidates.length) {
+        out.ambiguousPayouts!.push({ txnId: t.id, amount, description: t.description, candidates: fits, ...(lpCandidates.length ? { lpCandidates } : {}) })
+        continue
+      }
+      if (fits.length === 1) {
+        const matched = await matchPayout(admin, fundId, group, userId, fits[0].payoutId, t.id)
+        if ('error' in matched) { out.unmatched++; continue }
+        payouts = payouts.filter(p => p.payoutId !== fits[0].payoutId)
+        out.payouts!.push({ txnId: t.id, payoutId: fits[0].payoutId, amount, entryId: matched.entryId })
+        continue
+      }
+    }
     const pool = inflow ? receivables : payables
     const settleAccountId = inflow ? receivableId : payableId
     if (!settleAccountId) { out.unmatched++; continue }

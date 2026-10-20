@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
 import { useVehicle, FundSwitcher } from '@/components/accounting-vehicle'
 import { AccountingBody, AccountingPageHeader } from '@/components/accounting-chrome'
 import { Metric } from '@/components/ui/metric'
-import { useAccess, useIsAdmin } from '@/components/access-context'
+import { useAccess, useCanRead, useIsAdmin } from '@/components/access-context'
+import { send, unreturnedCapital, vehicleFetcher, waterfallPaths, type PrefLedgerRow } from '@/components/gpu/waterfall-api'
 import { canSee } from '@/components/app-sidebar'
 import { ACCOUNTING_SECTIONS, type AccountingSection } from '@/lib/accounting/nav'
 import type { Domain } from '@/lib/access/domains'
@@ -15,7 +16,7 @@ import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
-import { fleetTotals, todayIso, type FleetTotals } from '@/components/gpu/fleet-math'
+import { fleetTotals, todayIso, valuationDate, type FleetTotals } from '@/components/gpu/fleet-math'
 
 // ── GPU fleet (P5) ── The GPU SPV's lead page, in place of a fund's performance lead: what the fleet
 // is worth, what it earned, how busy it was, and how much of the investors' capital is still out.
@@ -54,14 +55,32 @@ export function GpuDetailView({
 
   // The register, for the NBV tile. This page renders only for a caller who can view the fleet
   // (funds/[id]/page.tsx), so the request is theirs to make.
-  const [fleet, setFleet] = useState<FleetTotals | { error: string } | null>(null)
+  const [fleet, setFleet] = useState<(FleetTotals & { valuedAsOf: string | null }) | { error: string } | null>(null)
   useEffect(() => {
     let cancelled = false
-    void listVehicleAssets(browserFetch, vehicle).then(r => {
-      if (!cancelled) setFleet(r.ok ? fleetTotals(r.data.assets, todayIso()) : { error: r.error })
+    void listVehicleAssets(browserFetch, vehicle, todayIso()).then(r => {
+      if (!cancelled) setFleet(r.ok ? { ...fleetTotals(r.data.assets), valuedAsOf: valuationDate(r.data.assets) } : { error: r.error })
     })
     return () => { cancelled = true }
   }, [vehicle])
+
+  // Unreturned capital, from the pref ledger the Waterfall page reads (lp_capital): asked for this
+  // URL's vehicle by name, not the context's, which this page pins only after its first render.
+  const readsCapital = useCanRead('lp_capital')
+  const fetcher = useMemo(() => vehicleFetcher(vehicle), [vehicle])
+  const [unreturned, setUnreturned] = useState<{ value: number | null; sub: string } | null>(null)
+  useEffect(() => {
+    if (!readsCapital) return
+    let cancelled = false
+    void send<PrefLedgerRow[]>(fetcher, waterfallPaths.prefLedger).then(r => {
+      if (cancelled) return
+      // A refusal is shown in the route's words: a 400 is either other terms or a replay that failed.
+      if (!r.ok) { setUnreturned({ value: null, sub: r.error }); return }
+      const value = Array.isArray(r.data) ? unreturnedCapital(r.data) : null
+      setUnreturned({ value, sub: value == null ? 'The pref ledger has no per-investor lines' : 'From the preferred return ledger' })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, readsCapital])
 
   return (
     <>
@@ -84,14 +103,19 @@ export function GpuDetailView({
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Metric
               label="Fleet NBV"
-              value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbv, currency) : '—'}
+              value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbvBook, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
                 : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
-                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned, not booked` : '')}
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')
+                  + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
             <Metric label="LTM revenue" value="—" sub="Fills in with revenue entry (P5-4)" />
             <Metric label="Utilization" value="—" sub="Fills in with revenue entry (P5-4)" />
-            <Metric label="Unreturned capital" value="—" sub="Fills in with the waterfall (P5-3)" />
+            <Metric
+              label="Unreturned capital"
+              value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}
+              sub={!readsCapital ? 'Needs access to investors\u2019 capital' : unreturned?.sub ?? 'Loading'}
+            />
           </div>
 
           {links.length > 0 && (
