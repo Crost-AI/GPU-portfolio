@@ -190,6 +190,26 @@ describe("a pitch plan's opening: the capital raised and the fleet bought", () =
     expect(opening).toBe(0)
   })
 
+  it('months after seeding, with no books yet, the pitch stays anchored on its Y1: opening, NBV, sale', async () => {
+    // Seeded three months ago; nothing closed since, so the cutoff would have rolled on by three.
+    const [y, mm] = thisMonth.split('-').map(Number)
+    const t = y * 12 + mm - 1 - 3
+    const seeded = `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}`
+    const fleet = packAssumptions('oversupply_50', { startMonth: seeded as any, capex: { contingencyPct: 0.1, contingencySpent: 100_000 } })
+    const detail = await getPlan(ctx(books([plan({ fleet, start_month: `${seeded}-01` })]).admin), { vehicle: GPU, planId: 'p1' })
+    expect(detail.window.first).toBe(seeded)
+    expect(detail.cutoff).not.toBe(thisMonth)
+    const raise = detail.entries.find(e => e.memo === 'Capital raised for the fleet')!
+    expect(raise.date.slice(0, 7)).toBe(seeded)
+    const bal = balances(detail.entries)
+    expect(bal('1600')).toBe(0)
+    expect(bal('1650')).toBe(0)
+    // Opening NBV is the fleet's cost, and 30,500 of the raise is left as the unspent contingency.
+    const opening = balances(detail.entries.filter(e => e.date.slice(0, 7) === seeded && (e.kind === 'capital_call' || e.kind === 'investment')))
+    expect(opening('1600')).toBe(1_305_000)
+    expect(opening('1000')).toBe(30_500)
+  })
+
   it('a register plan carries these from the books, so it books none of them', async () => {
     const b = books([plan({ fleet: { ...FLEET, assets: 'register' } })])
     b.tables.gpu_asset_types.push({ id: 't1', fund_id: 'f1', code: 'b200', label: 'B200', gpu_model: null, gpus_per_server: 8, anchor_rate: null, notes: null })

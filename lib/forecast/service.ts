@@ -163,11 +163,20 @@ async function loadVehicle(ctx: ForecastServiceContext, vehicle: string, need: '
 
 const thisMonth = () => new Date().toISOString().slice(0, 7)
 
+/** A GPU SPV pitch plan's Y1: its fleet states its own servers (not the register). Null otherwise. */
+function pitchStartOf(v: VehicleCtx, fleet: unknown): MonthKey | null {
+  const f = fleet as { assets?: unknown; startMonth?: unknown } | null
+  return isGpuSpv(v.kind) && f && f.assets !== 'register' && isMonthKey(f.startMonth) ? f.startMonth : null
+}
+
 /**
  * The cutoff a plan compiles against and why. Default: the last closed month. With nothing closed,
  * the month before this one — labelled unclosed everywhere it shows, never passed off as final.
  */
-function resolveCutoff(planCutoff: string | null, v: VehicleCtx): { cutoff: MonthKey; warnings: string[] } {
+function resolveCutoff(planCutoff: string | null, v: VehicleCtx, pitchStart: MonthKey | null = null): { cutoff: MonthKey; warnings: string[] } {
+  // A pitch (its servers its own, no books closed yet) stays anchored on its fleet's Y1, so its window
+  // keeps the capital raise and the purchase however many months pass before the books start.
+  if (!planCutoff && pitchStart && !v.closedThrough) return { cutoff: addMonths(pitchStart, -1), warnings: [] }
   if (planCutoff) {
     const m = monthOf(planCutoff)
     const warnings = v.closedThrough && m <= v.closedThrough ? [] : [`Actuals through ${m} include months that are not closed`]
@@ -349,7 +358,7 @@ async function compile(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, ru
 }
 
 async function compileFromSources(ctx: ForecastServiceContext, v: VehicleCtx, plan: any, rules: RuleView[], overrides: OverrideView[]) {
-  const { cutoff, warnings } = resolveCutoff(plan.actuals_cutoff, v)
+  const { cutoff, warnings } = resolveCutoff(plan.actuals_cutoff, v, pitchStartOf(v, plan.fleet))
   // Before any work: a window past the cap (a plan stored before it was enforced) is refused, not
   // compiled month by month.
   const win = planWindow({
@@ -1215,7 +1224,7 @@ export async function savePlan(ctx: ForecastServiceContext, input: SavePlanInput
   {
     const win = planWindow({
       kind: working.kind, fiscalYear: working.fiscal_year, startMonth: monthOf(working.start_month), endMonth: monthOf(working.end_month),
-      horizonMonths: working.horizon_months, cutoff: resolveCutoff(working.actuals_cutoff, v).cutoff,
+      horizonMonths: working.horizon_months, cutoff: resolveCutoff(working.actuals_cutoff, v, pitchStartOf(v, working.fleet)).cutoff,
     })
     if (p.endMonth != null && win.last < win.first) throw new ForecastError('endMonth is before the first forecast month')
     assertPlanWindow(win.first, win.last)
@@ -1386,7 +1395,7 @@ async function seriesDetail(ctx: ForecastServiceContext, v: VehicleCtx, input: S
     } else {
       // The stored entries were compiled against compiled_cutoff, so that is the boundary they
       // join the actuals at. If today's cutoff differs, say so rather than re-cut silently.
-      const resolved = resolveCutoff(row.actuals_cutoff, v)
+      const resolved = resolveCutoff(row.actuals_cutoff, v, pitchStartOf(v, row.fleet))
       cutoff = row.compiled_cutoff ? monthOf(row.compiled_cutoff) : resolved.cutoff
       warnings.push(...resolved.warnings)
       if (cutoff !== resolved.cutoff) {
