@@ -44,7 +44,7 @@ const asset = (over: Partial<ValuedAsset>): ValuedAsset => ({
   tax_life_years: null, insurance_basis: null, datacenter_contract_id: null, purchase_entry_id: 'je', disposed_on: null,
   disposal_proceeds: null, disposal_entry_id: null, notes: null,
   basis: 0, capitalized_costs: 0, accumulated_book: 0, nbv_book: 0, accumulated_tax: 0, nbv_tax: 0,
-  valuation_as_of: AS_OF, capex_events: [], ...over,
+  valuation_as_of: AS_OF, capex_events: [], on_books_as_of: true, ...over,
 })
 
 // The pack's three servers, with the server's valuation as of 31 December 2026 (book after 12 months
