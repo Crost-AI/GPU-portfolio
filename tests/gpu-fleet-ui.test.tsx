@@ -18,7 +18,7 @@ import { RegisterTable, ContractsTable } from '@/components/gpu/fleet-register'
 import { CapexEventsTable, ValuationCard } from '@/components/gpu/asset-detail'
 import { CapexDialog, useCapexSubmitter, whileOpen } from '@/components/gpu/fleet-dialogs'
 import { ErrorAlert, asOfCommit } from '@/components/gpu/fleet-ui'
-import { ZERO_TOTALS, fleetTotals, isOffBooks, mayCountLaterPurchases, valuationDate, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
+import { ZERO_TOTALS, fleetTotals, isOffBooks, valuationDate, offBooksLabel, offersBookedActions, statusMoves, todayIso, type ValuedAsset } from '@/components/gpu/fleet-math'
 import { FleetOverviewView } from '@/components/gpu/fleet-overview'
 import {
   EMPTY_ASSET_FORM, EMPTY_CONTRACT_FORM, assetBody, assetFormError, assetFormOf, assetPatch, disposeBody, validAmount, capexSubmitter, contractBody, endContractBody, eventBody,
@@ -175,41 +175,56 @@ describe('the fleet register', () => {
     })
   })
 
-  it('keeps a planned asset out of book and tax, though the route values it at its full basis', () => {
-    // valueAssets reports an unpurchased asset at its basis with nothing depreciated.
-    const plan = asset({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000,
-      basis: 335_000, nbv_book: 335_000, nbv_tax: 335_000 })
-    expect(fleetTotals([plan])).toMatchObject({ basis: 0, planned: 335_000, nbvBook: 0, nbvTax: 0 })
-    expect(fleetTotals([...PACK, plan])).toMatchObject({ basis: 1_317_000, planned: 335_000, nbvBook: 1_081_950, nbvTax: 927_850 })
-    const html = register({ assets: [...PACK, plan] })
-    expect(cell(html, 'plan', 'basis')).toBe('')
-    expect(cell(html, 'plan', 'nbv_book')).toBe('')
-    expect(cell(html, 'plan', 'nbv_tax')).toBe('')
-    expect(html).toMatch(/data-asset="plan"[\s\S]*?data-col="planned" data-value="335000"[^>]*>[^<]*<span[^>]*>Planned</)
-    expect(html).toContain(`data-total="planned">${money(335_000)}`)
-  })
+  describe('on the books follows the route\u2019s on_books_as_of (#108), not a client rule', () => {
+    // The route reports an off-book asset with every value 0 and its basis; the page sums what it sends.
+    const offBook = (over: Partial<ValuedAsset>) => asset({ on_books_as_of: false, accumulated_book: 0, nbv_book: 0, accumulated_tax: 0, nbv_tax: 0, ...over })
 
-  it('counts follow the status: an unbooked in-service asset counts in GPUs and in service, but adds 0 to book and tax', () => {
-    const running = asset({ id: 'run', status: 'in_service', purchase_entry_id: null, gpu_count: 8, basis: 400_000, nbv_book: 400_000, nbv_tax: 400_000 })
-    expect(fleetTotals([running])).toEqual({ ...ZERO_TOTALS, assets: 1, gpus: 8, inService: 1, planned: 400_000 })
-    expect(fleetTotals([...PACK, running])).toMatchObject({ gpus: 32, inService: 4, nbvBook: 1_081_950, nbvTax: 927_850, planned: 400_000 })
-  })
+    it('planned (false): basis under Planned, captioned Planned, nothing in the totals', () => {
+      const plan = offBook({ id: 'plan', name: 'Planned H200', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000, basis: 335_000 })
+      expect(fleetTotals([...PACK, plan])).toMatchObject({ basis: 1_317_000, planned: 335_000, nbvBook: 1_081_950, nbvTax: 927_850 })
+      const html = register({ assets: [...PACK, plan] })
+      expect(cell(html, 'plan', 'nbv_book')).toBe('')
+      expect(html).toMatch(/data-asset="plan"[\s\S]*?data-col="planned" data-value="335000"[^>]*>[^<]*<span[^>]*>Planned</)
+      expect(html).toContain(`data-total="planned">${money(335_000)}`)
+    })
 
-  it('says, at a date before today, that the totals may include assets purchased later (until the route flags it)', () => {
-    expect(mayCountLaterPurchases('2026-03-31', '2026-10-19')).toBe(true)
-    expect(mayCountLaterPurchases('2026-10-19', '2026-10-19')).toBe(false)
-    expect(mayCountLaterPurchases(null)).toBe(false)
-    const past = register({ assets: PACK.map(p => ({ ...p, valuation_as_of: '2020-01-31' })) })
-    expect(past).toContain('data-earlier-date-caveat')
-    expect(register({ assets: PACK.map(p => ({ ...p, valuation_as_of: todayIso() })) })).not.toContain('data-earlier-date-caveat')
-  })
+    it('purchased after the as-of date (false): the same, captioned Not on the books at this date', () => {
+      const later = offBook({ id: 'later', status: 'in_service', purchase_entry_id: 'je-later', basis: 410_000 })
+      expect(isOffBooks(later)).toBe(true)
+      expect(offBooksLabel(later)).toBe('Not on the books at this date')
+      expect(fleetTotals([...PACK, later])).toMatchObject({ planned: 410_000, nbvBook: 1_081_950, inService: 4, gpus: 32 })
+      expect(register({ assets: [...PACK, later] })).toMatch(/data-asset="later"[\s\S]*?data-col="planned" data-value="410000"[^>]*>[^<]*<span[^>]*>Not on the books at this date</)
+    })
 
-  it('keeps an unbooked asset (not planned, purchase not linked) out too, captioned Unbooked', () => {
-    const unbooked = asset({ id: 'ub', name: 'Recovering', status: 'ordered', purchase_entry_id: null, basis: 410_000, nbv_book: 410_000, nbv_tax: 410_000 })
-    expect(isOffBooks(unbooked)).toBe(true)
-    expect(offBooksLabel(unbooked)).toBe('Unbooked')
-    expect(fleetTotals([...PACK, unbooked])).toMatchObject({ planned: 410_000, nbvBook: 1_081_950 })
-    expect(register({ assets: [...PACK, unbooked] })).toMatch(/data-asset="ub"[\s\S]*?data-col="planned" data-value="410000"[^>]*>[^<]*<span[^>]*>Unbooked</)
+    it('an unlinked but posted purchase (true) is counted: the route recognises it, so the page does too', () => {
+      const unlinked = asset({ id: 'ul', status: 'ordered', purchase_entry_id: null, basis: 410_000, accumulated_book: 6_150, nbv_book: 403_850, nbv_tax: 403_850 })
+      expect(isOffBooks(unlinked)).toBe(false)
+      expect(fleetTotals([...PACK, unlinked])).toMatchObject({ basis: 1_727_000, planned: 0, nbvBook: 1_485_800 })
+      expect(cell(register({ assets: [...PACK, unlinked] }), 'ul', 'nbv_book')).toBe('403850')
+    })
+
+    it('in service (true) is counted at the route\u2019s figures', () => {
+      expect(isOffBooks(PACK[0])).toBe(false)
+      expect(cell(register(), 'h200', 'nbv_book')).toBe('274700')
+    })
+
+    it('disposed on or before the as-of date (true, values 0): excluded and shown as a dash', () => {
+      const gone = asset({ id: 'gone', status: 'disposed', disposed_on: '2026-06-30', basis: 300_000, nbv_book: 0, nbv_tax: 0, accumulated_book: 300_000 })
+      expect(isOffBooks(gone)).toBe(false)
+      expect(fleetTotals([...PACK, gone])).toMatchObject({ assets: 3, basis: 1_317_000, nbvBook: 1_081_950 })
+      expect(cell(register({ assets: [...PACK, gone] }), 'gone', 'nbv_book')).toBe('')
+    })
+
+    it('counts follow status: an off-book asset in service counts in GPUs and in service, and adds 0 to book and tax', () => {
+      const running = offBook({ id: 'run', status: 'in_service', gpu_count: 8, basis: 400_000 })
+      expect(fleetTotals([running])).toEqual({ ...ZERO_TOTALS, assets: 1, gpus: 8, inService: 1, planned: 400_000 })
+    })
+
+    it('the earlier-date caveat and its TODO are gone: the flag answers the question', () => {
+      const html = register({ assets: PACK.map(p => ({ ...p, valuation_as_of: '2020-01-31' })) })
+      expect(html).not.toContain('data-earlier-date-caveat')
+      expect(readFileSync(path.join(process.cwd(), 'components/gpu/fleet-math.ts'), 'utf8')).not.toContain('TODO(gpu-P1 on_books_as_of)')
+    })
   })
 })
 
@@ -273,19 +288,25 @@ describe('the asset\u2019s book, tax and capex', () => {
     expect(html).toContain(`data-valuation-as-of="${AS_OF}"`)
   })
 
-  it('a planned asset shows its basis and no book or tax value', () => {
-    const html = view(asset({ status: 'planned', purchase_entry_id: null, basis: 335_000, nbv_book: 335_000, nbv_tax: 335_000 }))
+  it('a planned asset (off the books) shows its basis and no book or tax value', () => {
+    const html = view(asset({ status: 'planned', purchase_entry_id: null, on_books_as_of: false, basis: 335_000, nbv_book: 0, nbv_tax: 0 }))
     expect(col(html, 'basis')).toBe(money(335_000))
     expect(col(html, 'nbv_book')).toBe('—')
     expect(col(html, 'nbv_tax')).toBe('—')
-    expect(html).toContain('Planned: the purchase is not booked yet')
+    expect(html).toContain(`Planned: not purchased as of ${AS_OF}`)
   })
 
-  it('an unbooked asset is not called unbooked-nothing: its purchase may be posted, just not linked', () => {
-    const html = view(asset({ status: 'ordered', purchase_entry_id: null, basis: 410_000, nbv_book: 410_000, nbv_tax: 410_000 }))
-    expect(html).toContain('Unbooked: the purchase entry is not linked to this asset, so its value is not counted until it is.')
-    expect(html).not.toMatch(/nothing is booked/i)
+  it('an asset purchased later says it is not on the books as of the date: its purchase is not recognised then', () => {
+    const html = view(asset({ status: 'in_service', purchase_entry_id: 'je', on_books_as_of: false, basis: 410_000, nbv_book: 0, nbv_tax: 0 }))
+    expect(html).toContain(`Not on the books as of ${AS_OF}: its purchase is not recognised at this date.`)
+    expect(html).not.toMatch(/Unbooked|not linked/)
     expect(col(html, 'nbv_book')).toBe('—')
+  })
+
+  it('an unlinked but posted purchase is on the books: the card shows its figures', () => {
+    const html = view(asset({ status: 'ordered', purchase_entry_id: null, on_books_as_of: true, basis: 410_000, accumulated_book: 6_150, nbv_book: 403_850, nbv_tax: 403_850 }))
+    expect(col(html, 'nbv_book')).toBe(money(403_850))
+    expect(html).not.toContain('Not on the books')
   })
 
   it('lists the capex events: month, amount, source ref and when posted', () => {
@@ -676,10 +697,10 @@ describe('the firm-wide overview', () => {
   })
 
   it('totals every vehicle when all load, with planned cost said apart', () => {
-    const plan = asset({ id: 'plan', status: 'planned', purchase_entry_id: null, hardware_cost: 335_000, basis: 335_000, nbv_book: 335_000 })
+    const plan = asset({ id: 'plan', status: 'planned', purchase_entry_id: null, on_books_as_of: false, hardware_cost: 335_000, basis: 335_000, nbv_book: 0 })
     const html = view({ v1: { assets: PACK }, v2: { assets: [plan] } })
     expect(html).not.toContain('Partial')
-    expect(html).toContain(`On the books; ${money(335_000)} more planned or unbooked`)
+    expect(html).toContain(`On the books; ${money(335_000)} more not on the books yet`)
     // Fleet NBV is the booked pack's, from the server: the planned 335,000 is not in it.
     expect(html).toContain(`>${money(1_081_950)}<`)
     expect(html).toContain(`tax book ${money(927_850)}`)
