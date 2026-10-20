@@ -7,6 +7,7 @@ import { linkInflowToEntry } from '@/lib/accounting/bank-match'
 import { fetchAllRows, fetchAllRowsIn, loadPostedLedger } from '@/lib/accounting/load'
 import { accountBalances, roundCents } from '@/lib/accounting/ledger'
 import { persistEntry } from '@/lib/accounting/persist'
+import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { accountIdsByCode, liveEntryByRef, postedTo, type Lifecycle } from '../assets'
 import { buildPayoutEntry } from './entries'
 import { completeFromEvidence, isStale, renewClaim, settleClaim, takeClaim, takeOver } from './claims'
@@ -256,4 +257,27 @@ export async function receivableTieOut(admin: SupabaseClient, fundId: string, gr
   const matchedPayouts = payouts.filter(p => p.journal_entry_id && dated.has(p.journal_entry_id)).reduce((s, p) => s + cents(p.amount), 0) / 100
   const expected = roundCents(postedNet - matchedPayouts)
   return { asOf, ledger1150, postedNet, matchedPayouts, expected, difference: roundCents(ledger1150 - expected) }
+}
+
+/**
+ * What the bank auto-match may do with a GPU SPV's expected payouts for this caller (#92):
+ *   - 'off'     — no caller, no membership, or no `fleet` write (which includes gpu_fleet being off
+ *                 or hidden: fleet then resolves to none, admins included). The pool is skipped.
+ *   - 'propose' — the default: report the fitting payout, book nothing.
+ *   - 'post'    — the vehicle's gpu_fleet_settings.auto_post_payout_matches is on: book it.
+ */
+export async function payoutAutoMatchMode(admin: SupabaseClient, fundId: string, group: string, userId: string | null): Promise<'off' | 'propose' | 'post'> {
+  if (!userId) return 'off'
+  const { data: member, error: memberError } = await (admin as any).from('fund_members').select('role')
+    .eq('fund_id', fundId).eq('user_id', userId).maybeSingle()
+  if (memberError) throw memberError
+  if (!member) return 'off'
+  const access = await loadAccessContext(admin, fundId, userId, member.role)
+  if (!hasAccess(access, 'fleet', 'write')) return 'off'
+  const vehicle = await fleetVehicleId(admin, fundId, group)
+  if ('error' in vehicle) return 'off'
+  const { data: settings, error } = await (admin as any).from('gpu_fleet_settings').select('auto_post_payout_matches')
+    .eq('fund_id', fundId).eq('vehicle_id', vehicle.vehicleId).maybeSingle()
+  if (error) throw error
+  return settings?.auto_post_payout_matches === true ? 'post' : 'propose'
 }

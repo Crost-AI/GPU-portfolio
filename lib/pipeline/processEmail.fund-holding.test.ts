@@ -88,9 +88,11 @@ function fakeDb(holdingType: string, featureVisibility: Record<string, string> |
       }
       if (table === 'companies') {
         return {
-          select: (cols: string) => chain(cols.includes('holding_type')
+          // The holding's own kind is a single-row read; the candidate list (which also selects
+          // holding_type since the GPU fleet filter, P3) names the companies.
+          select: (cols: string) => chain(cols.includes('holding_type') && !cols.includes('name')
             ? { data: { holding_type: holdingType }, error: null }
-            : { data: [{ id: 'h1', name: 'Meridian Growth Partners IV', aliases: [] }], error: null }),
+            : { data: [{ id: 'h1', name: 'Meridian Growth Partners IV', aliases: [], holding_type: holdingType }], error: null }),
         }
       }
       if (table === 'metrics') return { select: () => chain({ data: [], error: null }) }

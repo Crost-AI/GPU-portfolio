@@ -5,6 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import type { InboundEmail, Metric, MetricValue, ParsingReview, Json } from '@/lib/types/database'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 type MetricValueRow = Pick<
   MetricValue,
@@ -140,7 +141,7 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
   const { data: email } = await admin
     .from('inbound_emails')
-    .select('fund_id')
+    .select('fund_id, company_id')
     .eq('id', params.id)
     .maybeSingle()
 
@@ -153,11 +154,17 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const updates: Record<string, unknown> = {}
 
   if (companyId !== undefined) {
+    // ── GPU fleet (P3) ── An email filed under a fleet company is that company's: moving it off (or
+    // unmatching it) needs fleet write too, not only filing one under it (#91).
+    if ((email as { company_id?: string | null }).company_id && (email as { company_id?: string | null }).company_id !== companyId) {
+      const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: (email as { company_id: string }).company_id }, 'write')
+      if (fleetDenied) return fleetDenied
+    }
     if (companyId) {
       // Verify the company belongs to the same fund
-      const { data: company } = await admin
+      const { data: company } = await (admin as any)
         .from('companies')
-        .select('id')
+        .select('id, holding_type')
         .eq('id', companyId)
         .eq('fund_id', membership.fund_id)
         .maybeSingle()
@@ -167,6 +174,11 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       if (!company || (visible !== null && !visible.includes(companyId))) {
         return NextResponse.json({ error: 'Invalid company' }, { status: 400 })
       }
+      // ── GPU fleet (P3) ── Filing an email under a fleet company makes its next reprocess write that
+      // company's metrics and updates: fleet write (#91). Refused as not found, like moving one off it,
+      // so a member without fleet learns nothing about the company.
+      const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId }, 'write')
+      if (fleetDenied) return fleetDenied
     } else {
       // Unmatching an email makes it an admin-triage item; a member would lose it.
       const scope = await loadEntityScopeForUser(admin, user.id)

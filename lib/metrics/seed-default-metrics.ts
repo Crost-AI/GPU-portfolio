@@ -13,7 +13,23 @@ import { fetchAllRows } from '@/lib/accounting/load'
  */
 
 const TEMPLATE_COLUMNS =
-  'name, slug, description, unit, unit_position, value_type, reporting_cadence, display_order, currency'
+  'name, slug, description, unit, unit_position, value_type, reporting_cadence, display_order, currency, holding_type'
+
+// ── GPU fleet (P3) ── A template is for one kind of holding (migration 20261019310000): the GPU
+// SPV's fleet company takes the gpu-* templates and nothing else; every other holding takes the
+// 'company' templates exactly as before.
+export type TemplateHoldingType = 'company' | 'gpu_fleet'
+
+/** Which templates a holding takes: a fleet company its own; anything else (company, fund, crypto) the company ones. */
+export function templateKindFor(holdingType: string | null | undefined): TemplateHoldingType {
+  return holdingType === 'gpu_fleet' ? 'gpu_fleet' : 'company'
+}
+
+/** A listing's `?holding_type=`: absent or 'company' → 'company', 'gpu_fleet' → 'gpu_fleet', else null (refuse). */
+export function listedHoldingType(param: string | null): TemplateHoldingType | null {
+  if (param == null || param === 'company') return 'company'
+  return param === 'gpu_fleet' ? 'gpu_fleet' : null
+}
 
 export type DefaultMetricTemplate = {
   id: string
@@ -26,6 +42,8 @@ export type DefaultMetricTemplate = {
   reporting_cadence: string | null
   display_order: number | null
   currency: string | null
+  /** Absent on rows read before 20261019310000: a company template. */
+  holding_type?: TemplateHoldingType | null
 }
 
 /** Map a default-metric template onto a company's `metrics` insert. */
@@ -47,9 +65,9 @@ function toMetricInsert(t: DefaultMetricTemplate, fundId: string, companyId: str
 }
 
 /**
- * The metrics rows to insert for ONE company: every template whose slug the company does not
- * already track and which it has not opted out of. Pure — shared by the single-company seed and
- * the fund-wide apply so both decide "missing" identically.
+ * The metrics rows to insert for ONE company: every template of the company's kind whose slug the
+ * company does not already track and which it has not opted out of. Pure — shared by the
+ * single-company seed and the fund-wide apply so both decide "missing" identically.
  */
 export function plannedInserts(
   templates: DefaultMetricTemplate[],
@@ -57,8 +75,10 @@ export function plannedInserts(
   excluded: Set<string>,
   fundId: string,
   companyId: string,
+  holdingType: TemplateHoldingType = 'company',
 ) {
   return templates
+    .filter(t => (t.holding_type ?? 'company') === holdingType)
     .filter(t => !have.has(t.slug) && !excluded.has(t.id))
     .map(t => toMetricInsert(t, fundId, companyId))
 }
@@ -133,6 +153,16 @@ export async function seedCompanyFromDefaults(
   const list = keep ? all.filter(t => keep.has(t.id)) : all
   if (list.length === 0) return 0
 
+  // The company's own kind decides which templates it takes. Unread = not seeded: a guess could put
+  // fleet metrics on a portfolio company or the reverse.
+  const { data: company, error: companyError } = await (admin as any)
+    .from('companies').select('holding_type').eq('fund_id', fundId).eq('id', companyId)
+  if (companyError) {
+    console.error('[seedCompanyFromDefaults] company read failed:', errMessage(companyError))
+    return 0
+  }
+  const kind = templateKindFor(((company as any[]) ?? [])[0]?.holding_type)
+
   let state: SeedState
   try {
     state = await readSeedState(admin, [companyId])
@@ -140,7 +170,7 @@ export async function seedCompanyFromDefaults(
     console.error('[seedCompanyFromDefaults] read failed:', errMessage(e))
     return 0
   }
-  const toInsert = plannedInserts(list, state.have.get(companyId) ?? EMPTY, state.excluded.get(companyId) ?? EMPTY, fundId, companyId)
+  const toInsert = plannedInserts(list, state.have.get(companyId) ?? EMPTY, state.excluded.get(companyId) ?? EMPTY, fundId, companyId, kind)
   if (toInsert.length === 0) return 0
 
   const { error } = await admin.from('metrics').insert(toInsert)
@@ -207,7 +237,9 @@ export async function applyDefaultsToAllCompanies(
       continue
     }
     for (const companyId of chunk) {
-      rows.push(...plannedInserts(templates, state.have.get(companyId) ?? EMPTY, state.excluded.get(companyId) ?? EMPTY, fundId, companyId))
+      // Company templates only: the filter above reads holding_type 'company', and fleet companies
+      // are seeded when they are created (lib/gpu/fleet-company.ts), never by this fund-wide apply.
+      rows.push(...plannedInserts(templates, state.have.get(companyId) ?? EMPTY, state.excluded.get(companyId) ?? EMPTY, fundId, companyId, 'company'))
     }
   }
 

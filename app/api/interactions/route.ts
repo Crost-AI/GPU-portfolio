@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { filterByCompany } from '@/lib/access/scope'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -23,25 +24,28 @@ export async function GET(req: NextRequest) {
   const companyId = req.nextUrl.searchParams.get('company_id')
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '50', 10), 200)
 
-  let query = admin
-    .from('interactions')
-    .select('id, fund_id, company_id, email_id, user_id, tags, subject, summary, intro_contacts, body_preview, interaction_date, created_at')
-    .eq('fund_id', membership.fund_id)
-    .order('interaction_date', { ascending: false })
-    .limit(limit)
-
   // Interactions about companies the caller can see, and those about no company.
   const scope = await loadEntityScopeForUser(admin, user.id)
-  query = filterByCompany(query, scope ? scope.companyIds : [], { keepUnlinked: true })
-
-  if (tag) {
-    query = query.contains('tags', [tag])
+  const build = () => {
+    let query = admin
+      .from('interactions')
+      .select('id, fund_id, company_id, email_id, user_id, tags, subject, summary, intro_contacts, body_preview, interaction_date, created_at')
+      .eq('fund_id', membership.fund_id)
+      .order('interaction_date', { ascending: false })
+    query = filterByCompany(query, scope ? scope.companyIds : [], { keepUnlinked: true })
+    if (tag) {
+      query = query.contains('tags', [tag])
+    }
+    if (companyId) {
+      query = query.eq('company_id', companyId)
+    }
+    return query
   }
-  if (companyId) {
-    query = query.eq('company_id', companyId)
-  }
 
-  const { data: interactions, error } = await query
+  // ── GPU fleet (P3) ── interactions about a fleet company the caller may not read are left out
+  // in the query (#91), so they never take a place in the limit.
+  const fleetHidden = await hiddenFleetIdsInFund(admin, membership.fund_id, user.id)
+  const { data: interactions, error } = await excludeHiddenCompanies(build(), fleetHidden).limit(limit)
 
   if (error) {
     return dbError(error, 'interactions')
