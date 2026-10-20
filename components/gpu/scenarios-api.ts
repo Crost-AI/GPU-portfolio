@@ -14,6 +14,22 @@ export const SCENARIOS_PATH = '/api/accounting/forecast/fleet-scenarios'
 export const getScenarios = (f: Fetcher, planId?: string | null) =>
   call<FleetScenariosResponse>(f, planId ? `${SCENARIOS_PATH}?plan=${encodeURIComponent(planId)}` : SCENARIOS_PATH)
 
+/** The same, for a named vehicle outside a vehicle scope (the GPU SPV lead page). */
+export const getVehicleScenarios = (f: Fetcher, vehicle: string) =>
+  call<FleetScenariosResponse>(f, `${SCENARIOS_PATH}?group=${encodeURIComponent(vehicle)}`)
+
+/**
+ * The primary scenario's investor returns on the pack's annual convention (the headline's), for the
+ * lead page; null when the vehicle has no scenarios.
+ */
+export function baseCaseReturns(data: Pick<FleetScenariosResponse, 'results' | 'plans' | 'primaryPlanId'>): { name: string; irr: number | null; multiple: number } | null {
+  const id = data.primaryPlanId ?? data.plans[0]?.id
+  const result = id ? data.results[id] : undefined
+  if (!id || !result) return null
+  const { irr, multiple } = result.returns.byCadence.annual.investor
+  return { name: data.plans.find(p => p.id === id)?.name ?? 'Primary scenario', irr, multiple }
+}
+
 /** Create the six pitch scenarios (idempotent: an already seeded vehicle answers with its plans). */
 export const seedScenarios = (f: Fetcher) => send<{ created: number; plans: unknown[] }>(f, SCENARIOS_PATH, 'POST', { action: 'seed' })
 

@@ -15,7 +15,7 @@ import { CurrencyProvider } from '@/components/currency-context'
 import { AccessProvider, type ClientAccess } from '@/components/access-context'
 import { VehicleScope } from '@/components/accounting-vehicle'
 import { AssumptionsSummary, HeadlineTable, InvestorFlowBlocks, ScenariosView } from '@/components/gpu/scenarios-view'
-import { formatReportValue, scenarioExportHref } from '@/components/gpu/scenarios-api'
+import { baseCaseReturns, formatReportValue, getVehicleScenarios, scenarioExportHref } from '@/components/gpu/scenarios-api'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { redactScenarioResult, resolveFleet, runFleetScenario, type FleetAssumptions, type FleetScenarioResult } from '@/lib/gpu/scenario'
 import { scenarioComparison, scenarioDetail } from '@/lib/gpu/report'
@@ -303,5 +303,21 @@ describe('the Forecast Fleet tab', () => {
     render(wrap(<FleetAssumptionsForm fleet={packAssumptions('base')} canEdit={false} onSave={async () => null} />))
     expect((screen.getByLabelText('Utilization, %') as HTMLInputElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Save fleet assumptions' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the lead page’s Base case tiles', () => {
+  it('take the primary scenario’s annual investor IRR and multiple', () => {
+    const base = baseCaseReturns(response(true))!
+    expect(base.name).toBe('Base case')
+    expect(formatReportValue(base.multiple, 'multiple', () => '')).toBe('2.02x')
+    expect(formatReportValue(base.irr, 'pct', () => '')).toBe('33.6%')
+  })
+
+  it('stay a dash with no scenarios, and the request names its vehicle', async () => {
+    expect(baseCaseReturns({ results: {}, plans: [], primaryPlanId: null })).toBeNull()
+    const calls: string[] = []
+    await getVehicleScenarios(async url => { calls.push(url); return new Response('{}') }, 'H200 SPV I')
+    expect(calls).toEqual(['/api/accounting/forecast/fleet-scenarios?group=H200%20SPV%20I'])
   })
 })
