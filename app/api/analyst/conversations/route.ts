@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
-import { fleetCompanyDenied } from '@/lib/access/fleet-company'
+import { fleetCompanyDenied, hiddenFleetCompanyIds } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -48,7 +48,11 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query
   if (error) return dbError(error, 'analyst-conversations')
 
-  return NextResponse.json({ conversations: data })
+  // ── GPU fleet (P3) ── A thread about a fleet company is listed only while the caller can read the
+  // fleet (#91): a grant revoked, or gpu_fleet switched off, hides the saved transcript too.
+  const rows = (data ?? []) as { company_id: string | null }[]
+  const hidden = await hiddenFleetCompanyIds(admin, membership.fund_id, user.id, rows.map(r => r.company_id).filter((v): v is string => !!v))
+  return NextResponse.json({ conversations: hidden.size ? rows.filter(r => !r.company_id || !hidden.has(r.company_id)) : data })
 }
 
 export async function POST(req: NextRequest) {

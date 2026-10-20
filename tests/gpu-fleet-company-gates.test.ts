@@ -89,3 +89,18 @@ describe('every resolveCompany call that writes resolves at write level', () => 
     expect(offenders).toEqual([])
   })
 })
+
+// Routes outside app/api/companies/[id]/** that return a company's data per row (#91, Codex on #98):
+// each handler that reads one must apply the fleet gate.
+describe('per-row fleet gates outside the company routes', () => {
+  const GATED: [string, string, RegExp][] = [
+    ['app/api/analyst/conversations/route.ts', 'GET', /hiddenFleetCompanyIds\(/],
+    ['app/api/analyst/conversations/route.ts', 'POST', /fleetCompanyDenied\(scope\.access, companyCheck\.holding_type\)/],
+    ['app/api/analyst/conversations/[id]/route.ts', 'GET', /refuseFleetCompany\(admin, user\.id, \{ companyId \}, 'read'\)/],
+  ]
+  it.each(GATED)('%s %s applies the fleet gate', (file, method, gate) => {
+    const h = handlers(readFileSync(path.join(process.cwd(), file), 'utf8')).find(x => x.method === method)
+    expect(h, `${file} has no ${method}`).toBeDefined()
+    expect(h!.body).toMatch(gate)
+  })
+})

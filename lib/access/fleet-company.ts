@@ -48,3 +48,24 @@ export async function refuseFleetCompany(
   const access = await loadAccessContext(admin, company.fund_id, userId, member.role)
   return fleetCompanyDenied(access, company.holding_type, need) ? notFound() : null
 }
+
+/**
+ * Of `companyIds`, the fleet companies this caller may not reach at `need`: for filtering a list of
+ * rows about companies (a member's saved Analyst threads). Reads nothing beyond the companies'
+ * holding_type when none of them is a fleet company.
+ */
+export async function hiddenFleetCompanyIds(
+  admin: SupabaseClient, fundId: string, userId: string, companyIds: string[], need: 'read' | 'write' = 'read',
+): Promise<Set<string>> {
+  const ids = Array.from(new Set(companyIds.filter(Boolean)))
+  if (!ids.length) return new Set()
+  const { data: rows, error } = await (admin as any).from('companies').select('id, holding_type')
+    .eq('fund_id', fundId).in('id', ids)
+  if (error) throw error
+  const fleet = ((rows as any[]) ?? []).filter(r => r.holding_type === FLEET_HOLDING_TYPE).map(r => r.id as string)
+  if (!fleet.length) return new Set()
+  const { data: member } = await (admin as any).from('fund_members').select('role').eq('fund_id', fundId).eq('user_id', userId).maybeSingle()
+  if (!member) return new Set(fleet)
+  const access = await loadAccessContext(admin, fundId, userId, member.role)
+  return fleetCompanyDenied(access, FLEET_HOLDING_TYPE, need) ? new Set(fleet) : new Set()
+}

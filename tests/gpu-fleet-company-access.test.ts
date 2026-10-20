@@ -180,3 +180,29 @@ describe('fleet write for the agent’s investment writes and the update pipelin
     expect(await ids({ userId: 'u' })).toEqual(['fleet', 'vc'])
   })
 })
+
+describe('saved Analyst threads about the fleet company (#91, Codex on #98)', () => {
+  const conv = (id: string, company_id: string | null) => ({ id, fund_id: 'f', user_id: 'u', company_id, deal_id: null, scope: null, title: id, message_count: 2, messages: [{ role: 'user', content: 'revenue?' }], created_at: '2026-10-01', updated_at: id === 'c-fleet' ? '2026-10-02' : '2026-10-01' })
+  beforeEach(() => { s.m.tables.analyst_conversations = [conv('c-fleet', 'fleet'), conv('c-vc', 'vc'), conv('c-port', null)] })
+
+  it('a revoked fleet grant hides the fleet transcript from the list and 404s it by id; VC threads unchanged', async () => {
+    const { GET: list } = await import('@/app/api/analyst/conversations/route')
+    const { GET: one } = await import('@/app/api/analyst/conversations/[id]/route')
+    const ids = async () => ((await (await list(req('/api/analyst/conversations'))).json()).conversations as any[]).map(c => c.id).sort()
+    const fetch = (id: string) => one(req(`/api/analyst/conversations/${id}`), p({ id }))
+
+    s.ctx = FLEET_READER()
+    expect(await ids()).toEqual(['c-fleet', 'c-port', 'c-vc'])
+    expect((await fetch('c-fleet')).status).toBe(200)
+
+    s.ctx = PORTFOLIO_NO_FLEET() // the grant is revoked
+    expect(await ids()).toEqual(['c-port', 'c-vc'])
+    expect(await isFleet404(await fetch('c-fleet'))).toBe(true)
+    expect((await fetch('c-vc')).status).toBe(200)
+
+    s.ctx = ADMIN_FLEET_OFF() // or gpu_fleet is switched off
+    s.m.tables.fund_members[0].role = 'admin'
+    expect(await ids()).toEqual(['c-port', 'c-vc'])
+    expect(await isFleet404(await fetch('c-fleet'))).toBe(true)
+  })
+})
