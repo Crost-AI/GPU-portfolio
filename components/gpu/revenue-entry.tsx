@@ -163,7 +163,7 @@ export function EntryForm({ fetcher, initialRows, initialPeriod, canWrite, onSta
     setBusy('csv'); setErrors([]); setRowErrors({}); setResult(null)
     const r = await importCsv(fetcher, csv)
     setBusy(null)
-    if (!r.ok) { setErrors([r.error]); return }
+    if (!r.ok) { setErrors(r.errors); return }
     setResult(r.data)
     // Rows the import refused stay in the paste to correct; its summary names them by line.
     if (r.data.errors.length === 0) setCsv('')

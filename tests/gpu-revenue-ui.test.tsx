@@ -16,13 +16,14 @@ import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, PO
 import { PayoutsTable, TieOutCard, AutoPostPlaceholder } from '@/components/gpu/revenue-payouts'
 import { AssetKpis, KpiRow, LtmTiles, PublishPlaceholder, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
 import {
-  combineLtm, derived, entryRowFor, groupByPeriod, importCsv, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
+  combineLtm, derived, entryRowFor, groupByPeriod, importCsv, importRows, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
   type EarningView, type EntryRow, type FleetKpis, type PayoutView, type ReceivableTieOut,
 } from '@/components/gpu/revenue-api'
 import type { Fetcher } from '@/components/gpu/fleet-api'
 import { vehicleFetcher } from '@/components/gpu/waterfall-api'
 import { parseManualRows, parseEarningsCsv } from '@/lib/gpu/ops/parse'
+import { matchAssets } from '@/lib/gpu/ops/match'
 import { EARNING_STATUSES } from '@/lib/gpu/ops/types'
 import { computeKpis, daysInclusive, ltm as ltmOf, monthBounds, trailingMonths, type KpiAsset, type KpiEarning } from '@/lib/gpu/kpis'
 
@@ -88,6 +89,34 @@ describe('the entry rows', () => {
     const { fetcher, calls } = fakeFetcher()
     expect(await stageRows(fetcher, SEPT, rows)).toMatchObject({ ok: false })
     expect(calls).toHaveLength(0)
+  })
+
+  it.each([
+    ['rented hours above capacity', { rentedHours: '5761', gross: '1' }],
+    ['utilization that implies hours above capacity', { basis: 'utilization' as const, utilizationPct: '100', gross: '1', downtimeHours: '5760.5' }],
+  ] as [string, Partial<EntryRow>][])('refuse %s on the page, in the server\u2019s own words', async (_label, over) => {
+    const rows = [server('1', over)]
+    const r = manualRowsBody(SEPT, rows)
+    expect(r.ok).toBe(false)
+    const client = !r.ok ? r.errors[0].replace(/^H200 #1: /, '') : ''
+    // The same row through the server's matcher, which these checks mirror.
+    const parsed = parseManualRows([{ asset: 'H200 #1', period_start: SEPT.start, period_end: SEPT.end,
+      ...(over.rentedHours ? { rented_hours: over.rentedHours } : { utilization_pct: over.utilizationPct }), gross: over.gross,
+      ...(over.downtimeHours ? { downtime_hours: over.downtimeHours } : {}) }])
+    const matched = matchAssets(parsed.rows, [{ id: '1', name: 'H200 #1', serials: [], gpu_count: 8, disposed_on: null } as any])
+    expect(matched.errors[0].replace(/^Row 1: /, '')).toBe(client)
+    const { fetcher, calls } = fakeFetcher()
+    expect(await stageRows(fetcher, SEPT, rows)).toMatchObject({ ok: false })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a 400 that lists every row\u2019s reason keeps them all, not only the first', async () => {
+    const errors = ['Row 1: gross is required', 'Row 2: period_end is before period_start']
+    const { fetcher } = fakeFetcher({ status: 400, body: { error: errors[0], errors } }, { status: 400, body: { error: errors[0], errors } })
+    expect(await importCsv(fetcher, 'x')).toEqual({ ok: false, status: 400, error: errors[0], errors })
+    expect(await importRows(fetcher, [])).toMatchObject({ errors })
+    const plain = fakeFetcher({ status: 403, body: { error: 'Entering operations needs write access to the GPU fleet.' } })
+    expect(await importCsv(plain.fetcher, 'x')).toMatchObject({ errors: ['Entering operations needs write access to the GPU fleet.'] })
   })
 
   it('stage through the import route as { rows }, the vehicle pinned', async () => {

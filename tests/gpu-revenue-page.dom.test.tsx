@@ -162,13 +162,14 @@ describe('the Revenue & payouts page', () => {
   })
 
   it('a 200 import that refuses a row keeps that row as typed, with its reason; the staged row is cleared', async () => {
-    const reason = '99999 rented GPU-hours is more than H200 #1 can sell in the period (8 GPUs × 720 h = 5760)'
+    // One only the server can know: the period is being posted by another request.
+    const reason = 'H200 #1 2026-09-01..2026-09-30 is being posted right now. Enter it again once that finishes.'
     const sent = server({ '/api/fleet/ops/import': [{
       imported: 1, skipped: 0, needsReview: 0, skippedRows: [], errors: [`Row 1: ${reason}`], runId: 'r', staged: [{ id: 'x', status: 'staged' }],
     }] })
     mount()
     const h1 = await screen.findByLabelText('H200 #1: rented GPU-hours')
-    fireEvent.change(h1, { target: { value: '99999' } })
+    fireEvent.change(h1, { target: { value: '100' } })
     fireEvent.change(screen.getByLabelText('H200 #1: gross'), { target: { value: '100' } })
     fireEvent.change(screen.getByLabelText('H200 #2: rented GPU-hours'), { target: { value: '4320' } })
     fireEvent.change(screen.getByLabelText('H200 #2: gross'), { target: { value: '8640' } })
@@ -178,7 +179,7 @@ describe('the Revenue & payouts page', () => {
 
     // The refused row keeps its figures and shows why, beside it; the staged one is emptied.
     expect(await screen.findByText(reason)).toBeTruthy()
-    expect((screen.getByLabelText('H200 #1: rented GPU-hours') as HTMLInputElement).value).toBe('99999')
+    expect((screen.getByLabelText('H200 #1: rented GPU-hours') as HTMLInputElement).value).toBe('100')
     expect((screen.getByLabelText('H200 #1: gross') as HTMLInputElement).value).toBe('100')
     expect((screen.getByLabelText('H200 #2: rented GPU-hours') as HTMLInputElement).value).toBe('')
     // The summary still shows, and the entered periods are read again.

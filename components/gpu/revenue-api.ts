@@ -6,7 +6,7 @@
 import type { EarningStatus } from '@/lib/gpu/ops/types'
 import type { Kpi } from '@/lib/gpu/kpis'
 import { daysInclusive } from '@/lib/gpu/kpis'
-import { call, send, type Fetcher } from './fleet-api'
+import { CONNECTION_ERROR, call, send, type Fetcher } from './fleet-api'
 
 export const opsPaths = {
   import: '/api/fleet/ops/import',
@@ -93,9 +93,27 @@ export const getKpis = (f: Fetcher, month: string) => call<FleetKpis>(f, `${opsP
 export const getVehicleKpis = (f: Fetcher, vehicle: string, month: string) =>
   call<FleetKpis>(f, `${opsPaths.kpis}?group=${encodeURIComponent(vehicle)}&month=${encodeURIComponent(month)}`)
 
-export const importRows = (f: Fetcher, rows: ManualRowBody[]) => send<ImportReply>(f, opsPaths.import, 'POST', { rows })
+/**
+ * The import route answers a refused batch with `{ error, errors }`: every row's reason, not only the
+ * first. This keeps all of them (`errors`), where the shared `call` keeps only `error`.
+ */
+export type ImportResultOf = { ok: true; data: ImportReply } | { ok: false; status: number; error: string; errors: string[] }
+async function sendImport(f: Fetcher, body: unknown): Promise<ImportResultOf> {
+  let res: Response
+  try {
+    res = await f(opsPaths.import, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  } catch {
+    return { ok: false, status: 0, error: CONNECTION_ERROR, errors: [CONNECTION_ERROR] }
+  }
+  const data = await res.json().catch(() => null)
+  if (res.ok) return { ok: true, data: data as ImportReply }
+  const error = (data && typeof data.error === 'string' && data.error) || `Request failed (${res.status})`
+  const listed = Array.isArray(data?.errors) ? (data.errors as unknown[]).filter((e): e is string => typeof e === 'string') : []
+  return { ok: false, status: res.status, error, errors: listed.length ? listed : [error] }
+}
+export const importRows = (f: Fetcher, rows: ManualRowBody[]) => sendImport(f, { rows })
 /** A paste goes to the route as typed: the server parses it (parseEarningsCsv). */
-export const importCsv = (f: Fetcher, csv: string) => send<ImportReply>(f, opsPaths.import, 'POST', { csv })
+export const importCsv = (f: Fetcher, csv: string) => sendImport(f, { csv })
 export const postEarnings = (f: Fetcher, ids: string[], confirmReversal = false) =>
   send<PostReply>(f, opsPaths.earnings, 'POST', { action: 'post', ids, ...(confirmReversal ? { confirmReversal: true } : {}) })
 export const ignoreEarnings = (f: Fetcher, ids: string[]) => send<{ ignored: string[] }>(f, opsPaths.earnings, 'POST', { action: 'ignore', ids })
@@ -206,6 +224,7 @@ export function manualRowsBody(period: { start: string; end: string }, rows: Ent
   const errors: string[] = []
   if (!/^\d{4}-\d{2}-\d{2}$/.test(period.start) || !/^\d{4}-\d{2}-\d{2}$/.test(period.end)) errors.push('Pick the period start and end.')
   else if (period.end < period.start) errors.push('The period ends before it starts.')
+  const periodOk = errors.length === 0
   const out: ManualRowBody[] = []
   for (const r of rows) {
     if (isBlankRow(r)) continue
@@ -220,6 +239,13 @@ export function manualRowsBody(period: { start: string; end: string }, rows: Ent
     const other = r.basis === 'hours' ? nums.utilization_pct : nums.rented_hours
     if (typed == null || other != null) { fail('enter exactly one of rented GPU-hours and utilization %.'); continue }
     if (nums.utilization_pct != null && nums.utilization_pct > 100) { fail('utilization cannot be more than 100%.'); continue }
+    // The capacity checks match.ts applies, in its words, while the period is a real one.
+    const cap = periodOk ? capacityHours(r.gpuCount, period.start, period.end) : 0
+    if (cap > 0) {
+      const rented = nums.rented_hours ?? round4(((nums.utilization_pct ?? 0) / 100) * cap)
+      if (rented > cap + 1e-9) { fail(`${rented} rented GPU-hours is more than ${r.assetName} can sell in the period (${r.gpuCount} GPUs × ${cap / r.gpuCount} h = ${cap})`); continue }
+      if ((nums.downtime_hours ?? 0) > cap + 1e-9) { fail(`${nums.downtime_hours} downtime GPU-hours is more than ${r.assetName} has in the period (${cap})`); continue }
+    }
     if (nums.gross == null) { fail('gross revenue is required.'); continue }
     const fee = nums.fee ?? 0
     if (cents(fee) > cents(nums.gross)) { fail('the fee is more than gross revenue.'); continue }
@@ -249,7 +275,7 @@ export async function stageRows(f: Fetcher, period: { start: string; end: string
   const req = manualRowsBody(period, rows)
   if (!req.ok) return req
   const r = await importRows(f, req.rows)
-  return r.ok ? { ...r, sent: req.rows } : { ok: false, errors: [r.error] }
+  return r.ok ? { ...r, sent: req.rows } : { ok: false, errors: r.errors }
 }
 
 /**
