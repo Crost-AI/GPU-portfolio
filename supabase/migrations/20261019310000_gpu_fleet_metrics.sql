@@ -121,3 +121,75 @@ begin
     execute format('create policy "gpu_fleet %s delete needs fleet write" on public.%I as restrictive for delete to authenticated using (%s)', t, t, w);
   end loop;
 end $$;
+
+-- 5. The fleet company's STORED FILES (#91, review on #98). A member's browser can list, download and
+--    delete Storage objects with its own JWT; the bucket policies (20260902174637) ask only for
+--    portfolio, and the entity rule (20261007100500) lets an unscoped member reach every file in the
+--    fund. So the files get the same restrictive fleet gate as the rows above:
+--      company-documents  <fund_id>/<company_id>/…  the company is a fleet company the caller may not reach
+--      email-attachments  <email_id>/…              the email is about such a company
+--    Buckets that hold no company data pass untouched. The email check is a security definer helper
+--    rather than a subquery on inbound_emails: under RLS a caller who cannot see the email's row would
+--    read "no such email" and the attachment would pass.
+create or replace function public.gpu_fleet_email_hidden(p_folder text, p_write boolean)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from inbound_emails e
+     where p_folder ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       and e.id = p_folder::uuid
+       and e.company_id = any(case when p_write then public.gpu_fleet_company_ids_unwritable()
+                                   else public.gpu_fleet_company_ids_unreadable() end)
+  );
+$$;
+
+revoke execute on function public.gpu_fleet_email_hidden(text, boolean) from public, anon;
+grant execute on function public.gpu_fleet_email_hidden(text, boolean) to authenticated, service_role;
+
+drop policy if exists "gpu_fleet company files read needs fleet" on storage.objects;
+drop policy if exists "gpu_fleet company files insert needs fleet write" on storage.objects;
+drop policy if exists "gpu_fleet company files update needs fleet write" on storage.objects;
+drop policy if exists "gpu_fleet company files delete needs fleet write" on storage.objects;
+
+create policy "gpu_fleet company files read needs fleet"
+  on storage.objects as restrictive for select to authenticated
+  using (
+    not (bucket_id = 'company-documents'
+         and (storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unreadable())::text[]))
+    and not (bucket_id = 'email-attachments'
+             and public.gpu_fleet_email_hidden((storage.foldername(name))[1], false))
+  );
+create policy "gpu_fleet company files insert needs fleet write"
+  on storage.objects as restrictive for insert to authenticated
+  with check (
+    not (bucket_id = 'company-documents'
+         and (storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unwritable())::text[]))
+    and not (bucket_id = 'email-attachments'
+             and public.gpu_fleet_email_hidden((storage.foldername(name))[1], true))
+  );
+create policy "gpu_fleet company files update needs fleet write"
+  on storage.objects as restrictive for update to authenticated
+  using (
+    not (bucket_id = 'company-documents'
+         and (storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unwritable())::text[]))
+    and not (bucket_id = 'email-attachments'
+             and public.gpu_fleet_email_hidden((storage.foldername(name))[1], true))
+  )
+  with check (
+    not (bucket_id = 'company-documents'
+         and (storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unwritable())::text[]))
+    and not (bucket_id = 'email-attachments'
+             and public.gpu_fleet_email_hidden((storage.foldername(name))[1], true))
+  );
+create policy "gpu_fleet company files delete needs fleet write"
+  on storage.objects as restrictive for delete to authenticated
+  using (
+    not (bucket_id = 'company-documents'
+         and (storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unwritable())::text[]))
+    and not (bucket_id = 'email-attachments'
+             and public.gpu_fleet_email_hidden((storage.foldername(name))[1], true))
+  );

@@ -78,3 +78,52 @@ describe('fleet company RLS (#91)', () => {
     expect(views.match(/with \(security_invoker = true\)/g)?.length).toBe(2)
   })
 })
+
+// Review on #98: the fleet company's stored files, not only its rows. A browser reaches Storage with
+// its own JWT; the bucket policies ask only for portfolio, and the entity rule lets an unscoped
+// member reach every file in the fund.
+describe('fleet company files in Storage (#91)', () => {
+  const storageSql = sql.slice(sql.indexOf('-- 5. The fleet company'))
+  const policy = (verb: string) => {
+    const name = verb === 'select' ? 'gpu_fleet company files read needs fleet' : `gpu_fleet company files ${verb} needs fleet write`
+    const at = storageSql.indexOf(`create policy "${name}"`)
+    expect(at, name).toBeGreaterThan(-1)
+    return storageSql.slice(at, storageSql.indexOf(';', at))
+  }
+
+  it('adds a RESTRICTIVE storage.objects policy for every command', () => {
+    for (const verb of ['select', 'insert', 'update', 'delete']) {
+      expect(policy(verb)).toMatch(new RegExp(`on storage\\.objects as restrictive for ${verb} to authenticated`))
+    }
+    // No permissive storage policy is restated.
+    expect(storageSql).not.toMatch(/create policy "company-documents read needs portfolio"/)
+  })
+
+  it('gates company-documents by the company folder and email-attachments by the email’s company, at read and write level', () => {
+    expect(policy('select')).toContain("(storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unreadable())::text[])")
+    expect(policy('select')).toContain("public.gpu_fleet_email_hidden((storage.foldername(name))[1], false)")
+    for (const verb of ['insert', 'update', 'delete']) {
+      expect(policy(verb)).toContain("(storage.foldername(name))[2] = any((select public.gpu_fleet_company_ids_unwritable())::text[])")
+      expect(policy(verb)).toContain("public.gpu_fleet_email_hidden((storage.foldername(name))[1], true)")
+    }
+  })
+
+  it('covers every bucket the entity rule treats as company-scoped', () => {
+    const entity = readFileSync(join(MIGRATIONS, '20261007100500_entity_storage.sql'), 'utf8')
+    const companyScoped = new Set<string>()
+    // A bucket whose objects the entity rule resolves to a company: company_id folders or email rows.
+    for (const m of entity.matchAll(/bucket_id = '([a-z-]+)'\s*and[\s\S]{0,200}?(company_ids_readable|inbound_emails)/g)) companyScoped.add(m[1])
+    expect([...companyScoped].sort()).toEqual(['company-documents', 'email-attachments'])
+    for (const bucket of companyScoped) expect(policy('select')).toContain(`bucket_id = '${bucket}'`)
+  })
+
+  it('the email helper reads as definer, casts only a uuid folder, and is not callable anonymously', () => {
+    const fn = storageSql.slice(storageSql.indexOf('create or replace function public.gpu_fleet_email_hidden'), storageSql.indexOf('$$;', storageSql.indexOf('create or replace function public.gpu_fleet_email_hidden')))
+    expect(fn).toContain('security definer')
+    expect(fn).toContain('set search_path = public')
+    expect(fn).toMatch(/p_folder ~\* '\^\[0-9a-f\]\{8\}/)
+    expect(fn).toContain('public.gpu_fleet_company_ids_unwritable()')
+    expect(fn).toContain('public.gpu_fleet_company_ids_unreadable()')
+    expect(storageSql).toContain('revoke execute on function public.gpu_fleet_email_hidden(text, boolean) from public, anon;')
+  })
+})
