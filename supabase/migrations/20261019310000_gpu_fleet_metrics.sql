@@ -33,6 +33,14 @@ alter table public.gpu_fleet_settings
 --    rows pass exactly as before. `fleet` resolves to none while `gpu_fleet` is off, admins included.
 --    The metric_values_latest views are security_invoker (20261014180000), so they inherit this.
 --
+--    `fleet` here means what it means in the app. DOMAIN_META.fleet REQUIRES accounting read
+--    (lib/access/domains.ts; effectiveAccess returns none for fleet without it), but the SQL mirror
+--    domain_access() / fund_ids_readable() knows no `requires`: it was written before any policy read
+--    fleet. So every fleet predicate below states the requirement itself: fleet read AND accounting
+--    read (writes: fleet write AND accounting read). The shared domain_access() restatement (tax has
+--    the same `requires` and the same gap) is tracked in
+--    https://github.com/Crost-AI/GPU-portfolio/issues/112; this migration only hardens its own predicates.
+--
 --    The helpers return the EXCLUSION set: the fleet companies of the caller's funds that the caller
 --    may NOT read (or write). Called directly through the Data API, they reveal only ids the policies
 --    already hide. Security definer so the policies can read companies without recursing through its
@@ -47,7 +55,8 @@ as $$
   select coalesce(array_agg(c.id), '{}'::uuid[]) from companies c
    where c.holding_type = 'gpu_fleet'
      and c.fund_id = any(public.member_fund_ids())
-     and not (c.fund_id = any(public.fund_ids_readable('fleet')));
+     and not (c.fund_id = any(public.fund_ids_readable('fleet'))
+              and c.fund_id = any(public.fund_ids_readable('accounting')));
 $$;
 
 create or replace function public.gpu_fleet_company_ids_unwritable()
@@ -60,7 +69,8 @@ as $$
   select coalesce(array_agg(c.id), '{}'::uuid[]) from companies c
    where c.holding_type = 'gpu_fleet'
      and c.fund_id = any(public.member_fund_ids())
-     and not (c.fund_id = any(public.fund_ids_writable('fleet')));
+     and not (c.fund_id = any(public.fund_ids_writable('fleet'))
+              and c.fund_id = any(public.fund_ids_readable('accounting')));
 $$;
 
 revoke execute on function public.gpu_fleet_company_ids_unreadable() from public, anon;
@@ -76,17 +86,17 @@ drop policy if exists "gpu_fleet companies delete needs fleet write" on public.c
 
 create policy "gpu_fleet companies read needs fleet"
   on public.companies as restrictive for select to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or fund_id = any((select public.fund_ids_readable('fleet'))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_readable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
 create policy "gpu_fleet companies insert needs fleet write"
   on public.companies as restrictive for insert to authenticated
-  with check (holding_type is distinct from 'gpu_fleet' or fund_id = any((select public.fund_ids_writable('fleet'))));
+  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
 create policy "gpu_fleet companies update needs fleet write"
   on public.companies as restrictive for update to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or fund_id = any((select public.fund_ids_writable('fleet'))))
-  with check (holding_type is distinct from 'gpu_fleet' or fund_id = any((select public.fund_ids_writable('fleet'))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))))
+  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
 create policy "gpu_fleet companies delete needs fleet write"
   on public.companies as restrictive for delete to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or fund_id = any((select public.fund_ids_writable('fleet'))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
 
 -- Every browser-reachable table keyed by company_id. A row about no company (company_id null)
 -- passes. tests/gpu-fleet-company-rls.test.ts fails when a table with a company_id column and a
@@ -101,7 +111,9 @@ declare
     'company_summaries', 'company_update_artifacts', 'company_update_chunks', 'company_updates', 'crypto_wallets',
     'default_metric_exclusions', 'fund_capital_events', 'fund_holding_terms', 'fund_nav_statements', 'inbound_emails',
     'interactions', 'investment_transactions', 'metric_values', 'metrics', 'note_company_subscriptions',
-    'parsing_reviews', 'price_feeds'
+    'parsing_reviews', 'price_feeds',
+    -- Written only by security-definer triggers; read through the Data API, so it carries the company id.
+    'company_vehicles'
   ];
 begin
   foreach t in array tables loop

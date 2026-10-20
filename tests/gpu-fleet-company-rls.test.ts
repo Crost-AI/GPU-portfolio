@@ -16,7 +16,9 @@ const all = readdirSync(MIGRATIONS).filter(f => f.endsWith('.sql')).sort().map(f
 /** Tables that have a company_id column, from every create table and add column in the history. */
 function companyIdTables(): string[] {
   const out = new Set<string>()
-  const create = /create table (?:if not exists )?(?:public\.)?([a-z_0-9]+)\s*\(([\s\S]*?)\n\);/gi
+  // A body ends at the first line that is only `);` (indented or not), so a statement cannot run on
+  // into the next one's columns.
+  const create = /create table (?:if not exists )?(?:public\.)?([a-z_0-9]+)\s*\(([\s\S]*?)\n\s*\);/gi
   let m: RegExpExecArray | null
   while ((m = create.exec(all)) !== null) if (/^\s*company_id\s/m.test(m[2])) out.add(m[1])
   const alter = /alter table (?:only )?(?:if exists )?(?:public\.)?([a-z_0-9]+)\s+add column (?:if not exists )?company_id\b/gi
@@ -32,11 +34,14 @@ function listed(): string[] {
 
 describe('fleet company RLS (#91)', () => {
   it('gates every browser-reachable table keyed by company_id', () => {
-    // Browser-reachable = anything the registry does not keep service-only or leave alone.
+    // Browser-reachable = anything the registry does not keep service-only. 'keep' tables are
+    // included: company_vehicles is 'keep' yet granted to authenticated, and carries the company id.
     const reachable = companyIdTables().filter(t => {
       const rule = (TABLE_RULES as Record<string, { scope: string }>)[t]
-      return rule && rule.scope !== 'service' && rule.scope !== 'keep'
+      return rule && rule.scope !== 'service'
     })
+    expect(reachable).toContain('company_vehicles')
+    expect(companyIdTables()).not.toContain('fund_member_vehicles')
     expect(reachable.length).toBeGreaterThan(15)
     expect(reachable.filter(t => !listed().includes(t)), 'tables with company_id and a Data API grant missing from the fleet list').toEqual([])
     for (const t of ['metrics', 'metric_values', 'company_documents', 'company_summaries', 'company_updates', 'company_notes', 'inbound_emails', 'interactions']) {
@@ -55,7 +60,7 @@ describe('fleet company RLS (#91)', () => {
   })
 
   it('gates the fleet company row itself by its holding_type', () => {
-    expect(sql).toMatch(/create policy "gpu_fleet companies read needs fleet"\s+on public\.companies as restrictive for select to authenticated\s+using \(holding_type is distinct from 'gpu_fleet' or fund_id = any\(\(select public\.fund_ids_readable\('fleet'\)\)\)\);/)
+    expect(sql).toMatch(/create policy "gpu_fleet companies read needs fleet"\s+on public\.companies as restrictive for select to authenticated\s+using \(holding_type is distinct from 'gpu_fleet'\s+or \(fund_id = any\(\(select public\.fund_ids_readable\('fleet'\)\)\) and fund_id = any\(\(select public\.fund_ids_readable\('accounting'\)\)\)\)\);/)
     for (const verb of ['insert', 'update', 'delete']) {
       expect(sql).toMatch(new RegExp(`create policy "gpu_fleet companies ${verb} needs fleet write"\\s+on public\\.companies as restrictive for ${verb}`))
     }
@@ -68,7 +73,8 @@ describe('fleet company RLS (#91)', () => {
       expect(body).toContain('set search_path = public')
       expect(body).toContain("c.holding_type = 'gpu_fleet'")
       expect(body).toContain('c.fund_id = any(public.member_fund_ids())')
-      expect(body).toContain(`not (c.fund_id = any(public.fund_ids_${level}('fleet')))`)
+      // fleet in SQL requires accounting read, as DOMAIN_META.fleet.requires does in the app (#112).
+      expect(body).toMatch(new RegExp(`not \\(c\\.fund_id = any\\(public\\.fund_ids_${level}\\('fleet'\\)\\)\\s+and c\\.fund_id = any\\(public\\.fund_ids_readable\\('accounting'\\)\\)\\);`))
       expect(sql).toContain(`revoke execute on function public.${fn}() from public, anon;`)
     }
   })
@@ -125,5 +131,30 @@ describe('fleet company files in Storage (#91)', () => {
     expect(fn).toContain('public.gpu_fleet_company_ids_unwritable()')
     expect(fn).toContain('public.gpu_fleet_company_ids_unreadable()')
     expect(storageSql).toContain('revoke execute on function public.gpu_fleet_email_hidden(text, boolean) from public, anon;')
+  })
+})
+
+// Claude B1 on #98: `fleet` in SQL must mean what it means in the app.
+describe('fleet predicates require accounting read, as DOMAIN_META.fleet.requires does (#112)', () => {
+  it('the app says fleet requires accounting', async () => {
+    const { DOMAIN_META } = await import('@/lib/access/domains')
+    expect(DOMAIN_META.fleet.requires).toBe('accounting')
+  })
+
+  it('no fleet predicate in the migration stands without accounting read beside it', () => {
+    const fleetCalls = [...sql.matchAll(/fund_ids_(readable|writable)\('fleet'\)\)+/g)]
+    expect(fleetCalls.length).toBe(7)
+    for (const m of fleetCalls) {
+      const after = sql.slice(m.index! + m[0].length, m.index! + m[0].length + 120)
+      expect(after, sql.slice(m.index! - 60, m.index! + 160)).toMatch(/^\s*and c?\.?fund_id = any\(\(?(select )?public\.fund_ids_readable\('accounting'\)/)
+    }
+  })
+
+  it('the company policies require accounting on every command', () => {
+    for (const name of ['read needs fleet', 'insert needs fleet write', 'update needs fleet write', 'delete needs fleet write']) {
+      const at = sql.indexOf(`create policy "gpu_fleet companies ${name}"`)
+      const body = sql.slice(at, sql.indexOf(';', at))
+      expect(body, name).toContain("fund_ids_readable('accounting')")
+    }
   })
 })
