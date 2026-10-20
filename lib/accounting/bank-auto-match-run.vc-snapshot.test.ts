@@ -198,16 +198,23 @@ describe('a GPU SPV: expected marketplace payouts', () => {
     ['the caller holds fleet read only', () => { s.ctx = access('read') }],
     ['the caller holds no fleet grant', () => { s.ctx = access('none') }],
     ['there is no caller', () => {}],
-  ])('skips the payout pool entirely when %s; LP matching is unchanged', async (name, setup) => {
+  ])('with the pool off (%s): proposes and books no payout, and an inflow equal to an expected payout is not booked as capital', async (name, setup) => {
     setup()
     const out = await autoMatchOpenCapital(s.m.admin, 'f', 'GPU I', name === 'there is no caller' ? null : 'u')
     if ('error' in out) throw new Error(out.error)
+    // No payout keys: nothing proposed, nothing booked, no payout detail to this caller.
     expect(Object.keys(out)).toEqual(['matched', 'ambiguous', 'unmatched'])
-    expect(marketplacePayoutCandidates).not.toHaveBeenCalled()
     expect(s.m.tables.gpu_payouts.every((p: any) => p.status === 'expected')).toBe(true)
-    expect(out.matched).toEqual([
-      { txnId: 't-3', lpEntityId: 'lp-a', name: 'Alpha LP', amount: 5000, by: 'amount' },
-      { txnId: 't-4', lpEntityId: 'lp-b', name: 'Beta LP', amount: 300, by: 'amount' },
+    expect(s.m.tables.journal_entries.filter((e: any) => String(e.source_ref ?? '').startsWith('marketplace-payout:'))).toEqual([])
+    // Claude S2b on #98: t-3 (5,000) equals expected payout p-4 AND lp-a's open call. It used to be
+    // booked as Alpha LP's capital; now it is ambiguous, with the partner listed, and nothing is booked.
+    expect(out.ambiguous).toEqual([
+      { txnId: 't-1', amount: 1000, description: 'Payout', candidates: [], reason: 'expected_marketplace_payout' },
+      { txnId: 't-2', amount: 2000, description: 'Payout', candidates: [], reason: 'expected_marketplace_payout' },
+      { txnId: 't-3', amount: 5000, description: 'Incoming wire', candidates: [{ lpEntityId: 'lp-a', name: 'Alpha LP', amount: 5000, references: [] }], reason: 'expected_marketplace_payout' },
     ])
+    expect(s.m.tables.bank_transactions.find((b: any) => b.id === 't-3')).toMatchObject({ status: 'drafted', journal_entry_id: 'draft-t-3' })
+    // An inflow that is no payout still settles a partner's call as before.
+    expect(out.matched).toEqual([{ txnId: 't-4', lpEntityId: 'lp-b', name: 'Beta LP', amount: 300, by: 'amount' }])
   })
 })

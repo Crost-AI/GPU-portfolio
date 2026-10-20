@@ -25,7 +25,15 @@ import { RECEIVABLE_CODE as MARKETPLACE_RECEIVABLE_CODE } from '@/lib/gpu/ops/ty
 export interface AutoMatchOutcome {
   matched: { txnId: string; lpEntityId: string; name: string; amount: number; by: string }[]
   /** Amount fits several partners and the description didn't separate them — a human picks. */
-  ambiguous: { txnId: string; amount: number; description: string | null; candidates: OpenBalance[] }[]
+  ambiguous: {
+    txnId: string; amount: number; description: string | null; candidates: OpenBalance[]
+    /**
+     * ── GPU fleet (P3) ── Set when the inflow equals an expected marketplace payout of a GPU SPV
+     * while this caller's payout pool is off: it is not booked as partner capital, and it is left for
+     * someone with fleet write to match. Absent on every other entry.
+     */
+    reason?: 'expected_marketplace_payout'
+  }[]
   /** Transactions with no open balance at that amount. Left exactly as they were. */
   unmatched: number
   // ── GPU fleet (P3) ── Present only on a GPU SPV (a chart with 1150), so every other vehicle's
@@ -104,6 +112,9 @@ export async function autoMatchOpenCapital(
   // auto_post_payout_matches is on; otherwise the accountant confirms it on the payouts page.
   let payouts: PayoutCandidate[] | null = null
   let autoPost = false
+  // With the pool off, the expected payouts are still read — for collision only: an inflow equal to
+  // one is a marketplace payout, never a partner's capital, so it is reported and left alone.
+  let collisionOnly: PayoutCandidate[] | null = null
   if (codes.has(MARKETPLACE_RECEIVABLE_CODE)) {
     const mode = await payoutAutoMatchMode(admin, fundId, group, userId)
     if (mode !== 'off') {
@@ -112,12 +123,20 @@ export async function autoMatchOpenCapital(
       out.payouts = []
       out.proposedPayouts = []
       out.ambiguousPayouts = []
+    } else {
+      collisionOnly = await marketplacePayoutCandidates(admin, fundId, group)
     }
   }
 
   for (const t of ((txns as any[]) ?? [])) {
     const amount = Number(t.amount)
     const inflow = amount > 0
+    if (collisionOnly && inflow && collisionOnly.some(p => isPayoutCandidate({ amount: p.amount, payout_date: p.payoutDate }, t))) {
+      const lp = matchTransaction(amount, t.description, openOf(receivables))
+      const lpCandidates = lp.kind === 'none' ? [] : lp.kind === 'ambiguous' ? lp.candidates : openOf(receivables).filter(o => o.lpEntityId === lp.lpEntityId)
+      out.ambiguous.push({ txnId: t.id, amount, description: t.description, candidates: lpCandidates, reason: 'expected_marketplace_payout' })
+      continue
+    }
     if (payouts && inflow) {
       const fits = payouts.filter(p => isPayoutCandidate({ amount: p.amount, payout_date: p.payoutDate }, t))
       // A payout is booked only when no partner's open call fits the same inflow: a wire that could
