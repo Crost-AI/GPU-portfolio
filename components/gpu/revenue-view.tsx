@@ -115,8 +115,7 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
     reloadEarnings()
   }
 
-  async function match(payoutId: string) {
-    const txnId = choice[payoutId]
+  async function match(payoutId: string, txnId: string) {
     if (!txnId) return
     setMatching(payoutId); setPayoutError(null)
     const r = await matchPayout(fetcher, payoutId, txnId)
@@ -183,7 +182,7 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
                 <PayoutsTable
                   payouts={payouts.data.payouts} money={money} canMatch={canWriteFleet && canBook}
                   choice={choice} onChoose={(p, t) => setChoice(c => ({ ...c, [p]: t }))}
-                  matching={matching} onMatch={id => { void match(id) }}
+                  matching={matching} onMatch={(id, txn) => { void match(id, txn) }}
                 />
                 <p className="text-caption text-muted-foreground">
                   Matching books the deposit against the receivable (Dr 1000 / Cr 1150). The bank page&rsquo;s auto-match run also

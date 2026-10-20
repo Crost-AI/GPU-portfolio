@@ -8,7 +8,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 import { Field, FormDialog, selectCls } from './fleet-ui'
-import { BUSY_STATUSES, PAYOUT_STATUS_LABEL, payoutBody, type PayoutView, type ReceivableTieOut } from './revenue-api'
+import { PAYOUT_STATUS_LABEL, payoutBody, type PayoutView, type ReceivableTieOut } from './revenue-api'
 import { OPS_WRITE_HINT } from './revenue-earnings'
 
 // ── GPU fleet (P5) ── Payouts and the marketplace receivable. Posting a period books its net to
@@ -25,7 +25,7 @@ export function PayoutsTable({ payouts, money, canMatch, choice, onChoose, match
   choice: Record<string, string>
   onChoose: (payoutId: string, txnId: string) => void
   matching: string | null
-  onMatch: (payoutId: string) => void
+  onMatch: (payoutId: string, txnId: string) => void
 }) {
   if (payouts.length === 0) return <EmptyState compact>No payouts recorded yet. Record each marketplace payout as it is announced.</EmptyState>
   return (
@@ -40,7 +40,7 @@ export function PayoutsTable({ payouts, money, canMatch, choice, onChoose, match
         </thead>
         <tbody>
           {payouts.map(p => {
-            const busy = BUSY_STATUSES.includes(p.status) || matching === p.id
+            const busy = matching === p.id
             return (
               <tr key={p.id} className="border-t" data-payout={p.id}>
                 <td className="whitespace-nowrap px-3 py-2 tabular-nums">{p.payoutDate}</td>
@@ -54,7 +54,18 @@ export function PayoutsTable({ payouts, money, canMatch, choice, onChoose, match
                   </span>
                 </td>
                 <td className="px-3 py-2">
-                  {p.status !== 'expected' ? (
+                  {p.status === 'matching' && p.bankTransactionId ? (
+                    // A claim left by an attempt that did not finish: matching again to the same deposit resumes it.
+                    <div className="space-y-1">
+                      <Button type="button" size="sm" variant="outline" data-action="match" disabled={!canMatch || matching === p.id}
+                        title={canMatch ? undefined : MATCH_HINT} onClick={() => onMatch(p.id, p.bankTransactionId!)}>
+                        {matching === p.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Resume match
+                      </Button>
+                      <p className="text-caption text-muted-foreground" data-caption="resume">
+                        The previous attempt to match this payout did not complete. Matching again resumes it; if another request is still working on it, you will be told to try again shortly.
+                      </p>
+                    </div>
+                  ) : p.status !== 'expected' ? (
                     <span className="text-muted-foreground">{p.bankTransactionId ? 'Matched to a bank deposit' : '—'}</span>
                   ) : p.candidates.length === 0 ? (
                     <span className="text-muted-foreground">No bank deposit of this amount within the window yet.</span>
@@ -68,7 +79,7 @@ export function PayoutsTable({ payouts, money, canMatch, choice, onChoose, match
                         ))}
                       </select>
                       <Button type="button" size="sm" variant="outline" data-action="match" disabled={!canMatch || busy || !choice[p.id]}
-                        title={canMatch ? undefined : MATCH_HINT} onClick={() => onMatch(p.id)}>
+                        title={canMatch ? undefined : MATCH_HINT} onClick={() => onMatch(p.id, choice[p.id])}>
                         {matching === p.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Match
                       </Button>
                     </div>

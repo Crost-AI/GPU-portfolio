@@ -237,6 +237,20 @@ describe('payouts', () => {
     expect(render(true)).toContain('MARKETPLACE PAYOUT')
   })
 
+  it('a payout left in matching offers Match again, to the same deposit, with why', () => {
+    const stuck: PayoutView = { ...PAYOUT, status: 'matching', bankTransactionId: 't1', candidates: [] }
+    const calls: [string, string][] = []
+    const render = (canMatch: boolean) => renderToStaticMarkup(
+      <PayoutsTable payouts={[stuck]} money={money} canMatch={canMatch} choice={{}} onChoose={() => {}} matching={null} onMatch={(p, t) => calls.push([p, t])} />,
+    )
+    const html = render(true)
+    expect(button(html, 'match')).toContain('data-action="match"')
+    expect(isDisabled(button(html, 'match'))).toBe(false)
+    expect(html).toContain('Resume match')
+    expect(html).toContain('did not complete')
+    expect(isDisabled(button(render(false), 'match'))).toBe(true)
+  })
+
   const tie = (difference: number): ReceivableTieOut => ({ asOf: '2026-10-20', ledger1150: 23_328 + difference, postedNet: 23_328, matchedPayouts: 0, expected: 23_328, difference })
 
   it('the tie-out shows a non-zero difference in the warning token, and a zero one as tied out', () => {

@@ -37,7 +37,7 @@ const EARNINGS = [row('new', { supersedesId: 'old', gross: 9000, net: 8136 }), r
 const PAYOUTS = { payouts: [], receivable: { asOf: '2026-10-20', ledger1150: 7776, postedNet: 7776, matchedPayouts: 0, expected: 7776, difference: 0 } }
 
 /** Answers by route and method; the POSTs to the earnings and import routes take their replies in order. */
-function server(posts: Record<string, unknown[]>, status: Record<string, number[]> = {}) {
+function server(posts: Record<string, unknown[]>, status: Record<string, number[]> = {}, payouts: unknown = PAYOUTS) {
   const sent: { path: string; body: any }[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input)
@@ -51,7 +51,7 @@ function server(posts: Record<string, unknown[]>, status: Record<string, number[
     }
     if (path.startsWith('/api/fleet/assets')) return json({ assets: ASSETS })
     if (path.startsWith('/api/fleet/ops/earnings')) return json({ rows: EARNINGS })
-    if (path.startsWith('/api/fleet/ops/payouts')) { sent.push({ path: `GET ${path}`, body: undefined }); return json(PAYOUTS) }
+    if (path.startsWith('/api/fleet/ops/payouts')) { sent.push({ path: `GET ${path}`, body: undefined }); return json(payouts) }
     return json({})
   }))
   return sent
@@ -107,6 +107,15 @@ describe('the Revenue & payouts page', () => {
     // Still open, with the refusal in it.
     const still = await screen.findByRole('dialog')
     expect(await within(still).findByText(message)).toBeTruthy()
+  })
+
+  it('Resume match on a payout left in matching re-sends the match to its own deposit', async () => {
+    const stuck = { ...PAYOUTS, payouts: [{ id: 'p1', payoutDate: '2026-10-05', amount: 7776, reference: 'PO-1', note: null, status: 'matching', bankTransactionId: 't9', entryId: null, candidates: [] }] }
+    const sent = server({ '/api/fleet/ops/payouts': [{ payoutId: 'p1', entryId: 'je' }] }, {}, stuck)
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume match' }))
+    await waitFor(() => expect(posts(sent)).toHaveLength(1))
+    expect(posts(sent)[0].body).toEqual({ action: 'match', payoutId: 'p1', txnId: 't9', group: 'GPU SPV I' })
   })
 
   it('Cancel in the confirmation sends nothing more', async () => {
