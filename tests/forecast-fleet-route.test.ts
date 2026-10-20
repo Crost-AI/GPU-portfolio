@@ -42,6 +42,9 @@ vi.mock('@/lib/gpu/fee', async orig => ({ ...(await orig<typeof import('@/lib/gp
 vi.mock('@/lib/gpu/scenario-seed', async orig => ({ ...(await orig<typeof import('@/lib/gpu/scenario-seed')>()), createPitchScenarios: mocks.seed }))
 
 import { GET, POST } from '@/app/api/accounting/forecast/fleet-scenarios/route'
+import { ROUTE_DOMAINS, requiredLevel } from '@/lib/access/route-domains'
+import { matchRoute } from '@/lib/access/match-route'
+import { hasAccess } from '@/lib/access/effective'
 import { packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
 
 const planRow = (id: string, name: string, fleet: unknown, isPrimary = false) => ({
@@ -138,5 +141,29 @@ describe('POST fleet-scenarios', () => {
     expect((await post({ group: 'Fund I', action: 'seed' })).status).toBe(404)
     expect((await post({ group: 'GPU SPV I', action: 'delete' })).status).toBe(400)
     expect(mocks.seed).not.toHaveBeenCalled()
+  })
+})
+
+describe('the gate: fleet-scenarios is behind the gpu_fleet switch', () => {
+  // What gateApiRequest (proxy.ts) decides for this path, on its registry entry.
+  const passes = (gpuFleet: 'off' | 'everyone', grants: AccessContext['grants'], method: 'GET' | 'POST') => {
+    const key = matchRoute('/api/accounting/forecast/fleet-scenarios')!
+    const entry = ROUTE_DOMAINS[key]
+    const a = { ...access(grants), features: { ...FEATURES, gpu_fleet: gpuFleet } }
+    return hasAccess(a, entry.domain, requiredLevel(entry, method) as any, entry.feature)
+  }
+
+  it('denies both verbs while gpu_fleet is off, admins and accounting writers included', () => {
+    expect(passes('off', { accounting: 'write', gp_economics: 'read' }, 'GET')).toBe(false)
+    expect(passes('off', { accounting: 'write' }, 'POST')).toBe(false)
+    const admin = { ...access({ accounting: 'write' }), role: 'admin' as const, features: { ...FEATURES, gpu_fleet: 'off' as const } }
+    const entry = ROUTE_DOMAINS['api/accounting/forecast/fleet-scenarios']
+    expect(hasAccess(admin, entry.domain, 'read', entry.feature)).toBe(false)
+  })
+
+  it('allows them with gpu_fleet on and accounting at the verb’s level', () => {
+    expect(passes('everyone', { accounting: 'read' }, 'GET')).toBe(true)
+    expect(passes('everyone', { accounting: 'write' }, 'POST')).toBe(true)
+    expect(passes('everyone', { accounting: 'read' }, 'POST')).toBe(false)
   })
 })
