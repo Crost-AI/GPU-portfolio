@@ -4,8 +4,10 @@
 //
 //   GET ?group=X[&asOf=YYYY-MM-DD]   { asOf, bookNav, tiers, carryMemo, investorMemo, paidToDate }
 //
-// gp_economics (lib/access/route-domains.ts): the whole answer is the manager's economics, so the
-// gate refuses it to a member without that grant. A vehicle that is not a GPU SPV is a 404.
+// gp_economics (lib/access/route-domains.ts): the answer is the manager's economics, so the gate
+// refuses it to a member without that grant. Its book NAV is the books restated, so the handler also
+// needs accounting read (the registry maps one domain; this payload straddles two). A vehicle that
+// is not a GPU SPV is a 404.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
@@ -20,6 +22,7 @@ import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from '@/lib/
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import { accruedProfitShare } from '@/lib/gpu/accrued'
 import { gpuBookNav } from '@/lib/gpu/book-nav'
+import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -30,6 +33,8 @@ export async function GET(req: NextRequest) {
   if (gate instanceof NextResponse) return gate
   const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
   if (group instanceof NextResponse) return group
+  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  if (!hasAccess(access, 'accounting', 'read')) return NextResponse.json({ error: 'You do not have access to the books.' }, { status: 403 })
   const refused = await assertVehicleKind(admin, gate.fundId, group, 'gpu_spv')
   if (refused) return refused
 
