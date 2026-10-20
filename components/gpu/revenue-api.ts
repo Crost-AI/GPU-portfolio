@@ -361,3 +361,35 @@ export function combineLtm(kpis: Kpi[]): { grossRevenue: number; utilizationPct:
   const available = kpis.reduce((t, k) => t + k.availableHours, 0)
   return { grossRevenue: gross, utilizationPct: available > 0 ? round4((rented / available) * 100) : null, includesStaged: kpis.some(k => k.includesStaged) }
 }
+
+// ── Publish, settings and suggested matches (P3 PR B) ──────────────────────────────────────────
+
+/** POST /api/fleet/kpis { action: 'publish' }: the month's POSTED figures onto the fleet company. */
+export interface PublishReply {
+  companyId: string
+  month: string
+  /** slug → value written. */
+  written: Record<string, number>
+  /** Slugs whose earlier computed value for the month was removed. */
+  removed: string[]
+}
+export const publishKpis = (f: Fetcher, month: string) => send<PublishReply>(f, opsPaths.kpis, 'POST', { action: 'publish', month })
+
+export const settingsPath = '/api/fleet/ops/settings'
+export interface OpsSettings { autoPostPayoutMatches: boolean }
+export const getOpsSettings = (f: Fetcher) => call<OpsSettings>(f, settingsPath)
+/** PATCH needs fleet write and Accounting write (letting the run post to the books). */
+export const setAutoPost = (f: Fetcher, on: boolean) => send<OpsSettings>(f, settingsPath, 'PATCH', { autoPostPayoutMatches: on })
+
+/** Where a fleet company's metrics live. */
+export const fleetCompanyHref = (companyId: string) => `/companies/${encodeURIComponent(companyId)}`
+
+/**
+ * The matches the bank auto-match run would propose, from what this page already reads: an expected
+ * payout with exactly one fitting deposit (bank-auto-match-run's rule; it also sets aside a deposit
+ * that fits a partner's open call, which only the run can see). Confirming one posts the payouts
+ * route's match action.
+ */
+export function suggestedMatches(payouts: PayoutView[]): { payout: PayoutView; txn: PayoutView['candidates'][number] }[] {
+  return payouts.filter(p => p.status === 'expected' && p.candidates.length === 1).map(p => ({ payout: p, txn: p.candidates[0] }))
+}
