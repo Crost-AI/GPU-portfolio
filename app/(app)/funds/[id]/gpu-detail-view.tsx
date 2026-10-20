@@ -16,6 +16,7 @@ import type { AccessLevel } from '@/lib/access/effective'
 import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
+import { baseCaseReturns, formatReportValue, getVehicleScenarios } from '@/components/gpu/scenarios-api'
 import { getVehicleKpis } from '@/components/gpu/revenue-api'
 import { LtmTiles, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
 import type { Kpi } from '@/lib/gpu/kpis'
@@ -54,6 +55,21 @@ export function GpuDetailView({
   useEffect(() => { setVehicle(vehicle, vehicleId) }, [vehicle, vehicleId, setVehicle])
 
   const links = gpuQuickLinks(isAdmin, access)
+
+  // ── GPU fleet (P5) ── The primary pitch scenario's investor returns (annual, the headline's),
+  // from the Scenarios page's route; a dash until scenarios exist.
+  const [base, setBase] = useState<{ returns: ReturnType<typeof baseCaseReturns> } | { error: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void getVehicleScenarios(browserFetch, vehicle).then(r => {
+      if (!cancelled) setBase(r.ok ? { returns: baseCaseReturns(r.data) } : { error: r.error })
+    })
+    return () => { cancelled = true }
+  }, [vehicle])
+  const baseSub = !base ? 'Loading…'
+    : 'error' in base ? base.error
+      : base.returns ? `${base.returns.name}, after fees, annual distributions (pack convention)`
+        : 'No scenarios yet: create them on the Scenarios page'
   const currency = useCurrency()
 
   // The register, for the NBV tile. This page renders only for a caller who can view the fleet
@@ -128,6 +144,18 @@ export function GpuDetailView({
               label="Unreturned capital"
               value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}
               sub={!readsCapital ? 'Needs access to investors\u2019 capital' : unreturned?.sub ?? 'Loading'}
+            />
+            <Metric
+              label="Base case investor IRR"
+              value={base && 'returns' in base && base.returns ? formatReportValue(base.returns.irr, 'pct', () => '') : '—'}
+              sub={baseSub}
+              data-base-irr
+            />
+            <Metric
+              label="Base case investor multiple"
+              value={base && 'returns' in base && base.returns ? formatReportValue(base.returns.multiple, 'multiple', () => '') : '—'}
+              sub={baseSub}
+              data-base-multiple
             />
           </div>
 

@@ -25,6 +25,10 @@ import { PlanOverview } from './overview'
 import { onApplied } from '@/lib/pending-actions/applied-event'
 import { NO_ADJUSTMENTS } from '@/lib/forecast/adjustments'
 import { isGpuSpv } from '@/lib/vehicle-kinds'
+import { useCanWrite } from '@/components/access-context'
+import { FleetAssumptionsForm } from '@/components/gpu/fleet-assumptions-form'
+import { saveFleetPlan } from '@/components/gpu/fleet-assumptions'
+import type { FleetAssumptions } from '@/lib/gpu/scenario'
 
 type PlanListItem = PlanDetail['plan'] & { versions: { id: string; versionNo: number; label: string | null; status: string; publishedAt: string }[] }
 type View = 'combined' | 'plan' | 'actual' | 'variance'
@@ -78,10 +82,11 @@ const TAB_LABEL: Record<ForecastTab, string> = { charts: 'Charts', investments: 
 /**
  * The tabs a vehicle of `kind` gets, in order. A management company has no portfolio. ── GPU fleet
  * (P5) ── A GPU SPV has no deal portfolio either: its Investments tab is the Fleet tab, and the
- * construction view is never mounted for it.
+ * construction view is never mounted for it. Its Capital planning tab is left out too (P5-5): that
+ * tab's content is the construction view's, so on a GPU SPV it was empty.
  */
 export function forecastTabsFor(kind: string | null | undefined): ForecastTab[] {
-  if (isGpuSpv(kind)) return ['charts', 'fleet', 'capital', 'financials']
+  if (isGpuSpv(kind)) return ['charts', 'fleet', 'financials']
   return kind !== 'manco' ? ['charts', 'investments', 'capital', 'financials'] : ['charts', 'financials', 'capital']
 }
 
@@ -339,6 +344,19 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
       setBusy(false)
     }
   }, [detail, lf, loadSeries, setBusy, setActionError])
+
+  // ── GPU fleet (P5) ── The Fleet tab's save: the plan's fleet assumptions whole, at the revision this
+  // page loaded. A 409 means someone saved in between: reload the plan and say so. A success recompiles
+  // like any other plan edit (the PATCH answers with the recompiled plan; the series follows).
+  const canWriteBooks = useCanWrite('accounting')
+  const saveFleet = useCallback(async (fleet: FleetAssumptions): Promise<string | null> => {
+    if (!detail) return 'Open a plan first.'
+    return saveFleetPlan<PlanDetail>({
+      fetcher: lf, planId: detail.plan.id, revision: detail.plan.revision, fleet,
+      reload: () => loadDetail(detail.plan.id),
+      saved: async next => { setDetail(next); await loadSeries() },
+    })
+  }, [detail, lf, loadDetail, loadSeries])
 
   // A copy of the open plan as a new scenario — its portfolio, rules, capital and hand edits.
   const copyAsScenario = useCallback(async () => {
@@ -716,13 +734,23 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
         </div>
       )}
 
-      {/* ── GPU fleet (P5) ── The fleet's plan (servers, rates, utilization) is the scenario engine's. */}
-      {tab === 'fleet' && (
+      {/* ── GPU fleet (P5) ── The fleet's plan (servers, rates, utilization) is the scenario engine's.
+          Keyed by plan and revision, so a save or a stale-revision reload starts the form afresh. */}
+      {tab === 'fleet' && (detail ? (
+        <FleetAssumptionsForm
+          key={`${detail.plan.id}:${detail.plan.revision}`}
+          fleet={detail.plan.fleet}
+          canEdit={canWriteBooks && !versionId}
+          onSave={saveFleet}
+        />
+      ) : (
         <div className="mb-6 rounded-card border bg-card p-6 shadow-sm dark:shadow-none">
           <h2 className="text-base font-semibold">Fleet</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Fleet assumptions arrive with the scenario engine.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Open a plan to edit its fleet assumptions. The Scenarios page creates the six pitch scenarios as plans.
+          </p>
         </div>
-      )}
+      ))}
 
       {tab === 'financials' && (<>
       {tab === 'financials' && view === 'variance' && variance && (
