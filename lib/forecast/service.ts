@@ -1843,7 +1843,7 @@ export async function getFleetScenarios(ctx: ForecastServiceContext, input: { ve
  */
 export async function getFleetReport(
   ctx: ForecastServiceContext, input: { vehicle: string; planId: string; versionId?: string | null },
-): Promise<{ comparison: ScenarioComparison; detail: ScenarioDetail } | null> {
+): Promise<{ comparison: ScenarioComparison; detail: ScenarioDetail; stale: boolean } | null> {
   const v = await loadVehicle(ctx, input.vehicle, 'read')
   if (!isGpuSpv(v.kind)) return null
   const row = await loadPlanRow(ctx, v, input.planId)
@@ -1858,7 +1858,17 @@ export async function getFleetReport(
   const { fleet: run } = await loadFleet(ctx, v, fleet, { frozen: !!input.versionId })
   if (!run) return null
   const showCarry = seesCarry(ctx.access)
-  return { comparison: scenarioComparison({ [row.name]: run.result }, { showCarry }), detail: scenarioDetail(run.result, { showCarry }) }
+  // A draft's Monthly sheet is its STORED entries, compiled at its last save; these sheets run on
+  // today's terms and register. When compiling now would give other entries, say so on the sheets
+  // (getPlan's freshness test). A version is frozen whole, so it is never stale.
+  let stale = false
+  if (!input.versionId) {
+    const { rules, overrides } = await loadInputs(ctx, row.id)
+    const [{ built, cutoff }, stored] = await Promise.all([compile(ctx, v, row, rules, overrides), loadEntries(ctx, row.id, null)])
+    stale = (row.compiled_cutoff != null && monthOf(row.compiled_cutoff) !== cutoff)
+      || entriesFingerprint(built.entries.map(e => ({ date: e.entryDate, postings: e.postings }))) !== entriesFingerprint(stored.map(e => ({ date: e.date, postings: e.postings })))
+  }
+  return { comparison: scenarioComparison({ [row.name]: run.result }, { showCarry }), detail: scenarioDetail(run.result, { showCarry }), stale }
 }
 
 /** "GP I LLC" or "GP I LLC 60%, Jane Doe 40%" — the fund's carry recipients; null when it names none. */

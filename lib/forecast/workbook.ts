@@ -41,8 +41,11 @@ export interface ForecastWorkbookInput {
   /** The interval the person was looking at; a quarterly or annual sheet is added on top. */
   interval: Interval
   meta: ForecastWorkbookMeta
-  /** A GPU SPV fleet plan's scenario tables (lib/gpu/report.ts), already redacted for the caller. */
-  fleet?: { comparison: ScenarioComparison; detail: ScenarioDetail } | null
+  /**
+   * A GPU SPV fleet plan's scenario tables (lib/gpu/report.ts), already redacted for the caller.
+   * `stale`: a draft whose stored entries (the Monthly sheet) predate today's terms or register.
+   */
+  fleet?: { comparison: ScenarioComparison; detail: ScenarioDetail; stale?: boolean } | null
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -500,14 +503,15 @@ export function buildForecastWorkbook(input: ForecastWorkbookInput): XLSX.WorkBo
   XLSX.utils.book_append_sheet(wb, monthly.ws, MONTHLY)
   XLSX.utils.book_append_sheet(wb, assumptions, ASSUMPTIONS)
   if (input.fleet) {
-    XLSX.utils.book_append_sheet(wb, reportSheet([['Scenario headline (pack §1, §4)', input.fleet.comparison.headline]]), 'Headline')
+    const warn = input.fleet.stale ? FLEET_STALE : null
+    XLSX.utils.book_append_sheet(wb, reportSheet(warn, [['Scenario headline (pack §1, §4)', input.fleet.comparison.headline]]), 'Headline')
     const sr = input.fleet.comparison.series
-    XLSX.utils.book_append_sheet(wb, reportSheet([
+    XLSX.utils.book_append_sheet(wb, reportSheet(warn, [
       ['Revenue', sr.revenue], ['Operating profit', sr.operatingProfit], ['Net cash flow', sr.netCashFlow],
       ['To investors', sr.toInvestors], ['To manager', sr.toManager],
     ]), 'Series')
     const d = input.fleet.detail
-    XLSX.utils.book_append_sheet(wb, reportSheet([
+    XLSX.utils.book_append_sheet(wb, reportSheet(warn, [
       ['Operating cash flow', d.operating], ['Investor waterfall (annual, pack convention)', d.waterfall], ['$ per GPU-hour', d.rates],
     ]), 'Detail')
   }
@@ -520,10 +524,14 @@ export function buildForecastWorkbook(input: ForecastWorkbookInput): XLSX.WorkBo
 
 const REPORT_FORMAT: Record<ReportFormat, string | undefined> = { usd: NUM, pct: PCT, multiple: '0.00"x"', year: '0' }
 
+/** The warning a stale draft's scenario sheets open with. */
+export const FLEET_STALE = 'Stale: the Monthly sheet was compiled before the fleet’s terms or register changed, and these sheets use today’s. Recompile the plan (refresh it) so the two agree.'
+
 /** Values as the app returned them; a hidden (redacted) figure is a dash, never a 0. */
-function reportSheet(blocks: [string, Table][]): XLSX.WorkSheet {
+function reportSheet(warning: string | null, blocks: [string, Table][]): XLSX.WorkSheet {
   const g = new Grid()
   let r = 0
+  if (warning) { g.set(r, 0, warning); r += 2 }
   let width = 0
   for (const [title, t] of blocks) {
     g.set(r++, 0, title)

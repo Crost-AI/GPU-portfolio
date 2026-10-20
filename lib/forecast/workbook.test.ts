@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as XLSX from 'xlsx'
-import { buildForecastWorkbook, buildVarianceWorkbook } from './workbook'
+import { buildForecastWorkbook, buildVarianceWorkbook, FLEET_STALE } from './workbook'
 import { varianceCell } from './variance'
 import type { RuleView, SeriesResult, VarianceResponse } from './service'
 import { runFleetScenario } from '@/lib/gpu/scenario'
@@ -179,6 +179,16 @@ describe('a GPU SPV fleet plan adds its scenario sheets to the same workbook', (
     // Five years, then the total: 549,824 (pack §5).
     expect(Math.round(detail[`G${carry}`].v)).toBe(549_824)
     expect(cellsOf(wb.Sheets.Headline).some(c => c.v === 'Base case')).toBe(true)
+  })
+
+  it('a stale draft opens each scenario sheet with the warning; a fresh one does not', () => {
+    const stale = buildForecastWorkbook({
+      monthly: fixture(), rules, interval: 'month', accounts: lines.map(l => ({ id: l.accountId, code: l.code, name: l.name })),
+      meta: { fundName: 'Test Fund', generatedAt: '2026-10-11T00:00:00Z' },
+      fleet: { comparison: scenarioComparison({ 'Base case': r }, { showCarry: true }), detail: scenarioDetail(r, { showCarry: true }), stale: true },
+    })
+    for (const name of ['Headline', 'Series', 'Detail']) expect(stale.Sheets[name].A1.v).toBe(FLEET_STALE)
+    for (const name of ['Headline', 'Series', 'Detail']) expect(withFleet(true).Sheets[name].A1.v).not.toBe(FLEET_STALE)
   })
 
   it('a hidden manager figure is a dash, never a number', () => {

@@ -76,7 +76,7 @@ function books(plans: Record<string, unknown>[], withRules = true) {
       id: `r-${flow}`, fund_id: 'f1', plan_id: 'p1', account_id: `acct-${FLOW_CODE[flow]}`, method: 'linked_fleet', params: { flow },
       cash_timing: { mode: 'same' }, source: 'seeded', note: null,
     })) : [],
-    forecast_overrides: [], forecast_versions: [], forecast_entries: [], gpu_asset_types: [], fund_vehicles: [], lp_entities: [],
+    forecast_overrides: [], forecast_versions: [], forecast_entries: [], forecast_postings: [], gpu_asset_types: [], fund_vehicles: [], lp_entities: [],
   }, { before: (table, op, payload) => { if (table === 'forecast_plans' && op === 'insert') inserted.push(...[payload].flat()) } })
   const rpc = vi.fn(async (name: string, _args: any) => ({ data: name === 'forecast_publish' ? { id: 'ver1', versionNo: 1 } : null, error: null }))
   return { admin: { from: (t: string) => (admin as any).from(t), rpc } as any, tables, rpc, inserted }
@@ -147,6 +147,21 @@ describe('publishing freezes the fleet', () => {
     // The draft moves with them: an empty register is nothing to show.
     expect(await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1' })).toBeNull()
     list.mockRestore()
+  })
+
+  it("a draft's scenario sheets say when they run on newer terms than its stored entries", async () => {
+    const b = books([plan()])
+    // Store the draft as it compiles now (5% fee, the pack's), as a save would.
+    const detail = await getPlan(ctx(b.admin), { vehicle: GPU, planId: 'p1' })
+    detail.entries.forEach((e, k) => {
+      b.tables.forecast_entries.push({ id: `e${k}`, fund_id: 'f1', plan_id: 'p1', version_id: null, entry_date: e.date, kind: e.kind, memo: e.memo, account_id: e.accountId, source: e.source })
+      for (const p of e.postings) b.tables.forecast_postings.push({ entry_id: `e${k}`, fund_id: 'f1', account_id: p.accountId, amount: p.amount, currency: 'USD' })
+    })
+    b.tables.forecast_plans[0].compiled_cutoff = `${detail.cutoff}-28`
+    expect((await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1' }))!.stale).toBe(false)
+    // The fee is cut to 2% and nobody refreshes the plan: the Monthly sheet is at 5%, the scenario at 2%.
+    feeTerms.current = { basis: 'gross_revenue', annualRate: 0.02, revenueSubtypes: ['rental_revenue'], frequency: 'monthly', payeeVehicleId: null }
+    expect((await getFleetReport(ctx(b.admin), { vehicle: GPU, planId: 'p1' }))!.stale).toBe(true)
   })
 
   it('a plan without a fleet publishes p_fleet null', async () => {
