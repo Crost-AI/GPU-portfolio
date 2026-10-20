@@ -75,7 +75,7 @@ export type TableRule =
 
 export const TABLE_RULES: Record<string, TableRule> = {
   // ---- Portfolio ---------------------------------------------------------------------------
-  companies: { scope: 'fund', domain: 'portfolio' },
+  companies: { scope: 'fund', domain: 'portfolio', note: 'GPU fleet (P3): a gpu_fleet company and its rows also need fleet (restrictive RLS, 20261019310000; #91).' },
   company_documents: { scope: 'fund', domain: 'portfolio' },
   company_summaries: { scope: 'fund', domain: 'portfolio' },
   company_updates: { scope: 'fund', domain: 'portfolio' },
@@ -85,8 +85,8 @@ export const TABLE_RULES: Record<string, TableRule> = {
   company_update_backfill_items: { scope: 'service', note: 'Per-email backfill progress; worker-only.' },
   entity_documents: { scope: 'service', note: 'An entity\'s governing documents; served by routes that check the caller can see the entity (lib/entity-documents).' },
   entity_document_chunks: { scope: 'service', note: 'Searchable text of entity_documents; read through the same entity-checked routes and the Analyst tool.' },
-  metrics: { scope: 'fund', domain: 'portfolio' },
-  metric_values: { scope: 'fund', domain: 'portfolio' },
+  metrics: { scope: 'fund', domain: 'portfolio', note: 'GPU fleet (P3): a gpu_fleet company and its rows also need fleet (restrictive RLS, 20261019310000; #91).' },
+  metric_values: { scope: 'fund', domain: 'portfolio', note: 'GPU fleet (P3): a gpu_fleet company and its rows also need fleet (restrictive RLS, 20261019310000; #91).' },
   default_metrics: { scope: 'fund', domain: 'portfolio' },
   default_metric_exclusions: { scope: 'fund', domain: 'portfolio' },
   // NOT feature 'imports': that key gates the import ROUTES (api/import*), not the review

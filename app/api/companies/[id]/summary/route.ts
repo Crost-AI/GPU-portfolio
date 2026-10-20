@@ -8,6 +8,7 @@ import { generateCompanySummary } from '@/lib/companies/summary'
 import { outcomeResponse } from '@/lib/service-outcome'
 import { dbError } from '@/lib/api-error'
 import { rateLimit } from '@/lib/rate-limit'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 // Verify the company belongs to the user's fund
 async function verifyCompanyAccess(supabase: Awaited<ReturnType<typeof createClient>>, admin: ReturnType<typeof createAdminClient>, userId: string, companyId: string) {
@@ -40,6 +41,9 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 
@@ -81,6 +85,9 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 
@@ -109,6 +116,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const writeCheck = await assertWriteAccess(createAdminClient(), user.id)
   if (writeCheck instanceof NextResponse) return writeCheck
@@ -150,6 +160,9 @@ export async function PUT(req: NextRequest, props: { params: Promise<{ id: strin
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 

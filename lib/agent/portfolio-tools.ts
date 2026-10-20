@@ -15,6 +15,7 @@ import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-
 import { getUpdates } from '@/lib/company-updates/analyst'
 import type { AccessContext } from '@/lib/access/effective'
 import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
+import { fleetCompanyDenied, withoutHiddenFleet } from '@/lib/access/fleet-company'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
@@ -42,10 +43,14 @@ export async function resolveCompany(
   ref: string,
   /** The caller's access: only companies linked to their entities resolve. Required. */
   access: Pick<AccessContext, 'fundId' | 'vehicles'>,
+  /** What the caller will do with it: a tool that writes to the company passes 'write' (#91). */
+  need: 'read' | 'write' = 'read',
 ): Promise<any> {
   if (!ref) throw new Error('A company id or name is required')
   const visible = await visibleCompanyIds(admin, access)
-  const mine = (c: any) => visible === null || visible.includes(c.id)
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company resolves — and is suggested — only to a caller
+  // who can read the fleet (#91); to anyone else it does not exist.
+  const mine = (c: any) => (visible === null || visible.includes(c.id)) && !fleetCompanyDenied(access as AccessContext, c.holding_type, need)
   return resolveAnyCompany(admin, fundId, ref, mine, visible)
 }
 
@@ -66,7 +71,7 @@ async function resolveAnyCompany(
 
   // Scoped in the query, so a scoped caller still gets five suggestions of their own.
   const { data: fuzzy } = await filterByCompany((admin as any)
-    .from('companies').select('id, name').eq('fund_id', fundId).ilike('name', `%${ref}%`), visible, { column: 'id' }).limit(5)
+    .from('companies').select('id, name, holding_type').eq('fund_id', fundId).ilike('name', `%${ref}%`), visible, { column: 'id' }).limit(5)
   const near = ((fuzzy as any[]) ?? []).filter(mine).map(c => c.name)
   throw new Error(
     near.length > 0
@@ -106,7 +111,11 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   // same resolver as every other portfolio tool so a name never silently picks the wrong company.
   get_updates: async ({ admin, fundId, access }: AgentToolContext, input: any) =>
     getUpdates(
-      { admin: admin as any, fundId, resolveCompanyId: async ref => (await resolveCompany(admin, fundId, ref, access)).id, visibleCompanyIds: await visibleCompanyIds(admin, access) },
+      {
+        admin: admin as any, fundId, resolveCompanyId: async ref => (await resolveCompany(admin, fundId, ref, access)).id,
+        // ── GPU fleet (P3) ── list, search, by-id and artifacts all filter on this set (#91).
+        visibleCompanyIds: await withoutHiddenFleet(admin, fundId, access as AccessContext, await visibleCompanyIds(admin, access)),
+      },
       input ?? {},
     ),
 
@@ -328,7 +337,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   submit_company_update: async ({ admin, fundId, userId, access, origin }: AgentToolContext, input: any) =>
     submitCompanyUpdate(
-      { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access) },
+      { admin, fundId, userId, access, origin, resolveCompany: ref => resolveCompany(admin, fundId, ref, access, 'write') },
       input,
     ),
 
@@ -336,7 +345,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
     companyUpdateStatus(admin, fundId, jobRecordId('company_update', String(input?.job_id ?? '')), await visibleCompanyIds(admin, access), origin),
 
   record_metric_value: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     const metric = await resolveMetric(admin, fundId, company.id, String(input?.metric ?? ''))
     const period = parseMetricPeriod(input?.period)
     if (!period) throw new Error(`Couldn't read the period "${input?.period ?? ''}". Use "Q3 2026", "Sep 2026" or "FY2025".`)
@@ -387,7 +396,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   add_company_note: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     if (!userId) throw new Error('A note needs a person behind the credential.')
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     let vehicleId: string | null = null
     if (typeof input?.vehicle === 'string' && input.vehicle.trim()) {
       const { data: v } = await (admin as any).from('fund_vehicles').select('id').eq('fund_id', fundId).ilike('name', input.vehicle.trim()).maybeSingle()
@@ -408,7 +417,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   update_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     const { company, transaction_id, vehicle: _vehicle, ...changes } = input ?? {}
     if (!transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
-    const c = await resolveCompany(admin, fundId, company, access)
+    const c = await resolveCompany(admin, fundId, company, access, 'write')
     const editable = new Set<string>(EDITABLE_TXN_FIELDS)
     const unknown = Object.keys(changes).filter(k => !editable.has(k))
     if (unknown.length) throw new Error(`Not an editable field: ${unknown.join(', ')}`)
@@ -425,7 +434,7 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
 
   delete_investment: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     if (!input?.transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
-    const c = await resolveCompany(admin, fundId, input.company, access)
+    const c = await resolveCompany(admin, fundId, input.company, access, 'write')
     const vehicleNames = (await entityScopeFor(admin, access)).vehicleNames
     const { ledger } = unwrap(await deleteInvestmentTransaction(admin, { fundId, userId, vehicleNames }, c.id, input.transaction_id))
     return { deleted: input.transaction_id, ledger }
@@ -482,7 +491,7 @@ export async function executeRecordInvestment(
   input: RecordInvestmentInput,
 ): Promise<{ transaction: any; ledger: any }> {
   const { admin, fundId, userId, access } = deps
-  const c = await resolveCompany(admin, fundId, input?.company, access)
+  const c = await resolveCompany(admin, fundId, input?.company, access, 'write')
   // Only into one of the caller's entities (and no company-wide rows from a scoped caller).
   const writeNames = (await entityScopeFor(admin, access)).vehicleNames
   const denied = groupWriteDenial(writeNames, input?.vehicle ?? null)

@@ -5,6 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { outcomeResponse } from '@/lib/service-outcome'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 // The edit and delete themselves live in lib/portfolio/transaction-edit.ts, shared with the agent
 // tools `update_investment` and `delete_investment`.
@@ -21,6 +22,9 @@ export async function PATCH(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 
@@ -50,6 +54,9 @@ export async function DELETE(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 

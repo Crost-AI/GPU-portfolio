@@ -11,6 +11,7 @@ import { holdingForRequest, isRealDate, type HoldingContext } from '@/lib/portfo
 import { holdingEntities } from '@/lib/portfolio/holding-entities'
 import { quoteMarkForHolding, bookQuoteMark } from '@/lib/portfolio/quote-marks'
 import { PROVIDER_NAMES } from '@/lib/portfolio/quote-providers'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 /**
  * The price feed one holding marks from, the quotes stored against it, and the quoted mark each of
@@ -120,6 +121,9 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'read')
+  if (fleetDenied) return fleetDenied
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)
@@ -158,6 +162,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'write')
+  if (fleetDenied) return fleetDenied
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)
@@ -235,6 +242,9 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'write')
+  if (fleetDenied) return fleetDenied
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)

@@ -16,6 +16,7 @@ import { disposalBasis, isLotMethod, type LotMethod } from '@/lib/portfolio/lots
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { scopeTransactions, scopeGroups, groupWriteDenial } from '@/lib/access/scope'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 // ---------------------------------------------------------------------------
 // GET — all transactions for a company + computed summary
@@ -26,6 +27,9 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 
@@ -110,6 +114,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 

@@ -25,7 +25,7 @@ async function limit(key: string) {
 export const SERVER_AI_HANDLERS: Record<string, AgentToolHandler> = {
   company_generate_summary: async (ctx: AgentToolContext, input: any) => {
     await refuseWithoutKey(ctx, 'company_generate_summary')
-    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     await limit(`ai-summary:${requireUser(ctx.userId)}`)
     const provider = input?.provider === 'anthropic' || input?.provider === 'openai' ? input.provider : undefined
     const out = unwrap(await generateCompanySummary(ctx.admin, ctx.access, company.id, { provider }))

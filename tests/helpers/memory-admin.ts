@@ -43,6 +43,44 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
   const like = (v: unknown, pattern: string) => new RegExp(
     '^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.') + '$',
   ).test(String(v ?? ''))
+  // A PostgREST `or` filter: comma-separated `col.op.value` terms, with nested and(...)/or(...).
+  const COMPARE: Record<string, (a: any, b: string) => boolean> = {
+    eq: (a, b) => String(a) === b, neq: (a, b) => String(a) !== b,
+    lt: (a, b) => String(a) < b, lte: (a, b) => String(a) <= b, gt: (a, b) => String(a) > b, gte: (a, b) => String(a) >= b,
+    is: (a, b) => (a ?? null) === (b === 'null' ? null : b),
+  }
+  const splitTop = (s: string) => {
+    const parts: string[] = []
+    let depth = 0, at = 0
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(') depth++
+      else if (s[i] === ')') depth--
+      else if (s[i] === ',' && depth === 0) { parts.push(s.slice(at, i)); at = i + 1 }
+    }
+    return [...parts, s.slice(at)]
+  }
+  const orTerm = (t: string): ((r: Row) => boolean) => {
+    const group = /^(and|or)\((.*)\)$/.exec(t)
+    if (group) {
+      const ps = splitTop(group[2]).map(orTerm)
+      return group[1] === 'and' ? r => ps.every(p => p(r)) : r => ps.some(p => p(r))
+    }
+    const [k, ...parts] = t.split('.')
+    const negate = parts[0] === 'not'
+    const [op, ...rest] = negate ? parts.slice(1) : parts
+    const value = rest.join('.')
+    // As in SQL, a comparison with NULL is never true, negated or not; only `is` matches it.
+    let test: (r: Row) => boolean
+    if (op === 'in') {
+      const list = value.replace(/^\(|\)$/g, '').split(',')
+      test = r => r[k] != null && list.includes(String(r[k])) !== negate
+    } else if (COMPARE[op]) {
+      test = op === 'is' ? r => COMPARE.is(r[k], value) !== negate : r => r[k] != null && COMPARE[op](r[k], value) !== negate
+    } else {
+      throw new Error(`memoryAdmin: or(${op}) unsupported`)
+    }
+    return test
+  }
   const UNIQUE = { code: '23505', message: 'duplicate key value violates unique constraint' }
 
   function from(table: string) {
@@ -129,6 +167,7 @@ export function memoryAdmin(seed: Record<string, Row[]> = {}, opts: MemoryAdminO
         if (op !== 'is') throw new Error(`memoryAdmin: not(${op}) unsupported`)
         filters.push(r => (r[k] ?? null) !== v); return q
       },
+      or: (expr: string) => { filters.push(orTerm(`or(${expr})`)); return q },
       like: (k: string, p: string) => { filters.push(r => like(r[k], p)); return q },
       ilike: (k: string, p: string) => { filters.push(r => like(String(r[k] ?? '').toLowerCase(), p.toLowerCase())); return q },
       contains: (k: string, vs: unknown[]) => { filters.push(r => Array.isArray(r[k]) && vs.every(v => r[k].includes(v))); return q },

@@ -151,7 +151,10 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/fleet/ops/import': { domain: 'fleet' },
   'api/fleet/ops/earnings': { domain: 'fleet' },
   'api/fleet/ops/payouts': { domain: 'fleet' },
-  'api/fleet/kpis': { domain: 'fleet' },
+  // Whether the bank auto-match books payout matches itself (#92); PATCH also needs accounting write.
+  'api/fleet/ops/settings': { domain: 'fleet' },
+  // GET reads the KPIs; POST publishes them to the fleet company's metrics.
+  'api/fleet/kpis': { domain: 'fleet', level: { GET: 'read', POST: 'write' } },
   // ── Management company ─────────────────────────────────────────────────────
   // The firm's own operating entity, on its own books. A separate domain from `accounting`
   // because a manco ledger carries firm payroll and partner compensation, and — unlike a K-1,
@@ -523,6 +526,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // on any one domain would wrongly deny a member who holds a different one.
   'api/analyst': { domain: 'portfolio', level: 'any' },
   // A user's own conversations, scoped by user_id in the route.
+  // ── GPU fleet (P3) ── 'any' stays: these serve a member their own threads. The gate is per row
+  // inside: a thread about a fleet company is listed and returned only while the caller can read
+  // the fleet (#91; refuseFleetCompany / hiddenFleetIdsInFund).
   'api/analyst/conversations': { domain: 'portfolio', level: 'any' },
   'api/analyst/conversations/[id]': { domain: 'portfolio', level: 'any' },
   // Personal preferences, not fund data.

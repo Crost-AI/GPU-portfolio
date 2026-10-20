@@ -1,5 +1,6 @@
 import type { ActionDeps, PreviewResult } from './types'
 import { visibleCompanyIds } from '@/lib/access/scope'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 export interface MetricValueInput {
   companyId: string
@@ -31,6 +32,9 @@ async function loadContext(deps: ActionDeps, input: MetricValueInput) {
     .eq('company_id', input.companyId)
     .maybeSingle()
   if (!metric || (metric as any).fund_id !== deps.fundId) throw new Error('Metric not found in this fund')
+  // ── GPU fleet (P3) ── A fleet company's metrics need fleet write too (#91); the Analyst and the
+  // metric-values route both come through here.
+  if (await refuseFleetCompany(deps.admin, deps.userId, { companyId: input.companyId }, 'write')) throw new Error('Metric not found in this fund')
 
   let q = deps.admin
     .from('metric_values')

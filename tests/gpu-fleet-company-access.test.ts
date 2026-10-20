@@ -1,0 +1,208 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { NextRequest } from 'next/server'
+import { memoryAdmin } from '@/tests/helpers/memory-admin'
+import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
+import type { AccessContext } from '@/lib/access/effective'
+
+// ── GPU fleet (P3) ── #91: a GPU SPV's fleet company and its metrics need `fleet` as well as
+// `portfolio`. A member who reads the portfolio but not the fleet — or anyone, admins included,
+// while gpu_fleet is off — gets "not found" on every route that returns a company's data; a VC
+// company is served as before. The real effectiveAccess decides; only the context is stubbed.
+
+const s = vi.hoisted(() => ({ m: null as any, ctx: null as any }))
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) }, from: (t: string) => s.m.admin.from(t) }),
+}))
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => s.m.admin }))
+vi.mock('@/lib/access/effective', async orig => ({ ...(await orig<any>()), loadAccessContext: async () => s.ctx }))
+
+import { refuseFleetCompany, fleetCompanyDenied } from '@/lib/access/fleet-company'
+import * as company from '@/app/api/companies/[id]/route'
+import * as companyMetrics from '@/app/api/companies/[id]/metrics/route'
+import * as metricValues from '@/app/api/companies/[id]/metrics/[metricId]/values/route'
+import * as summary from '@/app/api/companies/[id]/summary/route'
+import * as metric from '@/app/api/metrics/[id]/route'
+import * as metricValue from '@/app/api/metric-values/[id]/route'
+
+const ctx = (over: Partial<AccessContext>): AccessContext => ({
+  fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] },
+  features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: 'everyone' } as FeatureVisibilityMap,
+  grants: { portfolio: 'write', accounting: 'write', fleet: 'none' }, defaults: {}, ...over,
+})
+const PORTFOLIO_NO_FLEET = () => ctx({})
+const FLEET_READER = () => ctx({ grants: { portfolio: 'write', accounting: 'read', fleet: 'read' } })
+const ADMIN_FLEET_OFF = () => ctx({ role: 'admin', features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: 'off' } as FeatureVisibilityMap })
+
+beforeEach(() => {
+  s.ctx = PORTFOLIO_NO_FLEET()
+  s.m = memoryAdmin({
+    fund_members: [{ id: 'fm', fund_id: 'f', user_id: 'u', role: 'member' }],
+    companies: [
+      { id: 'fleet', fund_id: 'f', name: 'Fleet — GPU I', holding_type: 'gpu_fleet', portfolio_group: ['GPU I'] },
+      { id: 'vc', fund_id: 'f', name: 'Acme', holding_type: 'company', portfolio_group: ['Fund I'] },
+    ],
+    metrics: [
+      { id: 'm-fleet', fund_id: 'f', company_id: 'fleet', slug: 'gpu-revenue', name: 'Rental revenue', display_order: 0 },
+      { id: 'm-vc', fund_id: 'f', company_id: 'vc', slug: 'mrr', name: 'MRR', display_order: 0 },
+    ],
+    metric_values: [
+      { id: 'v-fleet', fund_id: 'f', company_id: 'fleet', metric_id: 'm-fleet', period_year: 2026, period_month: 9, value_number: 25_920 },
+      { id: 'v-vc', fund_id: 'f', company_id: 'vc', metric_id: 'm-vc', period_year: 2026, period_month: 9, value_number: 10 },
+    ],
+    company_summaries: [], fund_vehicles: [], fund_member_vehicles: [],
+  })
+})
+
+const req = (url: string, method = 'GET', body?: object) => new NextRequest(`http://localhost${url}`, body ? { method, body: JSON.stringify(body) } : { method })
+const p = <T extends object>(v: T) => ({ params: Promise.resolve(v) })
+
+type Call = [string, (id: 'fleet' | 'vc') => Promise<Response | undefined>]
+const calls: Call[] = [
+  ['GET company', id => company.GET(req(`/api/companies/${id}`), p({ id }))],
+  ['PATCH company', id => company.PATCH(req(`/api/companies/${id}`, 'PATCH', { name: 'x' }), p({ id }))],
+  ['DELETE company', id => company.DELETE(req(`/api/companies/${id}`, 'DELETE'), p({ id }))],
+  ['GET company metrics', id => companyMetrics.GET(req(`/api/companies/${id}/metrics`), p({ id }))],
+  ['POST company metrics', id => companyMetrics.POST(req(`/api/companies/${id}/metrics`, 'POST', { name: 'x', slug: 'x' }), p({ id }))],
+  ['GET metric values', id => metricValues.GET(req(`/api/companies/${id}/metrics/m-${id}/values`), p({ id, metricId: `m-${id}` }))],
+  ['POST metric values', id => metricValues.POST(req(`/api/companies/${id}/metrics/m-${id}/values`, 'POST', { value: 1 }), p({ id, metricId: `m-${id}` }))],
+  ['GET summary', id => summary.GET(req(`/api/companies/${id}/summary`), p({ id }))],
+  ['DELETE summary', id => summary.DELETE(req(`/api/companies/${id}/summary`, 'DELETE'), p({ id }))],
+  ['POST summary', id => summary.POST(req(`/api/companies/${id}/summary`, 'POST', {}), p({ id }))],
+  ['PUT summary', id => summary.PUT(req(`/api/companies/${id}/summary`, 'PUT', { summary: 'x' }), p({ id }))],
+  ['PATCH metric', id => metric.PATCH(req(`/api/metrics/m-${id}`, 'PATCH', { name: 'x' }), p({ id: `m-${id}` }))],
+  ['DELETE metric', id => metric.DELETE(req(`/api/metrics/m-${id}`, 'DELETE'), p({ id: `m-${id}` }))],
+  ['PATCH metric value', id => metricValue.PATCH(req(`/api/metric-values/v-${id}`, 'PATCH', { value: 1 }), p({ id: `v-${id}` }))],
+  ['DELETE metric value', id => metricValue.DELETE(req(`/api/metric-values/v-${id}`, 'DELETE'), p({ id: `v-${id}` }))],
+]
+const fleetRows = () => [s.m.tables.companies.length, s.m.tables.metrics.length, s.m.tables.metric_values.length]
+const isFleet404 = async (res: Response | undefined) => !!res && res.status === 404 && (await res.clone().json()).error === 'Not found'
+
+describe('a fleet company without fleet', () => {
+  it.each(calls)('%s → 404, nothing changed', async (_, call) => {
+    const before = fleetRows()
+    expect(await isFleet404(await call('fleet'))).toBe(true)
+    expect(fleetRows()).toEqual(before)
+  })
+
+  it.each(calls)('%s → 404 for an admin while gpu_fleet is off', async (_, call) => {
+    s.ctx = ADMIN_FLEET_OFF()
+    s.m.tables.fund_members[0].role = 'admin'
+    expect(await isFleet404(await call('fleet'))).toBe(true)
+  })
+})
+
+describe('the same routes, other callers and companies', () => {
+  it.each(calls.filter(([n]) => n.startsWith('GET')))('%s on a VC company is not refused by the fleet rule', async (_, call) => {
+    expect(await isFleet404(await call('vc'))).toBe(false)
+  })
+
+  it.each(calls.filter(([n]) => n.startsWith('GET')))('%s on the fleet company is served to a fleet reader', async (_, call) => {
+    s.ctx = FLEET_READER()
+    expect(await isFleet404(await call('fleet'))).toBe(false)
+  })
+
+  it('a fleet reader without fleet write is refused the writes', async () => {
+    s.ctx = FLEET_READER()
+    expect(await refuseFleetCompany(s.m.admin, 'u', { companyId: 'fleet' }, 'write')).not.toBeNull()
+    expect(await refuseFleetCompany(s.m.admin, 'u', { metricId: 'm-fleet' }, 'read')).toBeNull()
+  })
+})
+
+describe('refuseFleetCompany / fleetCompanyDenied', () => {
+  it('a VC company costs one read and is never refused; an unknown id is left to the route', async () => {
+    expect(await refuseFleetCompany(s.m.admin, 'u', { companyId: 'vc' }, 'write')).toBeNull()
+    expect(await refuseFleetCompany(s.m.admin, 'u', { metricValueId: 'v-vc' })).toBeNull()
+    expect(await refuseFleetCompany(s.m.admin, 'u', { companyId: 'nope' })).toBeNull()
+    expect(await refuseFleetCompany(s.m.admin, 'u', { metricValueId: 'v-fleet' })).not.toBeNull()
+  })
+
+  it('a non-member of the fleet company’s fund is refused', async () => {
+    s.m.tables.fund_members = []
+    expect((await refuseFleetCompany(s.m.admin, 'u', { companyId: 'fleet' }))?.status).toBe(404)
+  })
+
+  it('the page rule: hidden without fleet read, shown with it, and never for other kinds', () => {
+    expect(fleetCompanyDenied(PORTFOLIO_NO_FLEET(), 'gpu_fleet')).toBe(true)
+    expect(fleetCompanyDenied(ADMIN_FLEET_OFF(), 'gpu_fleet')).toBe(true)
+    expect(fleetCompanyDenied(FLEET_READER(), 'gpu_fleet')).toBe(false)
+    expect(fleetCompanyDenied(PORTFOLIO_NO_FLEET(), 'company')).toBe(false)
+    expect(fleetCompanyDenied(PORTFOLIO_NO_FLEET(), null)).toBe(false)
+  })
+})
+
+describe('service-role paths outside the company routes', () => {
+  it('the agent resolves and suggests the fleet company only to a fleet reader', async () => {
+    const { resolveCompany } = await import('@/lib/agent/portfolio-tools')
+    const denied = PORTFOLIO_NO_FLEET()
+    await expect(resolveCompany(s.m.admin, 'f', 'fleet', denied)).rejects.toThrow(/No company named "fleet" in this fund/)
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet — GPU I', denied)).rejects.toThrow(/^No company named/)
+    // Not even as a "did you mean" suggestion.
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet', denied)).rejects.toThrow('No company named "Fleet" in this fund.')
+    expect((await resolveCompany(s.m.admin, 'f', 'Acme', denied)).id).toBe('vc')
+    expect((await resolveCompany(s.m.admin, 'f', 'Fleet — GPU I', FLEET_READER())).id).toBe('fleet')
+    await expect(resolveCompany(s.m.admin, 'f', 'Fleet', FLEET_READER())).rejects.toThrow(/Did you mean: Fleet — GPU I\?/)
+  })
+
+  it('the shared metric writer (Analyst, metric-values route) refuses a fleet metric without fleet write', async () => {
+    const { writeMetricValue } = await import('@/lib/pending-actions/metric-value')
+    const input = { companyId: 'fleet', metricId: 'm-fleet', period_label: '2026-09', period_year: 2026, period_month: 9, value: 1 }
+    s.ctx = FLEET_READER()
+    await expect(writeMetricValue({ admin: s.m.admin, fundId: 'f', userId: 'u', access: s.ctx }, input)).rejects.toThrow('Metric not found in this fund')
+    expect(s.m.tables.metric_values.find((v: any) => v.id === 'v-fleet').value_number).toBe(25_920)
+    const vc = await writeMetricValue({ admin: s.m.admin, fundId: 'f', userId: 'u', access: s.ctx }, { ...input, companyId: 'vc', metricId: 'm-vc', period_month: 10 })
+    expect(vc.mode).toBe('insert')
+  })
+})
+
+describe('fleet write for the agent’s investment writes and the update pipeline (#91)', () => {
+  const FLEET_WRITER = () => ctx({ grants: { portfolio: 'write', accounting: 'write', fleet: 'write' } })
+
+  it('update, delete and record an investment resolve the fleet company only with fleet write', async () => {
+    const { PORTFOLIO_HANDLERS, executeRecordInvestment } = await import('@/lib/agent/portfolio-tools')
+    const tool = (name: string) => PORTFOLIO_HANDLERS[name] as any
+    const call = { admin: s.m.admin, fundId: 'f', userId: 'u', access: FLEET_READER() }
+    await expect(tool('update_investment')(call, { company: 'fleet', transaction_id: 't-1', notes: 'x' })).rejects.toThrow(/No company named/)
+    await expect(tool('delete_investment')(call, { company: 'fleet', transaction_id: 't-1' })).rejects.toThrow(/No company named/)
+    await expect(executeRecordInvestment(call, { company: 'fleet', transaction_type: 'investment', amount: 1 } as any)).rejects.toThrow(/No company named/)
+    // The same caller still reads it.
+    expect(fleetCompanyDenied(FLEET_READER(), 'gpu_fleet', 'read')).toBe(false)
+    expect(fleetCompanyDenied(FLEET_WRITER(), 'gpu_fleet', 'write')).toBe(false)
+  })
+
+  it('the update pipeline offers the fleet company only to a member with fleet write; outside mail never matches it', async () => {
+    const { companiesForSender } = await import('@/lib/pipeline/processEmail')
+    s.m.tables.companies.forEach((c: any) => { c.status = 'active'; c.aliases = [] })
+    const ids = async (member: { userId: string } | null) => (await companiesForSender(s.m.admin, 'f', member)).map(c => c.id).sort()
+    expect(await ids(null)).toEqual(['vc'])
+    s.ctx = FLEET_READER()
+    expect(await ids({ userId: 'u' })).toEqual(['vc'])
+    s.ctx = FLEET_WRITER()
+    expect(await ids({ userId: 'u' })).toEqual(['fleet', 'vc'])
+  })
+})
+
+describe('saved Analyst threads about the fleet company (#91, Codex on #98)', () => {
+  const conv = (id: string, company_id: string | null) => ({ id, fund_id: 'f', user_id: 'u', company_id, deal_id: null, scope: null, title: id, message_count: 2, messages: [{ role: 'user', content: 'revenue?' }], created_at: '2026-10-01', updated_at: id === 'c-fleet' ? '2026-10-02' : '2026-10-01' })
+  beforeEach(() => { s.m.tables.analyst_conversations = [conv('c-fleet', 'fleet'), conv('c-vc', 'vc'), conv('c-port', null)] })
+
+  it('a revoked fleet grant hides the fleet transcript from the list and 404s it by id; VC threads unchanged', async () => {
+    const { GET: list } = await import('@/app/api/analyst/conversations/route')
+    const { GET: one } = await import('@/app/api/analyst/conversations/[id]/route')
+    const ids = async () => ((await (await list(req('/api/analyst/conversations'))).json()).conversations as any[]).map(c => c.id).sort()
+    const fetch = (id: string) => one(req(`/api/analyst/conversations/${id}`), p({ id }))
+
+    s.ctx = FLEET_READER()
+    expect(await ids()).toEqual(['c-fleet', 'c-port', 'c-vc'])
+    expect((await fetch('c-fleet')).status).toBe(200)
+
+    s.ctx = PORTFOLIO_NO_FLEET() // the grant is revoked
+    expect(await ids()).toEqual(['c-port', 'c-vc'])
+    expect(await isFleet404(await fetch('c-fleet'))).toBe(true)
+    expect((await fetch('c-vc')).status).toBe(200)
+
+    s.ctx = ADMIN_FLEET_OFF() // or gpu_fleet is switched off
+    s.m.tables.fund_members[0].role = 'admin'
+    expect(await ids()).toEqual(['c-port', 'c-vc'])
+    expect(await isFleet404(await fetch('c-fleet'))).toBe(true)
+  })
+})
