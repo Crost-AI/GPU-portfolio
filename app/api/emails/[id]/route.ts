@@ -5,6 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import type { InboundEmail, Metric, MetricValue, ParsingReview, Json } from '@/lib/types/database'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
+import { fleetCompanyDenied } from '@/lib/access/fleet-company'
 
 type MetricValueRow = Pick<
   MetricValue,
@@ -155,9 +156,9 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   if (companyId !== undefined) {
     if (companyId) {
       // Verify the company belongs to the same fund
-      const { data: company } = await admin
+      const { data: company } = await (admin as any)
         .from('companies')
-        .select('id')
+        .select('id, holding_type')
         .eq('id', companyId)
         .eq('fund_id', membership.fund_id)
         .maybeSingle()
@@ -166,6 +167,11 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       const visible = scope ? scope.companyIds : []
       if (!company || (visible !== null && !visible.includes(companyId))) {
         return NextResponse.json({ error: 'Invalid company' }, { status: 400 })
+      }
+      // ── GPU fleet (P3) ── Filing an email under a fleet company makes its next reprocess write that
+      // company's metrics and updates: fleet write (#91).
+      if (!scope || fleetCompanyDenied(scope.access, company.holding_type, 'write')) {
+        return NextResponse.json({ error: 'Filing an email under the GPU fleet company needs write access to GPU fleet.' }, { status: 403 })
       }
     } else {
       // Unmatching an email makes it an admin-triage item; a member would lose it.
