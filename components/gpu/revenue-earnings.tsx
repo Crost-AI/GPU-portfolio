@@ -141,7 +141,6 @@ export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm
   onCancel: () => void
   onConfirm: () => void
 }) {
-  const byId = new Map(rows.map(r => [r.id, r]))
   return (
     <Dialog open={open} onOpenChange={o => { if (!o && !busy) onCancel() }}>
       <DialogContent className="sm:max-w-lg">
@@ -151,22 +150,7 @@ export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm
             These rows replace periods already posted. Posting them reverses each posted entry first, then books the new figures.
           </DialogDescription>
         </DialogHeader>
-        <ul className="space-y-1.5 text-sm" data-region="needs-reversal">
-          {entries.map(e => {
-            const now = byId.get(e.id)
-            const old = byId.get(e.supersedesId)
-            return (
-              <li key={e.id} className="rounded-lg border px-3 py-2" data-reversal={e.supersedesId}>
-                <span className="font-medium">{now?.assetName ?? old?.assetName ?? now?.assetRef ?? 'Server'}</span>{' '}
-                <span className="tabular-nums text-muted-foreground">{now ? `${now.periodStart} to ${now.periodEnd}` : ''}</span>
-                <p className="text-caption text-muted-foreground">
-                  Reverses the entry posted {e.entryDate ? <span className="tabular-nums">{e.entryDate}</span> : '(no entry: a zero-revenue period)'}
-                  {old ? <> for net <span className="tabular-nums">{old.net.toFixed(2)}</span></> : null}
-                </p>
-              </li>
-            )
-          })}
-        </ul>
+        <ReversalList entries={entries} rows={rows} />
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
           <Button type="button" size="sm" onClick={onConfirm} disabled={busy} data-action="confirm-reversal">
@@ -175,5 +159,28 @@ export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The entries a post would reverse. Rendered statically by the tests. */
+export function ReversalList({ entries, rows }: { entries: NeedsReversal[]; rows: EarningView[] }) {
+  const byId = new Map(rows.map(r => [r.id, r]))
+  return (
+    <ul className="space-y-1.5 text-sm" data-region="needs-reversal">
+      {entries.map(e => {
+        const now = byId.get(e.id)
+        const old = byId.get(e.supersedesId)
+        return (
+          <li key={e.id} className="rounded-lg border px-3 py-2" data-reversal={e.supersedesId}>
+            <span className="font-medium">{now?.assetName ?? old?.assetName ?? now?.assetRef ?? 'Server'}</span>{' '}
+            <span className="tabular-nums text-muted-foreground">{now ? `${now.periodStart} to ${now.periodEnd}` : ''}</span>
+            <p className="text-caption text-muted-foreground">
+              Reverses the entry posted {e.entryDate ? <span className="tabular-nums">{e.entryDate}</span> : '(no entry: a zero-revenue period)'}
+              {old ? <> for net <span className="tabular-nums">{old.net.toFixed(2)}</span></> : null}
+            </p>
+          </li>
+        )
+      })}
+    </ul>
   )
 }

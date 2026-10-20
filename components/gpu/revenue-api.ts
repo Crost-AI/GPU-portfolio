@@ -243,6 +243,15 @@ export function manualRowsBody(period: { start: string; end: string }, rows: Ent
   return { ok: true, rows: out }
 }
 
+/** Stage the form's rows: checked here first, so a bad row never leaves the page; then the route. */
+export async function stageRows(f: Fetcher, period: { start: string; end: string }, rows: EntryRow[]):
+  Promise<{ ok: true; data: ImportReply } | { ok: false; errors: string[] }> {
+  const req = manualRowsBody(period, rows)
+  if (!req.ok) return req
+  const r = await importRows(f, req.rows)
+  return r.ok ? r : { ok: false, errors: [r.error] }
+}
+
 // ── Payouts ────────────────────────────────────────────────────────────────────────────────────
 
 export interface PayoutBody { date: string; amount: number; reference?: string; note?: string }

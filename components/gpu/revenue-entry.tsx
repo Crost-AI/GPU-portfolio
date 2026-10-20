@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ErrorAlert, Field } from './fleet-ui'
 import {
-  autoNet, derived, importCsv, importRows, manualRowsBody,
+  autoNet, derived, importCsv, stageRows,
   type EntryRow, type ImportReply,
 } from './revenue-api'
 import type { Fetcher } from './fleet-api'
@@ -137,13 +137,11 @@ export function EntryForm({ fetcher, initialRows, initialPeriod, canWrite, onSta
   const [errors, setErrors] = useState<string[]>([])
   const [result, setResult] = useState<ImportReply | null>(null)
 
-  async function stageRows() {
-    const req = manualRowsBody(period, rows)
-    if (!req.ok) { setErrors(req.errors); return }
+  async function stageTyped() {
     setBusy('rows'); setErrors([]); setResult(null)
-    const r = await importRows(fetcher, req.rows)
+    const r = await stageRows(fetcher, period, rows)
     setBusy(null)
-    if (!r.ok) { setErrors([r.error]); return }
+    if (!r.ok) { setErrors(r.errors); return }
     setResult(r.data)
     setRows(initialRows)
     onStaged()
@@ -164,7 +162,7 @@ export function EntryForm({ fetcher, initialRows, initialPeriod, canWrite, onSta
     <div className="space-y-4">
       <EntryTable period={period} rows={rows} onPeriod={setPeriod} onRow={(i, r) => setRows(rs => rs.map((x, j) => (j === i ? r : x)))} disabled={!canWrite || busy != null} />
       <div className="flex justify-end">
-        <Button size="sm" onClick={stageRows} disabled={!canWrite || busy != null || rows.length === 0}>
+        <Button size="sm" onClick={stageTyped} disabled={!canWrite || busy != null || rows.length === 0}>
           {busy === 'rows' && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}Stage entries
         </Button>
       </div>
