@@ -34,7 +34,7 @@ beforeEach(() => {
     gpu_assets: [], gpu_asset_types: [], gpu_earnings: [], gpu_import_runs: [], gpu_fleet_settings: [],
     companies: [
       { id: 'vc', fund_id: 'f', name: 'Acme', holding_type: 'company', portfolio_group: ['Fund I'] },
-      { id: 'fleet', fund_id: 'f', name: 'Fleet — GPU I', holding_type: 'gpu_fleet', portfolio_group: ['GPU I'] },
+      { id: 'fleet', fund_id: 'f', name: 'Fleet — GPU I', holding_type: 'gpu_fleet', portfolio_group: ['GPU I'], status: 'active' },
     ],
     default_metrics: [
       { id: 'dm-mrr', fund_id: 'f', name: 'MRR', slug: 'mrr', is_active: true, display_order: 0, holding_type: 'company' },

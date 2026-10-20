@@ -52,8 +52,11 @@ export async function ensureGpuTemplates(admin: SupabaseClient, fundId: string):
  */
 export async function ensureFleetCompany(admin: SupabaseClient, fundId: string, vehicleName: string, userId: string): Promise<string> {
   const find = async () => {
+    // Active only: a fleet company retired by a merge (reconcileFleetCompaniesAfterMerge) still names
+    // the surviving vehicle, and must not be the one that keeps publishing.
     const { data, error } = await (admin as any).from('companies').select('id')
-      .eq('fund_id', fundId).eq('holding_type', 'gpu_fleet').contains('portfolio_group', [vehicleName]).order('created_at').limit(1)
+      .eq('fund_id', fundId).eq('holding_type', 'gpu_fleet').eq('status', 'active')
+      .contains('portfolio_group', [vehicleName]).order('created_at').limit(1)
     if (error) throw new Error(`The fleet company could not be read: ${error.message}`)
     return ((data as any[]) ?? [])[0]?.id as string | undefined
   }
@@ -66,4 +69,44 @@ export async function ensureFleetCompany(admin: SupabaseClient, fundId: string, 
   })
   if (!created.ok) throw new Error(`The fleet company could not be created: ${created.error}`)
   return created.company.id as string
+}
+
+/** The vehicle's active fleet company id, or null. Read before a merge rewrites portfolio_group. */
+export async function activeFleetCompanyId(admin: SupabaseClient, fundId: string, vehicleName: string): Promise<string | null> {
+  const { data, error } = await (admin as any).from('companies').select('id')
+    .eq('fund_id', fundId).eq('holding_type', 'gpu_fleet').eq('status', 'active')
+    .contains('portfolio_group', [vehicleName]).order('created_at').limit(1)
+  if (error) throw error
+  return ((data as any[]) ?? [])[0]?.id ?? null
+}
+
+/**
+ * After two GPU SPVs merge, every company that named the source names the target, so both fleet
+ * companies would claim it. Keep the target's own fleet company (`keepId`, read before the merge)
+ * and retire the others: status 'exited', named as merged, so they stop publishing but keep their
+ * history. A source fleet company alone (the target had none) becomes the target's.
+ */
+export async function reconcileFleetCompaniesAfterMerge(
+  admin: SupabaseClient, fundId: string, intoName: string, keepId: string | null,
+): Promise<{ kept: string | null; retired: string[] }> {
+  const { data, error } = await (admin as any).from('companies').select('id, name, created_at')
+    .eq('fund_id', fundId).eq('holding_type', 'gpu_fleet').eq('status', 'active')
+    .contains('portfolio_group', [intoName]).order('created_at')
+  if (error) throw error
+  const rows = (data as any[]) ?? []
+  if (!rows.length) return { kept: null, retired: [] }
+  const kept = keepId && rows.some(r => r.id === keepId) ? keepId : rows[0].id
+  const retired: string[] = []
+  for (const r of rows) {
+    if (r.id === kept) continue
+    const { error: retireError } = await (admin as any).from('companies')
+      .update({ status: 'exited', name: `${r.name} (merged into ${intoName})` }).eq('fund_id', fundId).eq('id', r.id)
+    if (retireError) throw retireError
+    retired.push(r.id)
+  }
+  if (!keepId) {
+    const { error: renameError } = await (admin as any).from('companies').update({ name: fleetCompanyName(intoName) }).eq('fund_id', fundId).eq('id', kept)
+    if (renameError) throw renameError
+  }
+  return { kept, retired }
 }

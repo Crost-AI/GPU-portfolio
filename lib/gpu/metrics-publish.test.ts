@@ -171,3 +171,47 @@ describe('publishFleetKpis with no capacity left', () => {
     expect(valueOf(first.companyId, 'gpu-revenue')).toEqual([expect.objectContaining({ value_number: 0 })])
   })
 })
+
+// Bugbot on #98: merging two GPU SPVs must not leave two fleet companies claiming the survivor.
+describe('fleet companies after a GPU SPV merge', () => {
+  it('keeps the target’s fleet company, retires the source’s (history kept), and publishing uses the kept one', async () => {
+    const { reconcileFleetCompaniesAfterMerge, activeFleetCompanyId } = await import('./fleet-company')
+    m.tables.fund_vehicles.push({ id: 'v-gpu2', fund_id: 'f', name: 'GPU II', kind: 'gpu_spv', aliases: [] })
+    const target = await ensureFleetCompany(m.admin, 'f', 'GPU I', 'u')
+    const source = await ensureFleetCompany(m.admin, 'f', 'GPU II', 'u')
+    const keep = await activeFleetCompanyId(m.admin, 'f', 'GPU I')
+    expect(keep).toBe(target)
+    // The merge retags every company naming GPU II to GPU I.
+    for (const c of m.tables.companies) c.portfolio_group = (c.portfolio_group ?? []).map((g: string) => (g === 'GPU II' ? 'GPU I' : g))
+    expect(await reconcileFleetCompaniesAfterMerge(m.admin, 'f', 'GPU I', keep)).toEqual({ kept: target, retired: [source] })
+    expect(m.tables.companies.find((c: any) => c.id === source)).toMatchObject({ status: 'exited', name: 'Fleet — GPU II (merged into GPU I)' })
+    expect(slugsOf(source).length).toBeGreaterThan(0) // its history is kept
+    expect(await ensureFleetCompany(m.admin, 'f', 'GPU I', 'u')).toBe(target)
+    const r = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in r) throw new Error(r.error)
+    expect(r.companyId).toBe(target)
+  })
+
+  it('a source fleet company alone becomes the target’s, renamed', async () => {
+    const { reconcileFleetCompaniesAfterMerge } = await import('./fleet-company')
+    m.tables.fund_vehicles.push({ id: 'v-gpu2', fund_id: 'f', name: 'GPU II', kind: 'gpu_spv', aliases: [] })
+    const source = await ensureFleetCompany(m.admin, 'f', 'GPU II', 'u')
+    for (const c of m.tables.companies) c.portfolio_group = (c.portfolio_group ?? []).map((g: string) => (g === 'GPU II' ? 'GPU I' : g))
+    expect(await reconcileFleetCompaniesAfterMerge(m.admin, 'f', 'GPU I', null)).toEqual({ kept: source, retired: [] })
+    expect(m.tables.companies.find((c: any) => c.id === source)).toMatchObject({ status: 'active', name: 'Fleet — GPU I' })
+  })
+})
+
+describe('the merge wires the reconciliation', () => {
+  it('reads the target’s fleet company before the retag and reconciles after it, for GPU SPVs only', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync('lib/vehicles-merge.ts', 'utf8')
+    const read = src.indexOf('await activeFleetCompanyId(admin, fundId, intoRow.name)')
+    const retag = src.indexOf('await retagPortfolioGroup(admin, fundId, fromRow.name, intoRow.name)')
+    const reconcile = src.indexOf('await reconcileFleetCompaniesAfterMerge(admin, fundId, intoRow.name, keepFleetCompany)')
+    expect(read).toBeGreaterThan(-1)
+    expect(read).toBeLessThan(retag)
+    expect(reconcile).toBeGreaterThan(retag)
+    expect(src).toMatch(/const gpuMerge = isGpuSpv\(intoRow\.kind\)/)
+  })
+})
