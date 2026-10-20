@@ -16,6 +16,7 @@ import { roundCents } from './ledger'
 import { ACTUAL_BOOK } from './books'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
+import { vehicleKindByName } from './vehicle-domain'
 import { assembleLoadedLedger, fetchAllRows } from './load'
 import { loadCarryTerms } from './carry'
 import { carryOnUnrealizedForYear } from './book-tax'
@@ -165,9 +166,13 @@ export async function loadActualBookYear(
     Array.from(perLpCarry.values()).filter(v => v > 0).reduce((s, v) => s + v, 0),
   )
 
-  const organizationalExpense = total(flat.filter(r => inYear(r) && onCode(r, CODES.organizationalExpense)))
-  const organizationalCostsToDate = total(flat.filter(r => onCode(r, CODES.organizationalExpense)))
-  const syndicationExpense = total(flat.filter(r => inYear(r) && onCode(r, CODES.syndicationExpense)))
+  // ── GPU fleet (P1c) ── On a GPU SPV's chart 5200 and 5250 are insurance and repairs, ordinary
+  // operating costs, so there is no §709 or syndication difference to propose from them.
+  const isGpu = (await vehicleKindByName(admin, fundId, group)) === 'gpu_spv'
+  const onOrgCode = (r: YearPostingRow, code: string) => !isGpu && onCode(r, code)
+  const organizationalExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.organizationalExpense)))
+  const organizationalCostsToDate = total(flat.filter(r => onOrgCode(r, CODES.organizationalExpense)))
+  const syndicationExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.syndicationExpense)))
 
   // "Begins business" drives the §709 clock. Derived from the earliest posted entry unless the
   // caller knows better — a fund's real commencement date is a fact about the fund, and the

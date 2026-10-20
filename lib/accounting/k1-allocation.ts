@@ -99,6 +99,15 @@ export interface FundYearCharacter {
   otherIncome: number
   /** Investment expenses and management fee. Positive reduces income. */
   deductions: number
+  /**
+   * ── GPU fleet (P1c) ── A trade or business (a GPU SPV) only; absent on a fund. Gross business
+   * income (rental revenue), followed by the operating-income bucket.
+   */
+  businessIncome?: number
+  /** The business's deductions, netted into box 1 by the expenses bucket. Positive reduces income. */
+  businessDeductions?: number
+  /** Gain or loss on disposal of equipment (§1231), followed by the realized-gains bucket. */
+  section1231Gain?: number
 }
 
 /**

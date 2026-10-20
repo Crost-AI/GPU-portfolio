@@ -13,6 +13,8 @@ import { loadOwnership } from './load'
 import { accountIdByCode, ensureCapitalAccounts } from './persist'
 import { computeManagementFee } from './fees'
 import { loadPartnerTerms } from './terms'
+import { vehicleKindByName } from './vehicle-domain'
+import { vehicleIdByName } from './vehicle-id'
 import {
   buildManagementFeeEntry,
   buildExpenseEntry,
@@ -61,6 +63,20 @@ export async function buildAllocationEntry(
     const id = codes.get(code)
     if (!id) throw new Error(`The chart is missing account ${code} — add it under the entity's Admin → Chart of accounts.`)
     return id
+  }
+  // ── GPU fleet (P1c) ── A GPU SPV's 4000 is rental revenue and its 5100 datacenter hosting, so its
+  // gain and expense accounts are found by subtype: the disposal gain and partnership expenses.
+  if ((await vehicleKindByName(admin, fundId, group)) === 'gpu_spv') {
+    const vehicleId = await vehicleIdByName(admin, fundId, group)
+    const { data } = await admin.from('chart_of_accounts' as any).select('id, code, subtype')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('subtype', ['disposal_gain', 'partnership_expense'])
+    const rows = ((data as any[]) ?? []).sort((a, b) => String(a.code).localeCompare(String(b.code)))
+    const bySubtype = (subtype: string) => rows.find(r => r.subtype === subtype)?.id as string | undefined
+    for (const [code, subtype] of [[CODE.realizedGains, 'disposal_gain'], [CODE.partnershipExpense, 'partnership_expense']] as const) {
+      const id = bySubtype(subtype)
+      if (id) codes.set(code, id)
+      else codes.delete(code)
+    }
   }
   const base = { fundId, entryDate, memo: body.memo }
 
