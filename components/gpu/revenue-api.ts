@@ -245,12 +245,32 @@ export function manualRowsBody(period: { start: string; end: string }, rows: Ent
 
 /** Stage the form's rows: checked here first, so a bad row never leaves the page; then the route. */
 export async function stageRows(f: Fetcher, period: { start: string; end: string }, rows: EntryRow[]):
-  Promise<{ ok: true; data: ImportReply } | { ok: false; errors: string[] }> {
+  Promise<{ ok: true; data: ImportReply; sent: ManualRowBody[] } | { ok: false; errors: string[] }> {
   const req = manualRowsBody(period, rows)
   if (!req.ok) return req
   const r = await importRows(f, req.rows)
-  return r.ok ? r : { ok: false, errors: [r.error] }
+  return r.ok ? { ...r, sent: req.rows } : { ok: false, errors: [r.error] }
 }
+
+/**
+ * A 200 import can still refuse rows (a server disposed of, more hours than it has, a period being
+ * posted). Its errors read "Row N: …", N the row's place in what was sent: map each back to the
+ * server it names, so the form keeps that row with its reason. Anything else stays general.
+ */
+export function rowErrorsBySent(errors: string[], sent: Pick<ManualRowBody, 'assetId'>[]): { byAsset: Record<string, string[]>; other: string[] } {
+  const byAsset: Record<string, string[]> = {}
+  const other: string[] = []
+  for (const e of errors) {
+    const m = /^Row (\d+):\s*(.*)$/.exec(e)
+    const row = m ? sent[Number(m[1]) - 1] : undefined
+    if (row) (byAsset[row.assetId] ??= []).push(m![2])
+    else other.push(e)
+  }
+  return { byAsset, other }
+}
+
+/** A row emptied of its figures, once staged. */
+export const clearedRow = (r: EntryRow): EntryRow => ({ ...r, rentedHours: '', utilizationPct: '', gross: '', fee: '', net: '', downtimeHours: '', note: '' })
 
 // ── Payouts ────────────────────────────────────────────────────────────────────────────────────
 

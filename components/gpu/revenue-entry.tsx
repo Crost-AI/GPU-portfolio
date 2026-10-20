@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ErrorAlert, Field } from './fleet-ui'
 import {
-  autoNet, derived, importCsv, stageRows,
+  autoNet, clearedRow, derived, importCsv, rowErrorsBySent, stageRows,
   type EntryRow, type ImportReply,
 } from './revenue-api'
 import type { Fetcher } from './fleet-api'
@@ -23,9 +23,11 @@ const cell = 'h-8 text-right tabular-nums'
 const fmt4 = (n: number | null) => (n == null || !Number.isFinite(n) ? '—' : String(Number(n.toFixed(4))))
 
 /** The rows and period as typed, and what to do with them. Rendered statically by the tests. */
-export function EntryTable({ period, rows, onPeriod, onRow, disabled }: {
+export function EntryTable({ period, rows, onPeriod, onRow, disabled, rowErrors = {} }: {
   period: { start: string; end: string }
   rows: EntryRow[]
+  /** The import's refusals, by server: the row stays as typed, with the reason beside it. */
+  rowErrors?: Record<string, string[]>
   onPeriod: (p: { start: string; end: string }) => void
   onRow: (i: number, r: EntryRow) => void
   disabled?: boolean
@@ -59,7 +61,10 @@ export function EntryTable({ period, rows, onPeriod, onRow, disabled }: {
                 const net = autoNet(r)
                 return (
                   <tr key={r.assetId} className="border-t" data-entry={r.assetId}>
-                    <td className="whitespace-nowrap px-2 py-1.5">{r.assetName}<span className="ml-1 text-caption text-muted-foreground">{r.gpuCount} GPUs</span></td>
+                    <td className="px-2 py-1.5">
+                      <span className="whitespace-nowrap">{r.assetName}<span className="ml-1 text-caption text-muted-foreground">{r.gpuCount} GPUs</span></span>
+                      {rowErrors[r.assetId]?.map(e => <p key={e} role="alert" className="max-w-xs text-sm text-destructive" data-row-error={r.assetId}>{e}</p>)}
+                    </td>
                     <td className="px-2 py-1.5">
                       <select aria-label={`${r.assetName}: entered as`} value={r.basis}
                         onChange={e => onRow(i, { ...r, basis: e.target.value as EntryRow['basis'], rentedHours: '', utilizationPct: '' })}
@@ -135,32 +140,39 @@ export function EntryForm({ fetcher, initialRows, initialPeriod, canWrite, onSta
   const [csv, setCsv] = useState('')
   const [busy, setBusy] = useState<'rows' | 'csv' | null>(null)
   const [errors, setErrors] = useState<string[]>([])
+  const [rowErrors, setRowErrors] = useState<Record<string, string[]>>({})
   const [result, setResult] = useState<ImportReply | null>(null)
 
   async function stageTyped() {
-    setBusy('rows'); setErrors([]); setResult(null)
+    setBusy('rows'); setErrors([]); setRowErrors({}); setResult(null)
     const r = await stageRows(fetcher, period, rows)
     setBusy(null)
     if (!r.ok) { setErrors(r.errors); return }
     setResult(r.data)
-    setRows(initialRows)
+    // A 200 can still refuse rows: keep each refused row as typed, with its reason; clear the rest.
+    const refused = rowErrorsBySent(r.data.errors, r.sent)
+    const sent = new Set(r.sent.map(x => x.assetId))
+    setRows(rs => rs.map(x => (refused.byAsset[x.assetId] ? x : sent.has(x.assetId) ? clearedRow(x) : x)))
+    setRowErrors(refused.byAsset)
+    setErrors(refused.other)
     onStaged()
   }
 
   async function stagePaste() {
     if (!csv.trim()) { setErrors(['Paste the rows first.']); return }
-    setBusy('csv'); setErrors([]); setResult(null)
+    setBusy('csv'); setErrors([]); setRowErrors({}); setResult(null)
     const r = await importCsv(fetcher, csv)
     setBusy(null)
     if (!r.ok) { setErrors([r.error]); return }
     setResult(r.data)
-    setCsv('')
+    // Rows the import refused stay in the paste to correct; its summary names them by line.
+    if (r.data.errors.length === 0) setCsv('')
     onStaged()
   }
 
   return (
     <div className="space-y-4">
-      <EntryTable period={period} rows={rows} onPeriod={setPeriod} onRow={(i, r) => setRows(rs => rs.map((x, j) => (j === i ? r : x)))} disabled={!canWrite || busy != null} />
+      <EntryTable period={period} rows={rows} rowErrors={rowErrors} onPeriod={setPeriod} onRow={(i, r) => setRows(rs => rs.map((x, j) => (j === i ? r : x)))} disabled={!canWrite || busy != null} />
       <div className="flex justify-end">
         <Button size="sm" onClick={stageTyped} disabled={!canWrite || busy != null || rows.length === 0}>
           {busy === 'rows' && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}Stage entries

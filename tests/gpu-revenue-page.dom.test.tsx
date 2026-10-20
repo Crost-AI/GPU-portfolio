@@ -27,7 +27,7 @@ const ACCESS: ClientAccess = {
   defaults: {},
 }
 
-const ASSETS = [{ id: 'h1', name: 'H200 #1', gpu_count: 8, status: 'in_service' }]
+const ASSETS = [{ id: 'h1', name: 'H200 #1', gpu_count: 8, status: 'in_service' }, { id: 'h2', name: 'H200 #2', gpu_count: 8, status: 'in_service' }]
 const row = (id: string, over: Record<string, unknown> = {}) => ({
   id, runId: 'r', assetId: 'h1', assetName: 'H200 #1', assetRef: 'H200 #1', periodStart: '2026-09-01', periodEnd: '2026-09-30',
   gpuHoursRented: 4320, utilizationPct: 75, gross: 8640, fee: 864, net: 7776, downtimeHours: 0, note: null, currency: 'USD',
@@ -111,6 +111,40 @@ describe('the Revenue & payouts page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Post selected' }))
     expect(await screen.findByText(message)).toBeTruthy()
     await waitFor(() => expect(payoutReads(sent)).toBe(2))
+  })
+
+  it('a 200 import that refuses a row keeps that row as typed, with its reason; the staged row is cleared', async () => {
+    const reason = '99999 rented GPU-hours is more than H200 #1 can sell in the period (8 GPUs × 720 h = 5760)'
+    const sent = server({ '/api/fleet/ops/import': [{
+      imported: 1, skipped: 0, needsReview: 0, skippedRows: [], errors: [`Row 1: ${reason}`], runId: 'r', staged: [{ id: 'x', status: 'staged' }],
+    }] })
+    mount()
+    const h1 = await screen.findByLabelText('H200 #1: rented GPU-hours')
+    fireEvent.change(h1, { target: { value: '99999' } })
+    fireEvent.change(screen.getByLabelText('H200 #1: gross'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('H200 #2: rented GPU-hours'), { target: { value: '4320' } })
+    fireEvent.change(screen.getByLabelText('H200 #2: gross'), { target: { value: '8640' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stage entries' }))
+    await waitFor(() => expect(posts(sent)).toHaveLength(1))
+    expect(posts(sent)[0].body.rows.map((r: { assetId: string }) => r.assetId)).toEqual(['h1', 'h2'])
+
+    // The refused row keeps its figures and shows why, beside it; the staged one is emptied.
+    expect(await screen.findByText(reason)).toBeTruthy()
+    expect((screen.getByLabelText('H200 #1: rented GPU-hours') as HTMLInputElement).value).toBe('99999')
+    expect((screen.getByLabelText('H200 #1: gross') as HTMLInputElement).value).toBe('100')
+    expect((screen.getByLabelText('H200 #2: rented GPU-hours') as HTMLInputElement).value).toBe('')
+    // The summary still shows, and the entered periods are read again.
+    expect(screen.getByText(/Staged/, { selector: '[data-region="import-summary"] p' })).toBeTruthy()
+  })
+
+  it('a paste the import partly refuses stays in the box to correct', async () => {
+    server({ '/api/fleet/ops/import': [{ imported: 0, skipped: 0, needsReview: 0, skippedRows: [], errors: ['Row 2: bad row'], runId: 'r', staged: [] }] })
+    mount()
+    const box = await screen.findByLabelText('Or paste CSV') as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'H200 #1,2026-09-01,2026-09-30,4320,,8640,0,8640,0,' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stage paste' }))
+    expect(await screen.findByText('Row 2: bad row')).toBeTruthy()
+    expect(box.value).toContain('H200 #1')
   })
 
   it('typing a server’s figures stages them as one ManualRow for the period shown', async () => {
