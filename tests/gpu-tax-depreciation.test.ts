@@ -32,7 +32,7 @@ describe('the fleet tax year', () => {
     t.gpu_assets[0].tax_method = 'book'
     t.journal_entries = t.journal_entries.filter(e => e.source_ref !== `gpu-asset:${B}:purchase`)
     const fleet = await loadFleetTaxYear(memoryAdmin(t).admin as any, 'f', 'v-gpu', 2027)
-    expect(fleet).toEqual({ depreciation: [], disposals: [] })
+    expect(fleet).toEqual({ depreciation: [], disposals: [], unposted: [], laterDisposals: [] })
   })
 
   it('the next year: only the held server, and nothing for the one sold', async () => {
@@ -40,6 +40,16 @@ describe('the fleet tax year', () => {
     // MACRS year 2 is 32,000; the books posted nothing in 2028 in this fixture.
     expect(fleet.depreciation.map(l => [l.assetId, l.book, l.tax])).toEqual([[A, 0, 32_000]])
     expect(fleet.disposals).toEqual([])
+  })
+})
+
+describe('the fleet tax year measures book depreciation by journal date', () => {
+  it('a December charge posted in January counts in January\'s year; the schedule month does not move it', async () => {
+    const admin = memoryAdmin(gpuTaxYear({ catchUpDecember: true, year2028: {} })).admin as any
+    const y2027 = await loadFleetTaxYear(admin, 'f', 'v-gpu', 2027)
+    const y2028 = await loadFleetTaxYear(admin, 'f', 'v-gpu', 2028)
+    expect(y2027.depreciation.find(l => l.assetId === A)).toMatchObject({ book: 16_500, tax: 20_000, difference: 3_500 })
+    expect(y2028.depreciation.find(l => l.assetId === A)).toMatchObject({ book: 19_500, tax: 32_000, difference: 12_500 })
   })
 })
 
@@ -78,6 +88,25 @@ describe('the proposals and their entries', () => {
     expect(e.postings.map(p => [p.accountId, p.amount, p.lpEntityId])).toEqual([
       [acc(B), -13_500, null], ['g-4500', 13_500, null],
       ['cap-a', 8_100, 'lp-a'], ['cap-b', 5_400, 'lp-b'], ['g-3200', -13_500, null],
+    ])
+  })
+
+  it('servers that offset: one proposal of nil carrying both, and an entry of their 1650 lines alone', () => {
+    const offset = [
+      { assetId: A, name: 'H200 #1', accumulatedAccountId: acc(A), book: 18_000, tax: 20_000, difference: 2_000 },
+      { assetId: B, name: 'H200 #2', accumulatedAccountId: acc(B), book: 22_000, tax: 20_000, difference: -2_000 },
+    ]
+    const proposals = proposeFleetAdjustments({ depreciation: offset, disposals: offset })
+    expect(proposals.map(p => [p.kind, p.amount, p.assets?.length])).toEqual([['depreciation', 0, 2], ['disposal_basis', 0, 2]])
+    // No partner weights at all: nothing reaches the P&L, so nothing is refused for want of them.
+    const { entries, skipped } = buildTaxAdjustmentEntries({
+      base: { fundId: 'f', entryDate: '2027-12-31' }, proposals, accounts: {} as any,
+      fleet: { ...accts, weights: {} },
+    })
+    expect(skipped).toEqual([])
+    expect(entries.map(e => [e.sourceType, e.postings.map(p => [p.accountId, p.amount])])).toEqual([
+      ['tax_adj_depreciation', [[acc(A), -2_000], [acc(B), 2_000]]],
+      ['tax_adj_disposal', [[acc(A), 2_000], [acc(B), -2_000]]],
     ])
   })
 

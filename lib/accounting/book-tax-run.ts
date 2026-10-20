@@ -16,13 +16,13 @@ import { roundCents } from './ledger'
 import { ACTUAL_BOOK } from './books'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
-import { vehicleKindByName } from './vehicle-domain'
+import { readVehicleKindByName } from './vehicle-domain'
 import { assembleLoadedLedger, fetchAllRows } from './load'
 import { loadCarryTerms } from './carry'
 import { carryOnUnrealizedForYear } from './book-tax'
 import { proposeAdjustments, proposeFleetAdjustments, type ActualBookYear, type ProposedAdjustment } from './book-tax'
 import { bucketForSourceType } from './capital-account'
-import { loadFleetTaxYear, type FleetTaxYear } from '@/lib/gpu/tax-adjustments'
+import { loadFleetTaxYear, unpostedOverlayError, type FleetTaxYear } from '@/lib/gpu/tax-adjustments'
 import {
   buildTaxAdjustmentEntries,
   type TaxAdjustmentAccounts,
@@ -69,6 +69,11 @@ export async function loadActualBookYear(
 ): Promise<{ year: ActualBookYear; perLpCarry: Map<string, number>; perLpUnrealized: Map<string, number>; perLpFx: Map<string, number>; assetMoves: { unrealized: Map<string, number>; fx: Map<string, number> }; fleet?: FleetYear } | { error: string }> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return { error: `Unknown vehicle "${group}"` }
+  // ── GPU fleet (P1c) ── Fail closed: a kind that could not be read is not a fund, because on a
+  // GPU SPV's chart the fund-chart reading proposes §709 and syndication from insurance and repairs.
+  const kind = await readVehicleKindByName(admin, fundId, group)
+  if (kind.error) return { error: `Could not read the kind of "${group}", so its chart cannot be read for tax. Try again.` }
+  const isGpu = kind.kind === 'gpu_spv'
 
   const yearStart = `${taxYear}-01-01`
   const yearEnd = `${taxYear}-12-31`
@@ -171,15 +176,11 @@ export async function loadActualBookYear(
 
   // ── GPU fleet (P1c) ── On a GPU SPV's chart 5200 and 5250 are insurance and repairs, ordinary
   // operating costs, so there is no §709 or syndication difference to propose from them.
-  const isGpu = (await vehicleKindByName(admin, fundId, group)) === 'gpu_spv'
   const onOrgCode = (r: YearPostingRow, code: string) => !isGpu && onCode(r, code)
   const organizationalExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.organizationalExpense)))
   const organizationalCostsToDate = total(flat.filter(r => onOrgCode(r, CODES.organizationalExpense)))
   const syndicationExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.syndicationExpense)))
 
-  // "Begins business" drives the §709 clock. Derived from the earliest posted entry unless the
-  // caller knows better — a fund's real commencement date is a fact about the fund, and the
-  // ledger's first entry is the best available proxy, not a substitute for being told.
   // ── GPU fleet (P1c) ── The per-server depreciation and disposal-basis differences, and each
   // partner's share of the year's partnership expenses and realized gains to spread them by — the
   // buckets the close allocated depreciation and the disposal gain through.
@@ -198,6 +199,9 @@ export async function loadActualBookYear(
     }
   }
 
+  // "Begins business" drives the §709 clock. Derived from the earliest posted entry unless the
+  // caller knows better — a fund's real commencement date is a fact about the fund, and the
+  // ledger's first entry is the best available proxy, not a substitute for being told.
   const dates = flat.map(r => r.entry_date).filter(Boolean).sort()
   const inception = opts?.inceptionDate ?? dates[0] ?? yearStart
   const org = orgClockFor(inception, taxYear)
@@ -260,6 +264,11 @@ export interface TaxRunResult {
   voided: number
   /** Accounts the vehicle's chart is missing — the run refuses rather than posting a partial set. */
   missingAccounts: string[]
+  /**
+   * ── GPU fleet (P1c) ── Later years to run again: their posted run cleared a server's cumulative
+   * difference on its disposal, and this run changes this year's part of it. Absent when there are none.
+   */
+  rerun?: { taxYear: number; reason: string }[]
 }
 
 /**
@@ -280,6 +289,10 @@ export async function postTaxAdjustments(
   const loaded = await loadActualBookYear(admin, fundId, group, taxYear, opts)
   if ('error' in loaded) return loaded
   const { year, perLpCarry, perLpUnrealized, perLpFx, assetMoves, fleet } = loaded
+  // ── GPU fleet (P1c) ── A disposal clears the server's cumulative difference out of the tax book,
+  // so the earlier years have to have put it there. Refuse, naming the years to run, rather than
+  // leave a balance on a sold server.
+  if (fleet && fleet.year.unposted.length > 0) return { error: unpostedOverlayError(fleet.year.unposted, taxYear) }
 
   const proposals = [...proposeAdjustments(year), ...(fleet ? proposeFleetAdjustments(fleet.year) : [])]
   const codes = await accountIdByCode(admin, fundId, group)
@@ -358,8 +371,16 @@ export async function postTaxAdjustments(
       : undefined,
   })
 
+  const later = fleet?.year.laterDisposals ?? []
+  const rerun = later.length > 0
+    ? { rerun: Array.from(new Set(later.map(l => l.taxYear))).sort().map(y => ({
+        taxYear: y,
+        reason: `The ${y} run cleared ${later.filter(l => l.taxYear === y).map(l => l.name).join(', ')} on disposal using this year's difference as it was; run ${y} again after this.`,
+      })) }
+    : {}
+
   if (opts?.preview) {
-    return { taxYear, proposals, entryIds: [], skipped: built.skipped, voided: 0, missingAccounts: [] }
+    return { taxYear, proposals, entryIds: [], skipped: built.skipped, voided: 0, missingAccounts: [], ...rerun }
   }
 
   const voided = await voidPriorTaxRun(admin, fundId, group, taxYear)
@@ -380,7 +401,7 @@ export async function postTaxAdjustments(
     entryIds.push(result.entryId)
   }
 
-  return { taxYear, proposals, entryIds, skipped: built.skipped, voided, missingAccounts: [] }
+  return { taxYear, proposals, entryIds, skipped: built.skipped, voided, missingAccounts: [], ...rerun }
 }
 
 /** The vehicle's account of one type and subtype, the lowest code when there are several. */

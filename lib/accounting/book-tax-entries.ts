@@ -255,6 +255,9 @@ export function buildFleetDifferenceEntry(
     postings.push({ accountId: s.accumulatedAccountId, amount: roundCents(-a), currency, lpEntityId: null })
     pnl = roundCents(pnl + a)
   }
+  // Servers that offset each other leave nothing on the P&L, and so nothing for partners: the
+  // entry is the 1650 lines alone.
+  if (pnl === 0) return finalize(base, TAX_SOURCE_TYPE[kind], postings)
   postings.push({ accountId: kind === 'depreciation' ? accts.depreciationExpenseId : accts.disposalGainId, amount: pnl, currency, lpEntityId: null })
   const weights = accts.weights[kind]
   const owners = Array.from(weights?.entries() ?? []).map(([lpEntityId, w]) => ({ lpEntityId, commitment: Math.abs(w) }))
@@ -310,7 +313,8 @@ export function buildTaxAdjustmentEntries(input: BuildTaxEntriesInput): {
   const skipped: UnbuildableAdjustment[] = []
 
   for (const p of proposals) {
-    if (p.amount === 0) continue
+    // A fleet difference can net to nil across servers and still move each one's 1650 account.
+    if (p.amount === 0 && !p.assets?.length) continue
     switch (p.kind) {
       case 'unrealized':
         entries.push(buildUnrealizedReversalEntry({ ...base, memo: p.label }, p.amount, accounts, currency, input.unrealized))
@@ -349,7 +353,7 @@ export function buildTaxAdjustmentEntries(input: BuildTaxEntriesInput): {
           skipped.push({ kind: p.kind, reason: 'A fleet difference needs its servers and the GPU chart accounts (5300, 4500, 3200).' })
           break
         }
-        if (!Array.from(input.fleet.weights[p.kind]?.values() ?? []).some(w => w !== 0)) {
+        if (p.amount !== 0 && !Array.from(input.fleet.weights[p.kind]?.values() ?? []).some(w => w !== 0)) {
           skipped.push({
             kind: p.kind,
             reason:

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
-import { A, B, GROUP, gpuTaxYear } from '@/tests/helpers/gpu-tax-year'
+import { A, B, GROUP, gpuTaxYear, ledgerWriter } from '@/tests/helpers/gpu-tax-year'
 import type { JournalEntry } from '@/lib/accounting/types'
 
 /**
@@ -30,8 +30,10 @@ import { allocateK1, capitalAccountFoots } from '@/lib/accounting/k1-allocation'
 
 beforeEach(() => { s.m = memoryAdmin(gpuTaxYear()) })
 
-const balanceIn = (book: string, account: string) =>
-  s.m.tables.journal_postings.filter((p: any) => p.book === book && p.account_id === account).reduce((t: number, p: any) => t + Number(p.amount), 0)
+const balanceIn = (book: string, account: string) => {
+  const voided = new Set(s.m.tables.journal_entries.filter((e: any) => e.status === 'void').map((e: any) => e.id))
+  return s.m.tables.journal_postings.filter((p: any) => p.book === book && p.account_id === account && !voided.has(p.journal_entry_id)).reduce((t: number, p: any) => t + Number(p.amount), 0)
+}
 
 describe('a GPU SPV tax year, end to end', () => {
   it('posts the tax book and issues K-1s that tie to tax capital with zero variance', async () => {
@@ -81,5 +83,130 @@ describe('a GPU SPV tax year, end to end', () => {
     if ('error' in inputs) throw new Error(inputs.error)
     expect(inputs.fund).toMatchObject({ businessDeductions: 27_500, section1231Gain: -10_000 })
     for (const p of allocateK1(inputs).partners) expect(p.tieOut.variance).toBe(0)
+  })
+})
+
+const run = async (taxYear: number, opts?: { preview?: boolean }) => {
+  const r = await postTaxAdjustments(s.m.admin, 'f', GROUP, 'u', taxYear, opts)
+  if ('error' in r) throw new Error(r.error)
+  return r
+}
+/** The year's K-1 character, after asserting every partner ties to tax capital and Item L foots. */
+const k1Tied = async (taxYear: number) => {
+  const inputs = await loadK1Year(s.m.admin, 'f', GROUP, taxYear)
+  if ('error' in inputs) throw new Error(inputs.error)
+  const { partners, unallocated } = allocateK1(inputs)
+  expect(unallocated).toEqual({})
+  for (const p of partners) {
+    expect(p.tieOut.variance).toBe(0)
+    expect(capitalAccountFoots(p).variance).toBe(0)
+  }
+  return inputs.fund
+}
+const both = (account: string) => balanceIn('actual', account) + balanceIn('tax', account)
+const accA = `1650-${A.slice(0, 8)}`
+const accB = `1650-${B.slice(0, 8)}`
+
+describe('book depreciation is the year\'s P&L, by journal date (cross-year)', () => {
+  it('a December charge the close caught up in January is next year\'s book expense, and is deducted once', async () => {
+    s.m = memoryAdmin(gpuTaxYear({ catchUpDecember: true, year2028: {} }))
+    await run(2027)
+    // 2027 carries eleven months of A (16,500) and nine of B: the return still deducts MACRS, 20,000.
+    expect(await k1Tied(2027)).toMatchObject({ businessDeductions: 7_500 + 20_000 })
+    await run(2028)
+    // 2028's P&L carries thirteen months of A (19,500). MACRS year 2 is 32,000 — not 33,500.
+    expect(await k1Tied(2028)).toMatchObject({ businessDeductions: 32_000 })
+    expect(both(accA)).toBe(-(20_000 + 32_000))
+  })
+
+  it('a 2027 charge reversed in 2028 is 2027 expense and a 2028 credit, and the return still deducts MACRS each year', async () => {
+    s.m = memoryAdmin(gpuTaxYear({ year2028: {} }))
+    const t = s.m.tables
+    const nov = t.journal_entries.find((e: any) => e.source_ref === `gpu-dep:${A}:2027-11`)
+    const { je, allocate } = ledgerWriter(t)
+    je('reversal', '2028-01-10', `reversal:${nov.id}`, [['g-5300', -1_500], [accA, 1_500]])
+    allocate('partnership_expense', '2028-01-10', -1_500)
+    await run(2027)
+    expect(await k1Tied(2027)).toMatchObject({ businessDeductions: 7_500 + 20_000 })
+    await run(2028)
+    // 2028's P&L: twelve months (18,000) less the reversal (1,500); the difference makes it 32,000.
+    expect(await k1Tied(2028)).toMatchObject({ businessDeductions: 32_000 })
+    expect(both(accA)).toBe(-(20_000 + 32_000))
+  })
+})
+
+describe('a disposal clears only a difference the earlier years put in the tax book', () => {
+  // A: 18,000 book / 20,000 tax in 2027; sold 30 September 2028 after 13,500 book / 16,000 tax.
+  beforeEach(() => { s.m = memoryAdmin(gpuTaxYear({ year2028: { sellA: true } })) })
+
+  it('refuses the disposal year when the year before was never run, naming the year to run', async () => {
+    for (const opts of [undefined, { preview: true }]) {
+      const r = await postTaxAdjustments(s.m.admin, 'f', GROUP, 'u', 2028, opts)
+      expect(r).toEqual({ error: expect.stringContaining('H200 #1 2027: difference 2,000.00, tax book holds 0.00') })
+      expect((r as { error: string }).error).toMatch(/Run the book-to-tax adjustments for 2027 first, in order, then rerun 2028\./)
+    }
+    expect(s.m.tables.journal_entries.filter((e: any) => e.book === 'tax')).toEqual([])
+  })
+
+  it('with 2027 run first, the sold server\'s 1650 ends at nil and the K-1 carries the gain at tax basis', async () => {
+    await run(2027)
+    await run(2028)
+    expect(both(accA)).toBe(0)
+    // Tax basis 100,000 less 36,000 is 64,000; sold for 70,000: a 6,000 gain (1,500 on the books).
+    expect(await k1Tied(2028)).toMatchObject({ businessDeductions: 16_000, section1231Gain: 6_000 })
+  })
+
+  it('a prior-year rerun after the disposal run that changes nothing leaves the disposal run standing', async () => {
+    await run(2027)
+    await run(2028)
+    const again = await run(2027)
+    expect(again.rerun).toBeUndefined()
+    expect(both(accA)).toBe(0)
+    expect((await run(2028)).voided).toBe(2)
+    expect(both(accA)).toBe(0)
+  })
+
+  it('a prior year that changed after the disposal run: the disposal year refuses until it is rerun, which names the disposal year to rerun', async () => {
+    await run(2027)
+    await run(2028)
+    // The preparer corrects A to 40% bonus: 2027 is now 52,000 of tax depreciation, not 20,000.
+    Object.assign(s.m.tables.gpu_assets.find((a: any) => a.id === A), { tax_method: 'bonus', tax_bonus_pct: 0.4 })
+    const stale = await postTaxAdjustments(s.m.admin, 'f', GROUP, 'u', 2028)
+    expect(stale).toEqual({ error: expect.stringContaining('H200 #1 2027: difference 34,000.00, tax book holds 2,000.00') })
+
+    const rerun2027 = await run(2027)
+    expect(rerun2027.rerun).toEqual([{ taxYear: 2028, reason: expect.stringContaining('H200 #1') }])
+    expect(both(accA)).not.toBe(0)
+    await run(2028)
+    expect(both(accA)).toBe(0)
+    await k1Tied(2027)
+    await k1Tied(2028)
+  })
+})
+
+describe('servers whose differences offset still each get theirs (fleet total nil)', () => {
+  it('+2,000 on one server and −2,000 on another post to each 1650, with nothing on the P&L or capital', async () => {
+    const t = gpuTaxYear()
+    const drop = (ref: string) => {
+      const ids = new Set(t.journal_entries.filter(e => e.source_ref === ref).map(e => e.id))
+      t.journal_entries = t.journal_entries.filter(e => !ids.has(e.id))
+      t.journal_postings = t.journal_postings.filter(p => !ids.has(p.journal_entry_id))
+    }
+    // B is held all year, and its books carry 22,000 (an extra 4,000 in December) against MACRS 20,000.
+    for (const ref of [`gpu-asset:${B}:disposal`, 'allocation:realized_gain:2027-12-31', 'allocation:partnership_expense:2027-12-31']) drop(ref)
+    Object.assign(t.gpu_assets.find(a => a.id === B)!, { status: 'in_service', disposed_on: null })
+    const { je, allocate } = ledgerWriter(t as any)
+    for (const m of [10, 11, 12]) je('depreciation', new Date(Date.UTC(2027, m, 0)).toISOString().slice(0, 10), `gpu-dep:${B}:2027-${m}`, [['g-5300', 1_500], [accB, -1_500]])
+    je('depreciation', '2027-12-31', `gpu-dep:${B}:2027-12:2`, [['g-5300', 4_000], [accB, -4_000]])
+    allocate('partnership_expense', '2027-12-31', 18_000 + 22_000 + 7_500)
+    s.m = memoryAdmin(t)
+
+    const r = await run(2027)
+    expect(r.proposals.map(p => [p.kind, p.amount, p.assets?.map(a => a.difference)])).toEqual([['depreciation', 0, [2_000, -2_000]]])
+    expect([r.entryIds.length, r.skipped]).toEqual([1, []])
+    const posted = s.m.tables.journal_postings.filter((p: any) => p.book === 'tax').map((p: any) => [p.account_id, p.amount])
+    expect(posted).toEqual([[accA, -2_000], [accB, 2_000]])
+    expect([both(accA), both(accB)]).toEqual([-20_000, -20_000])
+    expect(await k1Tied(2027)).toMatchObject({ businessDeductions: 7_500 + 40_000 })
   })
 })

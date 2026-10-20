@@ -279,11 +279,13 @@ export function proposeAdjustments(year: ActualBookYear): ProposedAdjustment[] {
  * for the disposal basis, each carrying its servers. `amount` is book income over tax income, as
  * everywhere here: tax depreciating more than book is positive; a tax gain above the book gain negative.
  */
-export function proposeFleetAdjustments(fleet: FleetTaxYear): ProposedAdjustment[] {
+export function proposeFleetAdjustments(fleet: Pick<FleetTaxYear, 'depreciation' | 'disposals'>): ProposedAdjustment[] {
   const out: ProposedAdjustment[] = []
   const sum = (ls: FleetDepreciationDifference[]) => roundCents(ls.reduce((s, l) => s + l.difference, 0))
+  // On the servers, not their total: +100 on one and −100 on another nets to nothing on the P&L
+  // but still moves each 1650 account, and a later disposal clears exactly what is there.
   const depreciation = sum(fleet.depreciation)
-  if (depreciation !== 0) {
+  if (fleet.depreciation.length > 0) {
     out.push({
       kind: 'depreciation',
       amount: depreciation,
@@ -297,7 +299,7 @@ export function proposeFleetAdjustments(fleet: FleetTaxYear): ProposedAdjustment
     })
   }
   const disposal = sum(fleet.disposals)
-  if (disposal !== 0) {
+  if (fleet.disposals.length > 0) {
     out.push({
       kind: 'disposal_basis',
       amount: roundCents(-disposal),
