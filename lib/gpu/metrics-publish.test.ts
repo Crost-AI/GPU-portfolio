@@ -152,3 +152,22 @@ describe('publishFleetKpis removes computed values the month no longer has', () 
     expect(valueOf(first.companyId, 'gpu-utilization--b200')).toEqual([expect.objectContaining({ value_number: 75 })])
   })
 })
+
+// Bugbot on #98: the ratio KPIs (utilization, uptime) when no capacity is left.
+describe('publishFleetKpis with no capacity left', () => {
+  it('republishing after every server left the fleet removes the computed utilization and uptime, fleet-wide and per type', async () => {
+    const first = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in first) throw new Error(first.error)
+    expect(first.written).toMatchObject({ 'gpu-utilization': 75, 'gpu-uptime': 100, 'gpu-utilization--h200': 75 })
+    // Every server disposed of before the month (and its revenue reversed): no capacity at all.
+    for (const a of m.tables.gpu_assets) a.disposed_on = '2026-08-01'
+    for (const e of m.tables.gpu_earnings) Object.assign(e, { gpu_hours_rented: 0, gross: 0, marketplace_fee: 0, net: 0 })
+    const again = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in again) throw new Error(again.error)
+    expect(again.removed).toEqual(expect.arrayContaining(['gpu-utilization', 'gpu-uptime', 'gpu-realized-rate', 'gpu-utilization--h200', 'gpu-realized-rate--h200']))
+    for (const slug of ['gpu-utilization', 'gpu-uptime', 'gpu-realized-rate', 'gpu-utilization--h200']) expect(valueOf(first.companyId, slug), slug).toEqual([])
+    // Additive figures overwrite to zero rather than disappear.
+    expect(valueOf(first.companyId, 'gpu-count')).toEqual([expect.objectContaining({ value_number: 0 })])
+    expect(valueOf(first.companyId, 'gpu-revenue')).toEqual([expect.objectContaining({ value_number: 0 })])
+  })
+})
