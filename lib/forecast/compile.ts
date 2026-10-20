@@ -12,7 +12,7 @@
 import type { Account, Posting } from '@/lib/accounting/types'
 import { NORMAL_SIDE } from '@/lib/accounting/types'
 import { roundCents } from '@/lib/accounting/ledger'
-import { MANCO_KIND } from '@/lib/vehicle-kinds'
+import { isGpuSpv, MANCO_KIND } from '@/lib/vehicle-kinds'
 import { addMonths, lastDay, parseMonth, type MonthKey } from './months'
 
 export type CashTiming =
@@ -127,7 +127,8 @@ export interface CounterAccounts {
 /**
  * The balance-sheet accounts a vehicle's forecast settles through, found by subtype. A fund's
  * only 'receivable' is 1300 Due from LPs, which is capital, not revenue — so receivables are
- * taken only from a management company's chart; anything else falls back to same-month cash.
+ * taken only from a management company's chart, and a GPU SPV's marketplace receivable (1150);
+ * anything else falls back to same-month cash.
  */
 export function counterAccountsFor(kind: string, accounts: Account[]): CounterAccounts | null {
   const bySubtype = (...subtypes: string[]) => {
@@ -147,7 +148,8 @@ export function counterAccountsFor(kind: string, accounts: Account[]): CounterAc
     // A fund's only prepaid account is 1500 Prepaid management fees, which is exactly what a fee
     // billed in advance creates; a manco's is its general 1300 Prepaid expenses.
     prepaid: bySubtype('prepaid', 'prepaid_management_fee'),
-    receivable: kind === MANCO_KIND ? bySubtype('receivable') : undefined,
+    // A GPU SPV's revenue is billed through the marketplace: 1150, received the month after.
+    receivable: kind === MANCO_KIND ? bySubtype('receivable') : isGpuSpv(kind) ? bySubtype('marketplace_receivable') : undefined,
     deferred: bySubtype('deferred_revenue'),
   }
 }

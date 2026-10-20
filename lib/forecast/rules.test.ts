@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { aggregateFlow, monthRange, periods } from './months'
-import { evaluateRule, RuleError, validateRule, type HistoryContext } from './rules'
+import { evaluateRule, FLEET_FLOWS, LINKED_METHODS, RuleError, validateRule, type HistoryContext } from './rules'
 
 const NO_HISTORY: HistoryContext = { actuals: new Map(), closedFrom: null, closedThrough: null, cutoff: null }
 const YEAR = monthRange('2026-01', '2026-12')
@@ -95,6 +95,16 @@ describe('validation', () => {
     expect(() => validateRule('recurring', { amount: 1, everyMonths: 0, anchor: '2026-01' })).toThrow(/everyMonths/)
     expect(() => validateRule('fixed', { amount: 'x' })).toThrow(/amount/)
     expect(() => validateRule('run_rate', { window: 4 })).toThrow(/window/)
+  })
+})
+
+describe('linked_fleet', () => {
+  it('takes one of the fleet flows and nothing else, and is supplied by the service', () => {
+    for (const flow of FLEET_FLOWS) expect(validateRule('linked_fleet', { flow, extra: 1 })).toEqual({ method: 'linked_fleet', params: { flow } })
+    expect(() => validateRule('linked_fleet', { flow: 'carry' })).toThrow(/flow must be one of/)
+    expect(() => validateRule('linked_fleet', {})).toThrow(RuleError)
+    expect(LINKED_METHODS).toContain('linked_fleet')
+    expect(run('linked_fleet', { flow: 'revenue' }).warnings).toEqual(['linked_fleet has no linked source loaded'])
   })
 })
 
