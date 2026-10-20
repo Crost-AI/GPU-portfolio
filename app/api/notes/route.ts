@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeNotesQuery } from '@/lib/notes/entity'
+import { hiddenFleetCompanyIds } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -70,8 +71,13 @@ export async function GET(req: NextRequest) {
     nameMap[m.user_id] = m.display_name
   }
 
+  // ── GPU fleet (P3) ── notes about a fleet company the caller may not read are left out (#91).
+  const fleetHidden = await hiddenFleetCompanyIds(admin, membership.fund_id, user.id,
+    (notes ?? []).map((r: any) => r.company_id).filter(Boolean) as string[])
+  const visibleNotes = fleetHidden.size ? (notes ?? []).filter((r: any) => !r.company_id || !fleetHidden.has(r.company_id)) : notes
+
   // Batch-load company names
-  const companyIds = Array.from(new Set((notes ?? []).map(n => n.company_id).filter(Boolean))) as string[]
+  const companyIds = Array.from(new Set((visibleNotes ?? []).map(n => n.company_id).filter(Boolean))) as string[]
   const companyNameMap: Record<string, string> = {}
   if (companyIds.length > 0) {
     const { data: companies } = await admin
@@ -86,7 +92,7 @@ export async function GET(req: NextRequest) {
   // Look up user emails
   const result = []
   const emailCache: Record<string, string> = {}
-  for (const note of notes ?? []) {
+  for (const note of visibleNotes ?? []) {
     if (!emailCache[note.user_id]) {
       const { data: { user: noteUser } } = await admin.auth.admin.getUserById(note.user_id)
       emailCache[note.user_id] = noteUser?.email ?? 'Unknown'

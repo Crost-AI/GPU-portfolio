@@ -69,3 +69,32 @@ export async function hiddenFleetCompanyIds(
   const access = await loadAccessContext(admin, fundId, userId, member.role)
   return fleetCompanyDenied(access, FLEET_HOLDING_TYPE, need) ? new Set(fleet) : new Set()
 }
+
+/**
+ * A reader's visible company set without the fleet companies this caller may not read: what the
+ * entity-scoped fund-wide readers (company-updates search, notes, interactions, the agent's
+ * get_updates) pass on instead of their bare scope. `visible` null = every company in the fund;
+ * when the fund has a hidden fleet company that becomes the explicit list of every other company.
+ * A fund without a fleet company costs one read and returns `visible` unchanged.
+ */
+export async function withoutHiddenFleet(
+  admin: SupabaseClient, fundId: string, access: AccessContext | null | undefined, visible: string[] | null,
+): Promise<string[] | null> {
+  const { data: fleetRows, error } = await (admin as any).from('companies').select('id')
+    .eq('fund_id', fundId).eq('holding_type', FLEET_HOLDING_TYPE)
+  if (error) throw error
+  const fleet = ((fleetRows as any[]) ?? []).map(r => r.id as string)
+  if (!fleet.length || (access && !fleetCompanyDenied(access, FLEET_HOLDING_TYPE, 'read'))) return visible
+  const hidden = new Set(fleet)
+  if (visible !== null) return visible.filter(id => !hidden.has(id))
+  const all: string[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error: pageError } = await (admin as any).from('companies').select('id')
+      .eq('fund_id', fundId).order('id').range(from, from + 999)
+    if (pageError) throw pageError
+    const rows = (data as any[]) ?? []
+    for (const r of rows) if (!hidden.has(r.id)) all.push(r.id)
+    if (rows.length < 1000) break
+  }
+  return all
+}

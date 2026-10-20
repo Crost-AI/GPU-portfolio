@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ChatMessage } from '@/lib/ai/types'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
+import { hiddenFleetCompanyIds, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
@@ -91,10 +92,13 @@ export async function listConversations(
   if (error) throw new Error(error.message)
   const rows = (data ?? []) as ConversationRow[]
   const hasMore = rows.length > options.limit
-  const page = rows.slice(0, options.limit)
+  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out (#91).
+  const fetched = rows.slice(0, options.limit)
+  const hidden = await hiddenFleetCompanyIds(admin, principal.fundId, principal.userId, fetched.map(r => r.company_id).filter((v): v is string => !!v))
+  const page = hidden.size ? fetched.filter(r => !r.company_id || !hidden.has(r.company_id)) : fetched
   return {
     conversations: page.map(compact),
-    nextCursor: hasMore && page.length ? encodeCursor(page[page.length - 1]) : null,
+    nextCursor: hasMore && fetched.length ? encodeCursor(fetched[fetched.length - 1]) : null,
   }
 }
 
@@ -113,6 +117,8 @@ export async function getConversation(
   if (error) throw new Error(error.message)
   if (!data) return null
   const row = data as ConversationRow
+  // ── GPU fleet (P3) ── not found once the caller cannot read the fleet company it is about (#91).
+  if (row.company_id && await refuseFleetCompany(admin, principal.userId, { companyId: row.company_id }, 'read')) return null
   return {
     ...compact(row),
     summary: row.summary ?? null,

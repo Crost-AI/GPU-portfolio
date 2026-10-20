@@ -97,10 +97,33 @@ describe('per-row fleet gates outside the company routes', () => {
     ['app/api/analyst/conversations/route.ts', 'GET', /hiddenFleetCompanyIds\(/],
     ['app/api/analyst/conversations/route.ts', 'POST', /fleetCompanyDenied\(scope\.access, companyCheck\.holding_type\)/],
     ['app/api/analyst/conversations/[id]/route.ts', 'GET', /refuseFleetCompany\(admin, user\.id, \{ companyId \}, 'read'\)/],
+    // Claude review on #98, B2 and S1.
+    ['app/api/company-updates/search/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
+    ['app/api/company-updates/[id]/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
+    ['app/api/company-updates/[id]/artifacts/[artifactId]/route.ts', 'GET', /withoutHiddenFleet\(admin, fund\.fundId, scope\.access, scope\.companyIds\)/],
+    ['app/api/notes/route.ts', 'GET', /hiddenFleetCompanyIds\(admin, membership\.fund_id, user\.id/],
+    ['app/api/interactions/route.ts', 'GET', /hiddenFleetCompanyIds\(admin, membership\.fund_id, user\.id/],
+    ['app/api/emails/[id]/route.ts', 'PATCH', /fleetCompanyDenied\(scope\.access, company\.holding_type, 'write'\)/],
   ]
   it.each(GATED)('%s %s applies the fleet gate', (file, method, gate) => {
     const h = handlers(readFileSync(path.join(process.cwd(), file), 'utf8')).find(x => x.method === method)
     expect(h, `${file} has no ${method}`).toBeDefined()
     expect(h!.body).toMatch(gate)
+  })
+})
+
+describe('per-row fleet gates in the agent and the v1 API', () => {
+  const src = (f: string) => readFileSync(path.join(process.cwd(), f), 'utf8')
+  it('get_updates hands getUpdates a visible set without the hidden fleet companies', () => {
+    const tools = src('lib/agent/portfolio-tools.ts')
+    const body = tools.slice(tools.indexOf('get_updates: async'), tools.indexOf('list_vehicles: async'))
+    expect(body).toMatch(/visibleCompanyIds: await withoutHiddenFleet\(admin, fundId, access as AccessContext, await visibleCompanyIds\(admin, access\)\)/)
+  })
+  it('the v1 API lists and fetches conversations through the fleet gate', () => {
+    const v1 = src('lib/api-v1/conversations.ts')
+    const list = v1.slice(v1.indexOf('export async function listConversations'), v1.indexOf('export async function getConversation'))
+    const get = v1.slice(v1.indexOf('export async function getConversation'), v1.indexOf('export async function deleteConversation'))
+    expect(list).toMatch(/hiddenFleetCompanyIds\(admin, principal\.fundId, principal\.userId/)
+    expect(get).toMatch(/refuseFleetCompany\(admin, principal\.userId, \{ companyId: row\.company_id \}, 'read'\)/)
   })
 })

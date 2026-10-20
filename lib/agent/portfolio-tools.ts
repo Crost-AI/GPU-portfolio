@@ -15,7 +15,7 @@ import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-
 import { getUpdates } from '@/lib/company-updates/analyst'
 import type { AccessContext } from '@/lib/access/effective'
 import { entityScopeFor, type EntityScope } from '@/lib/access/entity-scope'
-import { fleetCompanyDenied } from '@/lib/access/fleet-company'
+import { fleetCompanyDenied, withoutHiddenFleet } from '@/lib/access/fleet-company'
 import { filterByCompany, groupWriteDenial, scopeCompanyRows, scopeGroups, scopeTransactions, visibleCompanyIds } from '@/lib/access/scope'
 import { validateConversionLink } from '@/lib/accounting/conversion-link'
 import { ensureVehiclesByName } from '@/lib/accounting/vehicle-id'
@@ -111,7 +111,11 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
   // same resolver as every other portfolio tool so a name never silently picks the wrong company.
   get_updates: async ({ admin, fundId, access }: AgentToolContext, input: any) =>
     getUpdates(
-      { admin: admin as any, fundId, resolveCompanyId: async ref => (await resolveCompany(admin, fundId, ref, access)).id, visibleCompanyIds: await visibleCompanyIds(admin, access) },
+      {
+        admin: admin as any, fundId, resolveCompanyId: async ref => (await resolveCompany(admin, fundId, ref, access)).id,
+        // ── GPU fleet (P3) ── list, search, by-id and artifacts all filter on this set (#91).
+        visibleCompanyIds: await withoutHiddenFleet(admin, fundId, access as AccessContext, await visibleCompanyIds(admin, access)),
+      },
       input ?? {},
     ),
 

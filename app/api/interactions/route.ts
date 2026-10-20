@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { dbError } from '@/lib/api-error'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { filterByCompany } from '@/lib/access/scope'
+import { hiddenFleetCompanyIds } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -47,8 +48,13 @@ export async function GET(req: NextRequest) {
     return dbError(error, 'interactions')
   }
 
+  // ── GPU fleet (P3) ── interactions about a fleet company the caller may not read are left out (#91).
+  const fleetHidden = await hiddenFleetCompanyIds(admin, membership.fund_id, user.id,
+    (interactions ?? []).map((r: any) => r.company_id).filter(Boolean) as string[])
+  const visibleInteractions = fleetHidden.size ? (interactions ?? []).filter((r: any) => !r.company_id || !fleetHidden.has(r.company_id)) : interactions
+
   // Batch-load company names
-  const companyIds = Array.from(new Set((interactions ?? []).map(i => (i as any).company_id).filter(Boolean))) as string[]
+  const companyIds = Array.from(new Set((visibleInteractions ?? []).map(i => (i as any).company_id).filter(Boolean))) as string[]
   const companyNameMap: Record<string, string> = {}
   if (companyIds.length > 0) {
     const { data: companies } = await admin
@@ -60,7 +66,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const result = (interactions ?? []).map((i: any) => ({
+  const result = (visibleInteractions ?? []).map((i: any) => ({
     ...i,
     company_name: i.company_id ? companyNameMap[i.company_id] ?? null : null,
   }))
