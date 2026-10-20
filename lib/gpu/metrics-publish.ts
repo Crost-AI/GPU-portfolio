@@ -26,8 +26,13 @@ const VALUE_OF: Record<string, (k: Kpi) => number | null> = {
 export interface PublishResult {
   companyId: string
   month: string
-  /** slug → value written. A KPI with no value (no capacity, nothing rented) is not written. */
+  /** slug → value written. */
   written: Record<string, number>
+  /**
+   * Slugs whose earlier computed value for the month was removed: the KPI has no value now (no
+   * capacity, nothing rented), or its server type is gone. A manually entered value is never touched.
+   */
+  removed: string[]
 }
 
 /**
@@ -35,7 +40,8 @@ export interface PublishResult {
  * books hold). Creates the fleet company and any missing metric (including a per-type variant the
  * first time a server type appears), then select-then-update-or-insert each value: the period's
  * unique index uses coalesce, so `onConflict` cannot target it (lib/pending-actions/metric-value.ts).
- * Re-publishing a month overwrites it.
+ * Re-publishing a month overwrites it, and removes a computed value the month no longer has (a rate
+ * after a correction to zero hours, a server type with no servers left) — manual values stay.
  */
 export async function publishFleetKpis(
   admin: SupabaseClient, fundId: string, group: string, month: string, userId: string,
@@ -87,8 +93,26 @@ export async function publishFleetKpis(
   const monthNo = Number(month.slice(5, 7))
   const period = { period_label: month, period_year: year, period_quarter: Math.ceil(monthNo / 3), period_month: monthNo }
   const written: Record<string, number> = {}
+  const removed: string[] = []
+  /** Delete this month's COMPUTED value of a metric (never a manually entered one). */
+  const clearComputed = async (slug: string, metricId: string) => {
+    const { data, error } = await (admin as any).from('metric_values').delete()
+      .eq('fund_id', fundId).eq('metric_id', metricId).eq('period_year', year).eq('period_quarter', period.period_quarter)
+      .eq('period_month', monthNo).eq('is_manually_entered', false).select('id')
+    if (error) throw error
+    if (((data as any[]) ?? []).length) removed.push(slug)
+  }
+  const wantedSlugs = new Set(wanted.map(w => w.def.slug))
+  for (const [slug, metricId] of idOf) {
+    // A per-type metric whose type has no servers this month.
+    if (!wantedSlugs.has(slug) && PER_TYPE_SLUGS.some(base => slug.startsWith(`${base}--`))) await clearComputed(slug, metricId)
+  }
   for (const w of wanted) {
-    if (w.value == null) continue
+    if (w.value == null) {
+      const metricId = idOf.get(w.def.slug)
+      if (metricId) await clearComputed(w.def.slug, metricId)
+      continue
+    }
     const metricId = idOf.get(w.def.slug)
     if (!metricId) throw new Error(`Metric ${w.def.slug} could not be created`)
     const { data: found, error: findError } = await (admin as any).from('metric_values').select('id')
@@ -102,5 +126,5 @@ export async function publishFleetKpis(
     if (error) throw error
     written[w.def.slug] = w.value
   }
-  return { companyId, month, written }
+  return { companyId, month, written, removed }
 }

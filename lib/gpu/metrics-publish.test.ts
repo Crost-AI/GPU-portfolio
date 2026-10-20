@@ -101,3 +101,54 @@ describe('publishFleetKpis', () => {
     expect(fleet()).toBeUndefined()
   })
 })
+
+// Codex on #98: a KPI that has no value any more must not keep its earlier published value.
+describe('publishFleetKpis removes computed values the month no longer has', () => {
+  it('a rate published at 2, then the period corrected to zero hours: no gpu-realized-rate for the month; manual values untouched', async () => {
+    const first = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in first) throw new Error(first.error)
+    expect(first.written['gpu-realized-rate']).toBe(2)
+    const fleetId = first.companyId
+    // A manual value someone entered on another month of the same metric, and on this month of another.
+    const rate = m.tables.metrics.find((x: any) => x.company_id === fleetId && x.slug === 'gpu-realized-rate')!
+    const fee = m.tables.metrics.find((x: any) => x.company_id === fleetId && x.slug === 'gpu-fee')
+    m.tables.metric_values.push(
+      { id: 'mv-manual-aug', fund_id: 'f', company_id: fleetId, metric_id: rate.id, period_year: 2026, period_quarter: 3, period_month: 8, value_number: 1.9, is_manually_entered: true },
+    )
+    // Every period corrected to zero hours and zero revenue.
+    for (const e of m.tables.gpu_earnings) Object.assign(e, { gpu_hours_rented: 0, gross: 0, marketplace_fee: 0, net: 0 })
+    const again = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in again) throw new Error(again.error)
+    expect(again.removed).toEqual(expect.arrayContaining(['gpu-realized-rate', 'gpu-realized-rate--h200']))
+    expect(valueOf(fleetId, 'gpu-realized-rate')).toEqual([expect.objectContaining({ id: 'mv-manual-aug', is_manually_entered: true })])
+    expect(valueOf(fleetId, 'gpu-revenue')).toEqual([expect.objectContaining({ value_number: 0 })])
+    expect(valueOf(fleetId, 'gpu-fee')).toHaveLength(1)
+    expect(fee).toBeTruthy()
+  })
+
+  it('a manually entered value for the month is never removed', async () => {
+    const first = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in first) throw new Error(first.error)
+    const rate = m.tables.metrics.find((x: any) => x.company_id === first.companyId && x.slug === 'gpu-realized-rate')!
+    const v = m.tables.metric_values.find((x: any) => x.metric_id === rate.id)!
+    Object.assign(v, { is_manually_entered: true, value_number: 2.5 })
+    for (const e of m.tables.gpu_earnings) Object.assign(e, { gpu_hours_rented: 0, gross: 0, marketplace_fee: 0, net: 0 })
+    const again = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in again) throw new Error(again.error)
+    expect(again.removed).not.toContain('gpu-realized-rate')
+    expect(valueOf(first.companyId, 'gpu-realized-rate')).toEqual([expect.objectContaining({ value_number: 2.5, is_manually_entered: true })])
+  })
+
+  it('a per-type metric whose server type is gone loses its computed value for the month', async () => {
+    const first = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in first) throw new Error(first.error)
+    // The servers are re-typed away from h200.
+    m.tables.gpu_asset_types.push({ id: 't-2', fund_id: 'f', code: 'b200' })
+    for (const a of m.tables.gpu_assets) a.asset_type_id = 't-2'
+    const again = await publishFleetKpis(m.admin, 'f', 'GPU I', '2026-09', 'u')
+    if ('error' in again) throw new Error(again.error)
+    expect(again.removed).toEqual(expect.arrayContaining(['gpu-utilization--h200', 'gpu-realized-rate--h200']))
+    expect(valueOf(first.companyId, 'gpu-utilization--h200')).toEqual([])
+    expect(valueOf(first.companyId, 'gpu-utilization--b200')).toEqual([expect.objectContaining({ value_number: 75 })])
+  })
+})
