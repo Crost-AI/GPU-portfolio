@@ -172,6 +172,11 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/fleet/assets/[id]/events': { domain: 'fleet' },
   'api/fleet/datacenter-contracts': { domain: 'fleet' },
   'api/fleet/datacenter-contracts/[id]': { domain: 'fleet' },
+  // ── GPU fleet (P4) ──
+  // A GPU SPV's accrued profit share: a display memo of the manager's take if book NAV were
+  // distributed today. All of it is the manager's economics, so gp_economics (not lp_capital, which
+  // the pref ledger is). The handler refuses a vehicle that is not a GPU SPV.
+  'api/accounting/accrued-profit-share': { domain: 'gp_economics' },
 
   // ── GP economics — the carve-out. These used to sit behind the single `accounting` key,
   //    so anyone who could reconcile the bank could read the partners' carry.
