@@ -35,6 +35,7 @@ import { GET as analystThreads } from '@/app/api/analyst/conversations/route'
 import { PATCH as patchEmail } from '@/app/api/emails/[id]/route'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
 import { getConversation, listConversations } from '@/lib/api-v1/conversations'
+import { FLEET_HIDDEN_SCAN_CAP, firstVisibleRows } from '@/lib/access/fleet-company'
 
 const ctx = (over: Partial<AccessContext>): AccessContext => ({
   fundId: 'f', userId: 'u', role: 'member', vehicles: { all: true, ids: [] },
@@ -167,6 +168,50 @@ describe('hidden fleet rows never take a place in the limit', () => {
     expect(first.nextCursor).not.toBeNull()
     const second = await listConversations(s.m.admin, principal, { limit: 2, cursor: first.nextCursor })
     expect(second.conversations.map((c: any) => c.id)).toEqual([uuid(7)])
+    expect(second.nextCursor).toBeNull()
+  })
+})
+
+// Security review on 4f08c2db (query amplification): skipping hidden rows reads pages of at least
+// 200 whatever the caller's limit, growing to max_rows, and stops at FLEET_HIDDEN_SCAN_CAP rows.
+describe('the hidden-row scan is bounded', () => {
+  const ts = (i: number) => `2026-10-10T${String(Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`
+
+  it('interactions?limit=1 behind 1000 hidden rows: the visible row comes back in at most 5 page reads', async () => {
+    for (let i = 0; i < 1000; i++) s.m.tables.interactions.push({ id: `i-h${i}`, fund_id: 'f', company_id: 'fleet', interaction_date: ts(i), tags: [] })
+    s.m.tables.interactions = s.m.tables.interactions.filter((r: any) => r.id !== 'i-vc')
+    s.m.tables.interactions.push({ id: 'i-late', fund_id: 'f', company_id: 'vc', interaction_date: '2026-09-01', tags: [] })
+    const from = s.m.admin.from
+    let reads = 0
+    s.m.admin.from = (t: string) => { if (t === 'interactions') reads++; return from(t) }
+    const ids = ((await (await interactions(req('/api/interactions?limit=1'))).json()) as any[]).map(i => i.id)
+    expect(ids).toEqual(['i-late'])
+    expect(reads).toBeGreaterThan(0)
+    expect(reads).toBeLessThanOrEqual(5)
+  })
+
+  it('at the cap the list returns a partial page instead of reading on', async () => {
+    const rows = [...Array.from({ length: 6000 }, (_, i) => ({ id: `h${i}`, company_id: 'fleet' })), { id: 'v', company_id: 'vc' }]
+    const ranges: [number, number][] = []
+    const out = await firstVisibleRows(async (a, b) => { ranges.push([a, b]); return { data: rows.slice(a, b + 1), error: null } }, 1, new Set(['fleet']))
+    expect(out).toEqual({ data: [], error: null })
+    expect(ranges.reduce((n, [a, b]) => n + b - a + 1, 0)).toBe(FLEET_HIDDEN_SCAN_CAP)
+    expect(ranges.every(([a, b]) => b - a + 1 >= 200 && b - a + 1 <= 1000)).toBe(true)
+  })
+
+  it('v1: at the cap the page comes back short with a cursor past the last row read, and the next page carries on', async () => {
+    const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+    const iso = (i: number) => new Date(Date.UTC(2026, 9, 10) + i * 1000).toISOString()
+    s.m.tables.analyst_conversations = []
+    const hiddenCount = FLEET_HIDDEN_SCAN_CAP + 10
+    for (let i = 0; i < hiddenCount; i++) s.m.tables.analyst_conversations.push({ id: uuid(100 + i), fund_id: 'f', user_id: 'u', company_id: 'fleet', updated_at: iso(10 + i), created_at: iso(0) })
+    for (const n of [3, 2]) s.m.tables.analyst_conversations.push({ id: uuid(n), fund_id: 'f', user_id: 'u', company_id: 'vc', updated_at: iso(n), created_at: iso(0) })
+    const principal = { userId: 'u', fundId: 'f', role: 'member', access: NO_FLEET() } as any
+    const first = await listConversations(s.m.admin, principal, { limit: 2 })
+    expect(first.conversations).toEqual([])
+    expect(first.nextCursor).not.toBeNull()
+    const second = await listConversations(s.m.admin, principal, { limit: 2, cursor: first.nextCursor })
+    expect(second.conversations.map((c: any) => c.id)).toEqual([uuid(3), uuid(2)])
     expect(second.nextCursor).toBeNull()
   })
 })

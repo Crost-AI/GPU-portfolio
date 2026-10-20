@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ChatMessage } from '@/lib/ai/types'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
-import { hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
+import { FLEET_HIDDEN_SCAN_CAP, fleetPageSize, hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
@@ -74,7 +74,7 @@ export async function listConversations(
   principal: AnalystPrincipal,
   options: { limit: number; cursor?: string | null },
 ) {
-  const build = (cursorRaw: string | null | undefined) => {
+  const build = (cursorRaw: string | null | undefined, size: number) => {
     let query: any = admin
       .from('analyst_conversations')
       .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
@@ -82,7 +82,7 @@ export async function listConversations(
       .eq('user_id', principal.userId)
       .order('updated_at', { ascending: false })
       .order('id', { ascending: false })
-      .limit(options.limit + 1)
+      .limit(size)
     if (cursorRaw) {
       const cursor = decodeCursor(cursorRaw)
       query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
@@ -91,23 +91,32 @@ export async function listConversations(
   }
 
   // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out (#91),
-  // and never takes a place in the page: the read continues past hidden threads (keyset cursor).
+  // and never takes a place in the page: the read continues past hidden threads (keyset cursor), in
+  // pages of at least 200, for at most FLEET_HIDDEN_SCAN_CAP rows. At the cap the page is returned
+  // short, with a cursor past the last row read, so the next request carries on from there.
   const hidden = await hiddenFleetIdsInFund(admin, principal.fundId, principal.userId)
   const rows: ConversationRow[] = []
   let cursorRaw = options.cursor ?? null
-  for (;;) {
-    const { data, error } = await build(cursorRaw)
+  let scanned = 0
+  let lastRead: ConversationRow | undefined
+  let capped = false
+  for (let i = 0; ; i++) {
+    const size = hidden.size ? fleetPageSize(options.limit + 1, i, scanned) : options.limit + 1
+    const { data, error } = await build(cursorRaw, size)
     if (error) throw new Error(error.message)
     const fetched = (data ?? []) as ConversationRow[]
+    scanned += fetched.length
+    lastRead = fetched[fetched.length - 1] ?? lastRead
     for (const r of fetched) if (!r.company_id || !hidden.has(r.company_id)) rows.push(r)
-    if (rows.length > options.limit || fetched.length <= options.limit || !hidden.size) break
-    cursorRaw = encodeCursor(fetched[fetched.length - 1])
+    if (rows.length > options.limit || fetched.length < size || !hidden.size) break
+    if (scanned >= FLEET_HIDDEN_SCAN_CAP) { capped = true; break }
+    cursorRaw = encodeCursor(lastRead!)
   }
   const hasMore = rows.length > options.limit
   const page = rows.slice(0, options.limit)
   return {
     conversations: page.map(compact),
-    nextCursor: hasMore && page.length ? encodeCursor(page[page.length - 1]) : null,
+    nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : capped && lastRead ? encodeCursor(lastRead) : null,
   }
 }
 
