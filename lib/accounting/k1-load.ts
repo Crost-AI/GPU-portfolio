@@ -16,7 +16,7 @@ import { computeCapitalAccounts, type CapitalPosting } from './capital-account'
 import { fetchAllRows } from './load'
 import { txnsForVehicle } from './soi'
 import { vehicleIdByName } from './vehicle-id'
-import { vehicleKindByName } from './vehicle-domain'
+import { readVehicleKindByName } from './vehicle-domain'
 import { disposalBasis, isLotMethod, type LotMethod } from '@/lib/portfolio/lots'
 import { splitGains, type DisposalGain, type GainSplit } from './holding-period'
 import { grossProceeds } from '@/lib/portfolio/proceeds'
@@ -139,7 +139,11 @@ export async function loadK1Year(
 
   // ── GPU fleet (P1c) ── A GPU SPV's chart reuses the fund chart's codes for other things (4000 is
   // rental revenue, 5200/5250 insurance and repairs), so its character is read by SUBTYPE.
-  if ((await vehicleKindByName(admin, fundId, group)) === 'gpu_spv') {
+  // Fail closed: a kind that could not be read is not a fund — the fund-chart reading would take a
+  // GPU SPV's rental revenue for realized gains.
+  const kind = await readVehicleKindByName(admin, fundId, group)
+  if (kind.error) return { error: `Could not read the kind of "${group}", so its chart cannot be read for tax. Try again.` }
+  if (kind.kind === 'gpu_spv') {
     return { fund: gpuCharacter(acctRows, posted.filter(inYear)), partners, undeterminedGain: 0, notDerivable: gpuNotDerivable(acctRows, posted.filter(inYear)) }
   }
   const onCode = (r: any, code: string) => codeById.get(r.account_id) === code
@@ -263,6 +267,19 @@ function gpuNotDerivable(acctRows: any[], inYear: any[]): { line: string; reason
       reason:
         'Box 10 carries the whole gain or loss on disposal of equipment. The part of a gain up to the ' +
         'depreciation taken on the server is §1245 ordinary income, which the preparer splits out on Form 4797 Part III.',
+    })
+  }
+  // 5400 "Professional & organizational" takes the SPV's formation and offering costs along with its
+  // ordinary professional fees, and the books cannot tell them apart. Box 1 deducts all of it; the
+  // §709 part is amortized (or §195 start-up) and syndication costs are never deductible.
+  const professional = sumBy(acctRows, inYear, a => a.type === 'expense' && a.subtype === 'partnership_expense')
+  if (professional !== 0) {
+    out.push({
+      line: 'Ordinary business income (1)',
+      reason:
+        `Box 1 deducts all ${professional.toFixed(2)} of professional and organizational costs (5400) in full. ` +
+        'Any organizational costs in it are capitalised under §709 (up to 5,000 deducted, the rest amortized over 180 months) ' +
+        'and any syndication costs are not deductible at all; the preparer splits them out and adjusts box 1.',
     })
   }
   if (sumBy(acctRows, inYear, a => a.subtype === 'depreciation') !== 0) {

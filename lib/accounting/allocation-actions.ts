@@ -13,7 +13,7 @@ import { loadOwnership } from './load'
 import { accountIdByCode, ensureCapitalAccounts } from './persist'
 import { computeManagementFee } from './fees'
 import { loadPartnerTerms } from './terms'
-import { vehicleKindByName } from './vehicle-domain'
+import { readVehicleKindByName } from './vehicle-domain'
 import { vehicleIdByName } from './vehicle-id'
 import {
   buildManagementFeeEntry,
@@ -65,8 +65,11 @@ export async function buildAllocationEntry(
     return id
   }
   // ── GPU fleet (P1c) ── A GPU SPV's 4000 is rental revenue and its 5100 datacenter hosting, so its
-  // gain and expense accounts are found by subtype: the disposal gain and partnership expenses.
-  if ((await vehicleKindByName(admin, fundId, group)) === 'gpu_spv') {
+  // gain and expense accounts are found by subtype: the disposal gain and partnership expenses. A kind
+  // that could not be read fails closed rather than booking to the fund chart's codes.
+  const kind = await readVehicleKindByName(admin, fundId, group)
+  if (kind.error) return { error: `Could not read the kind of "${group}", so the accounts to post to are unknown. Try again.` }
+  if (kind.kind === 'gpu_spv') {
     const vehicleId = await vehicleIdByName(admin, fundId, group)
     const { data } = await admin.from('chart_of_accounts' as any).select('id, code, subtype')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).in('subtype', ['disposal_gain', 'partnership_expense'])

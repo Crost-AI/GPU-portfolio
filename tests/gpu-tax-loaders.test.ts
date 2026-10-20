@@ -76,7 +76,7 @@ describe('the K-1 loader reads a GPU SPV by subtype', () => {
       businessIncome: 100_000, businessDeductions: totalExpense, section1231Gain: 5_000,
     })
     expect(inputs.undeterminedGain).toBe(0)
-    expect(inputs.notDerivable.map(n => n.line)).toEqual(['§1231 gain (10)', 'Depreciation convention'])
+    expect(inputs.notDerivable.map(n => n.line)).toEqual(['§1231 gain (10)', 'Ordinary business income (1)', 'Depreciation convention'])
     const a = inputs.partners.find(x => x.lpEntityId === 'lp-a')!
     expect([a.operatingIncome, a.realizedGains, a.expenses]).toEqual([60_600, 3_000, totalExpense * 0.6])
   })
@@ -148,5 +148,62 @@ describe('the allocation actions on a GPU SPV', () => {
     expect(gain.entry.postings.map(x => [x.accountId, x.amount])).toEqual(expect.arrayContaining([['a4500', -1_000], ['a1000', 1_000]]))
     expect(expense.entry.postings.map(x => [x.accountId, x.amount])).toEqual(expect.arrayContaining([['a5400', 1_000], ['a1000', -1_000]]))
     expect(JSON.stringify([gain, expense])).not.toMatch(/a4000|a5100/)
+  })
+})
+
+describe('organizational and syndication costs on 5400 are flagged on box 1 (§709)', () => {
+  it('a year with 5400 activity carries a note saying box 1 deducts it in full and what the preparer splits out', async () => {
+    const inputs = await loadK1Year(fakeAdmin(), 'f', 'H200 SPV I', 2027)
+    if ('error' in inputs) throw new Error(inputs.error)
+    const note = inputs.notDerivable.find(n => n.line === 'Ordinary business income (1)')
+    expect(note?.reason).toMatch(/2500\.00 of professional and organizational costs \(5400\)/)
+    expect(note?.reason).toMatch(/§709/)
+    expect(note?.reason).toMatch(/syndication costs are not deductible/)
+  })
+
+  it('no 5400 activity, no note', async () => {
+    const saved = TABLES.journal_postings
+    TABLES.journal_postings = saved.filter(x => x.account_id !== 'a5400')
+    try {
+      const inputs = await loadK1Year(fakeAdmin(), 'f', 'H200 SPV I', 2027)
+      if ('error' in inputs) throw new Error(inputs.error)
+      expect(inputs.notDerivable.map(n => n.line)).not.toContain('Ordinary business income (1)')
+    } finally {
+      TABLES.journal_postings = saved
+    }
+  })
+})
+
+describe('the GPU branches fail closed when the vehicle kind cannot be read', () => {
+  // The kind read (fund_vehicles, select 'kind') errors; every other read succeeds. A loader that
+  // took the error for "not a GPU SPV" would read the GPU chart by fund-chart codes.
+  const kindReadFails = () => {
+    const base = fakeAdmin()
+    const failing: any = new Proxy({}, {
+      get: (_t, k) => k === 'then' ? undefined
+        : k === 'maybeSingle' ? () => Promise.resolve({ data: null, error: { message: 'statement timeout' } })
+        : () => failing,
+    })
+    return { ...base, from: (table: string) => {
+      const q = base.from(table)
+      return table === 'fund_vehicles' ? { ...q, select: (cols: string) => (cols === 'kind' ? failing : q.select(cols)) } : q
+    } }
+  }
+
+  it('the K-1 loader refuses', async () => {
+    const r = await loadK1Year(kindReadFails() as any, 'f', 'H200 SPV I', 2027)
+    expect(r).toEqual({ error: expect.stringMatching(/Could not read the kind of "H200 SPV I"/) })
+  })
+
+  it('the book-to-tax year refuses, and so does the run', async () => {
+    expect(await loadActualBookYear(kindReadFails() as any, 'f', 'H200 SPV I', 2027)).toEqual({ error: expect.stringMatching(/Could not read the kind/) })
+    expect(await postTaxAdjustments(kindReadFails() as any, 'f', 'H200 SPV I', 'u', 2027, { preview: true })).toEqual({ error: expect.stringMatching(/Could not read the kind/) })
+  })
+
+  it('the allocation actions refuse rather than book to 4000 or 5100', async () => {
+    for (const action of ['gain', 'expense']) {
+      const r = await buildAllocationEntry(kindReadFails() as any, 'f', 'H200 SPV I', { action, entryDate: '2027-06-30', amount: 1_000 })
+      expect(r).toEqual({ error: expect.stringMatching(/Could not read the kind/) })
+    }
   })
 })
