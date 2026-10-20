@@ -278,6 +278,14 @@ describe('the asset lifecycle on the ledger', () => {
     expect(stored().status).toBe('in_service')
   })
 
+  it('a booked disposal whose register row vanished is a conflict naming the entry, never a success', async () => {
+    const a = await purchased()
+    await postDepreciation(['2027-01'])
+    s.between = async () => { s.m.tables.gpu_assets = [] }
+    expect(await disposeAsset(s.m.admin, ctx, a, { disposedOn: '2027-01-31', proceeds: 300_000 }))
+      .toEqual({ error: expect.stringContaining('booked as entry je-3'), conflict: true })
+  })
+
   it('a disposal that meets another\'s draft is in progress; if that one then fails, the asset is not disposed', async () => {
     const a = await purchased()
     await postDepreciation(['2027-01'])

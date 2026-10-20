@@ -37,7 +37,7 @@ export async function disposeAsset(
   ctx: Lifecycle,
   asset: GpuAssetRow,
   p: { disposedOn: string; proceeds: number },
-): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number } | { error: string; inProgress?: true }> {
+): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number } | { error: string; inProgress?: true; conflict?: true }> {
   const other = otherVehicleError(ctx, asset)
   if (other) return other
   if (asset.status === 'disposed' || asset.disposal_entry_id) return { error: 'This asset is already disposed of' }
@@ -93,7 +93,7 @@ export async function disposeAsset(
 /** Mark the asset disposed from the committed entry: its date, its cash debit and its 4500 line. */
 async function markDisposed(
   admin: SupabaseClient, ctx: Lifecycle, asset: GpuAssetRow, booked: LiveEntry, cashAccountId: string, gainAccountId: string,
-): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number } | { error: string }> {
+): Promise<{ entryId: string; gain: number; disposedOn: string; proceeds: number } | { error: string; conflict: true }> {
   const proceeds = postedTo(booked, cashAccountId)
   const gain = -postedTo(booked, gainAccountId) || 0
   const { data, error } = await (admin as any).from('gpu_assets').update({
@@ -103,7 +103,7 @@ async function markDisposed(
   if (error) throw error
   // Never a success with a booked disposal and no register row to show it: say so, by entry.
   if (!((data as any[]) ?? []).length) {
-    return { error: `The disposal is booked as entry ${booked.id}, but the asset is no longer in the register. Void entry ${booked.id}, or restore the asset and dispose of it again to link it.` }
+    return { error: `The disposal is booked as entry ${booked.id}, but the asset is no longer in the register. Void entry ${booked.id}, or restore the asset and dispose of it again to link it.`, conflict: true }
   }
   return { entryId: booked.id, gain, disposedOn: booked.entry_date, proceeds }
 }
