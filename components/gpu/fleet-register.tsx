@@ -10,7 +10,7 @@ import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import type { DatacenterContractRow, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { fleetPaths, listAssets, listContracts, listTypes, send, statusBody, type Fetcher } from './fleet-api'
 import {
-  MOVE_LABEL, bookingGate, disposedAsOf, fleetTotals, mayCountLaterPurchases, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
+  MOVE_LABEL, bookingGate, disposedAsOf, fleetTotals, isOffBooks, offBooksLabel, offersBookedActions, offersDelete, offersPurchase, statusMoves, todayIso,
   type ValuedAsset,
 } from './fleet-math'
 import { AsOfControl, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
@@ -78,7 +78,7 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
               <th scope="col" className={`${th} text-left`}>Status</th>
               <th scope="col" className={`${th} text-left`}>In service</th>
               <th scope="col" className={`${th} text-right`} title="Hardware plus capitalized costs, for assets on the books">Basis</th>
-              <th scope="col" className={`${th} text-right`} title="Basis of assets not on the books yet: planned, or a purchase not linked">Planned</th>
+              <th scope="col" className={`${th} text-right`} title="Basis of assets not on the books at the as-of date: planned, or purchased later">Planned</th>
               <th scope="col" className={`${th} border-l text-right`}>Accumulated</th>
               <th scope="col" className={`${th} text-right`}>NBV</th>
               <th scope="col" className={`${th} border-l text-right`}>Accumulated</th>
@@ -143,12 +143,7 @@ export function RegisterTable({ assets, types, contracts, vehicleId, canWriteFle
           </tfoot>
         </table>
       </div>
-      {asOf && <p className="text-caption text-muted-foreground" data-valuation-as-of={asOf}>Valued as of <span className="tabular-nums">{asOf}</span>, from the ledger. Planned and unbooked assets are not in the book or tax totals.</p>}
-      {mayCountLaterPurchases(asOf) && (
-        <p className="text-caption text-muted-foreground" data-earlier-date-caveat>
-          At a date before today, these totals may include an asset whose purchase was booked after that date: it is shown at its full basis, undepreciated.
-        </p>
-      )}
+      {asOf && <p className="text-caption text-muted-foreground" data-valuation-as-of={asOf}>Valued as of <span className="tabular-nums">{asOf}</span>, from the ledger. Assets not on the books at that date show their basis under Planned and add nothing to the book or tax totals.</p>}
     </div>
   )
 }
@@ -290,7 +285,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
 
       <ShellSection
         title="Assets"
-        description="Book and tax figures are the ledger's valuation as of the date chosen. An asset counts once its purchase is booked and linked; until then its basis is planned."
+        description="Book and tax figures are the ledger's valuation as of the date chosen. An asset counts from the date its purchase is recognised; before that its basis is planned."
         action={
           <div className="flex items-end gap-2">
             <AsOfControl id="register-as-of" value={asOf} onChange={setAsOf} />

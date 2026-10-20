@@ -3,11 +3,10 @@
 // routes for ?as_of), so the register, the asset page, the lead page and /fleet show the same numbers
 // the close books from. This file only adds them up and decides what each row offers.
 //
-// OFF THE BOOKS: a planned asset (status 'planned', the route's not-purchased state) or one whose
-// purchase entry is not linked (the #94 recovery case). The valuation reports both at their full basis
-// with nothing depreciated, but the ledger holds nothing linked to them, so their basis is shown in the
-// Planned column (captioned Planned or Unbooked) and kept out of the book and tax totals. If the route
-// comes to report 0 for an unbooked asset, the purchase_entry_id half of this rule can go.
+// OFF THE BOOKS is the route's own answer (on_books_as_of, #108): false when no purchase is recognised
+// as of the valuation date (planned, purchased later, or reversed by then), and the route then reports
+// every NBV and accumulated figure as 0. Off-book assets show their basis in the Planned column. The
+// flag stays true after a disposal; whether an asset was disposed of by the date is disposedAsOf.
 
 import type { GpuAssetRow, GpuAssetStatus } from '@/lib/gpu/types'
 import type { AssetValuation } from '@/lib/gpu/valuation'
@@ -21,24 +20,17 @@ export const todayIso = todayLocalIso
 
 export const isPlanned = (a: Pick<GpuAssetRow, 'status'>) => a.status === 'planned'
 
-/** Planned, or not linked to a purchase entry: its basis is not counted as book or tax value. */
-export const isOffBooks = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>) => isPlanned(a) || !a.purchase_entry_id
+/** Not on the books at the valuation date, by the route's flag. Its basis shows as planned; its values are 0. */
+export const isOffBooks = (a: Pick<ValuedAsset, 'on_books_as_of'>) => !a.on_books_as_of
 
-/** What an off-the-books row is called: planned (not purchased) or unbooked (purchase not linked). */
-export const offBooksLabel = (a: Pick<GpuAssetRow, 'status'>) => (isPlanned(a) ? 'Planned' : 'Unbooked')
+/** What an off-the-books row is called: planned (not purchased), or simply not on the books at this date. */
+export const offBooksLabel = (a: Pick<GpuAssetRow, 'status'>) => (isPlanned(a) ? 'Planned' : 'Not on the books at this date')
 
-/**
- * Why an off-the-books asset shows no book or tax value. An unbooked asset may have its purchase
- * posted (the #94 recovery case: booked, but the link to the asset was not made), so it is not
- * "nothing booked": the entry is not linked, and its value is not counted until it is.
- */
-export function offBooksReason(a: Pick<GpuAssetRow, 'status'>): { short: string; long: string } {
+/** Why an off-the-books asset shows no book or tax value at its valuation date. */
+export function offBooksReason(a: Pick<ValuedAsset, 'status' | 'valuation_as_of'>): { short: string; long: string } {
   return isPlanned(a)
-    ? { short: 'Not purchased yet', long: 'Planned: the purchase is not booked yet, so the asset has no book or tax value. Its basis is shown at cost.' }
-    : {
-        short: 'Purchase not linked',
-        long: 'Unbooked: the purchase entry is not linked to this asset, so its value is not counted until it is. Book the purchase again to link it.',
-      }
+    ? { short: 'Not purchased yet', long: `Planned: not purchased as of ${a.valuation_as_of}, so it has no book or tax value. Its basis is shown at cost.` }
+    : { short: 'Purchase not recognised', long: `Not on the books as of ${a.valuation_as_of}: its purchase is not recognised at this date.` }
 }
 
 /**
@@ -77,7 +69,8 @@ export function addTotals(a: FleetTotals, b: FleetTotals): FleetTotals {
 
 /**
  * The fleet as it stood on the valuation date, from the server's figures: every asset not disposed of
- * by then (disposedAsOf), off-the-books apart.
+ * by then (disposedAsOf). The money is the route's, summed; an off-book asset reports 0 for every value,
+ * and its basis is counted as planned rather than on the books.
  */
 export function fleetTotals(assets: ValuedAsset[]): FleetTotals {
   return assets.filter(a => !disposedAsOf(a)).reduce<FleetTotals>((t, a) => {
@@ -101,14 +94,6 @@ export function valuationDate(assets: Pick<ValuedAsset, 'valuation_as_of'>[], fa
   return assets.find(a => a.valuation_as_of)?.valuation_as_of ?? fallback
 }
 
-/**
- * Is the register valued as of a date before today? Then its totals may count an asset whose purchase
- * was booked after that date: the route reports such an asset in the unbooked shape (nothing
- * depreciated, NBV equal to basis), which the client cannot tell from one in service with no month end
- * yet. TODO(gpu-P1 on_books_as_of): when the assets route reports whether each asset was on the books
- * at the as-of date, count only those and drop this caption.
- */
-export const mayCountLaterPurchases = (asOf: string | null, today: string = todayIso()) => !!asOf && asOf < today
 
 /** The status moves a person may make (the PATCH route's OPERATIONAL_MOVES); the rest are the lifecycle's. */
 export const STATUS_MOVES: Partial<Record<GpuAssetStatus, GpuAssetStatus[]>> = {

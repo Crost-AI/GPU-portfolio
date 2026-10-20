@@ -120,7 +120,7 @@ export function GpuDetailView({
               value={fleet && !('error' in fleet) ? formatCurrencyFull(fleet.nbvBook, currency) : '—'}
               sub={!fleet ? 'Loading…' : 'error' in fleet ? fleet.error
                 : `${fleet.gpus.toLocaleString()} GPUs on ${fleet.assets} ${fleet.assets === 1 ? 'server' : 'servers'}, ${fleet.inService} in service`
-                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} planned or unbooked` : '')
+                  + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} not on the books yet` : '')
                   + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
             <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base="Last 12 months" />

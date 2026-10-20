@@ -59,7 +59,7 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null, kp
         <Metric
           label="Fleet basis"
           value={shown(money(totals.basis))}
-          sub={partial ? partialNote : totals.planned > 0 ? `On the books; ${money(totals.planned)} more planned or unbooked` : 'Hardware and capitalized costs on the books'}
+          sub={partial ? partialNote : totals.planned > 0 ? `On the books; ${money(totals.planned)} more not on the books yet` : 'Hardware and capitalized costs on the books'}
         />
         <Metric label="Fleet NBV" value={shown(money(totals.nbvBook))} sub={partial ? partialNote : `Book, as of ${valuedAsOf}; tax book ${money(totals.nbvTax)}`} data-valuation-as-of={valuedAsOf ?? undefined} />
         {(() => {

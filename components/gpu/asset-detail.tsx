@@ -31,8 +31,9 @@ const TAX_METHOD_LABEL: Record<string, string> = {
 
 /**
  * The server's valuation of the asset as of its date: basis, the book side and the tax book side
- * (Karl's Q7: the SPV takes tax depreciation). Nothing is computed here. An asset off the books
- * (planned, or its purchase not linked) shows its basis as such and no book or tax value.
+ * (Karl's Q7: the SPV takes tax depreciation). Nothing is computed here. An asset the route reports
+ * as not on the books at that date (on_books_as_of false) shows its basis and no book or tax value,
+ * with the reason from offBooksReason in fleet-math.ts.
  */
 export function ValuationCard({ asset }: { asset: ValuedAsset }) {
   const currency = useCurrency()
