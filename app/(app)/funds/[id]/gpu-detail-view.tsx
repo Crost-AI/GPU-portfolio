@@ -17,7 +17,7 @@ import { VEHICLE_KIND_LABELS } from '@/lib/vehicle-kinds'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets } from '@/components/gpu/fleet-api'
 import { getVehicleKpis } from '@/components/gpu/revenue-api'
-import { LtmTiles, currentMonth } from '@/components/gpu/fleet-kpis'
+import { LtmTiles, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
 import type { Kpi } from '@/lib/gpu/kpis'
 import { fleetTotals, todayIso, valuationDate, type FleetTotals } from '@/components/gpu/fleet-math'
 
@@ -72,7 +72,7 @@ export function GpuDetailView({
   const [ltm, setLtm] = useState<{ kpi: Kpi } | { error: string } | null>(null)
   useEffect(() => {
     let cancelled = false
-    void getVehicleKpis(browserFetch, vehicle, currentMonth()).then(r => {
+    void getVehicleKpis(browserFetch, vehicle, lastCompleteMonth()).then(r => {
       if (!cancelled) setLtm(r.ok ? { kpi: r.data.ltm } : { error: r.error })
     })
     return () => { cancelled = true }
@@ -123,7 +123,7 @@ export function GpuDetailView({
                   + (fleet.planned > 0 ? `; ${formatCurrencyFull(fleet.planned, currency)} not on the books yet` : '')
                   + (fleet.valuedAsOf ? `. Valued as of ${fleet.valuedAsOf}` : '')}
             />
-            <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base="Last 12 months" />
+            <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base={ltmCaption(lastCompleteMonth())} />
             <Metric
               label="Unreturned capital"
               value={unreturned?.value != null ? formatCurrencyFull(unreturned.value, currency) : '—'}

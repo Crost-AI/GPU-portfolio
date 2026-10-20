@@ -11,7 +11,7 @@ import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
 import { browserFetch, listVehicleAssets, mapBounded } from './fleet-api'
 import { combineLtm, getVehicleKpis } from './revenue-api'
-import { LtmTiles } from './fleet-kpis'
+import { LtmTiles, lastCompleteMonth, ltmCaption } from './fleet-kpis'
 import type { Kpi } from '@/lib/gpu/kpis'
 import { ZERO_TOTALS, addTotals, fleetTotals, todayIso, valuationDate, type FleetTotals, type ValuedAsset } from './fleet-math'
 
@@ -69,7 +69,7 @@ export function FleetOverviewView({ vehicles, loaded, asOf, addButton = null, kp
           const failedKpis = vehicles.filter(v => { const k = kpis[v.id]; return k && 'error' in k }).length
           if (vehicles.length === 0) return <LtmTiles ltm={null} error="No GPU SPVs yet" />
           if (missing > 0) return <LtmTiles ltm={null} error={failedKpis > 0 ? `Partial: ${failedKpis} ${failedKpis === 1 ? 'vehicle' : 'vehicles'} could not be loaded` : 'Loading…'} />
-          return <LtmTiles ltm={combineLtm(got)} base="Last 12 months, every GPU SPV" />
+          return <LtmTiles ltm={combineLtm(got)} base={`${ltmCaption(lastCompleteMonth(asOf))}, every GPU SPV`} />
         })()}
       </div>
 
@@ -136,7 +136,7 @@ export function FleetOverview({ vehicles }: { vehicles: FleetVehicle[] }) {
       const r = await listVehicleAssets(browserFetch, v.name, asOf)
       if (!cancelled) setLoaded(prev => ({ ...prev, [v.id]: r.ok ? { assets: r.data.assets } : { error: r.error } }))
     })
-    const month = asOf.slice(0, 7)
+    const month = lastCompleteMonth(asOf)
     void mapBounded(vehicles, 4, async v => {
       const r = await getVehicleKpis(browserFetch, v.name, month)
       if (!cancelled) setKpis(prev => ({ ...prev, [v.id]: r.ok ? { kpi: r.data.ltm } : { error: r.error } }))

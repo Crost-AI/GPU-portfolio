@@ -10,14 +10,21 @@ import type { Kpi } from '@/lib/gpu/kpis'
 import { ErrorAlert, Field } from './fleet-ui'
 import { todayIso } from './fleet-math'
 import type { Fetcher } from './fleet-api'
-import { getKpis, kpiCaption, type FleetKpis } from './revenue-api'
+import { getKpis, kpiCaption, previousMonth, type FleetKpis } from './revenue-api'
 
 // ── GPU fleet (P5) ── Fleet KPIs from GET /api/fleet/kpis: utilization, revenue, realized rate and
 // uptime, for a month and the trailing twelve. Figures count staged rows as well as posted ones, and
 // every tile that does says so ("includes staged rows").
 
-/** The current month, in the user's own zone: what the LTM tiles end with. */
-export const currentMonth = () => todayIso().slice(0, 7)
+/**
+ * The last COMPLETE calendar month before `today` (local), the month the entry form defaults to.
+ * The LTM tiles end here: ending at the current month would count its capacity with nothing yet
+ * entered, understating utilization by about a twelfth and covering only eleven months of revenue.
+ */
+export const lastCompleteMonth = (today: string = todayIso()) => previousMonth(today).start.slice(0, 7)
+
+/** The tiles' caption: the twelve complete months they cover. */
+export const ltmCaption = (month: string) => `12 months to ${month}`
 
 export const pct = (n: number | null | undefined) => (n == null || !Number.isFinite(n) ? '—' : `${n.toFixed(1)}%`)
 const hours = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 })
@@ -27,7 +34,7 @@ export function LtmTiles({ ltm, error, base }: {
   ltm: Pick<Kpi, 'grossRevenue' | 'utilizationPct' | 'includesStaged'> | null
   /** Why there is no figure: still loading, or the route's refusal. */
   error?: string | null
-  /** The caption before the staged note, e.g. "Last 12 months". */
+  /** The caption before the staged note, e.g. "12 months to 2026-09". */
   base?: string
 }) {
   const currency = useCurrency()
@@ -47,11 +54,11 @@ export function KpiRow({ kpi, label }: { kpi: Kpi; label: string }) {
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" data-kpi-row={label}>
       <Metric label="Utilization" value={pct(kpi.utilizationPct)} sub={sub} />
-      <Metric label="Rented GPU-hours" value={hours(kpi.rentedHours)} sub={`of ${hours(kpi.availableHours)} available`} />
+      <Metric label="Rented GPU-hours" value={hours(kpi.rentedHours)} sub={kpiCaption(kpi, `of ${hours(kpi.availableHours)} available`)} />
       <Metric label="Gross revenue" value={formatCurrencyFull(kpi.grossRevenue, currency)} sub={sub} />
       <Metric label="Net of fees" value={formatCurrencyFull(kpi.net, currency)} sub={sub} />
       <Metric label="Realized rate" value={kpi.realizedRate == null ? '—' : `${formatCurrencyPrice(kpi.realizedRate, currency)}/GPU-hr`} sub={sub} data-kpi="realized-rate" />
-      <Metric label="Uptime" value={pct(kpi.uptimePct)} sub={`${hours(kpi.downtimeHours)} GPU-hours down`} />
+      <Metric label="Uptime" value={pct(kpi.uptimePct)} sub={kpiCaption(kpi, `${hours(kpi.downtimeHours)} GPU-hours down`)} />
     </div>
   )
 }
@@ -71,7 +78,7 @@ export function PublishPlaceholder() {
 
 /** The asset page's card: one server's month, with a month picker, and the fleet's trailing twelve. */
 export function AssetKpiCard({ fetcher, assetId }: { fetcher: Fetcher; assetId: string }) {
-  const [month, setMonth] = useState(() => currentMonth())
+  const [month, setMonth] = useState(() => lastCompleteMonth())
   const [kpis, setKpis] = useState<{ state: 'loading' } | { state: 'ok'; data: FleetKpis } | { state: 'error'; error: string }>({ state: 'loading' })
   useEffect(() => {
     let cancelled = false

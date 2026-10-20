@@ -14,7 +14,7 @@ import { CurrencyProvider, formatCurrencyFull, formatCurrencyPrice } from '@/com
 import { EntryTable, ImportSummary } from '@/components/gpu/revenue-entry'
 import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, POST_HINT_NO_FLEET, postHint } from '@/components/gpu/revenue-earnings'
 import { PayoutsTable, TieOutCard, AutoPostPlaceholder } from '@/components/gpu/revenue-payouts'
-import { AssetKpis, LtmTiles, PublishPlaceholder } from '@/components/gpu/fleet-kpis'
+import { AssetKpis, KpiRow, LtmTiles, PublishPlaceholder, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
 import {
   combineLtm, derived, entryRowFor, groupByPeriod, importCsv, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
@@ -24,7 +24,7 @@ import type { Fetcher } from '@/components/gpu/fleet-api'
 import { vehicleFetcher } from '@/components/gpu/waterfall-api'
 import { parseManualRows, parseEarningsCsv } from '@/lib/gpu/ops/parse'
 import { EARNING_STATUSES } from '@/lib/gpu/ops/types'
-import { computeKpis, ltm as ltmOf, type KpiAsset, type KpiEarning } from '@/lib/gpu/kpis'
+import { computeKpis, daysInclusive, ltm as ltmOf, monthBounds, trailingMonths, type KpiAsset, type KpiEarning } from '@/lib/gpu/kpis'
 
 const money = (n: number) => formatCurrencyFull(n, 'USD')
 const inUsd = (node: React.ReactElement) => renderToStaticMarkup(<CurrencyProvider currency="USD">{node}</CurrencyProvider>)
@@ -299,6 +299,30 @@ describe('fleet KPIs', () => {
     expect(tiles).toContain(`Last 12 months; ${STAGED_CAPTION}`)
     expect(tiles).toContain(formatCurrencyFull(25_920, 'USD'))
     expect(inUsd(<LtmTiles ltm={reply().ltm} base="Last 12 months" />)).not.toContain(STAGED_CAPTION)
+  })
+
+  it('the LTM ends at the last complete month: a steady 75% year reads 75.0, not 68.6', () => {
+    // One 8-GPU server rented 75% of every hour, every month, entered through September.
+    const months = trailingMonths('2026-09', 13)
+    const earnings = months.map(m => {
+      const { start, end } = monthBounds(m)
+      const hours = 0.75 * 8 * 24 * daysInclusive(start, end)
+      return { ...kEarning('1'), period_end: end, gpu_hours_rented: hours, gross: hours * 2, marketplace_fee: 0, net: hours * 2 }
+    })
+    const server = { ...kAsset('1'), in_service_date: '2024-01-01' }
+    const ltmTo = (month: string) => ltmOf(trailingMonths(month).map(m => computeKpis({ assets: [server], earnings, month: m }).fleet))
+    expect(lastCompleteMonth('2026-10-20')).toBe('2026-09')
+    const tile = inUsd(<LtmTiles ltm={ltmTo(lastCompleteMonth('2026-10-20'))} base={ltmCaption('2026-09')} />)
+    expect(tile).toContain('75.0%')
+    expect(tile).toContain('12 months to 2026-09')
+    // Ending at the current month, with October's 31 days of capacity and nothing entered, was the bug.
+    expect(inUsd(<LtmTiles ltm={ltmTo('2026-10')} />)).toContain('68.6%')
+  })
+
+  it('every tile in a row that counts staged rows says so, rented hours and uptime included', () => {
+    const html = inUsd(<KpiRow kpi={month('staged').fleet} label="2026-09" />)
+    expect(html.match(new RegExp(STAGED_CAPTION, 'g'))).toHaveLength(6)
+    expect(inUsd(<KpiRow kpi={month().fleet} label="2026-09" />)).not.toContain(STAGED_CAPTION)
   })
 
   it('a refusal is shown on the tiles, never a zero', () => {
