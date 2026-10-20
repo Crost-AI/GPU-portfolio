@@ -172,10 +172,10 @@ describe('posting', () => {
     expect(calls[0].body).toEqual({ action: 'post', ids: ['new'] })
     if (!first.ok || !('needsReversal' in first.data)) throw new Error('expected needsReversal')
     const rows = [earning('new', { supersedesId: 'old' }), earning('old', { status: 'posted', net: 7000, entryId: 'je-old' })]
-    const html = renderToStaticMarkup(<ReversalList entries={first.data.needsReversal} rows={rows} />)
+    const html = renderToStaticMarkup(<ReversalList entries={first.data.needsReversal} rows={rows} money={money} />)
     expect(html).toContain('data-reversal="old"')
     expect(html).toContain('2026-09-30')
-    expect(html).toContain('7000.00')
+    expect(html).toContain(money(7000))
     await postEarnings(fetcher, ['new'], true)
     expect(calls[1].body).toEqual({ action: 'post', ids: ['new'], confirmReversal: true })
   })

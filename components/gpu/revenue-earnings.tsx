@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
 import { cn } from '@/lib/utils'
-import { ACCOUNTING_WRITE_HINT } from './fleet-ui'
+import { ACCOUNTING_WRITE_HINT, ErrorAlert } from './fleet-ui'
 import {
   BUSY_STATUSES, EARNING_STATUS_LABEL, EARNING_STATUS_TONE, groupByPeriod, selectable,
   type EarningView, type NeedsReversal,
@@ -133,11 +133,14 @@ export function EarningsTable({ rows, money, selected, onToggle, canWriteFleet, 
 }
 
 /** The posted entries a post would reverse, listed before anything is reversed. */
-export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm }: {
+export function ReversalConfirm({ open, entries, rows, busy, error, money, onCancel, onConfirm }: {
   open: boolean
   entries: NeedsReversal[]
   rows: EarningView[]
   busy: boolean
+  /** The confirmed re-send's refusal, in the route's words, shown here rather than behind the dialog. */
+  error: string | null
+  money: (n: number) => string
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -150,7 +153,8 @@ export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm
             These rows replace periods already posted. Posting them reverses each posted entry first, then books the new figures.
           </DialogDescription>
         </DialogHeader>
-        <ReversalList entries={entries} rows={rows} />
+        <ReversalList entries={entries} rows={rows} money={money} />
+        {error && <ErrorAlert>{error}</ErrorAlert>}
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
           <Button type="button" size="sm" onClick={onConfirm} disabled={busy} data-action="confirm-reversal">
@@ -163,7 +167,7 @@ export function ReversalConfirm({ open, entries, rows, busy, onCancel, onConfirm
 }
 
 /** The entries a post would reverse. Rendered statically by the tests. */
-export function ReversalList({ entries, rows }: { entries: NeedsReversal[]; rows: EarningView[] }) {
+export function ReversalList({ entries, rows, money }: { entries: NeedsReversal[]; rows: EarningView[]; money: (n: number) => string }) {
   const byId = new Map(rows.map(r => [r.id, r]))
   return (
     <ul className="space-y-1.5 text-sm" data-region="needs-reversal">
@@ -176,7 +180,7 @@ export function ReversalList({ entries, rows }: { entries: NeedsReversal[]; rows
             <span className="tabular-nums text-muted-foreground">{now ? `${now.periodStart} to ${now.periodEnd}` : ''}</span>
             <p className="text-caption text-muted-foreground">
               Reverses the entry posted {e.entryDate ? <span className="tabular-nums">{e.entryDate}</span> : '(no entry: a zero-revenue period)'}
-              {old ? <> for net <span className="tabular-nums">{old.net.toFixed(2)}</span></> : null}
+              {old ? <> for net <span className="tabular-nums">{money(old.net)}</span></> : null}
             </p>
           </li>
         )

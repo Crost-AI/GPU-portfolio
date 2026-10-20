@@ -91,6 +91,24 @@ describe('the Revenue & payouts page', () => {
     expect(await screen.findByText(/Posted 1 period, reversing 1 posted entry first/)).toBeTruthy()
   })
 
+  it('a refused confirmed re-send shows the route\u2019s error inside the open confirmation', async () => {
+    const message = 'Posting revenue needs write access to Fund accounting.'
+    const sent = server(
+      { '/api/fleet/ops/earnings': [{ needsReversal: [{ id: 'new', supersedesId: 'old', entryId: 'je-old', entryDate: '2026-09-30' }] }, { error: message }] },
+      { '/api/fleet/ops/earnings': [200, 403] },
+    )
+    mount()
+    fireEvent.click(await screen.findByLabelText('Select H200 #1 2026-09-01 to 2026-09-30'))
+    fireEvent.click(screen.getByRole('button', { name: 'Post selected' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reverse and post' }))
+    await waitFor(() => expect(posts(sent)).toHaveLength(2))
+    expect(posts(sent)[1].body.confirmReversal).toBe(true)
+    // Still open, with the refusal in it.
+    const still = await screen.findByRole('dialog')
+    expect(await within(still).findByText(message)).toBeTruthy()
+  })
+
   it('Cancel in the confirmation sends nothing more', async () => {
     const sent = server({ '/api/fleet/ops/earnings': [{ needsReversal: [{ id: 'new', supersedesId: 'old', entryId: 'je-old', entryDate: '2026-09-30' }] }] })
     mount()

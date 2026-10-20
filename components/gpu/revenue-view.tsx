@@ -44,7 +44,7 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
   const [busy, setBusy] = useState<'post' | 'ignore' | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [reversal, setReversal] = useState<{ ids: string[]; entries: NeedsReversal[] } | null>(null)
+  const [reversal, setReversal] = useState<{ ids: string[]; entries: NeedsReversal[]; error: string | null } | null>(null)
 
   const [choice, setChoice] = useState<Record<string, string>>({})
   const [matching, setMatching] = useState<string | null>(null)
@@ -91,8 +91,13 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
     setBusy(null)
     // Posting is per row: a refusal can come after earlier rows were posted or an old entry was
     // reversed, so the receivable is read again whatever the outcome, not only on success.
-    if (!r.ok) { setActionError(r.error); reloadEarnings(); reloadPayouts(); return }
-    if ('needsReversal' in r.data) { setReversal({ ids, entries: r.data.needsReversal }); return }
+    if (!r.ok) {
+      // A confirmed re-send that fails says so inside the open confirmation, never hidden behind it.
+      if (confirmReversal && reversal) setReversal({ ...reversal, error: r.error })
+      else setActionError(r.error)
+      reloadEarnings(); reloadPayouts(); return
+    }
+    if ('needsReversal' in r.data) { setReversal({ ids, entries: r.data.needsReversal, error: null }); return }
     setReversal(null)
     const { posted, reversed } = r.data
     setNotice(`Posted ${posted.length} ${posted.length === 1 ? 'period' : 'periods'}${reversed.length ? `, reversing ${reversed.length} posted ${reversed.length === 1 ? 'entry' : 'entries'} first` : ''}.`)
@@ -196,8 +201,10 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
         entries={reversal?.entries ?? []}
         rows={earnings.state === 'ok' ? earnings.data : []}
         busy={busy === 'post'}
+        error={reversal?.error ?? null}
+        money={money}
         onCancel={() => setReversal(null)}
-        onConfirm={() => { if (reversal) void post(reversal.ids, true) }}
+        onConfirm={() => { if (reversal) { setReversal({ ...reversal, error: null }); void post(reversal.ids, true) } }}
       />
       <RecordPayoutDialog
         open={recordOpen}
