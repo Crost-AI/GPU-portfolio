@@ -3,7 +3,8 @@
 // parseAssetInput (lib/gpu/assets.ts), parseContractInput (lib/gpu/opex.ts) and the lifecycle routes
 // read; nothing here decides what is allowed, the routes do.
 
-import type { DatacenterContractRow, GpuAsset, GpuAssetEventRow, GpuAssetStatus, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
+import type { DatacenterContractRow, GpuAssetEventRow, GpuAssetRow, GpuAssetStatus, GpuAssetTypeRow, GpuEventKind } from '@/lib/gpu/types'
+import type { ValuedAsset } from './fleet-math'
 
 export type Fetcher = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -49,7 +50,12 @@ export const fleetPaths = {
 }
 
 export const listTypes = (f: Fetcher) => call<{ assetTypes: GpuAssetTypeRow[] }>(f, fleetPaths.types)
-export const listAssets = (f: Fetcher) => call<{ assets: GpuAsset[] }>(f, fleetPaths.assets)
+/** The register valued as of `asOf` (the user's local date by default: the route's own default is UTC). */
+export const listAssets = (f: Fetcher, asOf: string) =>
+  call<{ assets: ValuedAsset[] }>(f, `${fleetPaths.assets}?as_of=${encodeURIComponent(asOf)}`)
+/** One asset valued as of `asOf`. */
+export const getAsset = (f: Fetcher, id: string, asOf: string) =>
+  call<ValuedAsset>(f, `${fleetPaths.asset(id)}?as_of=${encodeURIComponent(asOf)}`)
 export const listContracts = (f: Fetcher) => call<{ contracts: DatacenterContractRow[] }>(f, fleetPaths.contracts)
 export const listEvents = (f: Fetcher, id: string) => call<{ events: GpuAssetEventRow[] }>(f, fleetPaths.events(id))
 
@@ -124,7 +130,7 @@ export function assetBody(f: AssetForm): Record<string, unknown> {
 }
 
 /** The register row as an edit form, for the Specs card. */
-export function assetFormOf(a: GpuAsset): AssetForm {
+export function assetFormOf(a: GpuAssetRow): AssetForm {
   const s = (v: unknown) => (v == null ? '' : String(v))
   return {
     name: a.name, status: a.status, asset_type_id: s(a.asset_type_id), gpu_count: s(a.gpu_count), hardware_cost: s(a.hardware_cost),
@@ -157,7 +163,7 @@ export function assetFormError(f: AssetForm, editing: boolean): string | null {
  * not trip the "cost is booked" refusal. Blank optional fields that were set are cleared to null; a
  * cleared bonus is 0 (no bonus). Salvage and useful life cannot be cleared (assetFormError).
  */
-export function assetPatch(a: GpuAsset, f: AssetForm): Record<string, unknown> {
+export function assetPatch(a: GpuAssetRow, f: AssetForm): Record<string, unknown> {
   const before = assetFormOf(a)
   const full = assetBody(f)
   const out: Record<string, unknown> = {}
@@ -206,13 +212,42 @@ export function capexSubmitter(fetcher: Fetcher, assetId: string, newKey: () => 
 export interface EventForm { kind: GpuEventKind; starts_at: string; ends_at: string; gpus_affected: string; cause: string }
 
 /**
+ * Is `s` a real local date or date-time as a `datetime-local` (or date) input gives it? Checked by
+ * round trip, so 2026-02-30T10:00 (which Date would roll into March) is refused, not shifted.
+ */
+export function isValidLocalDateTime(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s)
+  if (!m) return false
+  const [, y, mo, d, h = '0', mi = '0', sec = '0'] = m
+  const t = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec))
+  return t.getFullYear() === Number(y) && t.getMonth() === Number(mo) - 1 && t.getDate() === Number(d)
+    && t.getHours() === Number(h) && t.getMinutes() === Number(mi)
+}
+
+/**
+ * Why the event form cannot be sent, or null. Run before eventBody: localToUtc throws (RangeError)
+ * on a value that is not a date, which would otherwise escape the submit and leave the form busy.
+ */
+export function eventFormError(f: Pick<EventForm, 'starts_at' | 'ends_at'>): string | null {
+  if (!isValidLocalDateTime(f.starts_at)) return 'Enter a valid start date and time.'
+  if (f.ends_at.trim() && !isValidLocalDateTime(f.ends_at)) return 'Enter a valid end date and time, or leave it blank while ongoing.'
+  // Both read as local instants: a bare date would otherwise parse as UTC midnight against a local time.
+  if (f.ends_at.trim() && localDate(f.ends_at) < localDate(f.starts_at)) return 'The end must be on or after the start.'
+  return null
+}
+
+/**
  * A `datetime-local` value ('YYYY-MM-DDTHH:mm', the user's wall clock) as a UTC ISO timestamp. A bare
  * date is the start of that local day. The event log stores instants, so a two-hour outage stays two
  * hours whatever the time zone.
  */
 export function localToUtc(s: string): string {
-  const local = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s
-  return new Date(local).toISOString()
+  return localDate(s).toISOString()
+}
+
+/** A date or `datetime-local` value as the local instant it names; a bare date is local midnight. */
+function localDate(s: string): Date {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s)
 }
 
 /** A stored instant as the user's wall clock, 'YYYY-MM-DD HH:mm'. */
@@ -278,8 +313,8 @@ export const endContractBody = (endDate: string) => ({ end_date: endDate, status
 export const rollBody = (asOf: string) => ({ action: 'roll' as const, asOf })
 
 /** One GPU SPV's register by name, outside a vehicle scope (the firm-wide /fleet page). */
-export const listVehicleAssets = (f: Fetcher, vehicle: string) =>
-  call<{ assets: GpuAsset[] }>(f, `${fleetPaths.assets}?group=${encodeURIComponent(vehicle)}`)
+export const listVehicleAssets = (f: Fetcher, vehicle: string, asOf: string) =>
+  call<{ assets: ValuedAsset[] }>(f, `${fleetPaths.assets}?group=${encodeURIComponent(vehicle)}&as_of=${encodeURIComponent(asOf)}`)
 
 /** Run `fn` over `items` with at most `limit` in flight, results in input order. */
 export async function mapBounded<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

@@ -10,72 +10,109 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { useLedgerFetch } from '@/components/accounting-vehicle'
 import { useCanWrite } from '@/components/access-context'
 import { useCurrency, formatCurrencyFull } from '@/components/currency-context'
-import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAsset, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
-import type { DepreciationLine } from '@/lib/gpu/depreciation'
-import type { DepreciationConvention } from '@/lib/gpu/types'
-import { call, eventBody, fleetPaths, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
-import { assetFigures, assetSchedule, bookingGate, offersBookedActions, todayIso } from './fleet-math'
-import { ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
+import { GPU_EVENT_KINDS, type DatacenterContractRow, type GpuAssetEventRow, type GpuAssetTypeRow, type GpuEventKind } from '@/lib/gpu/types'
+import { eventBody, eventFormError, fleetPaths, getAsset, listContracts, listEvents, listTypes, nowLocalInput, send, utcToLocalLabel, type EventForm, type Fetcher } from './fleet-api'
+import { bookingGate, disposedAsOf, isOffBooks, offBooksLabel, offBooksReason, offersBookedActions, todayIso, type ValuedAsset } from './fleet-math'
+import { AsOfControl, ErrorAlert, Field, FLEET_WRITE_HINT, GatedButton, StatusBadge, selectCls } from './fleet-ui'
 import { AssetDialog, CapexDialog } from './fleet-dialogs'
 import { ShellSection } from './parts'
 
-// ── GPU fleet (P5) ── One server: what it is, how it depreciates, what has been capitalized into it,
-// and its downtime and maintenance log. Listings, monthly revenue and documents arrive with P5-4.
+// ── GPU fleet (P5) ── One server: what it is, its book and tax value as of a date (the server's
+// valuation), what has been capitalized into it, and its downtime and maintenance log. Listings,
+// monthly revenue and documents arrive with P5-4.
 
 const th = 'whitespace-nowrap px-3 py-2 font-medium'
 const num = 'px-3 py-2 text-right tabular-nums'
 
-/**
- * Is the last line a final-month true-up? Only on a full schedule (a disposal cuts it short and its
- * last line is the disposal month, not the end of life), and only when the last charge differs from
- * the plan's: a regular month under full_month, half of one under mid_month (whose first month is a
- * half too, so the regular month is the second).
- */
-export function trueUpIndex(lines: DepreciationLine[], convention: DepreciationConvention, lifeMonths: number): number | null {
-  const full = convention === 'mid_month' ? lifeMonths + 1 : lifeMonths
-  if (lines.length !== full || lines.length < 2) return null
-  const regular = Math.round((convention === 'mid_month' ? lines[1] : lines[0]).amount * 100)
-  const expected = convention === 'mid_month' ? Math.round(regular / 2) : regular
-  const last = lines.length - 1
-  return Math.round(lines[last].amount * 100) !== expected ? last : null
+const TAX_METHOD_LABEL: Record<string, string> = {
+  book: 'Same as book', straight_line: 'Straight line', macrs_5: 'MACRS 5-year', macrs_7: 'MACRS 7-year', bonus: 'Bonus',
 }
 
-/** The book schedule, month by month. The last line takes whatever rounding is left (the true-up). */
-export function DepreciationTable({ lines, convention, lifeMonths }: {
-  lines: DepreciationLine[]
-  convention: DepreciationConvention
-  lifeMonths: number
-}) {
+/**
+ * The server's valuation of the asset as of its date: basis, the book side and the tax book side
+ * (Karl's Q7: the SPV takes tax depreciation). Nothing is computed here. An asset off the books
+ * (planned, or its purchase not linked) shows its basis as such and no book or tax value.
+ */
+export function ValuationCard({ asset }: { asset: ValuedAsset }) {
   const currency = useCurrency()
-  const money = (n: number) => formatCurrencyFull(n, currency)
-  const trueUp = trueUpIndex(lines, convention, lifeMonths)
+  const money = (n: number) => formatCurrencyFull(Number(n), currency)
+  const off = isOffBooks(asset) && !disposedAsOf(asset)
+  const value = (n: number) => (off ? '—' : money(n))
+  const rows: [string, string, string][] = [
+    ['Basis', money(asset.basis), 'basis'],
+    ['Capitalized costs', money(asset.capitalized_costs), 'capitalized_costs'],
+  ]
   return (
-    <div className="max-h-96 overflow-auto rounded-card border">
+    <ShellSection
+      title="Book and tax"
+      description={<>Valued as of <span className="tabular-nums" data-valuation-as-of={asset.valuation_as_of}>{asset.valuation_as_of}</span>, from the ledger.</>}
+    >
+      {off && (
+        <p className="mb-3 text-sm text-muted-foreground">
+          {offBooksReason(asset).long}
+        </p>
+      )}
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+        {rows.map(([k, v, key]) => (
+          <div key={k} className="contents">
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="text-right tabular-nums" data-col={key}>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-3 overflow-x-auto rounded-card border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50 text-muted-foreground">
+            <tr>
+              <th scope="col" className={`${th} text-left`}><span className="sr-only">Book</span></th>
+              <th scope="col" className={`${th} text-right`}>Accumulated depreciation</th>
+              <th scope="col" className={`${th} text-right`}>NBV</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t">
+              <th scope="row" className="px-3 py-2 text-left font-normal">Book</th>
+              <td className={num} data-col="accumulated_book">{value(asset.accumulated_book)}</td>
+              <td className={num} data-col="nbv_book">{value(asset.nbv_book)}</td>
+            </tr>
+            <tr className="border-t">
+              <th scope="row" className="px-3 py-2 text-left font-normal">
+                Tax book <span className="text-caption text-muted-foreground">({TAX_METHOD_LABEL[asset.tax_method] ?? asset.tax_method})</span>
+              </th>
+              <td className={num} data-col="accumulated_tax">{value(asset.accumulated_tax)}</td>
+              <td className={num} data-col="nbv_tax">{value(asset.nbv_tax)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </ShellSection>
+  )
+}
+
+/** The capex posted into the asset as of the valuation date: month, amount and the entry's source ref. */
+export function CapexEventsTable({ events }: { events: ValuedAsset['capex_events'] }) {
+  const currency = useCurrency()
+  if (events.length === 0) return <p className="text-sm text-muted-foreground">Nothing capitalized as of this date.</p>
+  return (
+    <div className="overflow-x-auto rounded-card border">
       <table className="w-full text-sm">
-        <thead className="sticky top-0 bg-muted text-muted-foreground">
+        <thead className="bg-muted/50 text-muted-foreground">
           <tr>
-            <th scope="col" className={`${th} text-right`}>#</th>
             <th scope="col" className={`${th} text-left`}>Month</th>
-            <th scope="col" className={`${th} text-right`}>Charge</th>
-            <th scope="col" className={`${th} text-right`}>Accumulated</th>
-            <th scope="col" className={`${th} text-right`}>NBV</th>
+            <th scope="col" className={`${th} text-right`}>Amount</th>
+            <th scope="col" className={`${th} text-left`}>Source</th>
+            <th scope="col" className={`${th} text-left`}>Posted</th>
           </tr>
         </thead>
         <tbody>
-          {lines.map((l, i) => {
-            return (
-              <tr key={l.month} className="border-t" data-month={i + 1}>
-                <td className={`${num} text-muted-foreground`}>{i + 1}</td>
-                <td className="whitespace-nowrap px-3 py-2 tabular-nums">{l.month}</td>
-                <td className={num}>
-                  {money(l.amount)}
-                  {trueUp === i && <span className="ml-1.5 text-caption text-muted-foreground">final-month true-up</span>}
-                </td>
-                <td className={num}>{money(l.accumulated)}</td>
-                <td className={num} data-nbv={l.nbv}>{money(l.nbv)}</td>
-              </tr>
-            )
-          })}
+          {events.map(e => (
+            <tr key={e.source_ref} className="border-t" data-capex={e.source_ref}>
+              <td className="whitespace-nowrap px-3 py-2 tabular-nums">{e.month}</td>
+              <td className={num}>{formatCurrencyFull(Number(e.amount), currency)}</td>
+              <td className="px-3 py-2 font-mono text-xs">{e.source_ref}</td>
+              <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">{e.posted_at ? utcToLocalLabel(e.posted_at) : '—'}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -93,7 +130,8 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
   const canWriteFleet = useCanWrite('fleet')
   const canBook = useCanWrite('accounting')
 
-  const [asset, setAsset] = useState<GpuAsset | null>(null)
+  const [asset, setAsset] = useState<ValuedAsset | null>(null)
+  const [asOf, setAsOf] = useState(todayIso)
   const [types, setTypes] = useState<GpuAssetTypeRow[]>([])
   const [contracts, setContracts] = useState<DatacenterContractRow[]>([])
   const [events, setEvents] = useState<GpuAssetEventRow[] | null>(null)
@@ -112,8 +150,8 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
   const loadTypes = useCallback(() => { void fetchTypes().then(applyTypes) }, [fetchTypes])
 
   const fetchAll = useCallback(
-    () => Promise.all([call<GpuAsset>(lf, fleetPaths.asset(assetId)), listEvents(lf, assetId), listContracts(lf)] as const),
-    [lf, assetId],
+    () => Promise.all([getAsset(lf, assetId, asOf), listEvents(lf, assetId), listContracts(lf)] as const),
+    [lf, assetId, asOf],
   )
   const apply = ([a, e, c]: Awaited<ReturnType<typeof fetchAll>>) => {
     if (a.ok) setAsset(a.data)
@@ -148,9 +186,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
     )
   }
 
-  const asOf = todayIso()
-  const f = assetFigures(asset, asOf)
-  const lines = assetSchedule(asset)
+  const off = isOffBooks(asset) && !disposedAsOf(asset)
   const disposed = asset.status === 'disposed'
   const book = bookingGate(canWriteFleet, canBook)
   // A name that could not be loaded is said so, not shown as "No type" or a dash.
@@ -198,11 +234,16 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
         </div>
       )}
 
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <p className="text-sm text-muted-foreground">Figures are the ledger&rsquo;s valuation as of <span className="tabular-nums">{asset.valuation_as_of}</span>.</p>
+        <AsOfControl id="asset-as-of" value={asOf} onChange={setAsOf} />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric label="Cost" value={money(f.cost)} sub={Number(asset.capitalized_costs) > 0 ? `Includes ${money(Number(asset.capitalized_costs))} capitalized` : 'Hardware'} />
-        <Metric label="Accumulated depreciation" value={money(f.accumulated)} sub={`Book, through ${asOf}`} />
-        <Metric label="NBV today" value={f.nbv == null ? '—' : money(f.nbv)} sub={disposed ? 'Disposed' : asset.in_service_date ? 'Cost less book depreciation' : 'Not in service yet'} />
-        <Metric label="Remaining months" value={f.remainingMonths == null ? '—' : String(f.remainingMonths)} sub={`Of a ${asset.useful_life_months}-month life`} />
+        <Metric label="Basis" value={money(Number(asset.basis))} sub={off ? `${offBooksLabel(asset)}: ${offBooksReason(asset).short.toLowerCase()}` : Number(asset.capitalized_costs) > 0 ? `Includes ${money(Number(asset.capitalized_costs))} capitalized` : 'Hardware'} />
+        <Metric label="Book NBV" value={off ? '—' : money(Number(asset.nbv_book))} sub={off ? offBooksReason(asset).short : `Accumulated ${money(Number(asset.accumulated_book))}`} />
+        <Metric label="Tax NBV" value={off ? '—' : money(Number(asset.nbv_tax))} sub={off ? offBooksReason(asset).short : `Accumulated ${money(Number(asset.accumulated_tax))}`} />
+        <Metric label="Capitalized" value={money(Number(asset.capitalized_costs))} sub={`${asset.capex_events.length} ${asset.capex_events.length === 1 ? 'entry' : 'entries'}`} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -229,18 +270,11 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
           {asset.notes && <p className="mt-3 text-sm text-muted-foreground">{asset.notes}</p>}
         </ShellSection>
 
-        <ShellSection title="Capitalized costs" description="Installation, shipping and spares booked into the asset (R8). Each is a journal entry on its cost account.">
-          <p className="text-2xl font-semibold tracking-tight tabular-nums">{money(Number(asset.capitalized_costs ?? 0))}</p>
-          <p className="mt-1 text-caption text-muted-foreground">
-            Capitalized to date. The schedule below depreciates the hardware cost; a capitalized cost depreciates from the month it is booked, in the ledger.
-          </p>
-        </ShellSection>
+        <ValuationCard asset={asset} />
       </div>
 
-      <ShellSection title="Depreciation schedule" description="Straight line to salvage on the hardware cost, month by month from the in-service month.">
-        {lines.length === 0
-          ? <EmptyState compact>{asset.in_service_date ? 'Nothing to depreciate.' : 'The schedule starts once the asset has an in-service date.'}</EmptyState>
-          : <DepreciationTable lines={lines} convention={asset.depreciation_convention} lifeMonths={asset.useful_life_months} />}
+      <ShellSection title="Capitalized costs" description="Installation, shipping and spares booked into the asset (R8), each from the month it was posted. Each joins the basis and depreciates prospectively.">
+        <CapexEventsTable events={asset.capex_events} />
       </ShellSection>
 
       <ShellSection title="Events" description="Downtime is the uptime input (Q9): there is no monitoring feed, so record it here.">
@@ -293,7 +327,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
 }
 
 /** Record a downtime, maintenance, RMA, relocation or note against the asset. */
-function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: GpuAsset; onDone: () => void }) {
+function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: ValuedAsset; onDone: () => void }) {
   const empty: EventForm = { kind: 'downtime', starts_at: nowLocalInput(), ends_at: '', gpus_affected: '', cause: '' }
   const [form, setForm] = useState<EventForm>(empty)
   const [error, setError] = useState<string | null>(null)
@@ -302,12 +336,18 @@ function EventRecorder({ fetcher, asset, onDone }: { fetcher: Fetcher; asset: Gp
 
   async function record(e: React.FormEvent) {
     e.preventDefault()
+    // Checked before anything is converted or the form goes busy: a bad value is a message, not a throw.
+    const invalid = eventFormError(form)
+    if (invalid) { setError(invalid); return }
     setBusy(true); setError(null)
-    const r = await send(fetcher, fleetPaths.events(asset.id), 'POST', eventBody(form))
-    setBusy(false)
-    if (!r.ok) { setError(r.error); return }
-    setForm(empty)
-    onDone()
+    try {
+      const r = await send(fetcher, fleetPaths.events(asset.id), 'POST', eventBody(form))
+      if (!r.ok) { setError(r.error); return }
+      setForm(empty)
+      onDone()
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

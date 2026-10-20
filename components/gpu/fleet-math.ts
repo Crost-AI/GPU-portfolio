@@ -1,102 +1,114 @@
-// ── GPU fleet (P5) ── The figures the fleet pages show, from the register rows the fleet routes
-// return. Pure, so the register, the asset page, the lead page and /fleet compute them one way.
+// ── GPU fleet (P5) ── Presentation helpers for the fleet pages. No depreciation is computed here:
+// every book and tax figure is the server's valuation (lib/gpu/valuation.ts, returned by the assets
+// routes for ?as_of), so the register, the asset page, the lead page and /fleet show the same numbers
+// the close books from. This file only adds them up and decides what each row offers.
 //
-// Book depreciation is lib/gpu/depreciation.ts's straight line on the hardware cost. The register
-// rows carry capitalized costs as one total, not by the month each was booked, so they are added to
-// NBV at cost: their depreciation (which starts in the month each is booked) is not netted here.
-// That is exact until the first month-end after a capex; the ledger is the authority after that.
-//
-// Book value is only what the ledger holds. An asset is BOOKED once its purchase entry is linked
-// (purchase_entry_id), the client-side half of assetLedgerState in lib/gpu/assets.ts (a live
-// gpu-asset:<id>: entry). Until then its cost is PLANNED: shown on its own, never in NBV or the
-// fleet NBV totals, and never depreciated, whatever its in-service date. The server's nbv_book
-// replaces this rule when it lands (P5-2b).
+// OFF THE BOOKS: a planned asset (status 'planned', the route's not-purchased state) or one whose
+// purchase entry is not linked (the #94 recovery case). The valuation reports both at their full basis
+// with nothing depreciated, but the ledger holds nothing linked to them, so their basis is shown in the
+// Planned column (captioned Planned or Unbooked) and kept out of the book and tax totals. If the route
+// comes to report 0 for an unbooked asset, the purchase_entry_id half of this rule can go.
 
-import { depreciableFromAsset, depreciationSchedule, monthEnd, nbvAsOf, type DepreciationLine } from '@/lib/gpu/depreciation'
-import type { GpuAsset, GpuAssetStatus } from '@/lib/gpu/types'
+import type { GpuAssetRow, GpuAssetStatus } from '@/lib/gpu/types'
+import type { AssetValuation } from '@/lib/gpu/valuation'
 import { todayLocalIso } from '@/lib/local-date'
 
-/** Today in the user's own time zone: the default entry date and the NBV as-of (not the UTC date). */
+/** A register row with its valuation as of a date, as GET /api/fleet/assets(/[id])?as_of returns it. */
+export type ValuedAsset = GpuAssetRow & AssetValuation
+
+/** Today in the user's own time zone: the default as-of and entry date (not the UTC date). */
 export const todayIso = todayLocalIso
 
-/** Is anything booked for the asset? Its purchase entry is linked. See the note above. */
-export const isBooked = (a: Pick<GpuAsset, 'purchase_entry_id'>) => !!a.purchase_entry_id
+export const isPlanned = (a: Pick<GpuAssetRow, 'status'>) => a.status === 'planned'
 
-/** What a register row cost: the hardware plus everything capitalized into it. */
-export const assetCost = (a: Pick<GpuAsset, 'hardware_cost' | 'capitalized_costs'>) =>
-  round2(Number(a.hardware_cost) + Number(a.capitalized_costs ?? 0))
+/** Planned, or not linked to a purchase entry: its basis is not counted as book or tax value. */
+export const isOffBooks = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>) => isPlanned(a) || !a.purchase_entry_id
+
+/** What an off-the-books row is called: planned (not purchased) or unbooked (purchase not linked). */
+export const offBooksLabel = (a: Pick<GpuAssetRow, 'status'>) => (isPlanned(a) ? 'Planned' : 'Unbooked')
+
+/**
+ * Why an off-the-books asset shows no book or tax value. An unbooked asset may have its purchase
+ * posted (the #94 recovery case: booked, but the link to the asset was not made), so it is not
+ * "nothing booked": the entry is not linked, and its value is not counted until it is.
+ */
+export function offBooksReason(a: Pick<GpuAssetRow, 'status'>): { short: string; long: string } {
+  return isPlanned(a)
+    ? { short: 'Not purchased yet', long: 'Planned: the purchase is not booked yet, so the asset has no book or tax value. Its basis is shown at cost.' }
+    : {
+        short: 'Purchase not linked',
+        long: 'Unbooked: the purchase entry is not linked to this asset, so its value is not counted until it is. Book the purchase again to link it.',
+      }
+}
+
+/**
+ * Was the asset disposed of by the date it is valued as of? The valuation's own rule (valueAssets:
+ * disposed_on <= as_of gives NBV 0). An asset disposed later is still on the books at an earlier date,
+ * so its figures count then, whatever its status today. Write actions follow the current status.
+ */
+export const disposedAsOf = (a: Pick<ValuedAsset, 'disposed_on' | 'valuation_as_of'>) =>
+  !!a.disposed_on && a.disposed_on <= a.valuation_as_of
 
 const round2 = (n: number) => Math.round(n * 100) / 100
-
-export interface AssetFigures {
-  cost: number
-  /** False while the purchase is not booked: the cost is planned, with no NBV and no depreciation. */
-  booked: boolean
-  /** Book depreciation charged through `asOf` (month ends on or before it). */
-  accumulated: number
-  /** Null once disposed: a disposed asset has no book value. */
-  nbv: number | null
-  /** Months of the schedule whose month end is after `asOf`; null before the asset is in service. */
-  remainingMonths: number | null
-}
-
-/** The month-by-month book schedule of the hardware cost; empty until it is booked and in service. */
-export function assetSchedule(a: GpuAsset): DepreciationLine[] {
-  const d = isBooked(a) ? depreciableFromAsset(a) : null
-  return d ? depreciationSchedule(d) : []
-}
-
-export function assetFigures(a: GpuAsset, asOf: string): AssetFigures {
-  const cost = assetCost(a)
-  if (!isBooked(a)) return { cost, booked: false, accumulated: 0, nbv: null, remainingMonths: null }
-  const d = depreciableFromAsset(a)
-  if (!d) return { cost, booked: true, accumulated: 0, nbv: a.status === 'disposed' ? null : cost, remainingMonths: null }
-  const hardwareNbv = nbvAsOf(d, asOf)
-  const accumulated = round2(Number(a.hardware_cost) - hardwareNbv)
-  const remainingMonths = depreciationSchedule(d).filter(l => monthEnd(l.month) > asOf).length
-  return {
-    cost,
-    booked: true,
-    accumulated,
-    nbv: a.status === 'disposed' ? null : round2(hardwareNbv + Number(a.capitalized_costs ?? 0)),
-    remainingMonths: a.status === 'disposed' ? 0 : remainingMonths,
-  }
-}
 
 export interface FleetTotals {
   assets: number
   gpus: number
-  /** Booked cost: what the ledger holds for the fleet. */
-  cost: number
-  /** Cost of assets whose purchase is not booked yet. Never part of `cost` or `nbv`. */
+  /** Basis of the assets on the books: hardware plus capitalized costs. */
+  basis: number
+  /** Basis of planned and unbooked assets (isOffBooks). Never part of the book or tax figures. */
   planned: number
-  nbv: number
+  accumulatedBook: number
+  nbvBook: number
+  accumulatedTax: number
+  nbvTax: number
   inService: number
 }
 
-export const ZERO_TOTALS: FleetTotals = { assets: 0, gpus: 0, cost: 0, planned: 0, nbv: 0, inService: 0 }
+export const ZERO_TOTALS: FleetTotals = {
+  assets: 0, gpus: 0, basis: 0, planned: 0, accumulatedBook: 0, nbvBook: 0, accumulatedTax: 0, nbvTax: 0, inService: 0,
+}
 
 export function addTotals(a: FleetTotals, b: FleetTotals): FleetTotals {
-  return {
-    assets: a.assets + b.assets, gpus: a.gpus + b.gpus, cost: round2(a.cost + b.cost), planned: round2(a.planned + b.planned),
-    nbv: round2(a.nbv + b.nbv), inService: a.inService + b.inService,
-  }
+  const out = { ...ZERO_TOTALS }
+  for (const k of Object.keys(out) as (keyof FleetTotals)[]) out[k] = round2(a[k] + b[k])
+  return out
 }
 
-/** The fleet as it stands: every asset not disposed of. Planned cost is counted apart from book value. */
-export function fleetTotals(assets: GpuAsset[], asOf: string): FleetTotals {
-  return assets.filter(a => a.status !== 'disposed').reduce<FleetTotals>((t, a) => {
-    const f = assetFigures(a, asOf)
-    return addTotals(t, {
-      assets: 1,
-      gpus: a.gpu_count,
-      cost: f.booked ? f.cost : 0,
-      planned: f.booked ? 0 : f.cost,
-      nbv: f.nbv ?? 0,
-      inService: a.status === 'in_service' ? 1 : 0,
-    })
+/**
+ * The fleet as it stood on the valuation date, from the server's figures: every asset not disposed of
+ * by then (disposedAsOf), off-the-books apart.
+ */
+export function fleetTotals(assets: ValuedAsset[]): FleetTotals {
+  return assets.filter(a => !disposedAsOf(a)).reduce<FleetTotals>((t, a) => {
+    // Counts follow the status; only the money follows the on-books rule.
+    const counts = { assets: 1, gpus: a.gpu_count, inService: a.status === 'in_service' ? 1 : 0 }
+    return addTotals(t, isOffBooks(a)
+      ? { ...ZERO_TOTALS, ...counts, planned: Number(a.basis) }
+      : {
+          ...counts, basis: Number(a.basis), planned: 0,
+          accumulatedBook: Number(a.accumulated_book), nbvBook: Number(a.nbv_book),
+          accumulatedTax: Number(a.accumulated_tax), nbvTax: Number(a.nbv_tax),
+        })
   }, ZERO_TOTALS)
 }
+
+/**
+ * The date the server valued these rows as of (valuation_as_of), or `fallback` when there are none.
+ * Shown beside the figures, so a page says the date the server used, not the one it asked for.
+ */
+export function valuationDate(assets: Pick<ValuedAsset, 'valuation_as_of'>[], fallback: string | null = null): string | null {
+  return assets.find(a => a.valuation_as_of)?.valuation_as_of ?? fallback
+}
+
+/**
+ * Is the register valued as of a date before today? Then its totals may count an asset whose purchase
+ * was booked after that date: the route reports such an asset in the unbooked shape (nothing
+ * depreciated, NBV equal to basis), which the client cannot tell from one in service with no month end
+ * yet. TODO(gpu-P1 on_books_as_of): when the assets route reports whether each asset was on the books
+ * at the as-of date, count only those and drop this caption.
+ */
+export const mayCountLaterPurchases = (asOf: string | null, today: string = todayIso()) => !!asOf && asOf < today
 
 /** The status moves a person may make (the PATCH route's OPERATIONAL_MOVES); the rest are the lifecycle's. */
 export const STATUS_MOVES: Partial<Record<GpuAssetStatus, GpuAssetStatus[]>> = {
@@ -109,7 +121,7 @@ export const STATUS_MOVES: Partial<Record<GpuAssetStatus, GpuAssetStatus[]>> = {
  * The moves on offer for this row. An ordered asset whose purchase is not linked yet is inside the
  * purchase's claim window, where the route refuses any status edit, so none is offered.
  */
-export function statusMoves(a: Pick<GpuAsset, 'status' | 'purchase_entry_id'>): GpuAssetStatus[] {
+export function statusMoves(a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>): GpuAssetStatus[] {
   if (a.status === 'ordered' && !a.purchase_entry_id) return []
   return STATUS_MOVES[a.status] ?? []
 }
@@ -117,11 +129,11 @@ export function statusMoves(a: Pick<GpuAsset, 'status' | 'purchase_entry_id'>): 
 export const MOVE_LABEL: Partial<Record<GpuAssetStatus, string>> = { in_service: 'Put in service', offline: 'Take offline' }
 
 /** Purchase is the route's recovery path too: offered for any unlinked asset not disposed of. */
-export const offersPurchase = (a: Pick<GpuAsset, 'status' | 'purchase_entry_id'>) => !a.purchase_entry_id && a.status !== 'disposed'
+export const offersPurchase = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>) => !a.purchase_entry_id && a.status !== 'disposed'
 /** Dispose and capitalize act on a booked asset; the routes refuse both before the purchase is linked. */
-export const offersBookedActions = (a: Pick<GpuAsset, 'status' | 'purchase_entry_id'>) => !!a.purchase_entry_id && a.status !== 'disposed'
+export const offersBookedActions = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>) => !!a.purchase_entry_id && a.status !== 'disposed'
 /** Delete: a planned asset with nothing booked (the route's rule, as far as the row shows it). */
-export const offersDelete = (a: Pick<GpuAsset, 'status' | 'purchase_entry_id'>) => a.status === 'planned' && !a.purchase_entry_id
+export const offersDelete = (a: Pick<GpuAssetRow, 'status' | 'purchase_entry_id'>) => a.status === 'planned' && !a.purchase_entry_id
 
 /**
  * Who may press a button that books to the ledger: these routes need fleet write (the row) and
