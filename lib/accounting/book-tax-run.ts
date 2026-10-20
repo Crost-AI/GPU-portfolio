@@ -383,6 +383,15 @@ export async function postTaxAdjustments(
     return { taxYear, proposals, entryIds: [], skipped: built.skipped, voided: 0, missingAccounts: [], ...rerun }
   }
 
+  // ── GPU fleet (P1c) ── The fleet differences depend on each other: a disposal clears the server's
+  // cumulative difference INCLUDING this year's depreciation difference, so posting one without the
+  // other leaves a balance on a sold server. If any cannot be built, post none of the run — and
+  // void nothing, so the last complete run stands.
+  const fleetSkipped = built.skipped.filter(k => k.kind === 'depreciation' || k.kind === 'disposal_basis')
+  if (fleetSkipped.length > 0) {
+    return { error: `Nothing was posted for ${taxYear}: ${fleetSkipped.map(k => k.reason).join(' ')}` }
+  }
+
   const voided = await voidPriorTaxRun(admin, fundId, group, taxYear)
 
   const sourceRef = taxSourceRef(taxYear)

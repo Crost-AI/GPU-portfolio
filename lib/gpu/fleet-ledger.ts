@@ -39,13 +39,6 @@ export interface AssetLedger {
   capex: LedgerCapexEvent[]
   /** Depreciation posted and unreversed as of `asOf`, by month. */
   posted: Map<string, number>
-  /**
-   * Depreciation as the P&L carries it: each posted gpu-dep entry and each posted reversal of one
-   * dated on or before `asOf`, by JOURNAL date and signed (expense positive). A catch-up posted in
-   * January for December is January's expense here, and a reversal is the year it is dated in —
-   * unlike `posted`, which is the schedule-month state the close works from.
-   */
-  depreciation: { entry_date: string; amount: number }[]
   /** All time, per month: a live unreversed gpu-dep entry (posted or draft), and how many were reversed. */
   refs: Map<string, { live: boolean; reversed: number }>
 }
@@ -94,7 +87,6 @@ export async function loadFleetLedger(
 
     const posted = new Map<string, number>()
     const refs = new Map<string, { live: boolean; reversed: number }>()
-    const depreciation: { entry_date: string; amount: number }[] = []
     const depPrefix = `gpu-dep:${asset.id}:`
     for (const e of mine(depPrefix)) {
       const month = String(e.source_ref).slice(depPrefix.length, depPrefix.length + 7)
@@ -103,15 +95,8 @@ export async function loadFleetLedger(
       else ref.live = true
       refs.set(month, ref)
       if (e.status === 'posted' && inPeriod(e) && !reversedAsOf(e)) posted.set(month, (cents(posted.get(month) ?? 0) - to(e, accumulatedAccountId)) / 100)
-      if (e.status === 'posted' && inPeriod(e)) {
-        depreciation.push({ entry_date: String(e.entry_date), amount: -to(e, accumulatedAccountId) / 100 })
-        if (reversedAsOf(e)) {
-          const r = reversalOf.get(e.id)
-          depreciation.push({ entry_date: String(r.entry_date), amount: -to(r, accumulatedAccountId) / 100 })
-        }
-      }
     }
-    out.push({ asset, costAccountId, accumulatedAccountId, purchase: purchase && { id: purchase.id, entry_date: purchase.entry_date }, purchaseReversed, capex: capex.filter(c => c.amount !== 0), posted, depreciation, refs })
+    out.push({ asset, costAccountId, accumulatedAccountId, purchase: purchase && { id: purchase.id, entry_date: purchase.entry_date }, purchaseReversed, capex: capex.filter(c => c.amount !== 0), posted, refs })
   }
   const assetAccountIds = new Set(chart.filter(a => /^16[05]0-/.test(a.code)).map(a => a.id))
   return { assets: out, assetAccountIds }

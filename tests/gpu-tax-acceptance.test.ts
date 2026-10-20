@@ -210,3 +210,49 @@ describe('servers whose differences offset still each get theirs (fleet total ni
     expect(await k1Tied(2027)).toMatchObject({ businessDeductions: 7_500 + 40_000 })
   })
 })
+
+describe('a manual depreciation correction is book depreciation too', () => {
+  it('a manual Dr 5300 / Cr 1650 correction, and its reversal the next year, count in the years they are dated', async () => {
+    s.m = memoryAdmin(gpuTaxYear({ year2028: {} }))
+    const { je, allocate } = ledgerWriter(s.m.tables)
+    // 2,000 of extra book depreciation on A in 2027, by hand; reversed on 15 January 2028.
+    const fix = je('manual', '2027-12-31', null, [['g-5300', 2_000], [accA, -2_000]])
+    allocate('partnership_expense', '2027-12-30', 2_000)
+    je('reversal', '2028-01-15', `reversal:${fix}`, [['g-5300', -2_000], [accA, 2_000]])
+    allocate('partnership_expense', '2028-01-15', -2_000)
+
+    const r2027 = await run(2027)
+    // A's books carry 20,000 (18,000 generated + 2,000 by hand) against MACRS 20,000: no difference.
+    expect(r2027.proposals.find(p => p.kind === 'depreciation')?.assets?.map(a => [a.assetId, a.book, a.tax])).toEqual([[B, 13_500, 0]])
+    expect(await k1Tied(2027)).toMatchObject({ businessDeductions: 7_500 + 20_000 })
+    await run(2028)
+    // 2028's P&L: 18,000 less the 2,000 reversal. The return deducts MACRS year 2, 32,000.
+    expect(await k1Tied(2028)).toMatchObject({ businessDeductions: 32_000 })
+    expect(both(accA)).toBe(-(20_000 + 32_000))
+  })
+})
+
+describe('a fleet run that cannot build every difference posts none of them', () => {
+  it('no expense weights but gain weights: refuses before voiding or posting, and the preview says why', async () => {
+    s.m = memoryAdmin(gpuTaxYear({ year2028: { sellA: true } }))
+    await run(2027)
+    await run(2028)
+    const t = s.m.tables
+    const live2028 = () => t.journal_entries.filter((e: any) => e.book === 'tax' && e.source_ref === 'tax:2028' && e.status === 'posted').map((e: any) => e.id)
+    const before = live2028()
+    expect(before).toHaveLength(2)
+    // The close's 2028 expense allocation is gone (say, the books' depreciation had run out): the
+    // disposal gain still has partners, the depreciation difference has none to follow.
+    const ids = new Set(t.journal_entries.filter((e: any) => e.source_ref === 'allocation:partnership_expense:2028-12-31').map((e: any) => e.id))
+    t.journal_entries = t.journal_entries.filter((e: any) => !ids.has(e.id))
+    t.journal_postings = t.journal_postings.filter((p: any) => !ids.has(p.journal_entry_id))
+
+    const preview = await run(2028, { preview: true })
+    expect(preview.skipped.map(k => k.kind)).toEqual(['depreciation'])
+    const posted = await postTaxAdjustments(s.m.admin, 'f', GROUP, 'u', 2028)
+    expect(posted).toEqual({ error: expect.stringMatching(/^Nothing was posted for 2028: No partner was allocated this year’s expenses/) })
+    // The last complete run stands: nothing voided, nothing new.
+    expect(live2028()).toEqual(before)
+    expect(both(accA)).toBe(0)
+  })
+})

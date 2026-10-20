@@ -4,10 +4,12 @@
 // the return takes the asset's own tax method (tax-depreciation.ts). The tax book records the
 // difference, so actual + tax is tax depreciation:
 //
-//   - depreciation: the year's tax depreciation less the book depreciation the year's P&L carries —
-//     the gpu-dep entries and their reversals by JOURNAL date, not by the schedule month in their
-//     ref. A December charge the close caught up in January is January's expense on the K-1, so it
-//     is January's book figure here; measuring it by its ref would deduct it twice.
+//   - depreciation: the year's tax depreciation less the book depreciation the year's P&L carries
+//     for the server — every posted actual-book entry that moves both its 1650 account and the
+//     depreciation expense account (the close's gpu-dep entries, a manual correction, the reversal
+//     of either), by JOURNAL date, not by the schedule month in a ref. A December charge the close
+//     caught up in January is January's expense on the K-1, so it is January's book figure here;
+//     measuring it any other way would deduct it twice.
 //   - disposal basis: a server disposed of in the year leaves the books with book accumulated
 //     depreciation; for tax it left with tax accumulated depreciation, so the tax gain differs from
 //     the book gain by the cumulative difference. Reversing it into the gain also clears the server's
@@ -69,8 +71,10 @@ export async function loadFleetTaxYear(
 ): Promise<FleetTaxYear> {
   const yearStart = `${taxYear}-01-01`
   const yearEnd = `${taxYear}-12-31`
-  const [{ assets }, taxEntries] = await Promise.all([
+  const [{ assets }, depreciationAccounts, taxEntries] = await Promise.all([
     loadFleetLedger(admin, fundId, vehicleId, yearEnd),
+    fetchAllRows<{ id: string }>((f, t) => (admin as any).from('chart_of_accounts').select('id')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('type', 'expense').eq('subtype', 'depreciation').range(f, t)),
     fetchAllRows<any>((f, t) => (admin as any).from('journal_entries').select('id, source_ref, source_type, journal_postings(account_id, amount)')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'tax').neq('status', 'void').like('source_ref', 'tax:%').range(f, t)),
   ])
@@ -88,6 +92,28 @@ export async function loadFleetTaxYear(
     }
   }
 
+  // Book depreciation per server and year: the 1650 leg of each posted actual-book entry, dated
+  // through year end, that also posts to depreciation expense. A disposal (1650 against cost and
+  // the gain) is not depreciation and never touches expense, so it is not counted.
+  const expenseIds = new Set(depreciationAccounts.map(a => a.id))
+  const accumulatedIds = assets.map(l => l.accumulatedAccountId).filter((id): id is string => !!id)
+  const movements = accumulatedIds.length && expenseIds.size
+    ? (await fetchAllRows<any>((f, t) => (admin as any).from('journal_postings')
+        .select('journal_entry_id, account_id, amount, journal_entries!inner(entry_date, status, book)')
+        .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('book', 'actual')
+        .in('account_id', [...accumulatedIds, ...expenseIds]).order('id').range(f, t)))
+      .filter(r => r.journal_entries?.status === 'posted' && r.journal_entries?.book === 'actual' && String(r.journal_entries?.entry_date) <= yearEnd)
+    : []
+  const expensed = new Set(movements.filter(r => expenseIds.has(r.account_id)).map(r => r.journal_entry_id))
+  const bookByAccount = new Map<string, Map<number, number>>()
+  for (const r of movements) {
+    if (expenseIds.has(r.account_id) || !expensed.has(r.journal_entry_id)) continue
+    const byYear = bookByAccount.get(r.account_id) ?? new Map<number, number>()
+    const y = yearOf(String(r.journal_entries.entry_date))
+    byYear.set(y, (byYear.get(y) ?? 0) - cents(r.amount))
+    bookByAccount.set(r.account_id, byYear)
+  }
+
   const out: FleetTaxYear = { depreciation: [], disposals: [], unposted: [], laterDisposals: [] }
   for (const l of assets) {
     const a = l.asset
@@ -95,8 +121,7 @@ export async function loadFleetTaxYear(
     if (!l.purchase || !acct || !a.in_service_date || a.tax_method === 'book') continue
     if (a.disposed_on && a.disposed_on < yearStart) continue
     const tax = taxDepreciationByYear(l)
-    const book = new Map<number, number>()
-    for (const d of l.depreciation) book.set(yearOf(d.entry_date), (book.get(yearOf(d.entry_date)) ?? 0) + cents(d.amount))
+    const book = bookByAccount.get(acct) ?? new Map<number, number>()
     const bookInYear = book.get(taxYear) ?? 0
     const taxInYear = tax.get(taxYear) ?? 0
     const line = (bookC: number, taxC: number): FleetDepreciationDifference => ({
