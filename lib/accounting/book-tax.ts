@@ -36,6 +36,7 @@
 
 import { roundCents } from './ledger'
 import { bucketForSourceType, computeCapitalAccounts, type CapitalPosting } from './capital-account'
+import type { FleetDepreciationDifference, FleetTaxYear } from '@/lib/gpu/tax-adjustments'
 import { carryAccrual, carryTarget, carryTargetShares, type DatedContribution, type LpEconomics, type VehicleCarryTerms } from './carry'
 
 export type TaxDifferenceKind =
@@ -44,6 +45,9 @@ export type TaxDifferenceKind =
   | 'carry_on_unrealized'
   | 'organizational_709'
   | 'syndication'
+  // ── GPU fleet (P1c) ── per-server, lib/gpu/tax-adjustments.ts
+  | 'depreciation'
+  | 'disposal_basis'
 
 /** Timing differences reverse; permanent ones never do. The distinction drives the disclosure. */
 export const DIFFERENCE_IS_PERMANENT: Record<TaxDifferenceKind, boolean> = {
@@ -52,6 +56,8 @@ export const DIFFERENCE_IS_PERMANENT: Record<TaxDifferenceKind, boolean> = {
   carry_on_unrealized: false,
   organizational_709: false,
   syndication: true,
+  depreciation: false,
+  disposal_basis: false,
 }
 
 export const DIFFERENCE_LABEL: Record<TaxDifferenceKind, string> = {
@@ -60,6 +66,8 @@ export const DIFFERENCE_LABEL: Record<TaxDifferenceKind, string> = {
   carry_on_unrealized: 'Carried interest accrued on unrealized gains',
   organizational_709: 'Organizational costs capitalised under §709',
   syndication: 'Syndication costs — permanently non-deductible',
+  depreciation: 'Tax depreciation (MACRS / bonus) in place of book depreciation',
+  disposal_basis: 'Gain on disposal at tax basis',
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +162,8 @@ export interface ProposedAdjustment {
   label: string
   /** Why this number, in the terms a preparer would use. Rendered next to the proposal. */
   rationale: string
+  /** ── GPU fleet (P1c) ── The per-server lines a depreciation or disposal-basis difference sums. */
+  assets?: FleetDepreciationDifference[]
 }
 
 /**
@@ -261,6 +271,44 @@ export function proposeAdjustments(year: ActualBookYear): ProposedAdjustment[] {
     })
   }
 
+  return out
+}
+
+/**
+ * ── GPU fleet (P1c) ── A GPU SPV's per-server differences as proposals: one for depreciation, one
+ * for the disposal basis, each carrying its servers. `amount` is book income over tax income, as
+ * everywhere here: tax depreciating more than book is positive; a tax gain above the book gain negative.
+ */
+export function proposeFleetAdjustments(fleet: FleetTaxYear): ProposedAdjustment[] {
+  const out: ProposedAdjustment[] = []
+  const sum = (ls: FleetDepreciationDifference[]) => roundCents(ls.reduce((s, l) => s + l.difference, 0))
+  const depreciation = sum(fleet.depreciation)
+  if (depreciation !== 0) {
+    out.push({
+      kind: 'depreciation',
+      amount: depreciation,
+      permanent: false,
+      label: DIFFERENCE_LABEL.depreciation,
+      rationale:
+        'The books depreciate each server straight line to salvage; the return takes its tax method ' +
+        '(MACRS, bonus or tax straight line, half-year convention, no salvage). Reverses over the ' +
+        'recovery period or on disposal.',
+      assets: fleet.depreciation,
+    })
+  }
+  const disposal = sum(fleet.disposals)
+  if (disposal !== 0) {
+    out.push({
+      kind: 'disposal_basis',
+      amount: roundCents(-disposal),
+      permanent: false,
+      label: DIFFERENCE_LABEL.disposal_basis,
+      rationale:
+        'A server disposed of in the year left the books at its book value and the return at its ' +
+        'tax value; the cumulative depreciation difference moves into the gain, which reverses it.',
+      assets: fleet.disposals,
+    })
+  }
   return out
 }
 

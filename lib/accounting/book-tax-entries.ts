@@ -14,6 +14,7 @@
 // receive it (see chart.ts).
 
 import { roundCents, assertBalanced } from './ledger'
+import { allocateAmount } from './allocation'
 import type { JournalEntry, Posting } from './types'
 import type { CapitalAccountMap } from './entries'
 import type { ProposedAdjustment, TaxDifferenceKind } from './book-tax'
@@ -47,6 +48,8 @@ export const TAX_SOURCE_TYPE: Record<TaxDifferenceKind, string> = {
   carry_on_unrealized: 'tax_adj_carry',
   organizational_709: 'tax_adj_org_709',
   syndication: 'tax_adj_syndication',
+  depreciation: 'tax_adj_depreciation',
+  disposal_basis: 'tax_adj_disposal',
 }
 
 function finalize(base: TaxEntryBase, sourceType: string, postings: Posting[]): JournalEntry {
@@ -212,6 +215,63 @@ export function buildSyndicationCostEntry(
   ])
 }
 
+/**
+ * ── GPU fleet (P1c) ── What a GPU SPV's depreciation and disposal-basis entries post to, and how
+ * each spreads across partners: `weights` per kind are each partner's share of the bucket the close
+ * allocated that P&L through (partnership expenses for depreciation, realized gains for a disposal).
+ */
+export interface FleetTaxAccounts {
+  depreciationExpenseId: string
+  disposalGainId: string
+  /** 3200, the side of a partner allocation that is not capital, as the close books it. */
+  bridgeId: string
+  capMap: CapitalAccountMap
+  weights: Partial<Record<'depreciation' | 'disposal_basis', Map<string, number>>>
+}
+
+/**
+ * ── GPU fleet (P1c) ── One server-by-server difference into the tax book, allocated as the close
+ * would have allocated it: the P&L line (`pnl`, debit-positive) against each server's 1650 account,
+ * and the same amount from the bridge into each partner's capital by `weights`. Without the capital
+ * lines the K-1 would read the extra deduction off the P&L while every partner's tax capital missed
+ * it — a tie-out variance on every K-1.
+ *
+ *   depreciation (tax more than book by D): Dr 5300 D / Cr 1650-<server>; Dr capital / Cr 3200.
+ *   disposal basis (tax gain above book by C): Dr 1650-<server> / Cr 4500 C; Dr 3200 / Cr capital.
+ */
+export function buildFleetDifferenceEntry(
+  base: TaxEntryBase,
+  kind: 'depreciation' | 'disposal_basis',
+  servers: { accumulatedAccountId: string; difference: number }[],
+  accts: FleetTaxAccounts,
+  currency = 'USD',
+): JournalEntry {
+  const sign = kind === 'depreciation' ? 1 : -1
+  const postings: Posting[] = []
+  let pnl = 0
+  for (const s of servers) {
+    const a = roundCents(sign * s.difference)
+    if (a === 0) continue
+    postings.push({ accountId: s.accumulatedAccountId, amount: roundCents(-a), currency, lpEntityId: null })
+    pnl = roundCents(pnl + a)
+  }
+  postings.push({ accountId: kind === 'depreciation' ? accts.depreciationExpenseId : accts.disposalGainId, amount: pnl, currency, lpEntityId: null })
+  const weights = accts.weights[kind]
+  const owners = Array.from(weights?.entries() ?? []).map(([lpEntityId, w]) => ({ lpEntityId, commitment: Math.abs(w) }))
+  if (owners.some(o => o.commitment > 0)) {
+    let allocated = 0
+    for (const [lpEntityId, share] of Array.from(allocateAmount(pnl, owners).entries())) {
+      if (share === 0) continue
+      const accountId = accts.capMap.get(lpEntityId)
+      if (!accountId) throw new Error(`No capital account for LP entity ${lpEntityId}`)
+      postings.push({ accountId, amount: share, currency, lpEntityId })
+      allocated = roundCents(allocated + share)
+    }
+    postings.push({ accountId: accts.bridgeId, amount: roundCents(-allocated), currency, lpEntityId: null })
+  }
+  return finalize(base, TAX_SOURCE_TYPE[kind], postings)
+}
+
 export interface BuildTaxEntriesInput {
   base: TaxEntryBase
   proposals: ProposedAdjustment[]
@@ -222,6 +282,8 @@ export interface BuildTaxEntriesInput {
   unrealized?: MarkReversalSplit
   /** The same for currency translation, with the accounts it posts to. */
   fx?: MarkReversalSplit & { fxIncomeId: string; fxAssetId: string }
+  /** ── GPU fleet (P1c) ── Required only when a depreciation or disposal-basis difference is present. */
+  fleet?: FleetTaxAccounts
   currency?: string
 }
 
@@ -280,6 +342,23 @@ export function buildTaxAdjustmentEntries(input: BuildTaxEntriesInput): {
         break
       case 'syndication':
         entries.push(buildSyndicationCostEntry({ ...base, memo: p.label }, p.amount, accounts, currency))
+        break
+      case 'depreciation':
+      case 'disposal_basis':
+        if (!input.fleet || !p.assets) {
+          skipped.push({ kind: p.kind, reason: 'A fleet difference needs its servers and the GPU chart accounts (5300, 4500, 3200).' })
+          break
+        }
+        if (!Array.from(input.fleet.weights[p.kind]?.values() ?? []).some(w => w !== 0)) {
+          skipped.push({
+            kind: p.kind,
+            reason:
+              'No partner was allocated this year’s ' + (p.kind === 'depreciation' ? 'expenses' : 'gains or expenses') +
+              ', so there is nothing to split the difference by. Run the close for the year, then rerun.',
+          })
+          break
+        }
+        entries.push(buildFleetDifferenceEntry({ ...base, memo: p.label }, p.kind, p.assets, input.fleet, currency))
         break
     }
   }
