@@ -1,0 +1,486 @@
+// ── GPU fleet (P5) ── The Waterfall page's requests and the arithmetic it does on their replies.
+// Pure: no React, no fetch of its own. The page and the tests share these builders, so a field the
+// page sends is the field the test checks.
+
+import type { DistributionPreview, DeclaredDistribution } from '@/lib/accounting/distributions'
+import type { PrefLedgerRow as EngineLedgerRow } from '@/lib/gpu/waterfall'
+
+/** A `fetch` that the page pins to its vehicle; the tests pass a fake. */
+export type Fetcher = (path: string, init?: RequestInit) => Promise<Response>
+
+export type SendResult<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; error: string; code?: string }
+
+/** One request, its JSON reply, and the route's `{ error, code }` on a refusal. Never throws. */
+export async function send<T>(fetcher: Fetcher, path: string, method: 'GET' | 'POST' | 'PATCH' | 'PUT' = 'GET', body?: unknown): Promise<SendResult<T>> {
+  let res: Response
+  try {
+    res = await fetcher(path, body === undefined ? { method } : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  } catch {
+    return { ok: false, status: 0, error: 'Could not reach the server. Check the connection and try again.' }
+  }
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      error: typeof data?.error === 'string' ? data.error : `The request failed (${res.status}).`,
+      ...(typeof data?.code === 'string' ? { code: data.code } : {}),
+    }
+  }
+  return { ok: true, status: res.status, data: data as T }
+}
+
+/**
+ * A fetcher bound to one vehicle by name, the way `useLedgerFetch` binds the context's vehicle —
+ * but from the page's own prop, so the first render cannot ask about whichever vehicle the context
+ * held before this page pinned it.
+ */
+export function vehicleFetcher(vehicle: string, base: Fetcher = (p, i) => fetch(p, i)): Fetcher {
+  return (path, init) => {
+    const url = path + (path.includes('?') ? '&' : '?') + 'group=' + encodeURIComponent(vehicle)
+    if (typeof init?.body !== 'string') return base(url, init)
+    try {
+      const b = JSON.parse(init.body)
+      if (b && typeof b === 'object' && b.group === undefined) return base(url, { ...init, body: JSON.stringify({ ...b, group: vehicle }) })
+    } catch { /* not JSON: send as is */ }
+    return base(url, init)
+  }
+}
+
+export const waterfallPaths = {
+  distributions: '/api/accounting/distributions',
+  prefLedger: '/api/accounting/pref-ledger',
+  waterfallTerms: '/api/accounting/waterfall-terms',
+  feeTerms: '/api/accounting/fee-terms',
+  vehicleSettings: '/api/accounting/vehicle-settings',
+}
+
+// ── Reply shapes ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The distributable-cash preview: the four fields below are present for that kind (route header).
+ * `cash` is absent only when the terms could not be replayed and the split fell back to pro-rata,
+ * which the preview's `method` and warnings say.
+ */
+export type CashPreview = DistributionPreview & {
+  available: number
+  reserve: number
+  distributable: number
+  lastReserve: number | null
+}
+
+/** A row of GET /api/accounting/distributions, as this page reads it. */
+export type HistoryRow = Pick<DeclaredDistribution, 'distributionId' | 'date' | 'description' | 'total' | 'lpTotal' | 'carryTotal' | 'status' | 'reserve' | 'splitMethod'> & {
+  tiers: DeclaredDistribution['tiers']
+  lines: { role: 'lp' | 'carry'; amount: number; settled: number }[]
+}
+
+/** A row of GET /api/accounting/pref-ledger: the engine's row, each investor named. */
+export type PrefLedgerRow = Omit<EngineLedgerRow, 'perInvestor'> & {
+  perInvestor?: (NonNullable<EngineLedgerRow['perInvestor']>[number] & { name: string })[]
+}
+
+export interface WaterfallTermsReply {
+  terms: {
+    kind: string; carryRate: number; prefRate: number
+    recipients: { lpEntityId: string; pct: number }[]
+    prefDayCount?: string; rocLpShare?: number
+  }
+  candidates: { lpEntityId: string; name: string; partnerClass?: string }[]
+}
+
+/** The waterfall-terms read, as the page holds it: a failed read is not "no terms". */
+export type TermsLoad =
+  | { state: 'loading' }
+  | { state: 'ok'; data: WaterfallTermsReply }
+  | { state: 'error'; error: string }
+
+/**
+ * May the page offer its distributable-cash editor? Only on terms it has actually read, and only
+ * when they are distributable_cash or the route's NO_CARRY (kind 'none': nothing set yet). Saving
+ * writes distributable_cash, so offering it over a failed read could overwrite, say, European terms.
+ */
+export function termsEditable(load: TermsLoad): boolean {
+  return load.state === 'ok' && (load.data.terms.kind === 'distributable_cash' || load.data.terms.kind === 'none')
+}
+
+export interface FeeTermsReply {
+  terms: {
+    basis: string; annualRate: number; frequency: string
+    /** The account subtypes the fee is charged on. No editor here, so it is sent back as read. */
+    revenueSubtypes?: string[]
+    payeeVehicleId: string | null; effectiveFrom?: string; effectiveTo?: string | null
+  } | null
+}
+
+export const CADENCES = ['monthly', 'quarterly', 'annual', 'ad_hoc'] as const
+export type Cadence = (typeof CADENCES)[number]
+
+// ── Money ──────────────────────────────────────────────────────────────────────────────────────
+
+const toCents = (n: number) => Math.round(n * 100)
+const cents = (n: number) => Math.round(n * 100) / 100
+
+/** A typed amount: commas, spaces and a leading $ allowed; blank is null, junk is NaN. */
+export function parseAmount(s: string): number | null {
+  const t = s.replace(/[\s,$]/g, '')
+  return t === '' ? null : Number(t)
+}
+
+// ── Preview and declare ────────────────────────────────────────────────────────────────────────
+
+export interface ProposalInputs {
+  /** YYYY-MM-DD: the preview's `asOf` and the declaration's `distributionDate`, one value. */
+  date: string
+  available: string
+  /** Required (Karl, Q5). Pre-filled with the last declared reserve, blank on the first. */
+  reserve: string
+  contingencyReturn: string
+  description: string
+}
+
+export type ProposalField = 'date' | 'available' | 'reserve' | 'contingencyReturn'
+
+/** The form's opening values: today, and the reserve last declared (blank when there is none). */
+export function initialInputs(lastReserve: number | null, today: string): ProposalInputs {
+  return { date: today, available: '', reserve: lastReserve == null ? '' : String(lastReserve), contingencyReturn: '', description: '' }
+}
+
+export type PreviewRequest =
+  | { ok: true; body: { action: 'preview'; available: number; reserve: number; contingencyReturn: number; asOf: string; method: 'waterfall' } }
+  | { ok: false; field: ProposalField; error: string }
+
+/** The preview body, or the field that stops it. Checked here so a bad reserve never leaves the page. */
+export function previewRequest(inputs: ProposalInputs): PreviewRequest {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(inputs.date)) return { ok: false, field: 'date', error: 'Pick the distribution date.' }
+  const available = parseAmount(inputs.available)
+  if (available == null || !Number.isFinite(available) || available <= 0) {
+    return { ok: false, field: 'available', error: 'Enter the cash available, more than 0.' }
+  }
+  const reserve = parseAmount(inputs.reserve)
+  if (reserve == null) return { ok: false, field: 'reserve', error: 'Enter the reserve to hold back; 0 if none.' }
+  if (!Number.isFinite(reserve) || reserve < 0 || reserve >= available) {
+    return { ok: false, field: 'reserve', error: 'The reserve must be at least 0 and less than the cash available.' }
+  }
+  const contingencyReturn = parseAmount(inputs.contingencyReturn) ?? 0
+  if (!Number.isFinite(contingencyReturn) || contingencyReturn < 0 || toCents(contingencyReturn) > toCents(available) - toCents(reserve)) {
+    return { ok: false, field: 'contingencyReturn', error: 'The contingency returned must be at least 0 and no more than the cash available less the reserve.' }
+  }
+  return {
+    ok: true,
+    body: { action: 'preview', available: cents(available), reserve: cents(reserve), contingencyReturn: cents(contingencyReturn), asOf: inputs.date, method: 'waterfall' },
+  }
+}
+
+/**
+ * Why the investor lines cannot be typed over, or null when they can. Only a preview with no
+ * profit share and no contingency returned can be edited:
+ * - a carry line makes the route hold every investor line to the waterfall, to the cent, whatever
+ *   the split method (declareDistribution → cashCarryMismatch), so any edit is refused;
+ * - a manual split freezes no `cash`, so a contingency return would never be stored
+ *   (wf_contingency_return) and later replays would treat that cash as preferred return.
+ */
+export function lineLock(p: Pick<CashPreview, 'carryLines' | 'tiers'>): string | null {
+  if ((p.tiers.contingencyReturn ?? 0) > 0) {
+    return 'Per-investor overrides are not supported when a contingency return is declared. These amounts are set by the waterfall; to change them, change the cash, reserve or contingency and preview again.'
+  }
+  if (p.carryLines.some(l => l.amount > 0)) {
+    return 'These amounts are set by the waterfall. To change them, change the cash, reserve or contingency and preview again.'
+  }
+  return null
+}
+
+export function linesEditable(p: Pick<CashPreview, 'carryLines' | 'tiers'>): boolean {
+  return lineLock(p) == null
+}
+
+
+/**
+ * The declaration body from an unmodified preview. `edited` investor amounts (allowed only where
+ * `lineLock` is null: no profit share, no contingency returned) make it a manual split, as on the
+ * capital-accounts page: no tiers, no character, nothing frozen from the waterfall — but the cash,
+ * the reserve and the preview's `cash` block still sent, so the route holds the lines to
+ * available − reserve.
+ */
+export function declareRequest(args: {
+  preview: CashPreview
+  asOf: string
+  description: string
+  requestKey: string
+  edits: Record<string, string> | null
+}): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  const { preview, asOf, requestKey, edits } = args
+  const manual = edits != null
+  const lock = lineLock(preview)
+  if (manual && lock) return { ok: false, error: lock }
+  // As previewed: a waterfall, or the pro-rata fallback the preview's warnings explain.
+  const waterfall = !manual && preview.method === 'waterfall'
+  const lines = manual
+    ? preview.lines.map(l => ({ lpEntityId: l.lpEntityId, amount: cents(parseAmount(edits[l.lpEntityId] ?? String(l.amount)) ?? 0) }))
+    : preview.lines.map(l => ({ lpEntityId: l.lpEntityId, amount: l.amount }))
+  if (lines.some(l => !Number.isFinite(l.amount) || l.amount < 0)) return { ok: false, error: 'Each investor amount must be 0 or more.' }
+  const carryLines = preview.carryLines.map(l => ({ lpEntityId: l.lpEntityId, amount: l.amount }))
+  if (manual) {
+    const total = lines.reduce((t, l) => t + toCents(l.amount), 0) + carryLines.reduce((t, l) => t + toCents(l.amount), 0)
+    if (total !== toCents(preview.distributable)) {
+      return { ok: false, error: `The lines total ${(total / 100).toFixed(2)}, but the cash available less the reserve is ${preview.distributable.toFixed(2)}. Adjust a line, or preview again.` }
+    }
+  }
+  return {
+    ok: true,
+    body: {
+      action: 'declare',
+      requestKey,
+      distributionDate: asOf,
+      description: args.description.trim() || null,
+      lines: lines.filter(l => l.amount > 0),
+      carryLines,
+      splitMethod: manual ? 'manual' : preview.method,
+      tiers: waterfall ? preview.tiers : null,
+      character: waterfall ? preview.suggestedCharacter : undefined,
+      available: preview.available,
+      reserve: preview.reserve,
+      contingencyReturn: preview.tiers.contingencyReturn ?? 0,
+      cash: preview.cash,
+    },
+  }
+}
+
+export const PREVIEW_AGAIN = 'The waterfall changed since you previewed; preview again.'
+
+/** What the form does with a refusal: key on the stable code first, the message otherwise. */
+export function refusal(r: { error: string; code?: string }): { text: string; field?: ProposalField; previewAgain?: boolean } {
+  if (r.code === 'WATERFALL_MISMATCH' || r.code === 'STATED_CASH_MISMATCH') return { text: PREVIEW_AGAIN, previewAgain: true }
+  if (r.code === 'RESERVE_REQUIRED') return { text: r.error, field: 'reserve' }
+  return { text: r.error }
+}
+
+/**
+ * The preview's identity, to the cent: contingency returned + preferred + return of capital +
+ * profit to investors + the manager's profit share + its return-of-capital share = available − reserve.
+ */
+export function previewIdentity(p: Pick<CashPreview, 'tiers' | 'cash' | 'available' | 'reserve'>): { sum: number; target: number; holds: boolean } {
+  const parts = [p.tiers.contingencyReturn ?? 0, p.tiers.preferred, p.tiers.returnOfCapital, p.tiers.profitToLP, p.tiers.carry, p.cash?.managerRocShare ?? 0]
+  const sum = parts.reduce((t, n) => t + toCents(n), 0)
+  const target = toCents(p.available) - toCents(p.reserve)
+  return { sum: sum / 100, target: target / 100, holds: sum === target }
+}
+
+// ── The pref ledger and the position ───────────────────────────────────────────────────────────
+
+/**
+ * The ledger's column totals; the route returns rows only. Accrued and paid are flows and sum;
+ * the closing carried-forward is the last row's, and (the first row bringing nothing forward)
+ * equals accrued − paid.
+ */
+export function prefLedgerTotals(rows: PrefLedgerRow[]): { accrued: number; paid: number; carriedForward: number } {
+  return {
+    accrued: rows.reduce((t, r) => t + toCents(r.accrued), 0) / 100,
+    paid: rows.reduce((t, r) => t + toCents(r.paid), 0) / 100,
+    carriedForward: rows.length ? rows[rows.length - 1].carriedForward : 0,
+  }
+}
+
+export interface PositionTiles {
+  contributed: number
+  capitalReturned: number
+  unreturned: number
+  prefPaid: number
+  prefCarriedForward: number
+  /** From the distributions shown, so capped like them. */
+  distributedToInvestors: number
+  dpi: number | null
+}
+
+/**
+ * The investors' position from the pref-ledger rows (one row per event, each investor's unreturned
+ * capital after it) and the history. The ledger is lifetime; `distributedToInvestors` is a sum over
+ * the history shown. A contribution raises only its investor's unreturned capital and a distribution
+ * only lowers it, so each rise is a contribution. Null without per-investor rows.
+ */
+export function positionFromLedger(rows: PrefLedgerRow[], history: Pick<HistoryRow, 'lpTotal'>[]): PositionTiles | null {
+  if (rows.some(r => !r.perInvestor)) return null
+  const last = new Map<string, number>()
+  let contributed = 0
+  for (const r of rows) {
+    for (const i of r.perInvestor!) {
+      const rise = toCents(i.unreturnedEnd) - toCents(last.get(i.lpEntityId) ?? 0)
+      if (rise > 0) contributed += rise
+      last.set(i.lpEntityId, i.unreturnedEnd)
+    }
+  }
+  const unreturned = Array.from(last.values()).reduce((t, n) => t + toCents(n), 0)
+  const distributed = history.reduce((t, h) => t + toCents(h.lpTotal), 0)
+  return {
+    contributed: contributed / 100,
+    capitalReturned: (contributed - unreturned) / 100,
+    unreturned: unreturned / 100,
+    prefPaid: rows.reduce((t, r) => t + toCents(r.paid), 0) / 100,
+    prefCarriedForward: rows.length ? rows[rows.length - 1].carriedForward : 0,
+    distributedToInvestors: distributed / 100,
+    dpi: contributed > 0 ? distributed / contributed : null,
+  }
+}
+
+/** The unreturned capital alone, for the lead page: the last row's investors, summed. */
+export function unreturnedCapital(rows: PrefLedgerRow[]): number | null {
+  return positionFromLedger(rows, [])?.unreturned ?? null
+}
+
+// ── The history ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The manager's profit share on one distribution: `declared` is what the carry lines say, `paid`
+ * what has settled against them. A declared-but-unwired distribution is paid 0 — `carryTotal` is
+ * the declared figure and must never be shown as paid.
+ */
+export function profitShare(row: Pick<HistoryRow, 'carryTotal' | 'lines'>): { paid: number; declared: number } {
+  const carry = (row.lines ?? []).filter(l => l.role === 'carry')
+  return { paid: cents(carry.reduce((t, l) => t + (l.settled ?? 0), 0)), declared: row.carryTotal }
+}
+
+/** Every distribution's profit share, summed: the cumulative tiles. */
+export function profitShareTotals(rows: Pick<HistoryRow, 'carryTotal' | 'lines'>[]): { paid: number; declared: number } {
+  return rows.reduce((t, r) => {
+    const p = profitShare(r)
+    return { paid: cents(t.paid + p.paid), declared: cents(t.declared + p.declared) }
+  }, { paid: 0, declared: 0 })
+}
+
+/**
+ * GET /api/accounting/distributions reads the newest 200 register rows (listDistributions
+ * `.limit(200)`) and drops drafts after, so a sum over the response is a sum over what is shown,
+ * never a lifetime figure.
+ */
+export const HISTORY_CAP = 200
+
+/** The caption under the cumulative tiles: what they sum, and what they leave out. */
+export function historyScope(n: number): { caption: string; truncated: boolean } {
+  return { caption: `In the ${n} ${n === 1 ? 'distribution' : 'distributions'} shown`, truncated: n >= HISTORY_CAP }
+}
+
+// ── Fee terms ──────────────────────────────────────────────────────────────────────────────────
+
+/** The fee form as typed: the rate as a percentage of revenue, dates as YYYY-MM-DD, '' for none. */
+export interface FeeForm {
+  ratePct: string
+  frequency: 'monthly' | 'quarterly'
+  /** A management company's vehicle id; '' books the fee to Due to manager (2100). */
+  payeeVehicleId: string
+  effectiveFrom: string
+  effectiveTo: string
+  /** Carried from the terms as read, so saving the rate does not reset a custom list to the
+   *  route's default (an omitted list is replaced with DEFAULT_FEE_REVENUE_SUBTYPES). Null: none set. */
+  revenueSubtypes: string[] | null
+}
+
+export function feeFormOf(terms: FeeTermsReply['terms']): FeeForm {
+  return {
+    ratePct: terms ? String(Number((terms.annualRate * 100).toFixed(6))) : '',
+    frequency: terms?.frequency === 'quarterly' ? 'quarterly' : 'monthly',
+    payeeVehicleId: terms?.payeeVehicleId ?? '',
+    effectiveFrom: terms?.effectiveFrom ?? '',
+    effectiveTo: terms?.effectiveTo ?? '',
+    revenueSubtypes: terms?.revenueSubtypes?.length ? [...terms.revenueSubtypes] : null,
+  }
+}
+
+/**
+ * The PUT body for /api/accounting/fee-terms. Only the rate is checked here (a blank one would
+ * otherwise arrive as 0); every other rule is the route's, and its 400 text is shown as it is.
+ */
+export function feeTermsBody(f: FeeForm): { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  const pct = parseAmount(f.ratePct.replace(/%$/, ''))
+  if (pct == null || !Number.isFinite(pct)) return { ok: false, error: 'Enter the fee rate as a percentage of gross revenue, e.g. 5.' }
+  return {
+    ok: true,
+    body: {
+      basis: 'gross_revenue',
+      annualRate: Number((pct / 100).toFixed(10)),
+      frequency: f.frequency,
+      payeeVehicleId: f.payeeVehicleId || null,
+      effectiveFrom: f.effectiveFrom,
+      effectiveTo: f.effectiveTo || null,
+      ...(f.revenueSubtypes ? { revenueSubtypes: f.revenueSubtypes } : {}),
+    },
+  }
+}
+
+// ── Waterfall terms ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The distributable-cash terms as typed. The two splits are each one number, the investors'
+ * share, and the manager's is what is left: X before capital is returned (rocLpShare = X/100),
+ * Y after (carryRate = 1 − Y/100).
+ */
+export interface CashTermsForm {
+  prefPct: string
+  dayCount: '30_360' | 'act_365'
+  /** Investors' share of the return-of-capital flow, %. */
+  investorsBeforePct: string
+  /** Investors' share of the profit split once capital is returned, %. */
+  investorsAfterPct: string
+  recipients: { lpEntityId: string; pct: string }[]
+}
+
+export type CashTermsField = 'prefPct' | 'investorsBeforePct' | 'investorsAfterPct' | 'recipients'
+
+const pctText = (n: number) => String(Number(n.toFixed(6)))
+
+export function cashTermsFormOf(t: WaterfallTermsReply['terms'] | null): CashTermsForm {
+  const cash = t?.kind === 'distributable_cash'
+  return {
+    prefPct: t ? pctText(t.prefRate * 100) : '',
+    dayCount: t?.prefDayCount === 'act_365' ? 'act_365' : '30_360',
+    investorsBeforePct: pctText((cash ? t.rocLpShare ?? 1 : 1) * 100),
+    investorsAfterPct: t && t.carryRate > 0 ? pctText((1 - t.carryRate) * 100) : '',
+    recipients: (t?.recipients ?? []).map(r => ({ lpEntityId: r.lpEntityId, pct: pctText(r.pct) })),
+  }
+}
+
+/** The manager's side of a split typed as the investors' %, or null while it is not a number in range. */
+export function managerPct(investorsPct: string): number | null {
+  const n = parseAmount(investorsPct.replace(/%$/, ''))
+  return n != null && Number.isFinite(n) && n >= 0 && n <= 100 ? Number((100 - n).toFixed(6)) : null
+}
+
+/**
+ * The PUT body for /api/accounting/waterfall-terms, kind distributable_cash: simple pref on
+ * unreturned capital, no catch-up. The two splits are checked here exactly as the route checks
+ * them (X above 0 and at most 100; Y above 0 and below 100); every other rule is the route's
+ * (validateCashTerms), and its 400 text is shown as it is.
+ */
+export function cashTermsBody(f: CashTermsForm):
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; field: CashTermsField; error: string } {
+  const pct = (s: string) => parseAmount(s.replace(/%$/, ''))
+  const pref = pct(f.prefPct)
+  if (pref == null || !Number.isFinite(pref)) return { ok: false, field: 'prefPct', error: 'Enter the preferred return as a percentage, e.g. 8.' }
+  const x = pct(f.investorsBeforePct)
+  // The route's own rule (validateCashTerms), in its own words: rocLpShare in (0, 1], carryRate in (0, 1).
+  if (x == null || !Number.isFinite(x) || !(x > 0 && x <= 100)) {
+    return { ok: false, field: 'investorsBeforePct', error: "Investors' share of the return of capital must be above 0 and at most 1 (1 = 100%)." }
+  }
+  const y = pct(f.investorsAfterPct)
+  if (y == null || !Number.isFinite(y) || !(y > 0 && y < 100)) {
+    return { ok: false, field: 'investorsAfterPct', error: "The manager's profit share must be a fraction between 0 and 1 (0.3 = 30%)." }
+  }
+  const recipients = f.recipients.map(r => ({ lpEntityId: r.lpEntityId, pct: pct(r.pct) ?? NaN }))
+  if (recipients.some(r => !Number.isFinite(r.pct))) return { ok: false, field: 'recipients', error: 'Enter each recipient\u2019s share as a percentage.' }
+  return {
+    ok: true,
+    body: {
+      kind: 'distributable_cash',
+      prefRate: Number((pref / 100).toFixed(10)),
+      prefDayCount: f.dayCount,
+      prefBasis: 'unreturned',
+      rocLpShare: Number((x / 100).toFixed(10)),
+      carryRate: Number((1 - y / 100).toFixed(10)),
+      prefCompounds: false,
+      catchupRate: 1,
+      carryRecipients: recipients,
+    },
+  }
+}
