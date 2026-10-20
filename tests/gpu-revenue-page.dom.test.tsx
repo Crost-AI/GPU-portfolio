@@ -61,8 +61,8 @@ function server(posts: Record<string, unknown[]>, status: Record<string, number[
 const posts = <T extends { path: string }>(sent: T[]) => sent.filter(x => !x.path.startsWith('GET '))
 const payoutReads = (sent: { path: string }[]) => sent.filter(x => x.path.startsWith('GET /api/fleet/ops/payouts')).length
 
-const mount = () => render(
-  <AccessProvider value={ACCESS}>
+const mount = (access: ClientAccess = ACCESS) => render(
+  <AccessProvider value={access}>
     <CurrencyProvider currency="USD"><RevenueView vehicle="GPU SPV I" vehicleId="v1" /></CurrencyProvider>
   </AccessProvider>,
 )
@@ -116,6 +116,27 @@ describe('the Revenue & payouts page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Resume match' }))
     await waitFor(() => expect(posts(sent)).toHaveLength(1))
     expect(posts(sent)[0].body).toEqual({ action: 'match', payoutId: 'p1', txnId: 't9', group: 'GPU SPV I' })
+  })
+
+  it('with fleet write but only Accounting read, Post and Match are disabled with the reason', async () => {
+    const withCandidate = { ...PAYOUTS, payouts: [{
+      id: 'p1', payoutDate: '2026-10-05', amount: 7776, reference: 'PO-1', note: null, status: 'expected', bankTransactionId: null, entryId: null,
+      candidates: [{ id: 't1', txnDate: '2026-10-06', amount: 7776, description: 'PAYOUT', status: 'unmatched' }],
+    }] }
+    server({}, {}, withCandidate)
+    mount({ ...ACCESS, grants: { fleet: 'write', accounting: 'read' } })
+    fireEvent.click(await screen.findByLabelText('Select H200 #1 2026-09-01 to 2026-09-30'))
+    const post = screen.getByRole('button', { name: 'Post selected' }) as HTMLButtonElement
+    expect(post.disabled).toBe(true)
+    expect(post.title).toMatch(/write access to Accounting/)
+    expect(screen.getByText(/Posting revenue: .*write access to Accounting/)).toBeTruthy()
+    // Ignore stays open to a fleet writer.
+    expect((screen.getByRole('button', { name: 'Ignore selected' }) as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.change(await screen.findByLabelText('Bank deposit for the payout of 2026-10-05'), { target: { value: 't1' } })
+    const match = screen.getByRole('button', { name: 'Match' }) as HTMLButtonElement
+    expect(match.disabled).toBe(true)
+    expect(match.title).toMatch(/write access to Accounting/)
   })
 
   it('Cancel in the confirmation sends nothing more', async () => {
