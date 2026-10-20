@@ -89,7 +89,9 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
     setBusy('post'); setActionError(null); setNotice(null)
     const r = await postEarnings(fetcher, ids, confirmReversal)
     setBusy(null)
-    if (!r.ok) { setActionError(r.error); reloadEarnings(); return }
+    // Posting is per row: a refusal can come after earlier rows were posted or an old entry was
+    // reversed, so the receivable is read again whatever the outcome, not only on success.
+    if (!r.ok) { setActionError(r.error); reloadEarnings(); reloadPayouts(); return }
     if ('needsReversal' in r.data) { setReversal({ ids, entries: r.data.needsReversal }); return }
     setReversal(null)
     const { posted, reversed } = r.data

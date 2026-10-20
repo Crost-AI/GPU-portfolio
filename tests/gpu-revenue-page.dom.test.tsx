@@ -37,7 +37,7 @@ const EARNINGS = [row('new', { supersedesId: 'old', gross: 9000, net: 8136 }), r
 const PAYOUTS = { payouts: [], receivable: { asOf: '2026-10-20', ledger1150: 7776, postedNet: 7776, matchedPayouts: 0, expected: 7776, difference: 0 } }
 
 /** Answers by route and method; the POSTs to the earnings and import routes take their replies in order. */
-function server(posts: Record<string, unknown[]>) {
+function server(posts: Record<string, unknown[]>, status: Record<string, number[]> = {}) {
   const sent: { path: string; body: any }[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input)
@@ -46,15 +46,20 @@ function server(posts: Record<string, unknown[]>) {
     if (init?.method === 'POST') {
       sent.push({ path, body })
       const key = path.split('?')[0]
-      return json(posts[key]?.shift() ?? {})
+      const code = status[key]?.shift() ?? 200
+      return new Response(JSON.stringify(posts[key]?.shift() ?? {}), { status: code, headers: { 'Content-Type': 'application/json' } })
     }
     if (path.startsWith('/api/fleet/assets')) return json({ assets: ASSETS })
     if (path.startsWith('/api/fleet/ops/earnings')) return json({ rows: EARNINGS })
-    if (path.startsWith('/api/fleet/ops/payouts')) return json(PAYOUTS)
+    if (path.startsWith('/api/fleet/ops/payouts')) { sent.push({ path: `GET ${path}`, body: undefined }); return json(PAYOUTS) }
     return json({})
   }))
   return sent
 }
+
+/** The POSTs sent, leaving out the payout reads `server` also records. */
+const posts = <T extends { path: string }>(sent: T[]) => sent.filter(x => !x.path.startsWith('GET '))
+const payoutReads = (sent: { path: string }[]) => sent.filter(x => x.path.startsWith('GET /api/fleet/ops/payouts')).length
 
 const mount = () => render(
   <AccessProvider value={ACCESS}>
@@ -77,12 +82,12 @@ describe('the Revenue & payouts page', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Reverse the posted periods?')).toBeTruthy()
     expect(dialog.textContent).toContain('2026-09-30')
-    expect(sent).toHaveLength(1)
-    expect(sent[0].body).toEqual({ action: 'post', ids: ['new'], group: 'GPU SPV I' })
+    expect(posts(sent)).toHaveLength(1)
+    expect(posts(sent)[0].body).toEqual({ action: 'post', ids: ['new'], group: 'GPU SPV I' })
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reverse and post' }))
-    await waitFor(() => expect(sent).toHaveLength(2))
-    expect(sent[1].body).toEqual({ action: 'post', ids: ['new'], confirmReversal: true, group: 'GPU SPV I' })
+    await waitFor(() => expect(posts(sent)).toHaveLength(2))
+    expect(posts(sent)[1].body).toEqual({ action: 'post', ids: ['new'], confirmReversal: true, group: 'GPU SPV I' })
     expect(await screen.findByText(/Posted 1 period, reversing 1 posted entry first/)).toBeTruthy()
   })
 
@@ -93,7 +98,19 @@ describe('the Revenue & payouts page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Post selected' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(sent).toHaveLength(1)
+    expect(posts(sent)).toHaveLength(1)
+  })
+
+  it('a post that fails after a partial write still reads the receivable again', async () => {
+    // The route refuses the batch after the old entry was reversed: 1150 has moved even though the reply is an error.
+    const message = 'The superseded row old is gone'
+    const sent = server({ '/api/fleet/ops/earnings': [{ error: message }] }, { '/api/fleet/ops/earnings': [400] })
+    mount()
+    fireEvent.click(await screen.findByLabelText('Select H200 #1 2026-09-01 to 2026-09-30'))
+    await waitFor(() => expect(payoutReads(sent)).toBe(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Post selected' }))
+    expect(await screen.findByText(message)).toBeTruthy()
+    await waitFor(() => expect(payoutReads(sent)).toBe(2))
   })
 
   it('typing a server’s figures stages them as one ManualRow for the period shown', async () => {
@@ -108,9 +125,9 @@ describe('the Revenue & payouts page', () => {
     // Net left blank: worked out as gross less fee, shown as its placeholder.
     expect((screen.getByLabelText('H200 #1: net') as HTMLInputElement).placeholder).toBe('7776.00')
     fireEvent.click(screen.getByRole('button', { name: 'Stage entries' }))
-    await waitFor(() => expect(sent).toHaveLength(1))
-    expect(sent[0].path).toBe('/api/fleet/ops/import?group=GPU%20SPV%20I')
-    expect(sent[0].body).toEqual({
+    await waitFor(() => expect(posts(sent)).toHaveLength(1))
+    expect(posts(sent)[0].path).toBe('/api/fleet/ops/import?group=GPU%20SPV%20I')
+    expect(posts(sent)[0].body).toEqual({
       group: 'GPU SPV I',
       rows: [{ assetId: 'h1', period_start: start, period_end: end, rented_hours: 4320, gross: 8640, fee: 864, net: 7776 }],
     })
