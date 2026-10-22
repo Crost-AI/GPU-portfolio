@@ -53,10 +53,13 @@ beforeEach(() => {
     fund_holding_terms: [],
     fund_capital_events: [],
     fund_nav_statements: [],
+    vehicle_accounting_settings: [],
     investment_transactions: [
       { id: 't-call', fund_id: 'fund-1', company_id: 'dup', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2024-01-10', investment_cost: 100_000 },
       { id: 't-mark', fund_id: 'fund-1', company_id: 'dup', portfolio_group: 'Fund I', transaction_type: 'unrealized_gain_change', transaction_date: '2024-03-31', unrealized_value_change: 5_000 },
+      { id: 't-fhcall', fund_id: 'fund-1', company_id: 'fh', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2023-07-01', investment_cost: 15_000 },
       { id: 't-dist', fund_id: 'fund-1', company_id: 'fh', portfolio_group: 'Fund I', transaction_type: 'proceeds', transaction_date: '2024-06-01', proceeds_received: 20_000, cost_basis_exited: 15_000 },
+      { id: 't-fhmark', fund_id: 'fund-1', company_id: 'fh', portfolio_group: 'Fund I', transaction_type: 'unrealized_gain_change', transaction_date: '2024-06-30', unrealized_value_change: 1_000 },
       { id: 't-acme', fund_id: 'fund-1', company_id: 'co', portfolio_group: 'Fund I', transaction_type: 'investment', transaction_date: '2024-02-01', investment_cost: 50_000 },
     ],
     chart_of_accounts: [
@@ -177,7 +180,7 @@ describe('the fund register', () => {
     await expect(run('set_fund_terms', { company: 'Acme', vehicle: 'Fund I', commitment: 1 })).rejects.toThrow('is not a fund holding')
   })
 
-  it('links a distribution to the proceeds already booked, with its character from the transaction', async () => {
+  it('links a distribution to the proceeds already booked, working its character out from the cost left', async () => {
     const out = await run('record_fund_notice', { company: 'fh', kind: 'distribution', event_date: '2024-06-01', amount: 20_000, transaction_id: 't-dist' })
     expect(out).toMatchObject({ mode: 'linked', status: 'confirmed', transactionId: 't-dist' })
     expect(store.tables.fund_capital_events[0]).toMatchObject({
@@ -214,6 +217,88 @@ describe('the fund register', () => {
       .rejects.toThrow('add up to 11000')
   })
 
+  it('corrects a linked distribution\'s character and re-books the transaction it owns', async () => {
+    await run('record_fund_notice', { company: 'fh', kind: 'distribution', event_date: '2024-06-01', amount: 20_000, transaction_id: 't-dist' })
+    // The transaction is the notice's now, so the company page's edit is refused...
+    await expect(run('update_investment', { company: 'fh', transaction_id: 't-dist', cost_basis_exited: 20_000 }))
+      .rejects.toThrow(/update_fund_notice/)
+    // ...and the notice is where it changes.
+    const out = await run('update_fund_notice', { company: 'Northwind Fund II', transaction_id: 't-dist', char_return_of_capital: 20_000, char_realized_gain: 0 })
+    expect(out).toMatchObject({ holding: 'Northwind Fund II', status: 'confirmed', transactionId: 't-dist' })
+    expect(store.tables.fund_capital_events[0]).toMatchObject({ char_return_of_capital: 20_000, char_realized_gain: 0, amount: 20_000 })
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist')).toMatchObject({
+      transaction_type: 'proceeds', proceeds_received: 20_000, cost_basis_exited: 20_000, transaction_date: '2024-06-01',
+    })
+    // Retiring 5,000 more cost took 5,000 off the holding's value; the next mark puts it back.
+    expect(store.tables.investment_transactions.find(t => t.id === 't-fhmark')!.unrealized_value_change).toBe(6_000)
+    expect(out).toMatchObject({ markAdjusted: 't-fhmark' })
+    expect(retract).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a correction whose character does not add up, changing nothing', async () => {
+    await run('record_fund_notice', { company: 'fh', kind: 'distribution', event_date: '2024-06-01', amount: 20_000, transaction_id: 't-dist' })
+    const eventId = store.tables.fund_capital_events[0].id
+    await expect(run('update_fund_notice', { company: 'fh', event_id: eventId, char_return_of_capital: 20_000 }))
+      .rejects.toThrow('adds up to 25000')
+    expect(store.tables.fund_capital_events[0]).toMatchObject({ char_return_of_capital: 15_000, char_realized_gain: 5_000 })
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited).toBe(15_000)
+    expect(retract).not.toHaveBeenCalled()
+  })
+
+  it('changes a draft notice without touching the books', async () => {
+    store.tables.fund_capital_events.push({
+      id: 'ev-draft', fund_id: 'fund-1', company_id: 'fh', vehicle_id: 'v1', kind: 'call', event_date: '2024-09-01', amount: 30_000,
+      purpose_investments: 30_000, purpose_fees: 0, purpose_expenses: 0, char_return_of_capital: 0, char_realized_gain: 0, char_income: 0,
+      recallable_amount: 0, status: 'draft', investment_transaction_id: null,
+    })
+    const out = await run('update_fund_notice', { company: 'fh', event_id: 'ev-draft', amount: 32_000, purpose_investments: 30_000, purpose_fees: 2_000, notice_number: '7' })
+    expect(out).toMatchObject({ eventId: 'ev-draft', status: 'draft' })
+    expect(store.tables.fund_capital_events.find(e => e.id === 'ev-draft')).toMatchObject({ amount: 32_000, purpose_fees: 2_000, notice_number: '7' })
+    expect(retract).not.toHaveBeenCalled()
+    await expect(run('update_fund_notice', { company: 'fh', event_id: 'nope', amount: 1 })).rejects.toThrow('No notice nope')
+  })
+
+  it('re-books a linked distribution booked all as gain while cost was still carried', async () => {
+    store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited = 0
+    const out = await run('record_fund_notice', { company: 'fh', kind: 'distribution', event_date: '2024-06-01', amount: 20_000, transaction_id: 't-dist' })
+    expect(out).toMatchObject({ mode: 'linked', rebooked: true })
+    expect(store.tables.fund_capital_events[0]).toMatchObject({ char_return_of_capital: 15_000, char_realized_gain: 5_000 })
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited).toBe(15_000)
+    expect(store.tables.investment_transactions.find(t => t.id === 't-fhmark')!.unrealized_value_change).toBe(16_000)
+  })
+
+  it('books a distribution with no character stated as gain once the cost is recovered, keeping stated income', async () => {
+    await run('record_fund_notice', { company: 'fh', kind: 'distribution', event_date: '2024-09-01', amount: 10_000, char_income: 1_000 })
+    const ev = store.tables.fund_capital_events[0]
+    expect(ev).toMatchObject({ char_return_of_capital: 0, char_realized_gain: 9_000, char_income: 1_000, status: 'confirmed' })
+    expect(store.tables.investment_transactions.find(t => t.id === ev.investment_transaction_id)).toMatchObject({ cost_basis_exited: 0, proceeds_received: 10_000 })
+  })
+
+  it('recalculates every distribution on a holding by cost recovery, oldest first', async () => {
+    store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited = 0
+    store.tables.investment_transactions.push(
+      { id: 't-dist2', fund_id: 'fund-1', company_id: 'fh', portfolio_group: 'Fund I', transaction_type: 'proceeds', transaction_date: '2024-08-01', proceeds_received: 5_000, cost_basis_exited: 5_000 },
+    )
+    const dry = await run('recalculate_fund_distributions', { company: 'fh', dry_run: true })
+    expect(dry).toMatchObject({
+      dryRun: true, unchanged: 0,
+      changed: [
+        { transactionId: 't-dist', returnOfCapital: { from: 0, to: 15_000 } },
+        { transactionId: 't-dist2', returnOfCapital: { from: 5_000, to: 0 } },
+      ],
+    })
+    expect(retract).not.toHaveBeenCalled()
+
+    const out = await run('recalculate_fund_distributions', { company: 'fh' })
+    expect(out).toMatchObject({ dryRun: false, changed: [{ transactionId: 't-dist' }, { transactionId: 't-dist2' }] })
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited).toBe(15_000)
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist2')!.cost_basis_exited).toBe(0)
+    // The first retired 15,000 more cost, and the mark after it puts the value back. The second has no
+    // mark after it, so its 5,000 does move the holding's value, and the result says so.
+    expect(store.tables.investment_transactions.find(t => t.id === 't-fhmark')!.unrealized_value_change).toBe(16_000)
+    expect(await run('recalculate_fund_distributions', { company: 'fh' })).toMatchObject({ changed: [], unchanged: 2 })
+  })
+
   it('saves a NAV statement through the one NAV writer', async () => {
     const out = await run('record_nav_statement', { company: 'fh', as_of_date: '2024-06-30', reported_nav: 90_000 })
     expect(out).toMatchObject({ holding: 'Northwind Fund II', booking: { status: 'no_change' } })
@@ -233,7 +318,7 @@ describe('merge_companies', () => {
     const out: any = await run('merge_companies', { from: 'dup', into: 'fh' })
     expect(out).toMatchObject({ transactionsMoved: 2, rowsMoved: { company_notes: 1 }, aliases: ['Northwind Custody', 'NW Custody'], deleted: false })
     expect(out.keptBecause).toMatch(/ledger posting/)
-    expect(store.tables.investment_transactions.filter(t => t.company_id === 'fh').map(t => t.id).sort()).toEqual(['t-call', 't-dist', 't-mark'])
+    expect(store.tables.investment_transactions.filter(t => t.company_id === 'fh').map(t => t.id).sort()).toEqual(['t-call', 't-dist', 't-fhcall', 't-fhmark', 't-mark'])
     expect(store.tables.company_notes[0].company_id).toBe('fh')
     expect(store.tables.chart_of_accounts.find(a => a.id === 'a4')!.is_active).toBe(false)
   })

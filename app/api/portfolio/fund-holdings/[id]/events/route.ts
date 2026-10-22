@@ -62,11 +62,11 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     await loadAccessContext(admin, gate.fundId, gate.userId, gate.role))
   if ('error' in resolved) return NextResponse.json({ error: resolved.error }, { status: 400 })
 
-  // Default the split to the whole amount so a notice recorded without a breakdown still
-  // confirms. transactionForEvent refuses a split that does not reconcile, and defaulting to
-  // zero would make every quick entry fail at confirm time for no good reason.
+  // Default a call's purposes to the whole amount so a notice recorded without a breakdown still
+  // confirms. A distribution with no character stated is left uncharacterised: confirming it splits
+  // it by cost recovery against the cost the holding still carries (lib/portfolio/fof-register.ts).
   const purposeInvestments = body?.purposeInvestments ?? (kind === 'call' ? amount : 0)
-  const charReturnOfCapital = body?.charReturnOfCapital ?? (kind === 'distribution' ? amount : 0)
+  const charReturnOfCapital = body?.charReturnOfCapital ?? 0
 
   const { data, error } = await (admin as any).from('fund_capital_events').insert({
     fund_id: gate.fundId,
