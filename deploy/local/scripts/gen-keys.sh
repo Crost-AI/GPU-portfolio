@@ -36,7 +36,7 @@ trap 'rm -f "$tmp"' EXIT
 if command -v node >/dev/null; then
   node -e "$script" < "$here/.env.example" > "$tmp"
 else
-  docker run --rm -i node:22.23.3-bookworm-slim node -e "$script" < "$here/.env.example" > "$tmp"
+  docker run --rm -i node:22.23.4-bookworm-slim node -e "$script" < "$here/.env.example" > "$tmp"
 fi
 mv "$tmp" "$env_file"
 echo "Wrote $env_file. Back it up somewhere safe: ENCRYPTION_KEY cannot be recovered."
