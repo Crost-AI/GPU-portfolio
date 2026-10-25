@@ -968,7 +968,7 @@ function InboundStep({
               onChange={e => setInboundAddress(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              Found on the same Inbound settings page. Share this with your portfolio founders.
+              Found on the same Inbound settings page, or any address on the inbound domain you set there. Share this with your portfolio founders.
             </p>
           </div>
         )}

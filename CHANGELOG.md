@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Postmark inbound routes by domain, like Resend
+- Mail to any name on a fund's Postmark inbound domain now reaches the fund, not only the exact saved address, so `reports@` and `updates@inbound.yourfund.com` both work. An exact address still wins; a domain two funds share routes only exact addresses; Postmark's shared `inbound.postmarkapp.com` domain and the deployment's global inbound address stay exact-only. Each fund needs its own Postmark server and inbound domain. `lib/postmark/inbound.ts`.
+
 ### Inbound email over Resend; Mailgun removed
 - **Resend as an inbound provider.** `/api/inbound-email/resend` takes Resend's `email.received` webhook, checks its Svix signature against the fund's signing secret, then reads the body and attachments back from Resend's API (the webhook carries metadata only) and runs the same pipeline as Postmark. The fund is found by the recipient's domain (`resend_inbound_domain`), so any address on it works. If Resend can't be read back the route answers 503 and stores nothing, and Resend retries. Set it up in Settings → Inbound email or the onboarding wizard: the inbound domain, a full-access Resend API key (the same `resend_api_key_encrypted` outbound uses) and the webhook secret, or `RESEND_API_KEY` and the new `RESEND_WEBHOOK_SECRET` in the environment.
 - **Spoofed senders are dropped.** Resend reports SPF, DKIM and DMARC as its receiving server computed them. Mail whose From fails DMARC is refused even when the address is an authorized sender, which the From-address check alone could not catch.

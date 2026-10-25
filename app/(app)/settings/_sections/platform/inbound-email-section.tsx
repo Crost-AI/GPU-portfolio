@@ -107,7 +107,7 @@ export function InboundEmailSection({
                 placeholder="abc123@inbound.postmarkapp.com"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Set this in the Postmark dashboard under Inbound. Portfolio companies forward their reports to this address, and Postmark delivers them to your webhook.
+                The address Postmark shows under Inbound, or one on the inbound domain you set there. With your own domain, any name at it reaches this fund (reports@, updates@), so another fund needs its own Postmark server and domain.
               </p>
             </div>
             {postmarkToken && (

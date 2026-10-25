@@ -171,6 +171,8 @@ This is how portfolio company reports get into the system. Choose one:
    - `YOUR_TOKEN` is the webhook token shown in the onboarding wizard (also available in Settings)
 4. Enter the Postmark inbound address in the onboarding wizard or Settings page
 
+To use your own address, set an **inbound domain** on the Postmark server (e.g. `inbound.yourfund.com`, with an MX record pointing at `inbound.postmarkapp.com`) and save any address on it, such as `reports@inbound.yourfund.com`. Mail to any name at that domain then comes to the fund. A Postmark server has one inbound domain and one webhook token, so each fund on a deployment needs its own server and its own domain (`fund-a.inbound.example.com`, `fund-b.inbound.example.com`). On Postmark's shared `inbound.postmarkapp.com` domain only the exact address routes.
+
 **Resend:**
 1. Create a [Resend](https://resend.com) account, add a domain with receiving turned on (a subdomain such as `inbound.yourdomain.com` keeps your existing mailboxes untouched), and add the DNS records it lists, including the receiving MX record
 2. Create a **full-access** API key, so the app can read each received email and its attachments
