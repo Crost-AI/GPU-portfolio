@@ -9,10 +9,10 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName, vehicleNameById } from '@/lib/accounting/vehicle-id'
 import { listVehiclesWithId } from '@/lib/accounting/load'
 import { previousQuarter } from '@/lib/accounting/receipts-core'
-import { ensureIntercompanyAccounts } from '@/lib/accounting/intercompany'
+import { ensureIntercompanyAccounts, intercompanyChart, linkIntercompanyAccount } from '@/lib/accounting/intercompany'
 import {
   previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
-  listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
+  listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice, receivableCandidates,
 } from '@/lib/accounting/partnership-invoices'
 
 type Gate = Exclude<Awaited<ReturnType<typeof assertReadAccess>>, NextResponse>
@@ -29,7 +29,7 @@ async function counterparty(admin: ReturnType<typeof createAdminClient>, gate: G
 
 /**
  * GET ?group=<billing entity>
- *   → { invoices, unbilled, counterparties, defaultQuarter }
+ *   → { invoices, unbilled, counterparties, receivableAccounts, defaultQuarter }
  * GET ?group=…&to=<entity id>&year=2026&quarter=3
  *   → the preview: what an invoice for that quarter would bill
  * GET ?group=…&id=<invoice id>
@@ -67,10 +67,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ preview })
   }
 
-  const [invoices, unbilled, vehicles] = await Promise.all([
+  const [invoices, unbilled, vehicles, chart] = await Promise.all([
     listPartnershipInvoices(admin, gate.fundId, vehicleId),
     unbilledByCounterparty(admin, gate.fundId, vehicleId),
     listVehiclesWithId(admin, gate.fundId),
+    intercompanyChart(admin, gate.fundId, vehicleId),
   ])
   const names = new Map(vehicles.map(v => [v.id, v.name]))
   return NextResponse.json({
@@ -79,6 +80,8 @@ export async function GET(req: NextRequest) {
     unbilled,
     // Who this entity can bill: every other fund vehicle (a manco is not billed for fund expenses).
     counterparties: vehicles.filter(v => v.id && v.id !== vehicleId),
+    // The accounts that could be a fund's "Due from", each with the entity it is linked to.
+    receivableAccounts: receivableCandidates(chart),
     defaultQuarter: previousQuarter(new Date().toISOString().slice(0, 10)),
   })
 }
@@ -89,6 +92,7 @@ export async function GET(req: NextRequest) {
  *   { group, action: 'issue', id }   book the fund's side (Dr partnership expenses, Cr due to <group>)
  *   { group, action: 'void', id }    release its lines; an issued one needs the fund's entry voided first
  *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
+ *   { group, action: 'link', to, accountId } make an existing account of group's "Due from <to>"
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -142,5 +146,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ error: 'action must be create, issue, void or accounts' }, { status: 400 })
+  if (body?.action === 'link') {
+    const to = await counterparty(admin, gate, body?.to)
+    if (to instanceof NextResponse) return to
+    const accountId = typeof body?.accountId === 'string' ? body.accountId : ''
+    const chart = await intercompanyChart(admin, gate.fundId, vehicleId)
+    if (!receivableCandidates(chart).some(a => a.id === accountId)) {
+      return NextResponse.json({ error: 'Choose one of this entity’s receivable accounts.' }, { status: 400 })
+    }
+    const res = await linkIntercompanyAccount(admin, gate.fundId, vehicleId, accountId, to.vehicleId, 'receivable')
+    if ('error' in res) return NextResponse.json({ error: res.error }, { status: 409 })
+    return NextResponse.json(res)
+  }
+
+  return NextResponse.json({ error: 'action must be create, issue, void, accounts or link' }, { status: 400 })
 }

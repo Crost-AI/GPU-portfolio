@@ -24,11 +24,11 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry } from './intercompany'
 import { liveEntryByRef } from './persist'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
-import { INTERCOMPANY_RECEIVABLE_CODE, intercompanyCode } from './chart'
+import { INTERCOMPANY_RECEIVABLE_SUBTYPE } from './chart'
+import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry, intercompanyChart, pickIntercompanyAccounts, type IntercompanyChartRow } from './intercompany'
 import { billablePostings, invoiceNumber, quarterBounds, type Quarter } from './receipts-core'
 
 export interface InvoiceLine {
@@ -58,6 +58,8 @@ export interface InvoicePreview {
   drafts: InvoiceLine[]
   /** False when the biller's chart has no "Due from <fund>" account yet, so nothing can be billed. */
   hasReceivableAccount: boolean
+  /** The account the quarter is read from: the one linked to the fund, or `1900-<fund>`. */
+  receivableAccount: { id: string; code: string; name: string } | null
   /** An invoice already covering this quarter, if one exists. */
   existing: { id: string; invoiceNumber: string; status: string; amount: number } | null
 }
@@ -68,12 +70,23 @@ async function vehiclePair(admin: SupabaseClient, fundId: string, fromId: string
   return { from: { vehicleId: fromId, name: fromName }, to: { vehicleId: toId, name: toName } }
 }
 
-/** The biller's "Due from <fund>" account, if its chart has one. */
-export async function receivableAccountId(admin: SupabaseClient, fundId: string, fromVehicleId: string, toVehicleId: string): Promise<string | null> {
-  const { data } = await admin.from('chart_of_accounts' as any).select('id')
-    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
-    .eq('code', intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, toVehicleId)).maybeSingle()
-  return (data as any)?.id ?? null
+/** The biller's "Due from <fund>" account, if its chart has one (linked, or by the code convention). */
+export async function receivableAccount(
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, toVehicleId: string,
+): Promise<{ id: string; code: string; name: string } | null> {
+  const hit = pickIntercompanyAccounts(await intercompanyChart(admin, fundId, fromVehicleId), toVehicleId).receivable
+  return hit ? { id: hit.id, code: hit.code, name: hit.name } : null
+}
+
+/**
+ * The biller's accounts that could be a fund's "Due from": its receivables, minus the bare 1900
+ * parent. Each says which entity it is linked to, if any, so a picker can offer the free ones.
+ */
+export function receivableCandidates(chart: IntercompanyChartRow[]) {
+  return chart
+    .filter(a => a.type === 'asset' && a.code !== '1900' && (a.counterparty_vehicle_id || a.subtype === INTERCOMPANY_RECEIVABLE_SUBTYPE || a.subtype === 'receivable'))
+    .map(a => ({ id: a.id, code: a.code, name: a.name, counterpartyVehicleId: a.counterparty_vehicle_id }))
+    .sort((a, b) => a.code.localeCompare(b.code))
 }
 
 interface EntryRow {
@@ -167,11 +180,11 @@ export async function previewPartnershipInvoice(
   const pair = await vehiclePair(admin, fundId, args.fromVehicleId, args.toVehicleId)
   if (!pair) return { error: 'Both entities must be in this fund.' }
   if (args.fromVehicleId === args.toVehicleId) return { error: 'An entity cannot bill itself.' }
-  const receivableId = await receivableAccountId(admin, fundId, args.fromVehicleId, args.toVehicleId)
-  const all = receivableId ? await openLines(admin, fundId, args.fromVehicleId, receivableId, q) : []
+  const receivable = await receivableAccount(admin, fundId, args.fromVehicleId, args.toVehicleId)
+  const all = receivable ? await openLines(admin, fundId, args.fromVehicleId, receivable.id, q) : []
   const lines = all.filter(l => l.status === 'posted')
   return {
-    quarter: q, ...pair, lines, hasReceivableAccount: !!receivableId,
+    quarter: q, ...pair, lines, hasReceivableAccount: !!receivable, receivableAccount: receivable,
     total: roundCents(lines.reduce((s, l) => s + l.amount, 0)),
     drafts: all.filter(l => l.status === 'draft'),
     existing: await existingInvoice(admin, fundId, args.fromVehicleId, args.toVehicleId, q),
@@ -185,15 +198,13 @@ export async function previewPartnershipInvoice(
 export async function unbilledByCounterparty(
   admin: SupabaseClient, fundId: string, fromVehicleId: string,
 ): Promise<{ vehicleId: string; name: string; entries: number; amount: number }[]> {
-  const [{ data: vehicles }, { data: accounts }] = await Promise.all([
+  const [{ data: vehicles }, chart] = await Promise.all([
     admin.from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId),
-    admin.from('chart_of_accounts' as any).select('id, code').eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
-      .like('code', `${INTERCOMPANY_RECEIVABLE_CODE}-%`),
+    intercompanyChart(admin, fundId, fromVehicleId),
   ])
-  const accountByCode = new Map(((accounts as any[]) ?? []).map(a => [a.code as string, a.id as string]))
   const pairs = ((vehicles as any[]) ?? [])
     .filter(v => v.id !== fromVehicleId)
-    .map(v => ({ vehicleId: v.id as string, name: v.name as string, accountId: accountByCode.get(intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, v.id)) }))
+    .map(v => ({ vehicleId: v.id as string, name: v.name as string, accountId: pickIntercompanyAccounts(chart, v.id).receivable?.id }))
     .filter((p): p is { vehicleId: string; name: string; accountId: string } => !!p.accountId)
   if (pairs.length === 0) return []
 

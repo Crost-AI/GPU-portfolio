@@ -122,6 +122,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
         invoiceDate: { type: 'string', description: 'YYYY-MM-DD; default today' },
         memo: { type: 'string' },
         issue: { type: 'boolean', description: 'default false: leave it as a draft to review' },
+        dueFromAccount: { type: 'string', description: "optional account code on this entity's chart to use as the 'Due from <billTo>' account from now on (for a chart imported with its own names, e.g. an account called 'Due from Fund III' under a plain code). It is linked to billTo before the quarter is read." },
       },
     },
   },
