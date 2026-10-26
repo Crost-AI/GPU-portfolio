@@ -11,7 +11,7 @@ import { listVehiclesWithId } from '@/lib/accounting/load'
 import { previousQuarter } from '@/lib/accounting/receipts-core'
 import { ensureIntercompanyAccounts, intercompanyChart, linkIntercompanyAccount } from '@/lib/accounting/intercompany'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, updateInvoiceAllocations,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice, receivableCandidates,
 } from '@/lib/accounting/partnership-invoices'
 
@@ -98,6 +98,8 @@ export async function GET(req: NextRequest) {
  *   { group, action: 'void', id }    release its lines; an issued one needs the fund's entry voided first
  *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
  *   { group, action: 'link', to, accountId } make an existing account of group's "Due from <to>"
+ *   { group, action: 'bases', id, allocations: { postingId: basis }, remember?: [postingId] }
+ *     correct a draft or issued invoice's allocation bases in place (same number, same bookings)
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -146,6 +148,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
+  if (body?.action === 'bases') {
+    const id = String(body?.id ?? '')
+    const inv = await getPartnershipInvoice(admin, gate.fundId, id)
+    // As with issue and void: only the billing entity edits its own invoices.
+    if (!inv || inv.from.vehicleId !== vehicleId) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    const to = await counterparty(admin, gate, inv.to.vehicleId)
+    if (to instanceof NextResponse) return to
+    if (!body?.allocations || typeof body.allocations !== 'object' || Array.isArray(body.allocations)) {
+      return NextResponse.json({ error: 'allocations must map posting ids to a basis.' }, { status: 400 })
+    }
+    const res = await updateInvoiceAllocations(admin, gate.fundId, user.id, id, {
+      allocations: Object.fromEntries(Object.entries(body.allocations).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
+      rememberPostingIds: Array.isArray(body?.remember) ? body.remember.filter((x: unknown): x is string => typeof x === 'string') : null,
+    })
+    if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
+    return NextResponse.json(res)
+  }
+
   if (body?.action === 'accounts') {
     const to = await counterparty(admin, gate, body?.to)
     if (to instanceof NextResponse) return to
@@ -171,5 +191,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
-  return NextResponse.json({ error: 'action must be create, issue, void, accounts or link' }, { status: 400 })
+  return NextResponse.json({ error: 'action must be create, issue, void, bases, accounts or link' }, { status: 400 })
 }

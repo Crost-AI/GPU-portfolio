@@ -146,4 +146,18 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
       properties: { invoiceId: { type: 'string' }, void: { type: 'boolean' } },
     },
   },
+  {
+    name: 'edit_partnership_invoice',
+    description: 'Correct the allocation basis on a draft or issued partnership invoice in place: same number, amounts and bookings; the PDF shows the new text. allocations maps posting id (from partnership_invoices with invoiceId) to the basis; an empty string clears it. rememberPostingIds also saves those lines\' bases for that vendor\'s future expenses billed to the same fund.',
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['invoiceId', 'allocations'],
+      properties: {
+        invoiceId: { type: 'string' },
+        allocations: { type: 'object', additionalProperties: { type: 'string' } },
+        rememberPostingIds: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
 ]

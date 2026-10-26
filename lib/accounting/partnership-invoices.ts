@@ -372,6 +372,44 @@ export interface InvoiceDetail {
   lines: InvoiceDetailLine[]
 }
 
+/**
+ * Change the allocation basis on an invoice already created, draft or issued. The basis is a note
+ * printed beside each line, not part of any amount or booking, so it can be corrected in place: the
+ * invoice keeps its number and its entries, and the PDF reads the new text. A void invoice is left
+ * as it was. Lines not named in `allocations` keep theirs; an empty string clears one.
+ */
+export async function updateInvoiceAllocations(
+  admin: SupabaseClient,
+  fundId: string,
+  userId: string | null,
+  id: string,
+  args: { allocations: Record<string, string>; rememberPostingIds?: string[] | null },
+): Promise<{ ok: true; updated: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  const inv = await getPartnershipInvoice(admin, fundId, id)
+  if (!inv) return { error: 'Invoice not found', status: 404 }
+  if (inv.status === 'void') return { error: 'This invoice is void. Bill the expenses on a new invoice instead.', status: 409 }
+  const onInvoice = new Map(inv.lines.map(l => [l.postingId, l]))
+  const changes = Object.entries(args.allocations)
+    .filter(([postingId]) => onInvoice.has(postingId))
+    .map(([postingId, basis]) => ({ postingId, basis: String(basis ?? '').trim() || null }))
+    .filter(c => c.basis !== onInvoice.get(c.postingId)!.allocationBasis)
+  for (const c of changes) {
+    const { error } = await admin.from('partnership_invoice_lines' as any).update({ allocation_basis: c.basis })
+      .eq('fund_id', fundId).eq('invoice_id', id).eq('journal_posting_id', c.postingId)
+    if (error) return { error: `The allocation basis could not be saved: ${error.message}`, status: 400 }
+    onInvoice.set(c.postingId, { ...onInvoice.get(c.postingId)!, allocationBasis: c.basis })
+  }
+  const notSaved: string[] = []
+  for (const postingId of args.rememberPostingIds ?? []) {
+    const l = onInvoice.get(postingId)
+    if (!l?.allocationBasis) continue
+    const saved = await saveAllocationRule(admin, fundId, userId, { fromVehicleId: inv.from.vehicleId, toVehicleId: inv.to.vehicleId, vendorName: l.vendorName, allocationBasis: l.allocationBasis })
+    if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
+  }
+  if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
+  return { ok: true, updated: changes.length, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+}
+
 /** An invoice's frozen lines, beside what the ledger says about each now. */
 async function invoiceLines(admin: SupabaseClient, fundId: string, invoiceId: string): Promise<InvoiceDetailLine[]> {
   const { data, error } = await admin.from('partnership_invoice_lines' as any)

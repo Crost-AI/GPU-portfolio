@@ -63,6 +63,10 @@ function PartnershipInvoices() {
   // Allocation bases typed over the ones the lines came with, and the lines to save for the vendor.
   const [allocations, setAllocations] = useState<Record<string, string>>({})
   const [remember, setRemember] = useState<Set<string>>(new Set())
+  // An invoice already created whose allocation bases are being corrected in place.
+  const [editing, setEditing] = useState<{ id: string; invoiceNumber: string; status: string; toName: string; lines: Line[] } | null>(null)
+  const [editBases, setEditBases] = useState<Record<string, string>>({})
+  const [editRemember, setEditRemember] = useState<Set<string>>(new Set())
 
   const load = useCallback(async () => {
     if (!group) return
@@ -119,6 +123,25 @@ function PartnershipInvoices() {
     if (!window.confirm('Void this invoice? Its expenses become billable again.')) return
     const j = await post({ action: 'void', id }, 'Could not void the invoice')
     if (j) { setNotice('Voided. Its expenses can be billed again.'); await load() }
+  }
+  async function editBasesOf(id: string) {
+    setBusy(true); setError(null); setNotice(null)
+    const r = await lf(`/api/accounting/partnership-invoices?id=${id}`)
+    const j = await r.json().catch(() => ({}))
+    setBusy(false)
+    if (!r.ok) { setError(j.error ?? 'Could not open the invoice'); return }
+    const inv = j.invoice
+    setEditing({ id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status, toName: inv.to.name, lines: inv.lines })
+    setEditBases(Object.fromEntries((inv.lines as Line[]).map(l => [l.postingId, l.allocationBasis ?? ''])))
+    setEditRemember(new Set())
+  }
+  async function saveBases() {
+    if (!editing) return
+    const j = await post({ action: 'bases', id: editing.id, allocations: editBases, remember: Array.from(editRemember) }, 'Could not save the allocation bases')
+    if (j) {
+      const unsaved = Array.isArray(j.basesNotSaved) && j.basesNotSaved.length ? ` The basis for ${j.basesNotSaved.join(', ')} was not saved for next time.` : ''
+      setNotice(`Allocation bases on ${editing.invoiceNumber} saved. The PDF shows them now.${unsaved}`); setEditing(null); await load()
+    }
   }
   async function addAccounts() {
     const j = await post({ action: 'accounts', to }, 'Could not add the accounts')
@@ -253,6 +276,7 @@ function PartnershipInvoices() {
                     <span className="inline-flex gap-1.5">
                       <a className={smallBtn} href={`/api/accounting/partnership-invoices/${i.id}/pdf`} target="_blank" rel="noreferrer">PDF</a>
                       {mine && i.status === 'draft' && <button className={smallBtn} disabled={busy} onClick={() => void issue(i.id)}>Issue</button>}
+                      {mine && i.status !== 'void' && <button className={smallBtn} disabled={busy} onClick={() => void editBasesOf(i.id)}>Edit</button>}
                       {mine && i.status !== 'void' && <button className={smallBtn} disabled={busy} onClick={() => void voidIt(i.id)}>Void</button>}
                     </span>
                   </td>
@@ -261,6 +285,50 @@ function PartnershipInvoices() {
             })}
           </tbody>
         </table>
+      )}
+      {editing && (
+        <div className="space-y-2 rounded-card border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">Allocation bases on {editing.invoiceNumber}</p>
+            <span className="inline-flex gap-1.5">
+              <button className={smallBtn} disabled={busy} onClick={() => setEditing(null)}>Cancel</button>
+              <Button size="sm" disabled={busy} onClick={() => void saveBases()}>Save</Button>
+            </span>
+          </div>
+          {editing.status === 'issued' && <p className="text-xs text-muted-foreground">Already issued: only the text changes. The number, amounts and bookings stay as they are; send the fund the new PDF if it needs one.</p>}
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-muted-foreground">
+              <th className="pb-1 font-medium">Date</th><th className="pb-1 font-medium">Vendor</th><th className="pb-1 font-medium">Allocation basis</th><th className="pb-1 text-right font-medium">Amount</th>
+            </tr></thead>
+            <tbody>
+              {editing.lines.map(l => {
+                const value = editBases[l.postingId] ?? ''
+                return (
+                  <tr key={l.postingId} className="border-t align-top text-xs">
+                    <td className="py-1 tabular-nums">{l.entryDate}</td>
+                    <td className="py-1">{l.vendorName ?? l.memo ?? '—'}</td>
+                    <td className="py-1">
+                      <input
+                        value={value}
+                        onChange={e => setEditBases(prev => ({ ...prev, [l.postingId]: e.target.value }))}
+                        placeholder="Why the fund bears it"
+                        aria-label={`Allocation basis for ${l.vendorName ?? l.memo ?? 'this expense'}`}
+                        className="block w-full rounded border border-input bg-transparent px-1.5 py-0.5 text-xs"
+                      />
+                      {l.vendorName && value.trim() && (
+                        <label className="mt-0.5 inline-flex items-center gap-1 text-muted-foreground">
+                          <input type="checkbox" checked={editRemember.has(l.postingId)} onChange={() => setEditRemember(prev => toggled(prev, l.postingId))} />
+                          use for future {l.vendorName} expenses for {editing.toName}
+                        </label>
+                      )}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">{fmt(l.amount)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
       {openEntry && <EntryModal entryId={openEntry} readOnly onClose={() => setOpenEntry(null)} onSaved={() => void load()} />}
     </div>

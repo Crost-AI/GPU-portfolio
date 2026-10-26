@@ -13,7 +13,7 @@ import {
   type ReceiptRow,
 } from '@/lib/accounting/receipts'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, updateInvoiceAllocations,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
 } from '@/lib/accounting/partnership-invoices'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
@@ -266,5 +266,20 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       : await issuePartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, id)
     if ('error' in res) fail(res)
     return res
+  },
+
+  edit_partnership_invoice: async (ctx, input) => {
+    const vehicleId = await here(ctx)
+    const id = String(input?.invoiceId ?? '')
+    const inv = await getPartnershipInvoice(ctx.admin, ctx.fundId, id)
+    if (!inv || inv.from.vehicleId !== vehicleId) throw new Error(`No invoice ${id} billed by ${ctx.portfolioGroup}`)
+    await otherEntity(ctx, inv.to.name, 'write')
+    const raw = input?.allocations && typeof input.allocations === 'object' && !Array.isArray(input.allocations) ? input.allocations : {}
+    const res = await updateInvoiceAllocations(ctx.admin, ctx.fundId, ctx.userId, id, {
+      allocations: Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
+      rememberPostingIds: Array.isArray(input?.rememberPostingIds) ? input.rememberPostingIds.filter((x: unknown): x is string => typeof x === 'string') : null,
+    })
+    if ('error' in res) fail(res)
+    return { ...res, pdf: `/api/accounting/partnership-invoices/${id}/pdf` }
   },
 }
