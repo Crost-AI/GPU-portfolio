@@ -12,6 +12,8 @@ export interface ReceiptFields {
   amount: number | null
   currency: string | null
   description: string | null
+  /** Why the fund bears it, when this is a partnership expense (allocation-basis.ts). */
+  allocationBasis?: string | null
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/

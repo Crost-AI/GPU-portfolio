@@ -19,6 +19,7 @@ interface ReceiptRow {
   amount: number | null
   currency: string | null
   description: string | null
+  allocation_basis: string | null
   extraction_status: string
   extraction_notes: string | null
   status: 'unmatched' | 'matched' | 'dismissed'
@@ -170,6 +171,7 @@ function ReceiptsList() {
                       {r.extraction_status === 'failed' && ' · could not be read, fill in the total'}
                       {r.extraction_notes && ` · ${r.extraction_notes}`}
                     </p>
+                    {r.allocation_basis && <p className="text-xs text-muted-foreground">Allocation basis: {r.allocation_basis}</p>}
                     {unfiled && <p className="text-sm text-warning">Not filed under an entity yet.</p>}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -246,6 +248,7 @@ function ReceiptFieldsForm({ r, onSave, onCancel }: { r: ReceiptRow; onSave: (p:
   const [receiptDate, setDate] = useState(r.receipt_date ?? '')
   const [amount, setAmount] = useState(r.amount != null ? String(r.amount) : '')
   const [description, setDescription] = useState(r.description ?? '')
+  const [allocationBasis, setAllocationBasis] = useState(r.allocation_basis ?? '')
   const input = 'mt-0.5 block w-full rounded border border-input bg-transparent px-2 py-1 text-sm'
   return (
     <div className="flex flex-wrap items-end gap-2">
@@ -253,8 +256,9 @@ function ReceiptFieldsForm({ r, onSave, onCancel }: { r: ReceiptRow; onSave: (p:
       <label className="text-xs text-muted-foreground">Date<input type="date" value={receiptDate} onChange={e => setDate(e.target.value)} className={input} /></label>
       <label className="w-28 text-xs text-muted-foreground">Total<input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} className={`${input} text-right tabular-nums`} /></label>
       <label className="min-w-[160px] flex-1 text-xs text-muted-foreground">What for<input value={description} onChange={e => setDescription(e.target.value)} className={input} /></label>
+      <label className="min-w-[200px] flex-1 text-xs text-muted-foreground" title="For a partnership expense: why the fund bears it. Printed on the fund’s invoice.">Allocation basis<input value={allocationBasis} onChange={e => setAllocationBasis(e.target.value)} placeholder="e.g. 100% Fund I: annual audit" className={input} /></label>
       <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
-      <Button size="sm" onClick={() => onSave({ vendorName, receiptDate: receiptDate || null, amount: amount || null, description })}>Save</Button>
+      <Button size="sm" onClick={() => onSave({ vendorName, receiptDate: receiptDate || null, amount: amount || null, description, allocationBasis })}>Save</Button>
     </div>
   )
 }
@@ -299,8 +303,15 @@ export function canDraft(f: { debit: string; credit: string; billTo: string; for
 }
 
 /** The draft request body: billed to a fund or debited to an account, with the books-currency total for a foreign receipt. */
-export function draftBody(f: { debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null }): object {
-  const base = f.billTo ? { creditAccountId: f.credit, billToVehicleId: f.billTo } : { debitAccountId: f.debit, creditAccountId: f.credit }
+export function draftBody(f: {
+  debit: string; credit: string; billTo: string; foreign: string | null; reportingAmount: number | null
+  /** With billTo: why the fund bears it (upstream #169), and whether to remember it for the vendor. */
+  allocationBasis?: string; remember?: boolean
+}): object {
+  const allocation = f.billTo && f.allocationBasis !== undefined
+    ? { allocationBasis: f.allocationBasis, rememberAllocation: !!f.remember && !!f.allocationBasis.trim() }
+    : {}
+  const base = f.billTo ? { creditAccountId: f.credit, billToVehicleId: f.billTo, ...allocation } : { debitAccountId: f.debit, creditAccountId: f.credit }
   return f.foreign ? { ...base, reportingAmount: f.reportingAmount } : base
 }
 
@@ -320,6 +331,8 @@ export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b
   const [debit, setDebit] = useState('')
   const [credit, setCredit] = useState('')
   const [billTo, setBillTo] = useState('')
+  const [allocationBasis, setAllocationBasis] = useState(r.allocation_basis ?? '')
+  const [remember, setRemember] = useState(false)
   useEffect(() => {
     lf('/api/accounting/chart').then(res => (res.ok ? res.json() : [])).then((chart: any[]) => {
       const list = (Array.isArray(chart) ? chart : []).filter(a => a.is_active !== false)
@@ -367,7 +380,7 @@ export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b
             setSubmitting(true); setFailed(null)
             // The form's fields, the typed total included, are left as they are on a failure.
             try {
-              setFailed(await runDraft(onDraft, draftBody({ debit, credit, billTo, foreign, reportingAmount })))
+              setFailed(await runDraft(onDraft, draftBody({ debit, credit, billTo, foreign, reportingAmount, allocationBasis, remember })))
             } finally {
               setSubmitting(false)
             }
@@ -375,6 +388,19 @@ export function DraftForm({ r, onDraft, onCancel }: { r: ReceiptRow; onDraft: (b
         >Draft entry</Button>
       </div>
       {failed && <p role="alert" className="text-sm text-destructive">{failed}</p>}
+      {billTo && (
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="min-w-[240px] flex-1 text-xs text-muted-foreground" title="Why the fund bears this expense. Printed on its partnership invoice.">Allocation basis
+            <input value={allocationBasis} onChange={e => setAllocationBasis(e.target.value)} placeholder="e.g. 100% Fund I: annual audit" className="mt-0.5 block w-full rounded border border-input bg-transparent px-2 py-1 text-sm" />
+          </label>
+          {r.vendor_name && (
+            <label className="flex items-center gap-1.5 pb-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} disabled={!allocationBasis.trim()} />
+              Use for future {r.vendor_name} expenses for {entities.find(e => e.id === billTo)?.name ?? 'this fund'}
+            </label>
+          )}
+        </div>
+      )}
     </div>
   )
 }

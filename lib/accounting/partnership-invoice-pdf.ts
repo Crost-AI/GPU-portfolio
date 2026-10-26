@@ -40,7 +40,8 @@ export interface PartnershipInvoicePdfData {
   amount: number
   memo: string | null
   draft: boolean
-  lines: { date: string; vendor: string | null; description: string | null; reference: string | null; amount: number; receipts: number }[]
+  /** allocationBasis: why the fund bears the expense (lib/accounting/allocation-basis.ts). */
+  lines: { date: string; vendor: string | null; description: string | null; allocationBasis: string | null; amount: number }[]
 }
 
 /** The invoice page, as HTML. Pure, so the layout is testable without a browser. */
@@ -51,8 +52,7 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;color:#888;font-variant-numeric:tabular-nums;">${i + 1}</td>
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;font-variant-numeric:tabular-nums;white-space:nowrap;">${esc(l.date)}</td>
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;">${esc(l.vendor ?? '')}${l.description ? `<div style="color:#555;">${esc(l.description)}</div>` : ''}</td>
-      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;color:#555;">${esc(l.reference ?? '')}</td>
-      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:center;color:#555;">${l.receipts > 0 ? 'Yes' : '—'}</td>
+      <td style="padding:5px 8px;border-top:1px solid #e5e5e5;color:#555;">${esc(l.allocationBasis ?? '')}</td>
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(l.amount)}</td>
     </tr>`).join('')
 
@@ -97,9 +97,9 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
 
     <h3 style="font-size:12px;font-weight:600;margin:20px 0 6px;">Expenses</h3>
     <table>
-      <thead><tr><th style="width:24px;">#</th><th>Date</th><th>Vendor and description</th><th>Reference</th><th style="text-align:center;">Receipt</th><th style="text-align:right;">Amount</th></tr></thead>
+      <thead><tr><th style="width:24px;">#</th><th>Date</th><th>Vendor and description</th><th>Allocation basis</th><th style="text-align:right;">Amount</th></tr></thead>
       <tbody>${rows}
-        <tr><td colspan="5" style="padding:6px 8px;border-top:2px solid #ccc;font-weight:600;">Total</td>
+        <tr><td colspan="4" style="padding:6px 8px;border-top:2px solid #ccc;font-weight:600;">Total</td>
             <td style="padding:6px 8px;border-top:2px solid #ccc;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${m(d.amount)}</td></tr>
       </tbody>
     </table>
@@ -216,7 +216,7 @@ export async function partnershipInvoiceDocument(
     amount: inv.amount,
     memo: inv.memo,
     draft: inv.status === 'draft',
-    lines: inv.lines.map(l => ({ date: l.entryDate, vendor: l.vendorName, description: l.memo, reference: l.reference, amount: l.amount, receipts: l.receiptCount })),
+    lines: inv.lines.map(l => ({ date: l.entryDate, vendor: l.vendorName, description: l.memo, allocationBasis: l.allocationBasis, amount: l.amount })),
   }, backup)
   return { body: pdf, fileName: `${inv.invoiceNumber}.pdf`, skipped }
 }

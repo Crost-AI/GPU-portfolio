@@ -129,13 +129,20 @@ describe('partnership invoice PDF', () => {
     fromName: 'Hemrock Management LLC', fromLogo: null, fromAddress: null, toName: 'Fund I, L.P.', toAddress: null,
     invoiceNumber: 'PE-2026Q3-ABCDEF', invoiceDate: '2026-10-01', periodLabel: 'Q3 2026', periodStart: '2026-07-01', periodEnd: '2026-09-30',
     currency: 'USD', amount: 1250, memo: null, draft: true,
-    lines: [{ date: '2026-07-14', vendor: 'Cooley <LLP>', description: 'Closing legal', reference: 'INV-9', amount: 1250, receipts: 1 }],
+    lines: [{ date: '2026-07-14', vendor: 'Acme Legal <LLP>', description: 'Closing legal', allocationBasis: '100% Fund I: formation', amount: 1250 }],
   }
   it('escapes what it prints and marks a draft', () => {
     const html = buildPartnershipInvoiceHtml(data)
-    expect(html).toContain('Cooley &lt;LLP&gt;')
+    expect(html).toContain('Acme Legal &lt;LLP&gt;')
     expect(html).toContain('Draft for review')
     expect(html).toContain('$1,250.00')
+  })
+  it('prints the allocation basis in place of the reference and receipt columns', () => {
+    const html = buildPartnershipInvoiceHtml(data)
+    expect(html).toContain('Allocation basis')
+    expect(html).toContain('100% Fund I: formation')
+    expect(html).not.toContain('>Reference<')
+    expect(html).not.toContain('>Receipt<')
   })
   it('appends PDF and image receipts and names what it could not', async () => {
     const base = await PDFDocument.create(); base.addPage()
