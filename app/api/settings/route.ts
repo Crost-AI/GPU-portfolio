@@ -280,13 +280,35 @@ export async function PATCH(req: NextRequest) {
     settingsUpdates.ai_summary_prompt = aiSummaryPrompt?.trim() || null
   }
 
+  // The fund's one data key (DEK), unwrapped once per request. Every secret in fund_settings is
+  // encrypted under it, so a save must REUSE the stored key: minting a fresh one re-wraps only the
+  // secret being saved and leaves every other one undecryptable. Saving the Claude key used to do
+  // exactly that, which broke the Postmark webhook token, Drive and the other providers' keys.
+  let fundDekValue: string | null = null
+  const fundDek = async (): Promise<string | null> => {
+    if (fundDekValue) return fundDekValue
+    const kek = process.env.ENCRYPTION_KEY
+    if (!kek) return null
+    const { data: existing } = await admin
+      .from('fund_settings')
+      .select('encryption_key_encrypted')
+      .eq('fund_id', membership.fund_id)
+      .single()
+    if (existing?.encryption_key_encrypted) {
+      const { decrypt } = await import('@/lib/crypto')
+      fundDekValue = decrypt(existing.encryption_key_encrypted, kek)
+    } else {
+      fundDekValue = randomBytes(32).toString('hex')
+      settingsUpdates.encryption_key_encrypted = encrypt(fundDekValue, kek)
+    }
+    return fundDekValue
+  }
+  const MISSING_KEK = () => NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
+
   // Update Claude API key with envelope encryption
   if (claudeApiKey !== undefined && claudeApiKey.trim()) {
-    const kek = process.env.ENCRYPTION_KEY
-    if (!kek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
-
-    const dek = randomBytes(32).toString('hex')
-    settingsUpdates.encryption_key_encrypted = encrypt(dek, kek)
+    const dek = await fundDek()
+    if (!dek) return MISSING_KEK()
     settingsUpdates.claude_api_key_encrypted = encrypt(claudeApiKey.trim(), dek)
   }
 
@@ -299,24 +321,8 @@ export async function PATCH(req: NextRequest) {
       // Clear the secret
       settingsUpdates.google_client_secret_encrypted = null
     } else {
-      const kek = process.env.ENCRYPTION_KEY
-      if (!kek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
-
-      // Ensure we have an encryption key; reuse existing or create new
-      const { data: existing } = await admin
-        .from('fund_settings')
-        .select('encryption_key_encrypted')
-        .eq('fund_id', membership.fund_id)
-        .single()
-
-      let dek: string
-      if (existing?.encryption_key_encrypted) {
-        const { decrypt } = await import('@/lib/crypto')
-        dek = decrypt(existing.encryption_key_encrypted, kek)
-      } else {
-        dek = randomBytes(32).toString('hex')
-        settingsUpdates.encryption_key_encrypted = encrypt(dek, kek)
-      }
+      const dek = await fundDek()
+      if (!dek) return MISSING_KEK()
       settingsUpdates.google_client_secret_encrypted = encrypt(googleClientSecret.trim(), dek)
     }
   }
@@ -347,38 +353,16 @@ export async function PATCH(req: NextRequest) {
     settingsUpdates.system_email_from_address = systemEmailFromAddress?.trim() || null
   }
 
-  // The fund's data key, created once per request if the fund has none yet, so that saving
-  // several email secrets together encrypts them all under the same key.
-  let emailDek: string | null = null
-  const emailSecretDek = async (): Promise<string | null> => {
-    if (emailDek) return emailDek
-    const kek = process.env.ENCRYPTION_KEY
-    if (!kek) return null
-    const { data: existing } = await admin
-      .from('fund_settings')
-      .select('encryption_key_encrypted')
-      .eq('fund_id', membership.fund_id)
-      .single()
-    if (existing?.encryption_key_encrypted) {
-      const { decrypt } = await import('@/lib/crypto')
-      emailDek = decrypt(existing.encryption_key_encrypted, kek)
-    } else {
-      emailDek = randomBytes(32).toString('hex')
-      settingsUpdates.encryption_key_encrypted = encrypt(emailDek, kek)
-    }
-    return emailDek
-  }
-
   // Update Resend API key
   if (resendApiKey !== undefined && resendApiKey.trim()) {
-    const dek = await emailSecretDek()
+    const dek = await fundDek()
     if (!dek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
     settingsUpdates.resend_api_key_encrypted = encrypt(resendApiKey.trim(), dek)
   }
 
   // Update Postmark server token
   if (postmarkServerToken !== undefined && postmarkServerToken.trim()) {
-    const dek = await emailSecretDek()
+    const dek = await fundDek()
     if (!dek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
     settingsUpdates.postmark_server_token_encrypted = encrypt(postmarkServerToken.trim(), dek)
   }
@@ -395,7 +379,7 @@ export async function PATCH(req: NextRequest) {
 
   // Update Resend webhook signing secret
   if (resendWebhookSecret !== undefined && resendWebhookSecret.trim()) {
-    const dek = await emailSecretDek()
+    const dek = await fundDek()
     if (!dek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
     settingsUpdates.resend_webhook_secret_encrypted = encrypt(resendWebhookSecret.trim(), dek)
   }
@@ -407,23 +391,8 @@ export async function PATCH(req: NextRequest) {
 
   // Update OpenAI API key with envelope encryption
   if (openaiApiKey !== undefined && openaiApiKey.trim()) {
-    const kek = process.env.ENCRYPTION_KEY
-    if (!kek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
-
-    const { data: existing } = await admin
-      .from('fund_settings')
-      .select('encryption_key_encrypted')
-      .eq('fund_id', membership.fund_id)
-      .single()
-
-    let dek: string
-    if (existing?.encryption_key_encrypted) {
-      const { decrypt } = await import('@/lib/crypto')
-      dek = decrypt(existing.encryption_key_encrypted, kek)
-    } else {
-      dek = randomBytes(32).toString('hex')
-      settingsUpdates.encryption_key_encrypted = encrypt(dek, kek)
-    }
+    const dek = await fundDek()
+    if (!dek) return MISSING_KEK()
     settingsUpdates.openai_api_key_encrypted = encrypt(openaiApiKey.trim(), dek)
   }
 
@@ -434,21 +403,8 @@ export async function PATCH(req: NextRequest) {
 
   // Update OpenRouter (OpenAI-compatible) settings — key uses envelope encryption.
   if (openrouterApiKey !== undefined && openrouterApiKey.trim()) {
-    const kek = process.env.ENCRYPTION_KEY
-    if (!kek) return NextResponse.json({ error: 'Server misconfiguration: ENCRYPTION_KEY not set' }, { status: 500 })
-    const { data: existing } = await admin
-      .from('fund_settings')
-      .select('encryption_key_encrypted')
-      .eq('fund_id', membership.fund_id)
-      .single()
-    let dek: string
-    if (existing?.encryption_key_encrypted) {
-      const { decrypt } = await import('@/lib/crypto')
-      dek = decrypt(existing.encryption_key_encrypted, kek)
-    } else {
-      dek = randomBytes(32).toString('hex')
-      settingsUpdates.encryption_key_encrypted = encrypt(dek, kek)
-    }
+    const dek = await fundDek()
+    if (!dek) return MISSING_KEK()
     settingsUpdates.openrouter_api_key_encrypted = encrypt(openrouterApiKey.trim(), dek)
   }
   if (openrouterModel !== undefined) {
