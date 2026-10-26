@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Book-to-tax adjustments from chat and the API
+- **`tax_adjustments`** previews a tax year's book-to-tax adjustments for one vehicle, the same set the Tax page shows, K-1 pass-through included; **`post_tax_adjustments`** posts them, staged for a person's approval from a chat. Until now they could only be posted from the Tax page. Both gate on the tax domain and `tax_reporting`, and a post leaves the same audit record as the page (`lib/accounting/tax-run-audit.ts`).
+- **A `recalculate_fund_distributions` dry run no longer waits for approval.** It writes nothing, so it runs directly; the real run still stages.
+
 ### Filling a fund register, renaming and merging holdings from chat
 - **`set_fund_terms`, `record_fund_notice`, `record_nav_statement`.** A fund holding's register can be filled in from chat. Terms (commitment and the rest) are set per entity. A capital call or distribution notice is either booked, as Confirm on the holding page books one, or, with `transaction_id`, linked to the investment or proceeds transaction already on the books for that payment, so a register filled in after the fact does not book the money twice. A linked transaction must be the holding's, on the same entity, of the matching type and amount, and not already the register's; a linked distribution takes its character from the transaction's cost basis exited. NAV statements go through `saveNavStatement`, so a NAV the ledger already carries books nothing. Shared code is in `lib/portfolio/fund-register-write.ts`.
 - **`update_company` and `set_holding_type`.** Rename a holding, set or add aliases, set its status; a rename also renames its own chart accounts that still carry the old name. A company can become a fund holding and back; a fund holding with notices or NAV statements is refused until its register is cleared. `lib/companies/holding-edit.ts`.

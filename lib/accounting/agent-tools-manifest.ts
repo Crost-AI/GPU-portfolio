@@ -516,6 +516,33 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'tax_adjustments',
+    description: "Preview a tax year's book-to-tax adjustments for this vehicle, as the Tax page shows them before posting: each proposed adjustment (unrealized appreciation, carry accrued on unrealized gains, organizational and syndication costs, the book realized gain on a fund holding's distributions), the lower-tier K-1 pass-through by holding, anything that could not be built and why, and any accounts the chart is missing. Nothing is written; post_tax_adjustments posts the same set.",
+    scope: 'read',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['taxYear'],
+      properties: { taxYear: { type: 'integer' } },
+    },
+  },
+  {
+    name: 'post_tax_adjustments',
+    description: "Post a tax year's book-to-tax adjustments to this vehicle's tax book (the Tax page's Post): the same set tax_adjustments previews, including each fund holding's K-1 pass-through. A previous run for the year is voided and replaced, so posting again after a K-1 or the books change is safe. Refused in a closed tax year, and when the chart is missing an account the run needs.",
+    scope: 'write',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['taxYear'],
+      properties: {
+        taxYear: { type: 'integer' },
+        inceptionDate: { type: 'string', description: 'YYYY-MM-DD; the vehicle\'s inception, when organizational costs are amortized from a date the books do not show' },
+      },
+    },
+  },
+  {
     name: 'set_bank_transaction_account',
     description: "Re-point one drafted bank transaction's draft entry to a chart account by code (the bank page's account picker). A per-partner capital account (3100-<partner>) carries that partner onto the posting. A draft split across several accounts (e.g. a distribution spread over every partner) is refused unless replaceSplit is true, which replaces the split with one posting to this account.",
     scope: 'write',

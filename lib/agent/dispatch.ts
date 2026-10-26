@@ -95,6 +95,8 @@ const DRAFT_ONLY: Record<string, (input: Record<string, unknown>) => boolean> = 
   // Settles only DRAFTED rows against declared calls and distributions, as drafts; posting them is
   // post_bank_transaction. Staging it would also send the ambiguous matches to the approver, not the chat.
   auto_match_bank_capital: () => true,
+  // A dry run lists the distributions cost recovery would re-book and writes nothing.
+  recalculate_fund_distributions: input => input.dry_run === true,
   // Filling a saved template makes a draft document for the person to read before sending; it
   // changes nothing else. Saving the template itself still stages.
   document_generate: () => true,

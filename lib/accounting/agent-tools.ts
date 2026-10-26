@@ -37,6 +37,8 @@ import { loadSettlements } from './capital-calls'
 import { loadSettlementReviews, reviewCapitalSettlement } from './settlement-reviews'
 import { loadK1Dependencies } from '@/lib/tax/year-close'
 import { markReceivedK1 } from '@/lib/tax/mark-received-k1'
+import { postTaxAdjustments } from './book-tax-run'
+import { auditTaxRun, missingAccountsMessage } from './tax-run-audit'
 import { unwrap } from '@/lib/service-outcome'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
@@ -429,6 +431,27 @@ const HANDLERS: Record<string, AgentToolHandler> = {
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
     if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
     return unwrap(await markReceivedK1(admin, fundId, userId, vehicleId, input))
+  },
+
+  tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId ?? null, taxYear, { preview: true })
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  post_tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    if (!userId) throw new Error('Posting tax adjustments needs a signed-in member.')
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId, taxYear, {
+      inceptionDate: typeof input?.inceptionDate === 'string' ? input.inceptionDate : undefined,
+    })
+    if ('error' in result) throw new Error(result.error)
+    await auditTaxRun(admin, { fundId, userId }, portfolioGroup, taxYear, result)
+    if (result.missingAccounts.length > 0) throw new Error(missingAccountsMessage(result.missingAccounts))
+    return result
   },
 
   set_bank_transaction_account: async ({ admin, fundId, portfolioGroup }, input) => {

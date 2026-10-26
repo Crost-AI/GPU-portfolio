@@ -26,6 +26,8 @@ describe('exception-handling tools', () => {
       review_capital_settlement: 'lp_capital',
       holding_k_ones: 'tax',
       mark_holding_k_one: 'tax',
+      tax_adjustments: 'tax',
+      post_tax_adjustments: 'tax',
     }
     for (const [name, domain] of Object.entries(expected)) {
       const tool = getTool(name)
@@ -34,6 +36,7 @@ describe('exception-handling tools', () => {
     }
     expect(getTool('holding_k_ones')!.accessFeature).toBe('tax_reporting')
     expect(getTool('mark_holding_k_one')!.accessFeature).toBe('tax_reporting')
+    expect(getTool('post_tax_adjustments')!.accessFeature).toBe('tax_reporting')
   })
 
   it('work on one set of books, except the review queue', () => {
@@ -46,7 +49,7 @@ describe('exception-handling tools', () => {
 
   it('stage every write from a connected chat for a person to approve', () => {
     for (const name of ['resolve_review', 'book_capital_call', 'book_distribution_from_bank',
-      'link_bank_transaction', 'restore_bank_transaction', 'review_capital_settlement', 'mark_holding_k_one']) {
+      'link_bank_transaction', 'restore_bank_transaction', 'review_capital_settlement', 'mark_holding_k_one', 'post_tax_adjustments']) {
       const tool = getTool(name)!
       expect(tool.scope, name).toBe('write')
       expect(tool.destructive, name).toBeUndefined()
@@ -54,7 +57,7 @@ describe('exception-handling tools', () => {
     }
     // Auto-match writes drafts on drafted rows only, like categorizing: it runs, and posting stages.
     expect(shouldStage(getTool('auto_match_bank_capital')!, {}, chat)).toBe(false)
-    for (const name of ['review_queue', 'bank_call_candidates', 'capital_settlements', 'holding_k_ones']) {
+    for (const name of ['review_queue', 'bank_call_candidates', 'capital_settlements', 'holding_k_ones', 'tax_adjustments']) {
       expect(getTool(name)!.scope, name).toBe('read')
     }
   })
