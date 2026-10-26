@@ -217,7 +217,7 @@ function PartnershipInvoices() {
             <p className="text-sm text-muted-foreground">{earlier} {earlier === 1 ? 'expense is' : 'expenses are'} dated before {preview.quarter.label} and not on any invoice yet, so {earlier === 1 ? 'it is' : 'they are'} included here. Untick any that should wait, or narrow the dates.</p>
           )}
           <LinesTable
-            lines={preview.lines} fmt={fmt} onOpen={setOpenEntry} periodLabel={preview.quarter.label}
+            lines={preview.lines} fmt={fmt} onOpen={setOpenEntry}
             excluded={excluded}
             onToggle={id => setExcluded(prev => toggled(prev, id))}
             onToggleAll={() => setExcluded(prev => (prev.size === 0 ? new Set(preview.lines.map(l => l.postingId)) : new Set()))}
@@ -281,9 +281,9 @@ function toggled(set: Set<string>, id: string): Set<string> {
   return next
 }
 
-function LinesTable({ lines, fmt, onOpen, periodLabel, excluded, onToggle, onToggleAll, allocations, onAllocation, remember, onRemember, toName }: {
+function LinesTable({ lines, fmt, onOpen, excluded, onToggle, onToggleAll, allocations, onAllocation, remember, onRemember, toName }: {
   lines: Line[]; fmt: (v: number) => string; onOpen: (id: string) => void
-  periodLabel: string; excluded: Set<string>; onToggle: (postingId: string) => void; onToggleAll: () => void
+  excluded: Set<string>; onToggle: (postingId: string) => void; onToggleAll: () => void
   allocations: Record<string, string>; onAllocation: (postingId: string, value: string) => void
   remember: Set<string>; onRemember: (postingId: string) => void
   toName: string
@@ -310,7 +310,6 @@ function LinesTable({ lines, fmt, onOpen, periodLabel, excluded, onToggle, onTog
             <td className="py-1"><input type="checkbox" checked={!excluded.has(l.postingId)} onChange={() => onToggle(l.postingId)} aria-label={`Bill ${l.vendorName ?? l.memo ?? 'this expense'} on this invoice`} /></td>
             <td className="py-1 tabular-nums">
               <button className="underline underline-offset-2" onClick={() => onOpen(l.entryId)}>{l.entryDate}</button>
-              {l.beforePeriod && <span className="ml-1.5 rounded-sm bg-warning-subtle px-1 py-0.5 text-warning" title={`Dated before ${periodLabel}, never invoiced`}>earlier</span>}
             </td>
             <td className="py-1">{l.vendorName ?? '—'}</td>
             <td className="py-1">{l.memo ?? '—'}</td>
