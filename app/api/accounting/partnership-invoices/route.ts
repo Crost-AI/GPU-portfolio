@@ -88,7 +88,8 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST
- *   { group, action: 'create', to, year, quarter, invoiceDate?, memo? }  freeze the quarter into a draft
+ *   { group, action: 'create', to, year, quarter, invoiceDate?, memo?, exclude? }  freeze the quarter into a
+ *        draft; exclude lists posting ids to leave off (they stay open for the next invoice)
  *   { group, action: 'issue', id }   book the fund's side (Dr partnership expenses, Cr due to <group>)
  *   { group, action: 'void', id }    release its lines; an issued one needs the fund's entry voided first
  *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
@@ -115,6 +116,7 @@ export async function POST(req: NextRequest) {
       year: Number(body?.year), quarter: Number(body?.quarter),
       invoiceDate: typeof body?.invoiceDate === 'string' ? body.invoiceDate : null,
       memo: typeof body?.memo === 'string' ? body.memo : null,
+      excludePostingIds: Array.isArray(body?.exclude) ? body.exclude.filter((x: unknown): x is string => typeof x === 'string') : null,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json({ ok: true, ...res })

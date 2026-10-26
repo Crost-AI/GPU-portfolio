@@ -27,7 +27,7 @@ export function PartnershipExpensesView() {
 }
 
 interface InvoiceRow { id: string; invoice_number: string; invoice_date: string; period_start: string; period_end: string; amount: number; status: string; from_vehicle_id: string; to_vehicle_id: string; from_name: string | null; to_name: string | null }
-interface Line { entryId: string; postingId: string; entryDate: string; memo: string | null; reference: string | null; vendorName: string | null; amount: number; receiptCount: number; status: string }
+interface Line { entryId: string; postingId: string; entryDate: string; memo: string | null; reference: string | null; vendorName: string | null; amount: number; receiptCount: number; status: string; beforePeriod?: boolean }
 interface Preview { quarter: { year: number; quarter: number; label: string; start: string; end: string }; to: { vehicleId: string; name: string }; lines: Line[]; total: number; drafts: Line[]; hasReceivableAccount: boolean; receivableAccount: { id: string; code: string; name: string } | null; existing: { id: string; invoiceNumber: string; status: string } | null }
 
 function PartnershipInvoices() {
@@ -48,6 +48,8 @@ function PartnershipInvoices() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [openEntry, setOpenEntry] = useState<string | null>(null)
+  // Lines left off the next invoice, by posting id. They stay open for a later one.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set())
 
   const load = useCallback(async () => {
     if (!group) return
@@ -74,6 +76,7 @@ function PartnershipInvoices() {
     const j = await r.json().catch(() => ({}))
     if (!r.ok) setError(j.error ?? 'Could not preview the invoice')
     setPreview(r.ok ? j.preview : null)
+    setExcluded(new Set())
     setBusy(false)
   }
 
@@ -87,7 +90,7 @@ function PartnershipInvoices() {
   }
 
   async function create() {
-    const j = await post({ action: 'create', to, year, quarter }, 'Could not create the invoice')
+    const j = await post({ action: 'create', to, year, quarter, exclude: Array.from(excluded) }, 'Could not create the invoice')
     if (j) { setNotice(`Draft invoice ${j.invoiceNumber} created for ${fmt(j.amount)}. Review the PDF, then issue it.`); setPreview(null); await load() }
   }
   async function issue(id: string) {
@@ -143,13 +146,17 @@ function PartnershipInvoices() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {notice && !error && <p className="text-sm text-success">{notice}</p>}
 
-      {preview && (
+      {preview && (() => {
+        const kept = preview.lines.filter(l => !excluded.has(l.postingId))
+        const keptTotal = kept.reduce((sum, l) => sum + l.amount, 0)
+        const earlier = preview.lines.filter(l => l.beforePeriod).length
+        return (
         <div className="space-y-2 rounded-card border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium">{preview.to.name}, {preview.quarter.label}: {preview.lines.length} {preview.lines.length === 1 ? 'expense' : 'expenses'}, {fmt(preview.total)}</p>
+            <p className="text-sm font-medium">{preview.to.name}, {preview.quarter.label}: {kept.length} {kept.length === 1 ? 'expense' : 'expenses'}, {fmt(keptTotal)}{excluded.size > 0 ? ` (${excluded.size} left off)` : ''}</p>
             {preview.existing
               ? <span className="text-xs text-muted-foreground">Already billed on {preview.existing.invoiceNumber} ({preview.existing.status}).</span>
-              : <Button size="sm" disabled={busy || preview.lines.length === 0} onClick={() => void create()}>Create draft invoice</Button>}
+              : <Button size="sm" disabled={busy || kept.length === 0} onClick={() => void create()}>Create draft invoice</Button>}
           </div>
           {preview.drafts.length > 0 && (
             <p className="text-sm text-warning">{preview.drafts.length} {preview.drafts.length === 1 ? 'expense is' : 'expenses are'} still a draft and will not be billed until posted.</p>
@@ -179,9 +186,17 @@ function PartnershipInvoices() {
           {!preview.hasReceivableAccount && (
             <p className="text-sm text-muted-foreground">Pick the account {group ?? 'this entity'} books {preview.to.name}’s expenses to, or add a new one. Nothing can be billed until it has one.</p>
           )}
-          <LinesTable lines={preview.lines} fmt={fmt} onOpen={setOpenEntry} />
+          {earlier > 0 && (
+            <p className="text-sm text-muted-foreground">{earlier} {earlier === 1 ? 'expense is' : 'expenses are'} dated before {preview.quarter.label} and not on any invoice yet, so {earlier === 1 ? 'it is' : 'they are'} included here. Untick any that should wait.</p>
+          )}
+          <LinesTable
+            lines={preview.lines} fmt={fmt} onOpen={setOpenEntry} periodLabel={preview.quarter.label}
+            excluded={excluded}
+            onToggle={id => setExcluded(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })}
+          />
         </div>
-      )}
+        )
+      })()}
 
       {invoices.length === 0 ? (
         <EmptyState icon={FileText}>No partnership invoices yet.</EmptyState>
@@ -219,18 +234,26 @@ function PartnershipInvoices() {
   )
 }
 
-function LinesTable({ lines, fmt, onOpen }: { lines: Line[]; fmt: (v: number) => string; onOpen: (id: string) => void }) {
-  if (lines.length === 0) return <p className="text-xs text-muted-foreground">No posted debits to the fund’s Due-from account in this quarter that are not already invoiced.</p>
+function LinesTable({ lines, fmt, onOpen, periodLabel, excluded, onToggle }: {
+  lines: Line[]; fmt: (v: number) => string; onOpen: (id: string) => void
+  periodLabel: string; excluded: Set<string>; onToggle: (postingId: string) => void
+}) {
+  if (lines.length === 0) return <p className="text-xs text-muted-foreground">No posted debits to the fund’s Due-from account through the end of {periodLabel} that are not already invoiced.</p>
   return (
     <table className="w-full text-xs">
       <thead><tr className="text-left text-muted-foreground">
+        <th className="w-6 pb-1 font-medium"><span className="sr-only">Bill</span></th>
         <th className="pb-1 font-medium">Date</th><th className="pb-1 font-medium">Vendor</th><th className="pb-1 font-medium">Memo</th>
         <th className="pb-1 font-medium">Receipt</th><th className="pb-1 text-right font-medium">Amount</th>
       </tr></thead>
       <tbody>
         {lines.map(l => (
-          <tr key={l.postingId} className="border-t">
-            <td className="py-1 tabular-nums"><button className="underline underline-offset-2" onClick={() => onOpen(l.entryId)}>{l.entryDate}</button></td>
+          <tr key={l.postingId} className={`border-t ${excluded.has(l.postingId) ? 'text-muted-foreground' : ''}`}>
+            <td className="py-1"><input type="checkbox" checked={!excluded.has(l.postingId)} onChange={() => onToggle(l.postingId)} aria-label={`Bill ${l.vendorName ?? l.memo ?? 'this expense'} on this invoice`} /></td>
+            <td className="py-1 tabular-nums">
+              <button className="underline underline-offset-2" onClick={() => onOpen(l.entryId)}>{l.entryDate}</button>
+              {l.beforePeriod && <span className="ml-1.5 rounded-sm bg-warning-subtle px-1 py-0.5 text-warning" title={`Dated before ${periodLabel}, never invoiced`}>earlier</span>}
+            </td>
             <td className="py-1">{l.vendorName ?? '—'}</td>
             <td className="py-1">{l.memo ?? '—'}</td>
             <td className={`py-1 ${l.receiptCount > 0 ? '' : 'text-muted-foreground'}`}>{l.receiptCount > 0 ? `${l.receiptCount}` : 'missing'}</td>

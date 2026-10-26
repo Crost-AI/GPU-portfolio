@@ -242,6 +242,7 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     const res = await createPartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, {
       fromVehicleId: vehicleId, toVehicleId: to.vehicleId, year: Number(input?.year), quarter: Number(input?.quarter),
       invoiceDate: input?.invoiceDate ?? null, memo: input?.memo ?? null,
+      excludePostingIds: Array.isArray(input?.excludePostingIds) ? input.excludePostingIds.map(String) : null,
     })
     if ('error' in res) fail(res)
     if (!input?.issue) return { ...res, status: 'draft', pdf: `/api/accounting/partnership-invoices/${res.id}/pdf` }

@@ -98,7 +98,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'partnership_invoices',
-    description: "This entity's partnership-expense invoices (sent and received), which funds have posted debits on their 'Due from <fund>' account not yet billed, and, given billTo + year + quarter, a preview of exactly what that quarter's invoice would bill (each posted debit to Due from <billTo> in the quarter that no invoice has billed; intercompany charges such as management fees are excluded; drafts are listed as a warning).",
+    description: "This entity's partnership-expense invoices (sent and received), which funds have posted debits on their 'Due from <fund>' account not yet billed, and, given billTo + year + quarter, a preview of exactly what that quarter's invoice would bill (each posted debit to Due from <billTo> dated on or before the quarter's end that no invoice has billed, earlier ones flagged beforePeriod; intercompany charges such as management fees are excluded; drafts are listed as a warning).",
     scope: 'read',
     inputSchema: {
       type: 'object',
@@ -111,7 +111,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'create_partnership_invoice',
-    description: "Bill a fund for the partnership expenses this entity paid for it in a quarter: freezes every posted, unbilled debit to this entity's 'Due from <fund>' account in the quarter into a DRAFT invoice (nothing is booked yet). issue: true also books the fund's side (Dr partnership expenses, Cr due to this entity); this entity's receivable is already on its books from each expense. When the fund pays, settle the charge on the Intercompany tab to clear the receivable. The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
+    description: "Bill a fund for the partnership expenses this entity paid for it in a quarter: freezes every posted, unbilled debit to this entity's 'Due from <fund>' account dated on or before the quarter's end (earlier unbilled ones included; the preview flags them beforePeriod) into a DRAFT invoice (nothing is booked yet). excludePostingIds leaves lines off; they stay open for the next invoice. issue: true also books the fund's side (Dr partnership expenses, Cr due to this entity); this entity's receivable is already on its books from each expense. When the fund pays, settle the charge on the Intercompany tab to clear the receivable. The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -122,6 +122,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
         invoiceDate: { type: 'string', description: 'YYYY-MM-DD; default today' },
         memo: { type: 'string' },
         issue: { type: 'boolean', description: 'default false: leave it as a draft to review' },
+        excludePostingIds: { type: 'array', items: { type: 'string' }, description: 'postingId values from the preview to leave off this invoice' },
         dueFromAccount: { type: 'string', description: "optional account code on this entity's chart to use as the 'Due from <billTo>' account from now on (for a chart imported with its own names, e.g. an account called 'Due from Fund III' under a plain code). It is linked to billTo before the quarter is read." },
       },
     },

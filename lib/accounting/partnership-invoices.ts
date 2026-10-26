@@ -6,11 +6,14 @@
 //        Dr Due from <fund> (1900-<fund>)   Cr Cash (or the card)
 //      from the bank feed, a typed entry, or a draft made from the receipt (receipts.ts). The
 //      receipt is attached to that entry. Nothing else marks it: the account IS the tag.
-//   2. `previewPartnershipInvoice` lists every POSTED debit to that account in the quarter that no
-//      live invoice has billed yet (receipts-core.ts, billablePostings). Drafts are listed
-//      separately as a warning, never billed: a draft is not yet a cost.
-//   3. `createPartnershipInvoice` freezes those postings and the total into a DRAFT invoice
-//      (partnership_invoice_lines), so the same expense cannot land on two invoices.
+//   2. `previewPartnershipInvoice` lists every POSTED debit to that account dated on or before the
+//      quarter's end that no live invoice has billed yet (receipts-core.ts, billablePostings). That
+//      includes earlier ones nobody billed (paid the week before the quarter opened, or missed
+//      last quarter), flagged `beforePeriod`, so nothing falls between two invoices. Drafts are
+//      listed separately as a warning, never billed: a draft is not yet a cost.
+//   3. `createPartnershipInvoice` freezes those postings (less any the person left off) and the
+//      total into a DRAFT invoice (partnership_invoice_lines), so the same expense cannot land on
+//      two invoices. A line left off stays open for the next one.
 //   4. `issuePartnershipInvoice` books the FUND's side only, as an intercompany expense
 //      reimbursement whose receivable is already on the manco's books:
 //        the fund   Dr Partnership expenses   Cr Due to <manco>
@@ -41,6 +44,8 @@ export interface InvoiceLine {
   amount: number
   receiptCount: number
   status: string
+  /** Dated before the invoice's quarter: an earlier expense nobody billed, carried onto this one. */
+  beforePeriod?: boolean
 }
 
 /** A line of an existing invoice, with what its posting says NOW (null when the posting is gone). */
@@ -98,7 +103,7 @@ interface EntryRow {
 /** Entries on the biller's books with a posting to any of these accounts (only those postings). */
 async function entriesTouching(
   admin: SupabaseClient, fundId: string, fromVehicleId: string, accountIds: string[],
-  opts: { window?: { start: string; end: string } | null; statuses: string[] },
+  opts: { window?: { start: string | null; end: string } | null; statuses: string[] },
 ): Promise<EntryRow[]> {
   if (accountIds.length === 0) return []
   let q = admin.from('journal_entries' as any)
@@ -106,7 +111,8 @@ async function entriesTouching(
     .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
     .in('status', opts.statuses)
     .in('journal_postings.account_id', accountIds)
-  if (opts.window) q = q.gte('entry_date', opts.window.start).lte('entry_date', opts.window.end)
+  if (opts.window?.start) q = q.gte('entry_date', opts.window.start)
+  if (opts.window) q = q.lte('entry_date', opts.window.end)
   const { data, error } = await q.order('entry_date', { ascending: true }).limit(5000)
   if (error) throw new Error(`The Due-from entries could not be read: ${error.message}`)
   return ((data as any[]) ?? []).map(e => ({ ...e, journal_postings: ((e.journal_postings as any[]) ?? []).map(p => ({ ...p, amount: Number(p.amount) })) }))
@@ -148,7 +154,7 @@ async function lineDetails(admin: SupabaseClient, fundId: string, entries: Entry
 
 /** The unbilled Due-from debits in the window, posted and draft. */
 async function openLines(
-  admin: SupabaseClient, fundId: string, fromVehicleId: string, receivableId: string, window: { start: string; end: string } | null,
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, receivableId: string, window: { start: string | null; end: string } | null,
 ): Promise<InvoiceLine[]> {
   const entries = await entriesTouching(admin, fundId, fromVehicleId, [receivableId], { window, statuses: ['draft', 'posted'] })
   const billed = await billedPostingIds(admin, fundId, entries.flatMap(e => e.journal_postings.map(p => p.id)))
@@ -169,7 +175,10 @@ async function existingInvoice(admin: SupabaseClient, fundId: string, fromId: st
   return data ? { id: (data as any).id, invoiceNumber: (data as any).invoice_number, status: (data as any).status, amount: Number((data as any).amount) } : null
 }
 
-/** What an invoice for this quarter would bill, without writing anything. */
+/**
+ * What an invoice for this quarter would bill, without writing anything: every unbilled debit dated
+ * on or before the quarter's end. Lines from before the quarter are flagged `beforePeriod`.
+ */
 export async function previewPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
@@ -181,7 +190,8 @@ export async function previewPartnershipInvoice(
   if (!pair) return { error: 'Both entities must be in this fund.' }
   if (args.fromVehicleId === args.toVehicleId) return { error: 'An entity cannot bill itself.' }
   const receivable = await receivableAccount(admin, fundId, args.fromVehicleId, args.toVehicleId)
-  const all = receivable ? await openLines(admin, fundId, args.fromVehicleId, receivable.id, q) : []
+  const all = (receivable ? await openLines(admin, fundId, args.fromVehicleId, receivable.id, { start: null, end: q.end }) : [])
+    .map(l => ({ ...l, beforePeriod: l.entryDate < q.start }))
   const lines = all.filter(l => l.status === 'posted')
   return {
     quarter: q, ...pair, lines, hasReceivableAccount: !!receivable, receivableAccount: receivable,
@@ -228,15 +238,24 @@ export async function createPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
   userId: string | null,
-  args: { fromVehicleId: string; toVehicleId: string; year: number; quarter: number; invoiceDate?: string | null; memo?: string | null },
+  args: {
+    fromVehicleId: string; toVehicleId: string; year: number; quarter: number; invoiceDate?: string | null; memo?: string | null
+    /** Postings to leave off this invoice; they stay open for the next one. */
+    excludePostingIds?: string[] | null
+  },
 ): Promise<{ id: string; invoiceNumber: string; amount: number; lines: number } | { error: string; status?: number }> {
-  const preview = await previewPartnershipInvoice(admin, fundId, args)
-  if ('error' in preview) return { error: preview.error, status: 400 }
+  const found = await previewPartnershipInvoice(admin, fundId, args)
+  if ('error' in found) return { error: found.error, status: 400 }
+  const excluded = new Set(args.excludePostingIds ?? [])
+  const kept = found.lines.filter(l => !excluded.has(l.postingId))
+  const preview = { ...found, lines: kept, total: roundCents(kept.reduce((sum, l) => sum + l.amount, 0)) }
   if (preview.existing) {
     return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). Void it to bill the quarter again.`, status: 409 }
   }
   if (preview.lines.length === 0) {
-    return { error: `Nothing to bill: no posted debits to Due from ${preview.to.name} in ${preview.quarter.label} that are not already on an invoice.`, status: 400 }
+    return { error: found.lines.length > 0
+      ? 'Nothing to bill: every expense was left off this invoice.'
+      : `Nothing to bill: no posted debits to Due from ${preview.to.name} through the end of ${preview.quarter.label} that are not already on an invoice.`, status: 400 }
   }
 
   const { data: settings } = await admin.from('fund_settings' as any).select('currency').eq('fund_id', fundId).maybeSingle()
