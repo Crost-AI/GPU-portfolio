@@ -94,6 +94,16 @@ describe('nonceRenderGap', () => {
 
   it('catches a request policy whose nonce is not the one the layouts use', () => {
     const other = buildReportOnlyCsp('zzz999')
-    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123', 'content-security-policy': other }))).toMatch(/different nonce/)
+    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123', 'content-security-policy': other })))
+      .toBe('content-security-policy carries a policy with another nonce; report-only did not arrive')
+  })
+
+  it('says when the enforcing policy took the request header’s place', () => {
+    const enforcing = "default-src 'self'; script-src 'self' 'unsafe-inline'"
+    expect(nonceRenderGap(new Headers({
+      'x-nonce': 'abc123',
+      'content-security-policy': enforcing,
+      'content-security-policy-report-only': policy,
+    }))).toBe('content-security-policy carries the enforcing policy (no nonce)')
   })
 })
