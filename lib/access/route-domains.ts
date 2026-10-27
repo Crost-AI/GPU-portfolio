@@ -109,6 +109,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/allocation': { domain: 'accounting' },
   // The account register: the same posted ledger the statements read, one account at a time.
   'api/accounting/ledger': { domain: 'accounting' },
+  // The general ledger as a file (CSV or Excel) — every account's register, or one account's.
+  'api/accounting/ledger/export': { domain: 'accounting' },
   'api/accounting/ledger-text': { domain: 'accounting' },
   'api/accounting/opening-balances': { domain: 'accounting' },
   'api/accounting/periods': { domain: 'accounting' },
