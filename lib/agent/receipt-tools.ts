@@ -247,6 +247,7 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       allocations: input?.allocations && typeof input.allocations === 'object' ? input.allocations : null,
       rememberPostingIds: Array.isArray(input?.rememberPostingIds) ? input.rememberPostingIds.map(String) : null,
       excludePostingIds: Array.isArray(input?.excludePostingIds) ? input.excludePostingIds.map(String) : null,
+      adjustments: Array.isArray(input?.adjustments) ? input.adjustments : null,
     })
     if ('error' in res) fail(res)
     if (!input?.issue) return { ...res, status: 'draft', pdf: `/api/accounting/partnership-invoices/${res.id}/pdf` }
@@ -284,6 +285,8 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       rememberPostingIds: ids(input?.rememberPostingIds),
       addPostingIds: ids(input?.addPostingIds),
       removePostingIds: ids(input?.removePostingIds ?? input?.releasePostingIds),
+      addAdjustments: Array.isArray(input?.addAdjustments) ? input.addAdjustments : null,
+      removeAdjustmentIds: ids(input?.removeAdjustmentIds),
       descriptions: Object.fromEntries(Object.entries(record(input?.descriptions)).map(([k, v]) => {
         const d = record(v)
         return [k, { vendor: typeof d.vendor === 'string' ? d.vendor : undefined, description: typeof d.description === 'string' ? d.description : undefined }]

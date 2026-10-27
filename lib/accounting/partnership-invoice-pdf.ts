@@ -37,7 +37,12 @@ export interface PartnershipInvoicePdfData {
   periodStart: string
   periodEnd: string
   currency: string
+  /** The expenses billed. */
   amount: number
+  /** Credits (negative) and charges (positive) below the expenses; absent or empty when none. */
+  adjustments?: { description: string; amount: number }[]
+  /** What the fund pays: amount plus the adjustments. Defaults to amount. */
+  amountDue?: number
   memo: string | null
   draft: boolean
   /** allocationBasis: why the fund bears the expense (lib/accounting/allocation-basis.ts). */
@@ -55,6 +60,19 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;color:#555;">${esc(l.allocationBasis ?? '')}</td>
       <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(l.amount)}</td>
     </tr>`).join('')
+  const adjustments = d.adjustments ?? []
+  const due = d.amountDue ?? d.amount
+  const totalRow = (label: string, v: number, top = '1px solid #e5e5e5') => `
+        <tr><td colspan="4" style="padding:6px 8px;border-top:${top};font-weight:600;">${esc(label)}</td>
+            <td style="padding:6px 8px;border-top:${top};text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${m(v)}</td></tr>`
+  // With adjustments the expenses get a subtotal, each adjustment a row, and the amount due the last line.
+  const footer = adjustments.length === 0
+    ? totalRow('Total', d.amount, '2px solid #ccc')
+    : totalRow('Total expenses', d.amount, '2px solid #ccc')
+      + adjustments.map(a => `
+        <tr><td colspan="4" style="padding:5px 8px;border-top:1px solid #e5e5e5;">${esc(a.description)}</td>
+            <td style="padding:5px 8px;border-top:1px solid #e5e5e5;text-align:right;font-variant-numeric:tabular-nums;">${m(a.amount)}</td></tr>`).join('')
+      + totalRow('Amount due', due, '2px solid #ccc')
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>${pdfFontCss(d.displayFont)}
@@ -84,7 +102,7 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
       </div>
       <div style="padding:14px 18px;border:1px solid #e5e5e5;background:#fafafa;min-width:200px;">
         <p style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:0.04em;">Amount due</p>
-        <p style="font-family:${PDF_DISPLAY};font-size:26px;font-weight:400;margin-top:4px;font-variant-numeric:tabular-nums;">${m(d.amount)}</p>
+        <p style="font-family:${PDF_DISPLAY};font-size:26px;font-weight:400;margin-top:4px;font-variant-numeric:tabular-nums;">${m(due)}</p>
       </div>
     </div>
 
@@ -98,9 +116,7 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
     <h3 style="font-size:12px;font-weight:600;margin:20px 0 6px;">Expenses</h3>
     <table>
       <thead><tr><th style="width:24px;">#</th><th>Date</th><th>Vendor and description</th><th>Allocation basis</th><th style="text-align:right;">Amount</th></tr></thead>
-      <tbody>${rows}
-        <tr><td colspan="4" style="padding:6px 8px;border-top:2px solid #ccc;font-weight:600;">Total</td>
-            <td style="padding:6px 8px;border-top:2px solid #ccc;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${m(d.amount)}</td></tr>
+      <tbody>${rows}${footer}
       </tbody>
     </table>
   </div>
@@ -214,6 +230,8 @@ export async function partnershipInvoiceDocument(
     periodEnd: inv.periodEnd,
     currency: inv.currency,
     amount: inv.amount,
+    adjustments: inv.adjustments.map(a => ({ description: a.description, amount: a.amount })),
+    amountDue: inv.amountDue,
     memo: inv.memo,
     draft: inv.status === 'draft',
     lines: inv.lines.map(l => ({ date: l.entryDate, vendor: l.vendorName, description: l.memo, allocationBasis: l.allocationBasis, amount: l.amount })),

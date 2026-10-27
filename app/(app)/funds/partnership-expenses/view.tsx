@@ -30,8 +30,9 @@ export function PartnershipExpensesView() {
   return <PartnershipInvoices />
 }
 
-interface InvoiceRow { id: string; invoice_number: string; invoice_date: string; period_start: string; period_end: string; amount: number; status: string; from_vehicle_id: string; to_vehicle_id: string; from_name: string | null; to_name: string | null }
+interface InvoiceRow { id: string; invoice_number: string; invoice_date: string; period_start: string; period_end: string; amount: number; adjustment_total?: number | null; status: string; from_vehicle_id: string; to_vehicle_id: string; from_name: string | null; to_name: string | null }
 interface Line { entryId: string; postingId: string; entryDate: string; memo: string | null; reference: string | null; vendorName: string | null; amount: number; receiptCount: number; status: string; beforePeriod?: boolean; allocationBasis: string | null; allocationSource?: 'receipt' | 'vendor' | null }
+interface Adjustment { id: string; description: string; amount: number }
 interface Preview { quarter: { year: number; quarter: number; label: string; start: string; end: string }; range: { from: string | null; through: string }; to: { vehicleId: string; name: string }; lines: Line[]; total: number; drafts: Line[]; hasReceivableAccount: boolean; receivableAccount: { id: string; code: string; name: string } | null; existing: { id: string; invoiceNumber: string; status: string } | null }
 
 function PartnershipInvoices() {
@@ -66,12 +67,15 @@ function PartnershipInvoices() {
   const [allocations, setAllocations] = useState<Record<string, string>>({})
   const [remember, setRemember] = useState<Set<string>>(new Set())
   // An invoice already created whose allocation bases are being corrected in place.
-  const [editing, setEditing] = useState<{ id: string; invoiceNumber: string; status: string; toName: string; lines: Line[]; addable: Line[] } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; invoiceNumber: string; status: string; toName: string; lines: Line[]; addable: Line[]; adjustments: Adjustment[] } | null>(null)
   const [editBases, setEditBases] = useState<Record<string, string>>({})
   const [editRemember, setEditRemember] = useState<Set<string>>(new Set())
   const [editRemove, setEditRemove] = useState<Set<string>>(new Set())
   const [editAdd, setEditAdd] = useState<Set<string>>(new Set())
   const [editDesc, setEditDesc] = useState<Record<string, { vendor: string; description: string }>>({})
+  // Credits and charges on a draft: ids to take off, and new ones typed (amount as typed, negative for a credit).
+  const [editRemoveAdj, setEditRemoveAdj] = useState<Set<string>>(new Set())
+  const [editNewAdj, setEditNewAdj] = useState<{ description: string; amount: string }[]>([])
   const [receiptsFor, setReceiptsFor] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -143,10 +147,11 @@ function PartnershipInvoices() {
     if (!r.ok) { setError(j.error ?? 'Could not open the invoice'); return }
     const inv = j.invoice
     const lines = inv.lines as Line[]
-    setEditing({ id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status, toName: inv.to.name, lines, addable: Array.isArray(j.addable) ? j.addable : [] })
+    setEditing({ id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status, toName: inv.to.name, lines, addable: Array.isArray(j.addable) ? j.addable : [], adjustments: Array.isArray(inv.adjustments) ? inv.adjustments : [] })
     setEditBases(Object.fromEntries(lines.map(l => [l.postingId, l.allocationBasis ?? ''])))
     setEditDesc(Object.fromEntries(lines.map(l => [l.postingId, { vendor: l.vendorName ?? '', description: l.memo ?? '' }])))
     setEditRemember(new Set()); setEditRemove(new Set()); setEditAdd(new Set()); setReceiptsFor(null)
+    setEditRemoveAdj(new Set()); setEditNewAdj([])
   }
   async function saveEdit() {
     if (!editing) return
@@ -161,11 +166,14 @@ function PartnershipInvoices() {
       if (d.description.trim() !== (l.memo ?? '')) patch.description = d.description
       return Object.keys(patch).length ? [[l.postingId, patch]] : []
     }))
-    const j = await post({ action: 'edit', id: editing.id, allocations: editBases, remember: Array.from(editRemember), add: Array.from(editAdd), remove, descriptions }, 'Could not save the invoice')
+    // A row left blank is ignored; one half filled in is sent, so the server says what is missing.
+    const addAdjustments = editNewAdj.filter(a => a.description.trim() || a.amount.trim())
+    const j = await post({ action: 'edit', id: editing.id, allocations: editBases, remember: Array.from(editRemember), add: Array.from(editAdd), remove, descriptions, addAdjustments, removeAdjustments: Array.from(editRemoveAdj) }, 'Could not save the invoice')
     if (j) {
       const unsaved = Array.isArray(j.basesNotSaved) && j.basesNotSaved.length ? ` The note for ${j.basesNotSaved.join(', ')} was not saved for next time.` : ''
       const moved = j.added || j.removed ? ` ${[j.added ? `Added ${j.added}` : '', j.removed ? `removed ${j.removed}` : ''].filter(Boolean).join(', ')} ${(j.added || 0) + (j.removed || 0) === 1 ? 'expense' : 'expenses'}; the invoice is now ${fmt(j.amount)}.` : ''
-      setNotice(`${editing.invoiceNumber} saved.${moved} The PDF shows the changes.${unsaved}`)
+      const adjusted = j.adjusted ? ` Amount due is now ${fmt(j.amountDue)}.` : ''
+      setNotice(`${editing.invoiceNumber} saved.${moved}${adjusted} The PDF shows the changes.${unsaved}`)
       await load()
       // Stay open, so an expense just added can get its note and receipt.
       await editOf(editing.id)
@@ -295,7 +303,7 @@ function PartnershipInvoices() {
                   <td className="py-1.5">{i.invoice_number}</td>
                   <td className="py-1.5 tabular-nums text-xs">{i.period_start} – {i.period_end}</td>
                   <td className="py-1.5 text-xs">{i.from_name ?? '—'} → {i.to_name ?? '—'}</td>
-                  <td className="py-1.5 text-right tabular-nums">{fmt(Number(i.amount))}</td>
+                  <td className="py-1.5 text-right tabular-nums" title={Number(i.adjustment_total || 0) ? `Expenses ${fmt(Number(i.amount))}, adjustments ${fmt(Number(i.adjustment_total))}` : undefined}>{fmt(Number(i.amount) + Number(i.adjustment_total || 0))}</td>
                   <td className="py-1.5 text-xs capitalize">{i.status}</td>
                   <td className="py-1.5 text-right">
                     <span className="inline-flex gap-1.5">
@@ -306,7 +314,7 @@ function PartnershipInvoices() {
                           actions={i.status === 'draft'
                             ? [
                                 { label: 'Issue', hint: 'Book it on the fund’s books', run: () => void issue(i.id) },
-                                { label: 'Edit', hint: 'Add or remove expenses, change descriptions, notes and receipts', run: () => void editOf(i.id) },
+                                { label: 'Edit', hint: 'Add or remove expenses and credits, change descriptions, notes and receipts', run: () => void editOf(i.id) },
                                 { label: 'Delete', hint: 'Remove the draft; its expenses go back to unbilled', run: () => void deleteIt(i.id) },
                               ]
                             : [
@@ -327,7 +335,9 @@ function PartnershipInvoices() {
         const draft = editing.status === 'draft'
         const total = editing.lines.filter(l => !editRemove.has(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
           + editing.addable.filter(l => editAdd.has(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
-        const changed = editRemove.size > 0 || editAdd.size > 0
+        const typedAdj = editNewAdj.map(a => Number(a.amount.replace(/[,$\s]/g, ''))).filter(n => Number.isFinite(n))
+        const adjTotal = editing.adjustments.filter(a => !editRemoveAdj.has(a.id)).reduce((sum, a) => sum + a.amount, 0) + typedAdj.reduce((sum, n) => sum + n, 0)
+        const changed = editRemove.size > 0 || editAdd.size > 0 || editRemoveAdj.size > 0 || typedAdj.some(n => n !== 0)
         const cell = 'block w-full rounded border border-input bg-transparent px-1.5 py-0.5 text-xs'
         return (
         <div className="space-y-3 rounded-card border p-3">
@@ -414,9 +424,47 @@ function PartnershipInvoices() {
               )}
             </div>
           )}
+          {(draft || editing.adjustments.length > 0) && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium">Credits and adjustments</p>
+              <p className="text-xs text-muted-foreground">
+                Printed below the expenses and taken off (or added to) the amount due. Use a negative amount to credit {editing.toName}, for example for an earlier invoice that asked for more than the books said. Nothing is booked: the expenses stay as they are, and settling the invoice moves the amount due.
+              </p>
+              <table className="w-full text-sm">
+                <tbody>
+                  {editing.adjustments.map(a => {
+                    const removed = editRemoveAdj.has(a.id)
+                    return (
+                      <tr key={a.id} className={`border-t text-xs ${removed ? 'text-muted-foreground line-through' : ''}`}>
+                        <td className="py-1 pr-2">{a.description}</td>
+                        <td className="py-1 text-right tabular-nums">{fmt(a.amount)}</td>
+                        <td className="w-20 py-1 pl-2 text-right">
+                          {draft && <button className={smallBtn} disabled={busy} onClick={() => setEditRemoveAdj(prev => toggled(prev, a.id))}>{removed ? 'Keep' : 'Remove'}</button>}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {draft && editNewAdj.map((a, i) => (
+                    <tr key={`new-${i}`} className="border-t text-xs">
+                      <td className="py-1 pr-2">
+                        <input value={a.description} onChange={e => setEditNewAdj(prev => prev.map((x, k) => (k === i ? { ...x, description: e.target.value } : x)))} placeholder="Credit for overbilling on an earlier invoice" aria-label="Adjustment description" className={cell} />
+                      </td>
+                      <td className="w-32 py-1">
+                        <input value={a.amount} inputMode="decimal" onChange={e => setEditNewAdj(prev => prev.map((x, k) => (k === i ? { ...x, amount: e.target.value } : x)))} placeholder="-1,000.00" aria-label="Adjustment amount, negative for a credit" className={`${cell} text-right tabular-nums`} />
+                      </td>
+                      <td className="w-20 py-1 pl-2 text-right">
+                        <button className={smallBtn} disabled={busy} onClick={() => setEditNewAdj(prev => prev.filter((_, k) => k !== i))}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {draft && <button className={smallBtn} disabled={busy} onClick={() => setEditNewAdj(prev => [...prev, { description: '', amount: '' }])}>Add a credit or adjustment</button>}
+            </div>
+          )}
           {changed && (
             <p className="text-xs text-muted-foreground">
-              {[editAdd.size ? `${editAdd.size} to add` : '', editRemove.size ? `${editRemove.size} to remove (back to unbilled)` : ''].filter(Boolean).join(', ')}. New total {fmt(total)}.
+              {[editAdd.size ? `${editAdd.size} to add` : '', editRemove.size ? `${editRemove.size} to remove (back to unbilled)` : ''].filter(Boolean).join(', ')}{editAdd.size || editRemove.size ? '. ' : ''}Expenses {fmt(total)}{adjTotal ? `, adjustments ${fmt(adjTotal)}, amount due ${fmt(total + adjTotal)}` : ''}.
             </p>
           )}
         </div>

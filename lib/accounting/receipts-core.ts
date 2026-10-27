@@ -222,6 +222,36 @@ export function billablePostings(
   return out
 }
 
+// ── Adjustments on an invoice ───────────────────────────────────────────────────────────────
+
+/**
+ * A line typed onto an invoice that changes what the fund pays without billing an expense: a credit
+ * (negative) for an earlier invoice that asked for too much, or a charge (positive) for one that
+ * asked for too little. Never booked; settling the invoice moves the amount due (amountDue).
+ */
+export interface InvoiceAdjustmentInput { description: string; amount: number }
+
+/** Adjustments from a form or a model: each needs a description and a non-zero amount. */
+export function parseAdjustments(raw: unknown): { adjustments: InvoiceAdjustmentInput[] } | { error: string } {
+  if (raw == null) return { adjustments: [] }
+  if (!Array.isArray(raw)) return { error: 'adjustments must be a list of { description, amount }.' }
+  const out: InvoiceAdjustmentInput[] = []
+  for (const a of raw) {
+    const description = typeof a?.description === 'string' ? a.description.trim() : ''
+    const n = typeof a?.amount === 'string' ? Number(a.amount.replace(/[,$\s]/g, '')) : Number(a?.amount)
+    const amount = Number.isFinite(n) ? roundCents(n) : NaN
+    if (!description) return { error: 'Every adjustment needs a description, which is printed on the invoice.' }
+    if (!Number.isFinite(amount) || amount === 0) return { error: `The adjustment “${description}” needs an amount: negative for a credit to the fund, positive for a charge.` }
+    out.push({ description, amount })
+  }
+  return { adjustments: out }
+}
+
+/** What the fund is asked to pay: the expenses billed plus the adjustments. */
+export function amountDue(expenses: number, adjustmentTotal: number): number {
+  return roundCents(Number(expenses) + Number(adjustmentTotal || 0))
+}
+
 /** The size of an entry, for matching: its debits. */
 export function entryGross(postings: { amount: number }[]): number {
   return roundCents(postings.filter(p => Number(p.amount) > 0).reduce((s, p) => s + Number(p.amount), 0))

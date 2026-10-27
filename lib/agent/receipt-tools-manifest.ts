@@ -116,7 +116,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'create_partnership_invoice',
-    description: "Bill a fund for the partnership expenses this entity paid for it in a quarter: freezes every posted, unbilled debit to this entity's 'Due from <fund>' account dated on or before the quarter's end (earlier unbilled ones included; the preview flags them beforePeriod) into a DRAFT invoice (nothing is booked yet). excludePostingIds leaves lines off; they stay open for the next invoice. issue: true also books the fund's side (Dr partnership expenses, Cr due to this entity); this entity's receivable is already on its books from each expense. When the fund pays, settle the charge on the Intercompany tab to clear the receivable. The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
+    description: "Bill a fund for the partnership expenses this entity paid for it in a quarter: freezes every posted, unbilled debit to this entity's 'Due from <fund>' account dated on or before the quarter's end (earlier unbilled ones included; the preview flags them beforePeriod) into a DRAFT invoice (nothing is booked yet). excludePostingIds leaves lines off; they stay open for the next invoice. issue: true also books the fund's side (Dr partnership expenses, Cr due to this entity); this entity's receivable is already on its books from each expense. adjustments are credits (negative) or charges (positive) typed below the expenses, e.g. a credit for an earlier invoice that asked for more than the books said and was paid: they change the amount due, never what is booked. When the fund pays, settle the charge on the Intercompany tab: it moves the amount due and clears the receivable. The PDF with receipts appended is at /api/accounting/partnership-invoices/<id>/pdf.",
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -132,6 +132,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
         allocations: { type: 'object', additionalProperties: { type: 'string' }, description: "allocation basis per line, keyed by postingId from the preview; replaces the one the line started with (the receipt's, else the vendor's saved basis)" },
         rememberPostingIds: { type: 'array', items: { type: 'string' }, description: "lines whose basis is saved for that vendor's future expenses billed to this fund" },
         excludePostingIds: { type: 'array', items: { type: 'string' }, description: 'postingId values from the preview to leave off this invoice' },
+        adjustments: { type: 'array', items: { type: 'object', required: ['description', 'amount'], properties: { description: { type: 'string', description: 'printed on the invoice' }, amount: { type: 'number', description: 'negative for a credit to the fund, positive for a charge' } } }, description: 'credits and charges that change the amount due, not the expenses booked; the amount due cannot go below zero' },
         dueFromAccount: { type: 'string', description: "optional account code on this entity's chart to use as the 'Due from <billTo>' account from now on (for a chart imported with its own names, e.g. an account called 'Due from Fund III' under a plain code). It is linked to billTo before the quarter is read." },
       },
     },
@@ -148,7 +149,7 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'edit_partnership_invoice',
-    description: 'Edit a partnership invoice already created. On a draft or an issued one: allocations maps posting id (from partnership_invoices with invoiceId) to the allocation basis (empty string clears it); rememberPostingIds also saves those bases for that vendor\'s future expenses billed to the same fund; descriptions maps posting id to { vendor?, description? }, written to the expense\'s journal entry. On a draft only: addPostingIds puts unbilled expenses on it (listAddable: true lists them), removePostingIds takes lines off and back to unbilled; the amount follows. An issued invoice\'s expenses cannot change: void it and bill again.',
+    description: 'Edit a partnership invoice already created. On a draft or an issued one: allocations maps posting id (from partnership_invoices with invoiceId) to the allocation basis (empty string clears it); rememberPostingIds also saves those bases for that vendor\'s future expenses billed to the same fund; descriptions maps posting id to { vendor?, description? }, written to the expense\'s journal entry. On a draft only: addPostingIds puts unbilled expenses on it (listAddable: true lists them), removePostingIds takes lines off and back to unbilled; the amount follows. addAdjustments adds credits (negative) or charges (positive) that change the amount due but not what is booked (for an earlier invoice that asked for too much or too little), and removeAdjustmentIds (ids from partnership_invoices with invoiceId) takes them off. An issued invoice\'s expenses cannot change: void it and bill again.',
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -160,6 +161,8 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
         rememberPostingIds: { type: 'array', items: { type: 'string' } },
         addPostingIds: { type: 'array', items: { type: 'string' } },
         removePostingIds: { type: 'array', items: { type: 'string' } },
+        addAdjustments: { type: 'array', items: { type: 'object', required: ['description', 'amount'], properties: { description: { type: 'string', description: 'printed on the invoice' }, amount: { type: 'number', description: 'negative for a credit to the fund, positive for a charge' } } } },
+        removeAdjustmentIds: { type: 'array', items: { type: 'string' } },
         descriptions: { type: 'object', additionalProperties: { type: 'object', properties: { vendor: { type: 'string' }, description: { type: 'string' } } } },
       },
     },

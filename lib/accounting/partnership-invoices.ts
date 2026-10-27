@@ -19,6 +19,12 @@
 //        the fund   Dr Partnership expenses   Cr Due to <manco>
 //      When the fund pays, the charge's settlement (the manco's Intercompany tab) posts the cash on
 //      both sides and clears the receivable: manco Dr Cash / Cr Due from <fund>.
+//   ADJUSTMENTS (partnership_invoice_adjustments) are lines typed onto a draft that change what the
+//   fund is asked to pay without billing an expense: a credit for an earlier invoice that asked for
+//   more than the books said (and was paid), or a charge for one that asked for too little. They
+//   are never booked. The books already hold the expenses at what they cost, and the difference in
+//   cash sits in the intercompany accounts; so issuing still books the expenses (`amount`), and
+//   settling the charge moves the amount due (`amount + adjustment_total`), which clears both.
 //   5. `deletePartnershipInvoice` removes a DRAFT and releases its lines; it was never sent.
 //      `voidPartnershipInvoice` is for an ISSUED one: it keeps the number and releases the lines,
 //      and the fund's entry has to be voided first (a void here never unposts the other side's books).
@@ -34,7 +40,7 @@ import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
 import { INTERCOMPANY_RECEIVABLE_SUBTYPE } from './chart'
 import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry, intercompanyChart, pickIntercompanyAccounts, type IntercompanyChartRow } from './intercompany'
-import { billablePostings, invoiceNumber, isoDateOrNull, quarterBounds, type Quarter } from './receipts-core'
+import { amountDue, billablePostings, invoiceNumber, isoDateOrNull, parseAdjustments, quarterBounds, type InvoiceAdjustmentInput, type Quarter } from './receipts-core'
 import { allocationRules, saveAllocationRule, startingAllocationBasis, type AllocationSource } from './allocation-basis'
 import { ensureVendor } from './vendors'
 
@@ -55,6 +61,9 @@ export interface InvoiceLine {
   /** Where a preview line's basis came from; null when none was found. Frozen lines omit it. */
   allocationSource?: AllocationSource | null
 }
+
+/** A credit (negative) or charge (positive) typed onto an invoice; not an expense, never booked. */
+export interface InvoiceAdjustment { id: string; description: string; amount: number }
 
 /** A line of an existing invoice, with what its posting says NOW (null when the posting is gone). */
 export interface InvoiceDetailLine extends InvoiceLine {
@@ -286,8 +295,12 @@ export async function createPartnershipInvoice(
     allocations?: Record<string, string> | null
     /** Lines whose basis is saved for that vendor's future expenses billed to this fund. */
     rememberPostingIds?: string[] | null
+    /** Credits (negative) and charges (positive) to print below the expenses; they change the amount due. */
+    adjustments?: InvoiceAdjustmentInput[] | null
   },
-): Promise<{ id: string; invoiceNumber: string; amount: number; lines: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+): Promise<{ id: string; invoiceNumber: string; amount: number; adjustmentTotal: number; amountDue: number; lines: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  const parsed = parseAdjustments(args.adjustments ?? null)
+  if ('error' in parsed) return { error: parsed.error, status: 400 }
   const found = await previewPartnershipInvoice(admin, fundId, args)
   if ('error' in found) return { error: found.error, status: 400 }
   const excluded = new Set(args.excludePostingIds ?? [])
@@ -304,6 +317,9 @@ export async function createPartnershipInvoice(
       ? 'Nothing to bill: every expense was left off this invoice.'
       : `Nothing to bill: no posted debits to Due from ${preview.to.name} ${preview.range.from ? `from ${preview.range.from} ` : ''}through ${preview.range.through} that are not already on an invoice.`, status: 400 }
   }
+  const adjustmentTotal = roundCents(parsed.adjustments.reduce((sum, a) => sum + a.amount, 0))
+  const due = amountDue(preview.total, adjustmentTotal)
+  if (due < 0) return { error: overCredited(preview.total, adjustmentTotal), status: 400 }
 
   const { data: settings } = await admin.from('fund_settings' as any).select('currency').eq('fund_id', fundId).maybeSingle()
   const invoiceDate = args.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(args.invoiceDate) ? args.invoiceDate : new Date().toISOString().slice(0, 10)
@@ -321,6 +337,7 @@ export async function createPartnershipInvoice(
       invoice_number: invoiceNumber(preview.quarter, args.toVehicleId, attempt),
       invoice_date: invoiceDate,
       amount: preview.total,
+      adjustment_total: adjustmentTotal,
       currency: (settings as any)?.currency || 'USD',
       memo: args.memo?.trim() || null,
       status: 'draft',
@@ -345,6 +362,15 @@ export async function createPartnershipInvoice(
       ? 'Some of these expenses were billed on another invoice at the same moment. Refresh and try again.'
       : `The invoice lines could not be saved: ${claimErr.message}`, status: 409 }
   }
+  if (parsed.adjustments.length > 0) {
+    const { error: adjErr } = await admin.from('partnership_invoice_adjustments' as any).insert(parsed.adjustments.map(a => ({
+      fund_id: fundId, invoice_id: row.id, description: a.description, amount: a.amount, created_by: userId,
+    })))
+    if (adjErr) {
+      await admin.from('partnership_invoices' as any).delete().eq('id', row.id).eq('fund_id', fundId)
+      return { error: `The adjustments could not be saved: ${adjErr.message}`, status: 400 }
+    }
+  }
 
   // Saved last: a rule is a convenience for next quarter, and failing to save one must not undo
   // an invoice that was made.
@@ -354,7 +380,7 @@ export async function createPartnershipInvoice(
     const saved = await saveAllocationRule(admin, fundId, userId, { fromVehicleId: args.fromVehicleId, toVehicleId: args.toVehicleId, vendorName: l.vendorName, allocationBasis: l.allocationBasis })
     if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
   }
-  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, lines: preview.lines.length, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, adjustmentTotal, amountDue: due, lines: preview.lines.length, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
 }
 
 export interface InvoiceDetail {
@@ -364,7 +390,12 @@ export interface InvoiceDetail {
   periodStart: string
   periodEnd: string
   label: string
+  /** The expenses billed: what issuing books on the fund's side. */
   amount: number
+  adjustments: InvoiceAdjustment[]
+  adjustmentTotal: number
+  /** What the fund is asked to pay, and what settling the charge moves: amount + adjustmentTotal. */
+  amountDue: number
   currency: string
   memo: string | null
   status: 'draft' | 'issued' | 'void'
@@ -411,6 +442,10 @@ export async function addableInvoiceLines(admin: SupabaseClient, fundId: string,
  * addableInvoiceLines), and `removePostingIds` takes lines off and returns them to unbilled. The
  * draft's amount follows. An issued invoice's amount is booked on the fund's books, so its expenses
  * cannot change; void it and bill again.
+ *
+ * Also on a DRAFT only, `addAdjustments` types credits (negative) and charges (positive) below the
+ * expenses and `removeAdjustmentIds` takes them off. They change the amount due, never the amount
+ * booked, and the amount due cannot go below zero.
  */
 export async function editPartnershipInvoice(
   admin: SupabaseClient,
@@ -423,8 +458,10 @@ export async function editPartnershipInvoice(
     addPostingIds?: string[] | null
     removePostingIds?: string[] | null
     descriptions?: Record<string, { vendor?: string | null; description?: string | null }> | null
+    addAdjustments?: InvoiceAdjustmentInput[] | null
+    removeAdjustmentIds?: string[] | null
   },
-): Promise<{ ok: true; updated: number; added: number; removed: number; described: number; amount: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+): Promise<{ ok: true; updated: number; added: number; removed: number; described: number; adjusted: number; amount: number; adjustmentTotal: number; amountDue: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
   const inv = await getPartnershipInvoice(admin, fundId, id)
   if (!inv) return { error: 'Invoice not found', status: 404 }
   if (inv.status === 'void') return { error: 'This invoice is void. Bill the expenses on a new invoice instead.', status: 409 }
@@ -433,6 +470,15 @@ export async function editPartnershipInvoice(
 
   const remove = Array.from(new Set(args.removePostingIds ?? [])).filter(p => onInvoice.has(p))
   const addIds = Array.from(new Set(args.addPostingIds ?? [])).filter(p => !onInvoice.has(p))
+  const parsedAdj = parseAdjustments(args.addAdjustments ?? null)
+  if ('error' in parsedAdj) return { error: parsedAdj.error, status: 400 }
+  const dropAdj = Array.from(new Set(args.removeAdjustmentIds ?? [])).filter(a => inv.adjustments.some(x => x.id === a))
+  const adjusting = parsedAdj.adjustments.length > 0 || dropAdj.length > 0
+  if (adjusting && inv.status !== 'draft') return { error: 'This invoice is issued, so the fund has been told its amount due. Void it and bill again to change its adjustments, or put the adjustment on the next invoice.', status: 409 }
+  const adjustmentTotal = roundCents(
+    inv.adjustments.filter(a => !dropAdj.includes(a.id)).reduce((sum, a) => sum + a.amount, 0)
+    + parsedAdj.adjustments.reduce((sum, a) => sum + a.amount, 0),
+  )
   let amount = inv.amount
   if (remove.length > 0 || addIds.length > 0) {
     if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill again to change its expenses.', status: 409 }
@@ -440,6 +486,9 @@ export async function editPartnershipInvoice(
     const missing = addIds.filter(p => !addable.has(p))
     if (missing.length > 0) return { error: `${missing.length === 1 ? 'One expense is' : `${missing.length} expenses are`} no longer open to bill (already invoiced, unposted or voided). Refresh and try again.`, status: 409 }
     if (onInvoice.size - remove.length + addIds.length === 0) return { error: 'That removes every expense. Delete the draft instead.', status: 400 }
+    const next = roundCents(Array.from(onInvoice.values()).filter(l => !remove.includes(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
+      + addIds.reduce((sum, p) => sum + addable.get(p)!.amount, 0))
+    if (amountDue(next, adjustmentTotal) < 0) return { error: overCredited(next, adjustmentTotal), status: 400 }
 
     // Add first: a claim another invoice beat us to fails here, before anything is taken off.
     if (addIds.length > 0) {
@@ -463,7 +512,24 @@ export async function editPartnershipInvoice(
       for (const p of remove) onInvoice.delete(p)
     }
     amount = roundCents(Array.from(onInvoice.values()).reduce((sum, l) => sum + l.amount, 0))
-    const { error: amtErr } = await admin.from('partnership_invoices' as any).update({ amount, updated_at: new Date().toISOString() })
+  } else if (amountDue(amount, adjustmentTotal) < 0) {
+    return { error: overCredited(amount, adjustmentTotal), status: 400 }
+  }
+  if (adjusting) {
+    if (parsedAdj.adjustments.length > 0) {
+      const { error } = await admin.from('partnership_invoice_adjustments' as any).insert(parsedAdj.adjustments.map(a => ({
+        fund_id: fundId, invoice_id: id, description: a.description, amount: a.amount, created_by: userId,
+      })))
+      if (error) return { error: `The adjustments could not be saved: ${error.message}`, status: 400 }
+    }
+    if (dropAdj.length > 0) {
+      const { error } = await admin.from('partnership_invoice_adjustments' as any).delete().eq('fund_id', fundId).eq('invoice_id', id).in('id', dropAdj)
+      if (error) return { error: `The adjustments could not be removed: ${error.message}`, status: 400 }
+    }
+  }
+  // The amount and the adjustments are written together: the amount due must never read below zero.
+  if (amount !== inv.amount || adjustmentTotal !== inv.adjustmentTotal) {
+    const { error: amtErr } = await admin.from('partnership_invoices' as any).update({ amount, adjustment_total: adjustmentTotal, updated_at: new Date().toISOString() })
       .eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
     if (amtErr) return { error: `The invoice total could not be updated: ${amtErr.message}`, status: 400 }
   }
@@ -509,7 +575,7 @@ export async function editPartnershipInvoice(
     if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
   }
   if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
-  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, amount, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, adjusted: parsedAdj.adjustments.length + dropAdj.length, amount, adjustmentTotal, amountDue: amountDue(amount, adjustmentTotal), ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
 }
 
 /**
@@ -534,6 +600,17 @@ export async function deletePartnershipInvoice(
   // Its lines go with it (on delete cascade), which frees their postings.
   const { error } = await admin.from('partnership_invoices' as any).delete().eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
   return error ? { error: `The invoice could not be deleted: ${error.message}`, status: 400 } : { ok: true }
+}
+
+/** The refusal when credits would leave the fund owed money by the invoice that bills it. */
+function overCredited(expenses: number, adjustmentTotal: number): string {
+  return `The adjustments (${roundCents(adjustmentTotal).toFixed(2)}) are more than the expenses billed (${roundCents(expenses).toFixed(2)}), so the amount due would be negative. Credit no more than this invoice bills and carry the rest to the next one.`
+}
+
+async function invoiceAdjustments(admin: SupabaseClient, fundId: string, invoiceId: string): Promise<InvoiceAdjustment[]> {
+  const { data } = await admin.from('partnership_invoice_adjustments' as any)
+    .select('id, description, amount').eq('fund_id', fundId).eq('invoice_id', invoiceId).order('created_at', { ascending: true })
+  return ((data as any[]) ?? []).map(a => ({ id: a.id as string, description: a.description as string, amount: roundCents(Number(a.amount)) }))
 }
 
 /** An invoice's frozen lines, beside what the ledger says about each now. */
@@ -575,13 +652,15 @@ export async function getPartnershipInvoice(admin: SupabaseClient, fundId: strin
   const inv = data as any
   const pair = await vehiclePair(admin, fundId, inv.from_vehicle_id, inv.to_vehicle_id)
   if (!pair) return null
-  const lines = await invoiceLines(admin, fundId, inv.id)
+  const [lines, adjustments] = await Promise.all([invoiceLines(admin, fundId, inv.id), invoiceAdjustments(admin, fundId, inv.id)])
   const [y, m] = String(inv.period_start).split('-').map(Number)
+  const adjustmentTotal = roundCents(Number(inv.adjustment_total ?? 0))
   return {
     id: inv.id, invoiceNumber: inv.invoice_number, invoiceDate: inv.invoice_date,
     periodStart: inv.period_start, periodEnd: inv.period_end,
     label: `Q${Math.floor((m - 1) / 3) + 1} ${y}`,
-    amount: Number(inv.amount), currency: inv.currency, memo: inv.memo ?? null,
+    amount: Number(inv.amount), adjustments, adjustmentTotal, amountDue: amountDue(Number(inv.amount), adjustmentTotal),
+    currency: inv.currency, memo: inv.memo ?? null,
     status: inv.status, issuedAt: inv.issued_at ?? null,
     intercompanyTransactionId: inv.intercompany_transaction_id ?? null,
     ...pair, lines,
@@ -591,7 +670,7 @@ export async function getPartnershipInvoice(admin: SupabaseClient, fundId: strin
 /** Invoices one entity sent or received, newest period first. */
 export async function listPartnershipInvoices(admin: SupabaseClient, fundId: string, vehicleId: string) {
   const { data } = await admin.from('partnership_invoices' as any)
-    .select('id, invoice_number, invoice_date, period_start, period_end, amount, currency, status, from_vehicle_id, to_vehicle_id, issued_at')
+    .select('id, invoice_number, invoice_date, period_start, period_end, amount, adjustment_total, currency, status, from_vehicle_id, to_vehicle_id, issued_at')
     .eq('fund_id', fundId)
     .or(`from_vehicle_id.eq.${vehicleId},to_vehicle_id.eq.${vehicleId}`)
     .order('period_end', { ascending: false }).order('created_at', { ascending: false })
@@ -638,7 +717,8 @@ export async function issuePartnershipInvoice(
     kind: 'expense_reimbursement',
     chargeDate: inv.invoiceDate,
     amount: inv.amount,
-    memo: `Partnership expenses ${inv.label}, invoice ${inv.invoiceNumber}`,
+    // The charge books the expenses; settling it moves the amount due, so say so where it is settled.
+    memo: `Partnership expenses ${inv.label}, invoice ${inv.invoiceNumber}${inv.adjustmentTotal !== 0 ? `; ${inv.amountDue.toFixed(2)} due after adjustments` : ''}`,
     payee: inv.from,
     payer: inv.to,
     payeeAlreadyBooked: true,

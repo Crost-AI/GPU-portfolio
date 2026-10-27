@@ -95,7 +95,9 @@ export async function GET(req: NextRequest) {
  *   { group, action: 'create', to, year, quarter, invoiceDate?, memo?, exclude? }  freeze the quarter into a
  *        draft; exclude lists posting ids to leave off (they stay open for the next invoice),
  *        allocations { postingId: basis } replaces a line's allocation basis, and remember lists the
- *        lines whose basis is saved for that vendor's future expenses billed to the fund
+ *        lines whose basis is saved for that vendor's future expenses billed to the fund, and
+ *        adjustments [{ description, amount }] are credits (negative) or charges (positive) printed
+ *        below the expenses that change the amount due, not the amount booked
  *   { group, action: 'issue', id }   book the fund's side (Dr partnership expenses, Cr due to <group>)
  *   { group, action: 'delete', id }  delete a draft and release its lines
  *   { group, action: 'void', id }    void an issued invoice and release its lines; the fund's entry is voided first
@@ -104,7 +106,9 @@ export async function GET(req: NextRequest) {
  *   { group, action: 'edit', id, allocations?, remember?, descriptions?, add?, remove? }
  *     allocations { postingId: basis } and descriptions { postingId: { vendor?, description? } }
  *     work on a draft or an issued invoice (descriptions are written to the expense's journal
- *     entry); add and remove (posting ids) change a draft's expenses and its amount
+ *     entry); add and remove (posting ids) change a draft's expenses and its amount;
+ *     addAdjustments [{ description, amount }] and removeAdjustments (ids) change a draft's
+ *     adjustments and its amount due
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -134,6 +138,7 @@ export async function POST(req: NextRequest) {
         : null,
       rememberPostingIds: Array.isArray(body?.remember) ? body.remember.filter((x: unknown): x is string => typeof x === 'string') : null,
       excludePostingIds: Array.isArray(body?.exclude) ? body.exclude.filter((x: unknown): x is string => typeof x === 'string') : null,
+      adjustments: Array.isArray(body?.adjustments) ? body.adjustments : null,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json({ ok: true, ...res })
@@ -169,6 +174,8 @@ export async function POST(req: NextRequest) {
       rememberPostingIds: ids(body?.remember),
       addPostingIds: ids(body?.add),
       removePostingIds: ids(body?.remove ?? body?.release),
+      addAdjustments: Array.isArray(body?.addAdjustments) ? body.addAdjustments : null,
+      removeAdjustmentIds: ids(body?.removeAdjustments),
       descriptions: Object.fromEntries(Object.entries(record(body?.descriptions)).map(([k, v]) => {
         const d = record(v)
         return [k, { vendor: typeof d.vendor === 'string' ? d.vendor : undefined, description: typeof d.description === 'string' ? d.description : undefined }]

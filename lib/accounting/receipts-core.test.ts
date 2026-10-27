@@ -3,6 +3,7 @@ import { PDFDocument } from 'pdf-lib'
 import {
   parseReceiptExtraction, looksLikeReceipt, isReceiptFile, scoreCandidate, rankCandidates,
   billablePostings, quarterBounds, quarterOf, previousQuarter, invoiceNumber, isoDateOrNull, amountOrNull,
+  parseAdjustments, amountDue,
 } from './receipts-core'
 import { buildPartnershipInvoiceHtml, appendBackup } from './partnership-invoice-pdf'
 
@@ -144,6 +145,24 @@ describe('partnership invoice PDF', () => {
     expect(html).not.toContain('>Reference<')
     expect(html).not.toContain('>Receipt<')
   })
+  it('prints each adjustment below a subtotal and bills the amount due', () => {
+    const html = buildPartnershipInvoiceHtml({
+      ...data, amountDue: 1000,
+      adjustments: [{ description: 'Credit: Q2 2026 overbilling', amount: -300 }, { description: 'Q1 2026 courier fee not billed', amount: 50 }],
+    })
+    expect(html).toContain('Total expenses')
+    expect(html).toContain('Credit: Q2 2026 overbilling')
+    expect(html).toContain('($300.00)')
+    expect(html).toContain('Q1 2026 courier fee not billed')
+    expect(html).toContain('$1,000.00')
+    expect(html).not.toContain('>Total<')
+    expect(html).toContain('>Amount due</td>')
+  })
+  it('keeps the single total when there are no adjustments', () => {
+    const html = buildPartnershipInvoiceHtml(data)
+    expect(html).not.toContain('Total expenses')
+    expect(html).toContain('>Total<')
+  })
   it('appends PDF and image receipts and names what it could not', async () => {
     const base = await PDFDocument.create(); base.addPage()
     const receipt = await PDFDocument.create(); receipt.addPage(); receipt.addPage()
@@ -156,5 +175,28 @@ describe('partnership invoice PDF', () => {
     ])
     expect((await PDFDocument.load(pdf)).getPageCount()).toBe(4)
     expect(skipped).toEqual(['c.heic'])
+  })
+})
+
+describe('invoice adjustments', () => {
+  it('takes several lines, credits negative and charges positive', () => {
+    expect(parseAdjustments([
+      { description: ' Credit: Q2 overbilling ', amount: -300 },
+      { description: 'Earlier fee not billed', amount: '1,250.50' },
+    ])).toEqual({ adjustments: [
+      { description: 'Credit: Q2 overbilling', amount: -300 },
+      { description: 'Earlier fee not billed', amount: 1250.5 },
+    ] })
+    expect(parseAdjustments(null)).toEqual({ adjustments: [] })
+  })
+  it('refuses a line with no description or no amount', () => {
+    expect(parseAdjustments([{ description: '', amount: -10 }])).toHaveProperty('error')
+    expect(parseAdjustments([{ description: 'Credit', amount: 0 }])).toHaveProperty('error')
+    expect(parseAdjustments([{ description: 'Credit', amount: 'abc' }])).toHaveProperty('error')
+    expect(parseAdjustments({ description: 'Credit', amount: -10 })).toHaveProperty('error')
+  })
+  it('adds the adjustments to the expenses for the amount due', () => {
+    expect(amountDue(1250, -300.1)).toBe(949.9)
+    expect(amountDue(1250, 0)).toBe(1250)
   })
 })
