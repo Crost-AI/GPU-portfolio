@@ -11,7 +11,7 @@ import { listVehiclesWithId } from '@/lib/accounting/load'
 import { previousQuarter } from '@/lib/accounting/receipts-core'
 import { ensureIntercompanyAccounts, intercompanyChart, linkIntercompanyAccount } from '@/lib/accounting/intercompany'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, updateInvoiceAllocations,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, editPartnershipInvoice, addableInvoiceLines,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice, receivableCandidates,
 } from '@/lib/accounting/partnership-invoices'
 
@@ -34,7 +34,8 @@ async function counterparty(admin: ReturnType<typeof createAdminClient>, gate: G
  *   → the preview: what an invoice for that quarter would bill, read from the expenses dated in the
  *     range (default: every unbilled one through the quarter's end)
  * GET ?group=…&id=<invoice id>
- *   → one invoice with its lines
+ *   → one invoice with its lines, and for a draft the biller sent, `addable`: the unbilled expenses
+ *     it could still pick up
  */
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -55,7 +56,8 @@ export async function GET(req: NextRequest) {
     if (!inv || (inv.from.vehicleId !== vehicleId && inv.to.vehicleId !== vehicleId)) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     const other = await counterparty(admin, gate, inv.from.vehicleId === vehicleId ? inv.to.vehicleId : inv.from.vehicleId)
     if (other instanceof NextResponse) return other
-    return NextResponse.json({ invoice: inv })
+    // A draft the billing entity is editing also gets the expenses it could still add.
+    return NextResponse.json({ invoice: inv, addable: inv.from.vehicleId === vehicleId ? await addableInvoiceLines(admin, gate.fundId, inv) : [] })
   }
 
   if (sp.get('to')) {
@@ -99,9 +101,10 @@ export async function GET(req: NextRequest) {
  *   { group, action: 'void', id }    void an issued invoice and release its lines; the fund's entry is voided first
  *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
  *   { group, action: 'link', to, accountId } make an existing account of group's "Due from <to>"
- *   { group, action: 'bases', id, allocations: { postingId: basis }, remember?: [postingId] }
- *     correct a draft or issued invoice's allocation bases in place (same number, same bookings);
- *     on a draft, release?: [postingId] also takes those lines off and lowers its amount
+ *   { group, action: 'edit', id, allocations?, remember?, descriptions?, add?, remove? }
+ *     allocations { postingId: basis } and descriptions { postingId: { vendor?, description? } }
+ *     work on a draft or an issued invoice (descriptions are written to the expense's journal
+ *     entry); add and remove (posting ids) change a draft's expenses and its amount
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -152,20 +155,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
-  if (body?.action === 'bases') {
+  if (body?.action === 'edit' || body?.action === 'bases') {
     const id = String(body?.id ?? '')
     const inv = await getPartnershipInvoice(admin, gate.fundId, id)
     // As with issue and void: only the billing entity edits its own invoices.
     if (!inv || inv.from.vehicleId !== vehicleId) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     const to = await counterparty(admin, gate, inv.to.vehicleId)
     if (to instanceof NextResponse) return to
-    if (!body?.allocations || typeof body.allocations !== 'object' || Array.isArray(body.allocations)) {
-      return NextResponse.json({ error: 'allocations must map posting ids to a basis.' }, { status: 400 })
-    }
-    const res = await updateInvoiceAllocations(admin, gate.fundId, user.id, id, {
-      allocations: Object.fromEntries(Object.entries(body.allocations).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
-      rememberPostingIds: Array.isArray(body?.remember) ? body.remember.filter((x: unknown): x is string => typeof x === 'string') : null,
-      releasePostingIds: Array.isArray(body?.release) ? body.release.filter((x: unknown): x is string => typeof x === 'string') : null,
+    const ids = (v: unknown) => Array.isArray(v) ? v.filter((x: unknown): x is string => typeof x === 'string') : null
+    const record = (v: unknown) => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+    const res = await editPartnershipInvoice(admin, gate.fundId, user.id, id, {
+      allocations: Object.fromEntries(Object.entries(record(body?.allocations)).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
+      rememberPostingIds: ids(body?.remember),
+      addPostingIds: ids(body?.add),
+      removePostingIds: ids(body?.remove ?? body?.release),
+      descriptions: Object.fromEntries(Object.entries(record(body?.descriptions)).map(([k, v]) => {
+        const d = record(v)
+        return [k, { vendor: typeof d.vendor === 'string' ? d.vendor : undefined, description: typeof d.description === 'string' ? d.description : undefined }]
+      })),
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json(res)
@@ -196,5 +203,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
-  return NextResponse.json({ error: 'action must be create, issue, delete, void, bases, accounts or link' }, { status: 400 })
+  return NextResponse.json({ error: 'action must be create, issue, delete, void, edit, accounts or link' }, { status: 400 })
 }

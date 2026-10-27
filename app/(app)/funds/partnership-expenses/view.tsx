@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Loader2, FileText, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { useCurrency, formatCurrencyPrice } from '@/components/currency-context'
 import { useLedgerFetch, useVehicle } from '@/components/accounting-vehicle'
 import { EntryModal } from '../entry-modal'
+import { EntryReceipts } from '@/components/accounting/entry-receipts'
 import { PeriodPicker } from '@/components/accounting/period-picker'
 import { resolvePeriod, type PeriodPreset } from '@/lib/accounting/statement-period'
 
@@ -65,10 +66,13 @@ function PartnershipInvoices() {
   const [allocations, setAllocations] = useState<Record<string, string>>({})
   const [remember, setRemember] = useState<Set<string>>(new Set())
   // An invoice already created whose allocation bases are being corrected in place.
-  const [editing, setEditing] = useState<{ id: string; invoiceNumber: string; status: string; toName: string; lines: Line[] } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; invoiceNumber: string; status: string; toName: string; lines: Line[]; addable: Line[] } | null>(null)
   const [editBases, setEditBases] = useState<Record<string, string>>({})
   const [editRemember, setEditRemember] = useState<Set<string>>(new Set())
-  const [editRelease, setEditRelease] = useState<Set<string>>(new Set())
+  const [editRemove, setEditRemove] = useState<Set<string>>(new Set())
+  const [editAdd, setEditAdd] = useState<Set<string>>(new Set())
+  const [editDesc, setEditDesc] = useState<Record<string, { vendor: string; description: string }>>({})
+  const [receiptsFor, setReceiptsFor] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!group) return
@@ -131,26 +135,40 @@ function PartnershipInvoices() {
     const j = await post({ action: 'void', id }, 'Could not void the invoice')
     if (j) { setNotice('Voided. Its expenses can be billed again.'); await load() }
   }
-  async function editBasesOf(id: string) {
-    setBusy(true); setError(null); setNotice(null)
+  async function editOf(id: string) {
+    setBusy(true); setError(null)
     const r = await lf(`/api/accounting/partnership-invoices?id=${id}`)
     const j = await r.json().catch(() => ({}))
     setBusy(false)
     if (!r.ok) { setError(j.error ?? 'Could not open the invoice'); return }
     const inv = j.invoice
-    setEditing({ id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status, toName: inv.to.name, lines: inv.lines })
-    setEditBases(Object.fromEntries((inv.lines as Line[]).map(l => [l.postingId, l.allocationBasis ?? ''])))
-    setEditRemember(new Set()); setEditRelease(new Set())
+    const lines = inv.lines as Line[]
+    setEditing({ id: inv.id, invoiceNumber: inv.invoiceNumber, status: inv.status, toName: inv.to.name, lines, addable: Array.isArray(j.addable) ? j.addable : [] })
+    setEditBases(Object.fromEntries(lines.map(l => [l.postingId, l.allocationBasis ?? ''])))
+    setEditDesc(Object.fromEntries(lines.map(l => [l.postingId, { vendor: l.vendorName ?? '', description: l.memo ?? '' }])))
+    setEditRemember(new Set()); setEditRemove(new Set()); setEditAdd(new Set()); setReceiptsFor(null)
   }
-  async function saveBases() {
+  async function saveEdit() {
     if (!editing) return
-    const release = Array.from(editRelease)
-    if (release.length > 0 && !window.confirm(`Release ${release.length} ${release.length === 1 ? 'expense' : 'expenses'} from ${editing.invoiceNumber}? ${release.length === 1 ? 'It goes' : 'They go'} back to unbilled, ready for the next invoice.`)) return
-    const j = await post({ action: 'bases', id: editing.id, allocations: editBases, remember: Array.from(editRemember), release }, 'Could not save the invoice')
+    const remove = Array.from(editRemove)
+    if (remove.length > 0 && !window.confirm(`Remove ${remove.length} ${remove.length === 1 ? 'expense' : 'expenses'} from ${editing.invoiceNumber}? ${remove.length === 1 ? 'It goes' : 'They go'} back to unbilled, ready for the next invoice.`)) return
+    // Only what changed: a vendor or description edit is written to the expense's journal entry.
+    const descriptions = Object.fromEntries(editing.lines.flatMap(l => {
+      const d = editDesc[l.postingId]
+      if (!d || editRemove.has(l.postingId)) return []
+      const patch: { vendor?: string; description?: string } = {}
+      if (d.vendor.trim() !== (l.vendorName ?? '')) patch.vendor = d.vendor
+      if (d.description.trim() !== (l.memo ?? '')) patch.description = d.description
+      return Object.keys(patch).length ? [[l.postingId, patch]] : []
+    }))
+    const j = await post({ action: 'edit', id: editing.id, allocations: editBases, remember: Array.from(editRemember), add: Array.from(editAdd), remove, descriptions }, 'Could not save the invoice')
     if (j) {
       const unsaved = Array.isArray(j.basesNotSaved) && j.basesNotSaved.length ? ` The note for ${j.basesNotSaved.join(', ')} was not saved for next time.` : ''
-      const released = j.released ? ` Released ${j.released} ${j.released === 1 ? 'expense' : 'expenses'}; the invoice is now ${fmt(j.amount)}.` : ''
-      setNotice(`${editing.invoiceNumber} saved.${released} The PDF shows the changes.${unsaved}`); setEditing(null); await load()
+      const moved = j.added || j.removed ? ` ${[j.added ? `Added ${j.added}` : '', j.removed ? `removed ${j.removed}` : ''].filter(Boolean).join(', ')} ${(j.added || 0) + (j.removed || 0) === 1 ? 'expense' : 'expenses'}; the invoice is now ${fmt(j.amount)}.` : ''
+      setNotice(`${editing.invoiceNumber} saved.${moved} The PDF shows the changes.${unsaved}`)
+      await load()
+      // Stay open, so an expense just added can get its note and receipt.
+      await editOf(editing.id)
     }
   }
   async function addAccounts() {
@@ -288,12 +306,12 @@ function PartnershipInvoices() {
                           actions={i.status === 'draft'
                             ? [
                                 { label: 'Issue', hint: 'Book it on the fund’s books', run: () => void issue(i.id) },
-                                { label: 'Edit', hint: 'Change the notes for the invoice', run: () => void editBasesOf(i.id) },
-                                { label: 'Delete', hint: 'Release its expenses', run: () => void deleteIt(i.id) },
+                                { label: 'Edit', hint: 'Add or remove expenses, change descriptions, notes and receipts', run: () => void editOf(i.id) },
+                                { label: 'Delete', hint: 'Remove the draft; its expenses go back to unbilled', run: () => void deleteIt(i.id) },
                               ]
                             : [
-                                { label: 'Edit', hint: 'Change the notes for the invoice', run: () => void editBasesOf(i.id) },
-                                { label: 'Void', hint: 'Cancel a sent invoice and release its expenses', run: () => void voidIt(i.id) },
+                                { label: 'Edit', hint: 'Change descriptions, notes and receipts', run: () => void editOf(i.id) },
+                                { label: 'Void', hint: 'Cancel a sent invoice; its expenses go back to unbilled', run: () => void voidIt(i.id) },
                               ]}
                         />
                       )}
@@ -305,63 +323,105 @@ function PartnershipInvoices() {
           </tbody>
         </table>
       )}
-      {editing && (
-        <div className="space-y-2 rounded-card border p-3">
+      {editing && (() => {
+        const draft = editing.status === 'draft'
+        const total = editing.lines.filter(l => !editRemove.has(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
+          + editing.addable.filter(l => editAdd.has(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
+        const changed = editRemove.size > 0 || editAdd.size > 0
+        const cell = 'block w-full rounded border border-input bg-transparent px-1.5 py-0.5 text-xs'
+        return (
+        <div className="space-y-3 rounded-card border p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-medium">Edit {editing.invoiceNumber}</p>
             <span className="inline-flex gap-1.5">
-              <button className={smallBtn} disabled={busy} onClick={() => setEditing(null)}>Cancel</button>
-              <Button size="sm" disabled={busy} onClick={() => void saveBases()}>Save</Button>
+              <button className={smallBtn} disabled={busy} onClick={() => setEditing(null)}>Close</button>
+              <Button size="sm" disabled={busy} onClick={() => void saveEdit()}>Save</Button>
             </span>
           </div>
-          {editing.status === 'issued' && <p className="text-xs text-muted-foreground">Already issued: only the notes can change. The number, amounts and bookings stay as they are; send the fund the new PDF if it needs one. To leave an expense off, void the invoice and bill again.</p>}
+          {!draft && <p className="text-xs text-muted-foreground">Already issued, so its expenses and amount are booked on the fund’s books and can’t change here; void it and bill again for that. Descriptions, notes and receipts can still change; send the fund the new PDF if it needs one.</p>}
+          <p className="text-xs text-muted-foreground">Vendor and description are the expense’s own: a change here is made on its journal entry too.</p>
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs text-muted-foreground">
-              <th className="pb-1 font-medium">Date</th><th className="pb-1 font-medium">Vendor</th><th className="pb-1 font-medium">Allocation basis</th><th className="pb-1 text-right font-medium">Amount</th>
-              {editing.status === 'draft' && <th />}
+              <th className="pb-1 font-medium">Date</th><th className="pb-1 font-medium">Vendor</th><th className="pb-1 font-medium">Description</th><th className="pb-1 font-medium">Allocation basis</th><th className="pb-1 text-right font-medium">Amount</th><th />
             </tr></thead>
             <tbody>
               {editing.lines.map(l => {
                 const value = editBases[l.postingId] ?? ''
-                const released = editRelease.has(l.postingId)
+                const d = editDesc[l.postingId] ?? { vendor: '', description: '' }
+                const removed = editRemove.has(l.postingId)
+                const vendor = d.vendor.trim() || l.vendorName
                 return (
-                  <tr key={l.postingId} className={`border-t align-top text-xs ${released ? 'text-muted-foreground' : ''}`}>
-                    <td className={`py-1 tabular-nums ${released ? 'line-through' : ''}`}>{l.entryDate}</td>
-                    <td className={`py-1 ${released ? 'line-through' : ''}`}>{l.vendorName ?? l.memo ?? '—'}</td>
-                    <td className="py-1">
+                  <Fragment key={l.postingId}>
+                  <tr className={`border-t align-top text-xs ${removed ? 'text-muted-foreground' : ''}`}>
+                    <td className={`py-1 pr-2 tabular-nums ${removed ? 'line-through' : ''}`}>{l.entryDate}</td>
+                    <td className="py-1 pr-2">
+                      <input value={d.vendor} disabled={removed} onChange={e => setEditDesc(prev => ({ ...prev, [l.postingId]: { ...d, vendor: e.target.value } }))} placeholder="Vendor" aria-label={`Vendor for the expense dated ${l.entryDate}`} className={cell} />
+                    </td>
+                    <td className="py-1 pr-2">
+                      <input value={d.description} disabled={removed} onChange={e => setEditDesc(prev => ({ ...prev, [l.postingId]: { ...d, description: e.target.value } }))} placeholder="Description" aria-label={`Description for the expense dated ${l.entryDate}`} className={cell} />
+                    </td>
+                    <td className="py-1 pr-2">
                       <input
                         value={value}
-                        disabled={released}
+                        disabled={removed}
                         onChange={e => setEditBases(prev => ({ ...prev, [l.postingId]: e.target.value }))}
                         placeholder="Note for invoice"
-                        aria-label={`Allocation basis for ${l.vendorName ?? l.memo ?? 'this expense'}`}
-                        className="block w-full rounded border border-input bg-transparent px-1.5 py-0.5 text-xs"
+                        aria-label={`Allocation basis for the expense dated ${l.entryDate}`}
+                        className={cell}
                       />
-                      {!released && l.vendorName && value.trim() && (
+                      {!removed && vendor && value.trim() && (
                         <label className="mt-0.5 inline-flex items-center gap-1 text-muted-foreground">
                           <input type="checkbox" checked={editRemember.has(l.postingId)} onChange={() => setEditRemember(prev => toggled(prev, l.postingId))} />
-                          use for future {l.vendorName} expenses for {editing.toName}
+                          use for future {vendor} expenses for {editing.toName}
                         </label>
                       )}
                     </td>
-                    <td className={`py-1 text-right tabular-nums ${released ? 'line-through' : ''}`}>{fmt(l.amount)}</td>
-                    {editing.status === 'draft' && (
-                      <td className="py-1 pl-2 text-right">
-                        <button className={smallBtn} disabled={busy} onClick={() => setEditRelease(prev => toggled(prev, l.postingId))}>{released ? 'Keep' : 'Release'}</button>
-                      </td>
-                    )}
+                    <td className={`py-1 text-right tabular-nums ${removed ? 'line-through' : ''}`}>{fmt(l.amount)}</td>
+                    <td className="py-1 pl-2 text-right">
+                      <span className="inline-flex gap-1">
+                        <button className={smallBtn} disabled={busy || removed} onClick={() => setReceiptsFor(receiptsFor === l.entryId ? null : l.entryId)}>Receipts{l.receiptCount ? ` (${l.receiptCount})` : ''}</button>
+                        {draft && <button className={smallBtn} disabled={busy} onClick={() => setEditRemove(prev => toggled(prev, l.postingId))}>{removed ? 'Keep' : 'Remove'}</button>}
+                      </span>
+                    </td>
                   </tr>
+                  {receiptsFor === l.entryId && (
+                    <tr><td colSpan={6} className="pb-2"><EntryReceipts key={l.entryId} entryId={l.entryId} /></td></tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>
           </table>
-          {editRelease.size > 0 && (
+          {draft && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium">Add expenses</p>
+              {editing.addable.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No other posted expenses on Due from {editing.toName} are waiting to be billed.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <tbody>
+                    {editing.addable.map(l => (
+                      <tr key={l.postingId} className="border-t align-top text-xs">
+                        <td className="w-6 py-1"><input type="checkbox" checked={editAdd.has(l.postingId)} onChange={() => setEditAdd(prev => toggled(prev, l.postingId))} aria-label={`Add the expense dated ${l.entryDate}`} /></td>
+                        <td className="py-1 pr-2 tabular-nums">{l.entryDate}</td>
+                        <td className="py-1 pr-2">{l.vendorName ?? '—'}</td>
+                        <td className="py-1 pr-2 text-muted-foreground">{l.memo ?? ''}</td>
+                        <td className="py-1 text-right tabular-nums">{fmt(l.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+          {changed && (
             <p className="text-xs text-muted-foreground">
-              {editRelease.size} {editRelease.size === 1 ? 'expense' : 'expenses'} will go back to unbilled. New total {fmt(editing.lines.filter(l => !editRelease.has(l.postingId)).reduce((sum, l) => sum + l.amount, 0))}.
+              {[editAdd.size ? `${editAdd.size} to add` : '', editRemove.size ? `${editRemove.size} to remove (back to unbilled)` : ''].filter(Boolean).join(', ')}. New total {fmt(total)}.
             </p>
           )}
         </div>
-      )}
+        )
+      })()}
       {openEntry && <EntryModal entryId={openEntry} readOnly onClose={() => setOpenEntry(null)} onSaved={() => void load()} />}
     </div>
   )

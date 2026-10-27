@@ -148,16 +148,19 @@ export const RECEIPT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'edit_partnership_invoice',
-    description: 'Correct the allocation basis on a draft or issued partnership invoice in place: same number, amounts and bookings; the PDF shows the new text. allocations maps posting id (from partnership_invoices with invoiceId) to the basis; an empty string clears it. rememberPostingIds also saves those lines\' bases for that vendor\'s future expenses billed to the same fund. releasePostingIds (drafts only) takes those lines off the invoice and back to unbilled, lowering its amount.',
+    description: 'Edit a partnership invoice already created. On a draft or an issued one: allocations maps posting id (from partnership_invoices with invoiceId) to the allocation basis (empty string clears it); rememberPostingIds also saves those bases for that vendor\'s future expenses billed to the same fund; descriptions maps posting id to { vendor?, description? }, written to the expense\'s journal entry. On a draft only: addPostingIds puts unbilled expenses on it (listAddable: true lists them), removePostingIds takes lines off and back to unbilled; the amount follows. An issued invoice\'s expenses cannot change: void it and bill again.',
     scope: 'write',
     inputSchema: {
       type: 'object',
-      required: ['invoiceId', 'allocations'],
+      required: ['invoiceId'],
       properties: {
         invoiceId: { type: 'string' },
+        listAddable: { type: 'boolean' },
         allocations: { type: 'object', additionalProperties: { type: 'string' } },
         rememberPostingIds: { type: 'array', items: { type: 'string' } },
-        releasePostingIds: { type: 'array', items: { type: 'string' } },
+        addPostingIds: { type: 'array', items: { type: 'string' } },
+        removePostingIds: { type: 'array', items: { type: 'string' } },
+        descriptions: { type: 'object', additionalProperties: { type: 'object', properties: { vendor: { type: 'string' }, description: { type: 'string' } } } },
       },
     },
   },

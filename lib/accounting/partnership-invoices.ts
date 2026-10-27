@@ -25,7 +25,7 @@
 //
 // The invoice row is the document; the ledger is the fact. Once issued, the amount on the row never
 // moves, the same way a capital call notice keeps the number the partner was told. A draft, never
-// sent, can still shed lines (updateInvoiceAllocations, releasePostingIds), and its amount follows.
+// sent, can still gain and lose lines (editPartnershipInvoice), and its amount follows.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
@@ -36,6 +36,7 @@ import { INTERCOMPANY_RECEIVABLE_SUBTYPE } from './chart'
 import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry, intercompanyChart, pickIntercompanyAccounts, type IntercompanyChartRow } from './intercompany'
 import { billablePostings, invoiceNumber, isoDateOrNull, quarterBounds, type Quarter } from './receipts-core'
 import { allocationRules, saveAllocationRule, startingAllocationBasis, type AllocationSource } from './allocation-basis'
+import { ensureVendor } from './vendors'
 
 export interface InvoiceLine {
   entryId: string
@@ -375,44 +376,101 @@ export interface InvoiceDetail {
 }
 
 /**
- * Change the allocation basis on an invoice already created, draft or issued. The basis is a note
- * printed beside each line, not part of any amount or booking, so it can be corrected in place: the
- * invoice keeps its number and its entries, and the PDF reads the new text. A void invoice is left
- * as it was. Lines not named in `allocations` keep theirs; an empty string clears one.
- *
- * On a DRAFT, `releasePostingIds` also takes lines off the invoice: they go back to unbilled for the
- * next one and the draft's amount drops by theirs. An issued invoice's amount is booked on the fund's
- * books, so it can't lose lines; void it instead.
+ * The expenses a DRAFT invoice could still pick up: every posted, unbilled debit to the biller's
+ * "Due from <fund>" account, whatever its date, each with the basis it would start with (the
+ * receipt's, else the one saved for its vendor). An issued or void invoice can add nothing.
  */
-export async function updateInvoiceAllocations(
+export async function addableInvoiceLines(admin: SupabaseClient, fundId: string, inv: Pick<InvoiceDetail, 'status' | 'from' | 'to'>): Promise<InvoiceLine[]> {
+  if (inv.status !== 'draft') return []
+  const receivable = await receivableAccount(admin, fundId, inv.from.vehicleId, inv.to.vehicleId)
+  if (!receivable) return []
+  const [open, rules] = await Promise.all([
+    openLines(admin, fundId, inv.from.vehicleId, receivable.id, null),
+    allocationRules(admin, fundId, inv.from.vehicleId, inv.to.vehicleId),
+  ])
+  return open
+    .filter(l => l.status === 'posted')
+    .map(l => ({ ...l, ...startingAllocationBasis(l.allocationBasis, l.vendorName, rules) }))
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate))
+}
+
+/**
+ * Edit an invoice already created.
+ *
+ * On any invoice that is not void, `allocations` changes the allocation basis, a note printed beside
+ * each line that is part of no amount or booking. The invoice keeps its number and entries, and the
+ * PDF reads the new text. Lines not named keep theirs; an empty string clears one. `rememberPostingIds`
+ * also saves a line's basis for that vendor's future expenses billed to the same fund.
+ *
+ * `descriptions` changes a line's vendor and description, which are its journal entry's: the
+ * change is made on the entry (memo, and vendor_id via the vendors list), so the books and the
+ * invoice say the same thing. Neither moves an amount, but a closed period refuses it like any
+ * other change to an entry dated in it.
+ *
+ * On a DRAFT, the expenses can change too. `addPostingIds` puts unbilled expenses on it (from
+ * addableInvoiceLines), and `removePostingIds` takes lines off and returns them to unbilled. The
+ * draft's amount follows. An issued invoice's amount is booked on the fund's books, so its expenses
+ * cannot change; void it and bill again.
+ */
+export async function editPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
   userId: string | null,
   id: string,
-  args: { allocations: Record<string, string>; rememberPostingIds?: string[] | null; releasePostingIds?: string[] | null },
-): Promise<{ ok: true; updated: number; released: number; amount: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  args: {
+    allocations?: Record<string, string> | null
+    rememberPostingIds?: string[] | null
+    addPostingIds?: string[] | null
+    removePostingIds?: string[] | null
+    descriptions?: Record<string, { vendor?: string | null; description?: string | null }> | null
+  },
+): Promise<{ ok: true; updated: number; added: number; removed: number; described: number; amount: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
   const inv = await getPartnershipInvoice(admin, fundId, id)
   if (!inv) return { error: 'Invoice not found', status: 404 }
   if (inv.status === 'void') return { error: 'This invoice is void. Bill the expenses on a new invoice instead.', status: 409 }
-  const onInvoice = new Map(inv.lines.map(l => [l.postingId, l]))
+  const onInvoice = new Map<string, InvoiceLine>(inv.lines.map(l => [l.postingId, l]))
+  const typed = args.allocations ?? {}
 
-  const release = Array.from(new Set(args.releasePostingIds ?? [])).filter(p => onInvoice.has(p))
+  const remove = Array.from(new Set(args.removePostingIds ?? [])).filter(p => onInvoice.has(p))
+  const addIds = Array.from(new Set(args.addPostingIds ?? [])).filter(p => !onInvoice.has(p))
   let amount = inv.amount
-  if (release.length > 0) {
-    if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill the expenses again to leave one off.', status: 409 }
-    if (release.length === onInvoice.size) return { error: 'That releases every expense. Delete the draft instead.', status: 400 }
-    const { error } = await admin.from('partnership_invoice_lines' as any).delete()
-      .eq('fund_id', fundId).eq('invoice_id', id).in('journal_posting_id', release)
-    if (error) return { error: `The expenses could not be released: ${error.message}`, status: 400 }
-    for (const p of release) onInvoice.delete(p)
+  if (remove.length > 0 || addIds.length > 0) {
+    if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill again to change its expenses.', status: 409 }
+    const addable = new Map((await addableInvoiceLines(admin, fundId, inv)).map(l => [l.postingId, l]))
+    const missing = addIds.filter(p => !addable.has(p))
+    if (missing.length > 0) return { error: `${missing.length === 1 ? 'One expense is' : `${missing.length} expenses are`} no longer open to bill (already invoiced, unposted or voided). Refresh and try again.`, status: 409 }
+    if (onInvoice.size - remove.length + addIds.length === 0) return { error: 'That removes every expense. Delete the draft instead.', status: 400 }
+
+    // Add first: a claim another invoice beat us to fails here, before anything is taken off.
+    if (addIds.length > 0) {
+      const lines = addIds.map(p => {
+        const l = addable.get(p)!
+        return p in typed ? { ...l, allocationBasis: String(typed[p] ?? '').trim() || null } : l
+      })
+      const { error } = await admin.from('partnership_invoice_lines' as any).insert(lines.map(l => ({
+        fund_id: fundId, invoice_id: id, journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount,
+        allocation_basis: l.allocationBasis,
+      })))
+      if (error) return { error: (error as any).code === '23505'
+        ? 'Some of these expenses were just billed on another invoice. Refresh and try again.'
+        : `The expenses could not be added: ${error.message}`, status: 409 }
+      for (const l of lines) onInvoice.set(l.postingId, l)
+    }
+    if (remove.length > 0) {
+      const { error } = await admin.from('partnership_invoice_lines' as any).delete()
+        .eq('fund_id', fundId).eq('invoice_id', id).in('journal_posting_id', remove)
+      if (error) return { error: `The expenses could not be removed: ${error.message}`, status: 400 }
+      for (const p of remove) onInvoice.delete(p)
+    }
     amount = roundCents(Array.from(onInvoice.values()).reduce((sum, l) => sum + l.amount, 0))
     const { error: amtErr } = await admin.from('partnership_invoices' as any).update({ amount, updated_at: new Date().toISOString() })
       .eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
     if (amtErr) return { error: `The invoice total could not be updated: ${amtErr.message}`, status: 400 }
   }
 
-  const changes = Object.entries(args.allocations)
-    .filter(([postingId]) => onInvoice.has(postingId))
+  const added = new Set(addIds)
+  const changes = Object.entries(typed)
+    .filter(([postingId]) => onInvoice.has(postingId) && !added.has(postingId))
     .map(([postingId, basis]) => ({ postingId, basis: String(basis ?? '').trim() || null }))
     .filter(c => c.basis !== onInvoice.get(c.postingId)!.allocationBasis)
   for (const c of changes) {
@@ -421,6 +479,28 @@ export async function updateInvoiceAllocations(
     if (error) return { error: `The allocation basis could not be saved: ${error.message}`, status: 400 }
     onInvoice.set(c.postingId, { ...onInvoice.get(c.postingId)!, allocationBasis: c.basis })
   }
+  // Vendor and description live on the entry, so a rule saved below keys on the vendor as corrected.
+  let described = 0
+  for (const [postingId, d] of Object.entries(args.descriptions ?? {})) {
+    const l = onInvoice.get(postingId)
+    if (!l || !d || typeof d !== 'object') continue
+    const patch: Record<string, unknown> = {}
+    if (typeof d.description === 'string' && (d.description.trim() || null) !== l.memo) patch.memo = d.description.trim() || null
+    let vendorName = l.vendorName
+    if (typeof d.vendor === 'string' && (d.vendor.trim() || null) !== l.vendorName) {
+      const v = d.vendor.trim() ? await ensureVendor(admin, fundId, d.vendor) : null
+      if (d.vendor.trim() && !v) return { error: `The vendor “${d.vendor.trim()}” could not be saved.`, status: 400 }
+      patch.vendor_id = v?.id ?? null
+      vendorName = v?.name ?? null
+    }
+    if (Object.keys(patch).length === 0) continue
+    const { error } = await admin.from('journal_entries' as any).update(patch)
+      .eq('id', l.entryId).eq('fund_id', fundId).eq('book', ACTUAL_BOOK).eq('vehicle_id', inv.from.vehicleId)
+    if (error) return { error: `The expense dated ${l.entryDate} could not be updated: ${error.message}`, status: 400 }
+    onInvoice.set(postingId, { ...l, memo: 'memo' in patch ? (patch.memo as string | null) : l.memo, vendorName })
+    described++
+  }
+
   const notSaved: string[] = []
   for (const postingId of args.rememberPostingIds ?? []) {
     const l = onInvoice.get(postingId)
@@ -429,7 +509,7 @@ export async function updateInvoiceAllocations(
     if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
   }
   if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
-  return { ok: true, updated: changes.length, released: release.length, amount, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, amount, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
 }
 
 /**

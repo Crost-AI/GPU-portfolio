@@ -13,7 +13,7 @@ import {
   type ReceiptRow,
 } from '@/lib/accounting/receipts'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, updateInvoiceAllocations,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, editPartnershipInvoice, addableInvoiceLines,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
 } from '@/lib/accounting/partnership-invoices'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
@@ -276,13 +276,21 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     const inv = await getPartnershipInvoice(ctx.admin, ctx.fundId, id)
     if (!inv || inv.from.vehicleId !== vehicleId) throw new Error(`No invoice ${id} billed by ${ctx.portfolioGroup}`)
     await otherEntity(ctx, inv.to.name, 'write')
-    const raw = input?.allocations && typeof input.allocations === 'object' && !Array.isArray(input.allocations) ? input.allocations : {}
-    const res = await updateInvoiceAllocations(ctx.admin, ctx.fundId, ctx.userId, id, {
-      allocations: Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
-      rememberPostingIds: Array.isArray(input?.rememberPostingIds) ? input.rememberPostingIds.filter((x: unknown): x is string => typeof x === 'string') : null,
-      releasePostingIds: Array.isArray(input?.releasePostingIds) ? input.releasePostingIds.filter((x: unknown): x is string => typeof x === 'string') : null,
+    const record = (v: unknown) => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {}
+    const ids = (v: unknown) => Array.isArray(v) ? v.filter((x: unknown): x is string => typeof x === 'string') : null
+    if (input?.listAddable) return { invoiceId: id, status: inv.status, addable: await addableInvoiceLines(ctx.admin, ctx.fundId, inv) }
+    const res = await editPartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, id, {
+      allocations: Object.fromEntries(Object.entries(record(input?.allocations)).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
+      rememberPostingIds: ids(input?.rememberPostingIds),
+      addPostingIds: ids(input?.addPostingIds),
+      removePostingIds: ids(input?.removePostingIds ?? input?.releasePostingIds),
+      descriptions: Object.fromEntries(Object.entries(record(input?.descriptions)).map(([k, v]) => {
+        const d = record(v)
+        return [k, { vendor: typeof d.vendor === 'string' ? d.vendor : undefined, description: typeof d.description === 'string' ? d.description : undefined }]
+      })),
     })
     if ('error' in res) fail(res)
     return { ...res, pdf: `/api/accounting/partnership-invoices/${id}/pdf` }
   },
+
 }
