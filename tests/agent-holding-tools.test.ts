@@ -89,6 +89,55 @@ describe('update_company', () => {
   })
 })
 
+describe('update_company: contacts, profile and entities', () => {
+  it('adds, removes and replaces contact emails, lowercased and without duplicates', async () => {
+    store.tables.companies.find(c => c.id === 'co')!.contact_email = ['ceo@acme.example']
+    const out = await run('update_company', { company: 'Acme', add_contact_emails: ['CFO@Acme.example', 'ceo@acme.example'], remove_contact_emails: ['CEO@acme.example'] })
+    expect(store.tables.companies.find(c => c.id === 'co')!.contact_email).toEqual(['cfo@acme.example'])
+    expect(out.changed.contact_email).toEqual({ from: ['ceo@acme.example'], to: ['cfo@acme.example'] })
+
+    await run('update_company', { company: 'Acme', contact_emails: ['founder@acme.example'] })
+    expect(store.tables.companies.find(c => c.id === 'co')!.contact_email).toEqual(['founder@acme.example'])
+  })
+
+  it('refuses something that is not an email address', async () => {
+    await expect(run('update_company', { company: 'Acme', add_contact_emails: ['not-an-email'] })).rejects.toThrow('is not an email address')
+  })
+
+  it('sets and clears the profile fields, and only the ones passed', async () => {
+    store.tables.companies.find(c => c.id === 'co')!.overview = 'Old overview'
+    await run('update_company', { company: 'Acme', stage: ' Series A ', country: 'Canada', founded_year: 2019, overview: '', add_tags: ['fintech'] })
+    expect(store.tables.companies.find(c => c.id === 'co')).toMatchObject({
+      stage: 'Series A', country: 'Canada', founded_year: 2019, overview: null, tags: ['fintech'], name: 'Acme', status: 'active',
+    })
+    await expect(run('update_company', { company: 'Acme', stage: 'Series A' })).rejects.toThrow('Nothing to change.')
+    await expect(run('update_company', { company: 'Acme', founded_year: 19 })).rejects.toThrow('founded_year')
+  })
+
+  it('adds an entity that exists, and refuses one that does not', async () => {
+    store.tables.fund_vehicles.push({ id: 'v2', fund_id: 'fund-1', name: 'Fund II', active: true, kind: 'fund', aliases: null })
+    await run('update_company', { company: 'Acme', add_vehicles: ['fund ii'] })
+    expect(store.tables.companies.find(c => c.id === 'co')!.portfolio_group).toEqual(['Fund I', 'Fund II'])
+    await expect(run('update_company', { company: 'Acme', add_vehicles: ['Fund III'] })).rejects.toThrow('No entity named "Fund III".')
+  })
+})
+
+describe('update_company staged from the chat', () => {
+  it('previews each change from what it is to what it would be, and writes nothing', async () => {
+    const { getWriteAction } = await import('@/lib/pending-actions/registry')
+    const action = getWriteAction('update_company')!
+    store.tables.companies.find(c => c.id === 'co')!.contact_email = ['ceo@acme.example']
+    const deps = { admin: store.admin, fundId: 'fund-1', userId: 'me', access }
+    const p = await action.preview(deps, { company: 'Acme', contact_emails: ['cfo@acme.example'] })
+    expect(p.summary).toBe('Change Acme: contact emails to cfo@acme.example')
+    expect(p.details.changes).toEqual({ 'contact emails': { from: ['ceo@acme.example'], to: ['cfo@acme.example'] } })
+    expect(store.tables.companies.find(c => c.id === 'co')!.contact_email).toEqual(['ceo@acme.example'])
+
+    await action.execute(deps, { company: 'Acme', contact_emails: ['cfo@acme.example'] })
+    expect(store.tables.companies.find(c => c.id === 'co')!.contact_email).toEqual(['cfo@acme.example'])
+  })
+})
+
 describe('set_holding_type', () => {
   it('makes a company a fund holding', async () => {
     expect(await run('set_holding_type', { company: 'co', holding_type: 'fund' })).toMatchObject({ from: 'company', to: 'fund' })

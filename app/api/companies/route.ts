@@ -8,7 +8,7 @@ import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { scopeCompanyRows, scopeGroups, scopeTransactions } from '@/lib/access/scope'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -26,16 +26,19 @@ export async function GET() {
   type CompanyRow = {
     id: string; name: string; stage: string | null; status: string
     industry: string[] | null; aliases: string[] | null; tags: string[]
-    portfolio_group: string[] | null; contact_email: string[] | null
+    portfolio_group: string[] | null; contact_email: string[] | null; holding_type: string | null
     metrics: { id: string }[]; inbound_emails: { received_at: string }[]
   }
 
-  const { data, error } = await admin
+  // Fund holdings and digital assets have their own surfaces, so the list is companies only.
+  // `?holdings=all` (the Jump to palette) lists every holding: each opens on /companies/[id].
+  const allHoldings = req.nextUrl.searchParams.get('holdings') === 'all'
+  let query = admin
     .from('companies')
-    .select('id, name, stage, status, industry, aliases, tags, portfolio_group, contact_email, metrics(id), inbound_emails(received_at)')
+    .select('id, name, stage, status, industry, aliases, tags, portfolio_group, contact_email, holding_type, metrics(id), inbound_emails(received_at)')
     .eq('fund_id', membership.fund_id)
-    .eq('holding_type', 'company')   // fund holdings have their own surfaces
-    .order('name') as { data: CompanyRow[] | null; error: { message: string } | null }
+  if (!allHoldings) query = query.eq('holding_type', 'company')
+  const { data, error } = await query.order('name') as { data: CompanyRow[] | null; error: { message: string } | null }
 
   if (error) return dbError(error, 'companies')
 
@@ -58,6 +61,7 @@ export async function GET() {
       tags: c.tags ?? [],
       portfolioGroup: scopeGroups(c.portfolio_group, (scope ? scope.vehicleNames : [])),
       contactEmail: c.contact_email,
+      holdingType: c.holding_type ?? 'company',
       metricsCount: c.metrics?.length ?? 0,
       lastReportAt,
     }

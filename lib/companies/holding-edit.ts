@@ -1,5 +1,6 @@
-// Renaming a holding, its aliases, and what kind of holding it is, for the `update_company` and
-// `set_holding_type` agent tools.
+// Editing a holding's record (its name, aliases, status, contact emails and profile) and what kind
+// of holding it is, for the `update_company` and `set_holding_type` agent tools and the chat's
+// staged `update_company` action.
 //
 // A rename also renames the holding's own chart accounts ("Investment — <name>" and the rest, made
 // by lib/accounting/investments.ts ensureInvestmentAccounts), so the trial balance reads the same
@@ -12,6 +13,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logActivity } from '@/lib/activity'
+import { mergeGroupsForWrite } from '@/lib/access/scope'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 
 export type HoldingType = 'company' | 'fund' | 'crypto'
@@ -20,23 +22,91 @@ const STATUSES = ['active', 'exited', 'written-off']
 
 const ACCOUNT_PREFIXES = ['Investment', 'Unrealized', 'FX translation', 'Accrued interest', 'Realized gain']
 
-export interface IdentityChange {
-  name?: string
-  aliases?: string[]
-  /** Added to the aliases already there, without duplicates. */
-  addAliases?: string[]
-  status?: string
+/** A list field: `set` replaces it, `add` and `remove` change the one already there. */
+export interface ListChange {
+  set?: string[]
+  add?: string[]
+  remove?: string[]
 }
 
-export async function updateCompanyIdentity(
+export interface CompanyChange {
+  name?: string
+  status?: string
+  aliases?: ListChange
+  tags?: ListChange
+  industry?: ListChange
+  /** The addresses its updates come from, so emailed updates match it. Lowercased. */
+  contactEmails?: ListChange
+  /** The entities that hold it (portfolio_group), by name. Each must already exist. */
+  vehicles?: ListChange
+  stage?: string | null
+  country?: string | null
+  foundedYear?: number | null
+  overview?: string | null
+  founders?: string | null
+  whyInvested?: string | null
+  currentUpdate?: string | null
+  notes?: string | null
+}
+
+// The profile's free-text fields: the change's key, then the column. Blank clears it.
+const TEXT_FIELDS = [
+  ['stage', 'stage'], ['country', 'country'], ['overview', 'overview'], ['founders', 'founders'],
+  ['whyInvested', 'why_invested'], ['currentUpdate', 'current_update'], ['notes', 'notes'],
+] as const
+
+const LIST_FIELDS = [
+  ['aliases', 'aliases'], ['tags', 'tags'], ['industry', 'industry'], ['contactEmails', 'contact_email'],
+] as const
+
+const COMPANY_COLUMNS = 'id, name, status, portfolio_group, aliases, tags, industry, contact_email, stage, country, founded_year, overview, founders, why_invested, current_update, notes'
+
+const isEmail = (s: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)
+
+const cleanList = (list: unknown): string[] => (Array.isArray(list) ? list : [])
+  .filter((a): a is string => typeof a === 'string' && !!a.trim()).map(a => a.trim())
+
+function applyList(current: unknown, change: ListChange, emails: boolean): string[] | { error: string } {
+  const norm = (list: unknown) => cleanList(list).map(x => (emails ? x.toLowerCase() : x))
+  if (emails) {
+    const bad = [...norm(change.set), ...norm(change.add)].find(e => !isEmail(e))
+    if (bad) return { error: `"${bad}" is not an email address.` }
+  }
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  const out: string[] = []
+  for (const x of change.set !== undefined ? norm(change.set) : norm(current)) {
+    if (!out.some(y => same(x, y))) out.push(x)
+  }
+  for (const x of norm(change.add)) if (!out.some(y => same(x, y))) out.push(x)
+  const remove = norm(change.remove)
+  return out.filter(x => !remove.some(r => same(x, r)))
+}
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+export interface CompanyChangePlan {
+  company: { id: string; name: string }
+  /** The columns that change, as they will be written. */
+  updates: Record<string, unknown>
+  /** The same columns as they are now. */
+  before: Record<string, unknown>
+}
+
+/**
+ * What a change would write, read against the company as it is now and written nowhere. The
+ * staged preview shows it; the write re-plans against the live row, so an approval applies to what
+ * is there when it is approved.
+ */
+export async function planCompanyChange(
   admin: SupabaseClient,
-  who: { fundId: string; userId: string | null },
+  who: { fundId: string; vehicleNames: string[] | null },
   companyId: string,
-  change: IdentityChange,
-): Promise<Outcome<{ id: string; name: string; previousName: string; aliases: string[]; status: string | null; accountsRenamed: number }>> {
+  change: CompanyChange,
+): Promise<Outcome<CompanyChangePlan>> {
+  const fundId = who.fundId
   const { data: company, error } = await (admin as any)
-    .from('companies').select('id, name, aliases, status').eq('id', companyId).eq('fund_id', who.fundId).maybeSingle()
-  if (error) return dbFail(error, 'company-identity')
+    .from('companies').select(COMPANY_COLUMNS).eq('id', companyId).eq('fund_id', fundId).maybeSingle()
+  if (error) return dbFail(error, 'company-edit')
   if (!company) return fail(404, 'Company not found')
 
   const updates: Record<string, unknown> = {}
@@ -44,25 +114,134 @@ export async function updateCompanyIdentity(
   if (change.name !== undefined && !name) return fail(400, 'Name cannot be empty.')
   if (name && name !== company.name) updates.name = name
 
-  const clean = (list: unknown) => (Array.isArray(list) ? list : [])
-    .filter((a): a is string => typeof a === 'string' && !!a.trim()).map(a => a.trim())
-  let aliases = change.aliases !== undefined ? clean(change.aliases) : clean(company.aliases)
-  for (const a of clean(change.addAliases)) {
-    if (!aliases.some(x => x.toLowerCase() === a.toLowerCase())) aliases.push(a)
-  }
-  // The name it now goes by is not an alias of itself.
-  const finalName = (updates.name as string | undefined) ?? company.name
-  aliases = aliases.filter(a => a.toLowerCase() !== String(finalName).toLowerCase())
-  if (change.aliases !== undefined || change.addAliases !== undefined) updates.aliases = aliases
-
   if (change.status !== undefined) {
     if (!STATUSES.includes(change.status)) return fail(400, `status must be one of: ${STATUSES.join(', ')}.`)
     updates.status = change.status
   }
+
+  for (const [key, column] of TEXT_FIELDS) {
+    const v = change[key]
+    if (v === undefined) continue
+    updates[column] = typeof v === 'string' && v.trim() ? v.trim() : null
+  }
+
+  if (change.foundedYear !== undefined) {
+    const y = change.foundedYear === null ? null : Number(change.foundedYear)
+    if (y !== null && (!Number.isInteger(y) || y < 1800 || y > 2100)) return fail(400, 'founded_year must be a year, like 2019.')
+    updates.founded_year = y
+  }
+
+  for (const [key, column] of LIST_FIELDS) {
+    const c = change[key]
+    if (!c || (c.set === undefined && c.add === undefined && c.remove === undefined)) continue
+    const next = applyList(company[column], c, key === 'contactEmails')
+    if ('error' in next) return fail(400, next.error)
+    updates[column] = next
+  }
+
+  const v = change.vehicles
+  if (v && (v.set !== undefined || v.add !== undefined || v.remove !== undefined)) {
+    const groups = await planVehicles(admin, who, cleanList(company.portfolio_group), v)
+    if (!groups.ok) return groups
+    updates.portfolio_group = groups.value
+  }
+
+  // The name it goes by is not an alias of itself.
+  const finalName = String((updates.name as string | undefined) ?? company.name)
+  if (updates.aliases || updates.name) {
+    const aliases = ((updates.aliases as string[] | undefined) ?? cleanList(company.aliases))
+      .filter(a => a.toLowerCase() !== finalName.toLowerCase())
+    if (updates.aliases || !sameValue(aliases, cleanList(company.aliases))) updates.aliases = aliases
+  }
+
+  // Only what actually differs is written, so "set it to what it already is" is nothing to change.
+  for (const column of Object.keys(updates)) {
+    const now = company[column]
+    const was = Array.isArray(updates[column]) ? cleanList(now) : (now ?? null)
+    if (sameValue(was, updates[column])) delete updates[column]
+  }
   if (Object.keys(updates).length === 0) return fail(400, 'Nothing to change.')
 
+  const before = Object.fromEntries(Object.keys(updates).map(k => [k, company[k] ?? null]))
+  return done({ company: { id: company.id, name: company.name }, updates, before })
+}
+
+/**
+ * The tools' snake_case input as a change: `<list>` replaces a list, `add_<list>` and
+ * `remove_<list>` change it. A field left out is left alone; null or "" clears a text field.
+ */
+export function companyChangeFromInput(input: any): CompanyChange {
+  const change: CompanyChange = {}
+  if (input?.name !== undefined) change.name = String(input.name ?? '')
+  if (input?.status !== undefined) change.status = String(input.status)
+  const list = (key: string): ListChange | undefined => {
+    const c: ListChange = {}
+    if (input?.[key] !== undefined) c.set = cleanList(input[key])
+    if (input?.[`add_${key}`] !== undefined) c.add = cleanList(input[`add_${key}`])
+    if (input?.[`remove_${key}`] !== undefined) c.remove = cleanList(input[`remove_${key}`])
+    return Object.keys(c).length ? c : undefined
+  }
+  const lists = { aliases: list('aliases'), tags: list('tags'), industry: list('industry'), contactEmails: list('contact_emails'), vehicles: list('vehicles') }
+  for (const [k, v] of Object.entries(lists)) if (v) (change as any)[k] = v
+  const text = { stage: 'stage', country: 'country', overview: 'overview', founders: 'founders', whyInvested: 'why_invested', currentUpdate: 'current_update', notes: 'notes' }
+  for (const [k, key] of Object.entries(text)) {
+    if (input?.[key] !== undefined) (change as any)[k] = input[key] === null ? null : String(input[key])
+  }
+  if (input?.founded_year !== undefined) change.foundedYear = input.founded_year === null || input.founded_year === '' ? null : Number(input.founded_year)
+  return change
+}
+
+/**
+ * The entities that will hold it. A member changes only their own entities' part, as the company
+ * page does (mergeGroupsForWrite): the ones they cannot see are kept, and naming one is refused.
+ * Unlike the page, a name that is not already an entity is refused rather than created, so a typo
+ * in a chat does not make a new entity.
+ */
+async function planVehicles(
+  admin: SupabaseClient,
+  who: { fundId: string; vehicleNames: string[] | null },
+  current: string[],
+  change: ListChange,
+): Promise<Outcome<string[]>> {
+  const { data, error } = await (admin as any).from('fund_vehicles').select('name').eq('fund_id', who.fundId)
+  if (error) return dbFail(error, 'company-edit')
+  const known = ((data as { name: string }[]) ?? []).map(r => r.name)
+  const canonical = (list: string[] | undefined): string[] | { error: string } => {
+    const out: string[] = []
+    for (const n of list ?? []) {
+      const hit = known.find(k => k.toLowerCase() === n.toLowerCase())
+      if (!hit) return { error: `No entity named "${n}".` }
+      out.push(hit)
+    }
+    return out
+  }
+  const named = [canonical(change.set), canonical(change.add), canonical(change.remove)]
+  const bad = named.find(x => 'error' in x) as { error: string } | undefined
+  if (bad) return fail(400, bad.error)
+  const [set, add, remove] = named as string[][]
+  const mine = who.vehicleNames === null ? current : current.filter(g => who.vehicleNames!.includes(g))
+  const next = applyList(mine, { ...(change.set !== undefined ? { set } : {}), add, remove }, false)
+  if ('error' in next) return fail(400, next.error)
+  const merged = mergeGroupsForWrite(current, next, who.vehicleNames)
+  if ('error' in merged) return fail(403, merged.error)
+  return done(merged.groups)
+}
+
+export async function updateCompanyDetails(
+  admin: SupabaseClient,
+  who: { fundId: string; userId: string | null; vehicleNames: string[] | null },
+  companyId: string,
+  change: CompanyChange,
+): Promise<Outcome<{
+  id: string; name: string; previousName: string; aliases: string[]; status: string | null
+  changed: Record<string, { from: unknown; to: unknown }>; accountsRenamed: number
+}>> {
+  const planned = await planCompanyChange(admin, who, companyId, change)
+  if (!planned.ok) return planned
+  const { company, updates, before } = planned.value
+
   const { error: updateError } = await (admin as any).from('companies').update(updates).eq('id', companyId).eq('fund_id', who.fundId)
-  if (updateError) return dbFail(updateError, 'company-identity')
+  if (updateError) return dbFail(updateError, 'company-edit')
 
   let accountsRenamed = 0
   if (updates.name) {
@@ -77,13 +256,17 @@ export async function updateCompanyIdentity(
     }
   }
 
+  const { data: after } = await (admin as any)
+    .from('companies').select('name, aliases, status').eq('id', companyId).eq('fund_id', who.fundId).maybeSingle()
+
   if (who.userId) logActivity(admin, who.fundId, who.userId, 'company.update', { companyId })
   return done({
     id: companyId,
-    name: finalName,
+    name: after?.name ?? (updates.name as string | undefined) ?? company.name,
     previousName: company.name,
-    aliases: (updates.aliases as string[] | undefined) ?? clean(company.aliases),
-    status: (updates.status as string | undefined) ?? company.status ?? null,
+    aliases: cleanList(after?.aliases),
+    status: after?.status ?? null,
+    changed: Object.fromEntries(Object.keys(updates).map(k => [k, { from: before[k], to: updates[k] }])),
     accountsRenamed,
   })
 }

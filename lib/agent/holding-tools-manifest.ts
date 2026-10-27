@@ -16,25 +16,60 @@ const VEHICLE = {
 }
 const DATE = { type: 'string', description: 'YYYY-MM-DD' }
 
+const LIST = (what: string) => ({ type: 'array', items: { type: 'string' }, description: what })
+
+/**
+ * update_company's input, shared with the chat's staged `update_company` action
+ * (lib/pending-actions/registry.ts) so the two take the same fields.
+ */
+export const UPDATE_COMPANY_PROPERTIES: Record<string, unknown> = {
+  company: COMPANY,
+  name: { type: 'string', description: 'The new name.' },
+  status: { type: 'string', enum: ['active', 'exited', 'written-off'] },
+  contact_emails: LIST('Replace every contact email with these. Contact emails are the addresses its updates come from, so emailed updates match it.'),
+  add_contact_emails: LIST('Add these contact emails, keeping the existing ones.'),
+  remove_contact_emails: LIST('Remove these contact emails.'),
+  aliases: LIST('Replace every alias with these.'),
+  add_aliases: LIST('Add these aliases, keeping the existing ones.'),
+  remove_aliases: LIST('Remove these aliases.'),
+  vehicles: LIST('Replace the entities that hold it with these (by name; each must already exist). Entities you cannot see are kept.'),
+  add_vehicles: LIST('Add these entities as holders.'),
+  remove_vehicles: LIST('Remove these entities as holders.'),
+  tags: LIST('Replace every tag with these.'),
+  add_tags: LIST('Add these tags.'),
+  remove_tags: LIST('Remove these tags.'),
+  industry: LIST('Replace its industries with these.'),
+  add_industry: LIST('Add these industries.'),
+  remove_industry: LIST('Remove these industries.'),
+  stage: { type: 'string', description: 'E.g. "Seed", "Series A". Empty clears it.' },
+  country: { type: 'string', description: 'Where it is based; the Schedule of Investments groups by it. Empty clears it.' },
+  founded_year: { type: 'integer' },
+  overview: { type: 'string', description: 'What the company does. Empty clears it.' },
+  founders: { type: 'string', description: 'Empty clears it.' },
+  why_invested: { type: 'string', description: 'Empty clears it.' },
+  current_update: { type: 'string', description: 'The latest news on the company. Empty clears it.' },
+  notes: { type: 'string', description: 'The free-text notes field on the record (not a team note: add_company_note). Empty clears it.' },
+}
+
+export const UPDATE_COMPANY_DESCRIPTION =
+  'Change a holding\'s record (company, fund holding or digital asset): its name, status, contact emails, aliases, tags, ' +
+  'industry, stage, country, founded year, overview, founders, why invested, current update, notes and the entities that ' +
+  'hold it. Only the fields ' +
+  'passed change. For a list, `<list>` replaces it and `add_<list>` / `remove_<list>` change the one there. A rename also ' +
+  'renames the holding\'s own chart accounts that still carry the old name ("Investment — <name>" and the rest). Aliases ' +
+  'and contact emails are what imports and emailed updates match it by. Changing the entities that hold it does not move ' +
+  'its transactions (move_investment does).'
+
 export const HOLDING_TOOL_MANIFEST: AgentToolMeta[] = [
   {
     name: 'update_company',
-    description:
-      'Rename a holding (company, fund holding or digital asset), set or add its aliases, or set its status. A rename also renames ' +
-      'the holding\'s own chart accounts that still carry the old name ("Investment — <name>" and the rest). Aliases are the other ' +
-      'names imports and emailed updates match it by; add_aliases adds to the ones already there, aliases replaces them.',
+    description: UPDATE_COMPANY_DESCRIPTION,
     scope: 'write',
     domain: 'portfolio',
     inputSchema: {
       type: 'object',
       required: ['company'],
-      properties: {
-        company: COMPANY,
-        name: { type: 'string', description: 'The new name.' },
-        aliases: { type: 'array', items: { type: 'string' }, description: 'Replace every alias with these.' },
-        add_aliases: { type: 'array', items: { type: 'string' }, description: 'Add these aliases, keeping the existing ones.' },
-        status: { type: 'string', enum: ['active', 'exited', 'written-off'] },
-      },
+      properties: UPDATE_COMPANY_PROPERTIES,
       additionalProperties: false,
     },
   },

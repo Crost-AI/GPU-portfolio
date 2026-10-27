@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Edit a portfolio company from chat, the API and the connector
+- **`update_company` changes the whole record.** Besides the name, aliases and status, it now sets contact emails, tags, industry, stage, country, founded year, overview, founders, why invested, current update, notes and the entities that hold it. Lists take `<list>` to replace and `add_<list>` / `remove_<list>` to change what is there; contact emails are checked and lowercased. A named entity must already exist; a member changes only their own entities' part, as on the company page. `lib/companies/holding-edit.ts`.
+- **The in-app chat and `/api/v1/chat` can stage it too**, as the `update_company` pending action (`lib/pending-actions/company-edit.ts`). Approving it re-plans the change against the record as it is then. A connected chat's staged `update_company` shows each field from what it is to what it would be.
+- **Jump to finds every holding.** It listed companies only, so a fund holding or digital asset could not be found, and it loaded its lists once per session, so a company added since (or a list whose fetch failed) never appeared. It now lists every holding, refreshes on each open, and caps each group separately so pages sharing a word no longer crowd out a matching company.
+
 ### Book-to-tax adjustments from chat and the API
 - **`tax_adjustments`** previews a tax year's book-to-tax adjustments for one vehicle, the same set the Tax page shows, K-1 pass-through included; **`post_tax_adjustments`** posts them, staged for a person's approval from a chat. Until now they could only be posted from the Tax page. Both gate on the tax domain and `tax_reporting`, and a post leaves the same audit record as the page (`lib/accounting/tax-run-audit.ts`).
 - **A `recalculate_fund_distributions` dry run no longer waits for approval.** It writes nothing, so it runs directly; the real run still stages.

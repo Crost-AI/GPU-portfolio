@@ -4,6 +4,7 @@ import type { Domain } from '@/lib/access/domains'
 
 export type ActionType =
   | 'update_company_metric'
+  | 'update_company'
   | 'record_investment'
   | 'issue_capital_call'
   | 'publish_call_notices'

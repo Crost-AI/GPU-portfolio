@@ -5,7 +5,7 @@
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { setHoldingType, updateCompanyIdentity } from '@/lib/companies/holding-edit'
+import { companyChangeFromInput, setHoldingType, updateCompanyDetails } from '@/lib/companies/holding-edit'
 import { saveNavStatement } from '@/lib/portfolio/fof-nav'
 import { resolveHoldingVehicle } from '@/lib/portfolio/fof-register'
 import { recordFundNotice, setFundTerms, TERM_FIELDS } from '@/lib/portfolio/fund-register-write'
@@ -36,12 +36,8 @@ function needUser(ctx: AgentToolContext): string {
 export const HOLDING_HANDLERS: Record<string, AgentToolHandler> = {
   update_company: async (ctx: AgentToolContext, input: any) => {
     const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
-    return unwrap(await updateCompanyIdentity(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null }, company.id, {
-      ...(input?.name !== undefined ? { name: String(input.name) } : {}),
-      ...(input?.aliases !== undefined ? { aliases: input.aliases } : {}),
-      ...(input?.add_aliases !== undefined ? { addAliases: input.add_aliases } : {}),
-      ...(input?.status !== undefined ? { status: String(input.status) } : {}),
-    }))
+    const vehicleNames = (await entityScopeFor(ctx.admin, ctx.access)).vehicleNames
+    return unwrap(await updateCompanyDetails(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null, vehicleNames }, company.id, companyChangeFromInput(input)))
   },
 
   set_holding_type: async (ctx: AgentToolContext, input: any) => {
