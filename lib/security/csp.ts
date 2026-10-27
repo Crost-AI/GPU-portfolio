@@ -52,6 +52,28 @@ const SCRIPT_HOSTS = [
   'https://www.google-analytics.com',
 ]
 
+/**
+ * Why Next would render this request's scripts WITHOUT the nonce, or null when it will not.
+ *
+ * Next takes its render nonce from the request's `content-security-policy` header, falling back to
+ * `-report-only` (route-modules/app-page/parse-request-headers.js), while the layouts read
+ * `x-nonce`. proxy.ts sets all three. A local `next start` renders every `<script>` nonce'd, yet
+ * production's report-only policy flags every `/_next/static` chunk on /auth and /start, which is
+ * what an un-nonced render looks like. So the root layout calls this on every render and logs the
+ * answer: one deploy of `grep '\\[csp-nonce\\]'` says which header the platform did not forward.
+ * The report endpoint can't say; it is rate-limited to ten a minute per IP, so a page load's later
+ * (inline) violations never reach the log.
+ */
+export function nonceRenderGap(headers: Headers): string | null {
+  const nonce = headers.get(NONCE_HEADER)
+  if (!nonce) return 'x-nonce missing'
+  const csp = headers.get('content-security-policy') ?? headers.get(REPORT_ONLY_HEADER.toLowerCase())
+  if (!csp) return 'no content-security-policy request header'
+  const rendered = /'nonce-([^']+)'/.exec(csp)?.[1]
+  if (rendered !== nonce) return 'request CSP carries a different nonce from x-nonce'
+  return null
+}
+
 export function buildReportOnlyCsp(nonce: string, options: { development?: boolean } = {}): string {
   const scriptSrc = [
     "'self'",
