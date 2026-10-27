@@ -11,7 +11,7 @@ import { listVehiclesWithId } from '@/lib/accounting/load'
 import { previousQuarter } from '@/lib/accounting/receipts-core'
 import { ensureIntercompanyAccounts, intercompanyChart, linkIntercompanyAccount } from '@/lib/accounting/intercompany'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, updateInvoiceAllocations,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, updateInvoiceAllocations,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice, receivableCandidates,
 } from '@/lib/accounting/partnership-invoices'
 
@@ -95,11 +95,13 @@ export async function GET(req: NextRequest) {
  *        allocations { postingId: basis } replaces a line's allocation basis, and remember lists the
  *        lines whose basis is saved for that vendor's future expenses billed to the fund
  *   { group, action: 'issue', id }   book the fund's side (Dr partnership expenses, Cr due to <group>)
- *   { group, action: 'void', id }    release its lines; an issued one needs the fund's entry voided first
+ *   { group, action: 'delete', id }  delete a draft and release its lines
+ *   { group, action: 'void', id }    void an issued invoice and release its lines; the fund's entry is voided first
  *   { group, action: 'accounts', to } add "Due from <to>" (and "Due to <to>") to group's chart
  *   { group, action: 'link', to, accountId } make an existing account of group's "Due from <to>"
  *   { group, action: 'bases', id, allocations: { postingId: basis }, remember?: [postingId] }
- *     correct a draft or issued invoice's allocation bases in place (same number, same bookings)
+ *     correct a draft or issued invoice's allocation bases in place (same number, same bookings);
+ *     on a draft, release?: [postingId] also takes those lines off and lowers its amount
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -134,16 +136,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ...res })
   }
 
-  if (body?.action === 'issue' || body?.action === 'void') {
+  if (body?.action === 'issue' || body?.action === 'void' || body?.action === 'delete') {
     const id = String(body?.id ?? '')
     const inv = await getPartnershipInvoice(admin, gate.fundId, id)
-    // Only the billing entity issues or voids its own invoices.
+    // Only the billing entity issues, voids or deletes its own invoices.
     if (!inv || inv.from.vehicleId !== vehicleId) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     const to = await counterparty(admin, gate, inv.to.vehicleId)
     if (to instanceof NextResponse) return to
     const res = body.action === 'issue'
       ? await issuePartnershipInvoice(admin, gate.fundId, user.id, id)
-      : await voidPartnershipInvoice(admin, gate.fundId, id)
+      : body.action === 'delete'
+        ? await deletePartnershipInvoice(admin, gate.fundId, id)
+        : await voidPartnershipInvoice(admin, gate.fundId, id)
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json(res)
   }
@@ -161,6 +165,7 @@ export async function POST(req: NextRequest) {
     const res = await updateInvoiceAllocations(admin, gate.fundId, user.id, id, {
       allocations: Object.fromEntries(Object.entries(body.allocations).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
       rememberPostingIds: Array.isArray(body?.remember) ? body.remember.filter((x: unknown): x is string => typeof x === 'string') : null,
+      releasePostingIds: Array.isArray(body?.release) ? body.release.filter((x: unknown): x is string => typeof x === 'string') : null,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json(res)
@@ -191,5 +196,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(res)
   }
 
-  return NextResponse.json({ error: 'action must be create, issue, void, bases, accounts or link' }, { status: 400 })
+  return NextResponse.json({ error: 'action must be create, issue, delete, void, bases, accounts or link' }, { status: 400 })
 }

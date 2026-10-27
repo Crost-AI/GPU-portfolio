@@ -19,11 +19,13 @@
 //        the fund   Dr Partnership expenses   Cr Due to <manco>
 //      When the fund pays, the charge's settlement (the manco's Intercompany tab) posts the cash on
 //      both sides and clears the receivable: manco Dr Cash / Cr Due from <fund>.
-//   5. `voidPartnershipInvoice` releases the lines for the next invoice. An issued invoice's fund
-//      entry has to be voided first (a void here never silently unposts the other side's books).
+//   5. `deletePartnershipInvoice` removes a DRAFT and releases its lines; it was never sent.
+//      `voidPartnershipInvoice` is for an ISSUED one: it keeps the number and releases the lines,
+//      and the fund's entry has to be voided first (a void here never unposts the other side's books).
 //
-// The invoice row is the document; the ledger is the fact. The amount on the row never moves after
-// creation, the same way a capital call notice keeps the number the partner was told.
+// The invoice row is the document; the ledger is the fact. Once issued, the amount on the row never
+// moves, the same way a capital call notice keeps the number the partner was told. A draft, never
+// sent, can still shed lines (updateInvoiceAllocations, releasePostingIds), and its amount follows.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
@@ -294,7 +296,7 @@ export async function createPartnershipInvoice(
     .map(l => (l.postingId in typed ? { ...l, allocationBasis: String(typed[l.postingId] ?? '').trim() || null } : l))
   const preview = { ...found, lines: kept, total: roundCents(kept.reduce((sum, l) => sum + l.amount, 0)) }
   if (preview.existing) {
-    return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). Void it to bill the quarter again.`, status: 409 }
+    return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). ${preview.existing.status === 'draft' ? 'Delete that draft' : 'Void it'} to bill the quarter again.`, status: 409 }
   }
   if (preview.lines.length === 0) {
     return { error: found.lines.length > 0
@@ -377,18 +379,38 @@ export interface InvoiceDetail {
  * printed beside each line, not part of any amount or booking, so it can be corrected in place: the
  * invoice keeps its number and its entries, and the PDF reads the new text. A void invoice is left
  * as it was. Lines not named in `allocations` keep theirs; an empty string clears one.
+ *
+ * On a DRAFT, `releasePostingIds` also takes lines off the invoice: they go back to unbilled for the
+ * next one and the draft's amount drops by theirs. An issued invoice's amount is booked on the fund's
+ * books, so it can't lose lines; void it instead.
  */
 export async function updateInvoiceAllocations(
   admin: SupabaseClient,
   fundId: string,
   userId: string | null,
   id: string,
-  args: { allocations: Record<string, string>; rememberPostingIds?: string[] | null },
-): Promise<{ ok: true; updated: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  args: { allocations: Record<string, string>; rememberPostingIds?: string[] | null; releasePostingIds?: string[] | null },
+): Promise<{ ok: true; updated: number; released: number; amount: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
   const inv = await getPartnershipInvoice(admin, fundId, id)
   if (!inv) return { error: 'Invoice not found', status: 404 }
   if (inv.status === 'void') return { error: 'This invoice is void. Bill the expenses on a new invoice instead.', status: 409 }
   const onInvoice = new Map(inv.lines.map(l => [l.postingId, l]))
+
+  const release = Array.from(new Set(args.releasePostingIds ?? [])).filter(p => onInvoice.has(p))
+  let amount = inv.amount
+  if (release.length > 0) {
+    if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill the expenses again to leave one off.', status: 409 }
+    if (release.length === onInvoice.size) return { error: 'That releases every expense. Delete the draft instead.', status: 400 }
+    const { error } = await admin.from('partnership_invoice_lines' as any).delete()
+      .eq('fund_id', fundId).eq('invoice_id', id).in('journal_posting_id', release)
+    if (error) return { error: `The expenses could not be released: ${error.message}`, status: 400 }
+    for (const p of release) onInvoice.delete(p)
+    amount = roundCents(Array.from(onInvoice.values()).reduce((sum, l) => sum + l.amount, 0))
+    const { error: amtErr } = await admin.from('partnership_invoices' as any).update({ amount, updated_at: new Date().toISOString() })
+      .eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
+    if (amtErr) return { error: `The invoice total could not be updated: ${amtErr.message}`, status: 400 }
+  }
+
   const changes = Object.entries(args.allocations)
     .filter(([postingId]) => onInvoice.has(postingId))
     .map(([postingId, basis]) => ({ postingId, basis: String(basis ?? '').trim() || null }))
@@ -407,7 +429,24 @@ export async function updateInvoiceAllocations(
     if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
   }
   if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
-  return { ok: true, updated: changes.length, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+  return { ok: true, updated: changes.length, released: release.length, amount, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+}
+
+/**
+ * Delete a draft invoice and release its expenses for the next one. A draft was never sent and
+ * booked nothing, so it leaves no trace; an issued invoice is voided instead, which keeps its number.
+ */
+export async function deletePartnershipInvoice(
+  admin: SupabaseClient,
+  fundId: string,
+  id: string,
+): Promise<{ ok: true } | { error: string; status?: number }> {
+  const { data } = await admin.from('partnership_invoices' as any).select('id, status').eq('fund_id', fundId).eq('id', id).maybeSingle()
+  if (!data) return { error: 'Invoice not found', status: 404 }
+  if ((data as any).status !== 'draft') return { error: `This invoice is ${(data as any).status}. Only a draft can be deleted; void an issued one.`, status: 409 }
+  // Its lines go with it (on delete cascade), which frees their postings.
+  const { error } = await admin.from('partnership_invoices' as any).delete().eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
+  return error ? { error: `The invoice could not be deleted: ${error.message}`, status: 400 } : { ok: true }
 }
 
 /** An invoice's frozen lines, beside what the ledger says about each now. */
@@ -504,7 +543,7 @@ export async function issuePartnershipInvoice(
   // billed as it was, and the fund must not be charged for what the books no longer say.
   const stale = inv.lines.filter(l => l.status !== 'posted' || l.currentAmount == null || Math.abs(l.currentAmount - l.amount) >= 0.005)
   if (stale.length > 0) {
-    return { error: `${stale.length} of this invoice's expenses ${stale.length === 1 ? 'has' : 'have'} been voided or changed since it was created. Void the invoice and create it again.`, status: 409 }
+    return { error: `${stale.length} of this invoice's expenses ${stale.length === 1 ? 'has' : 'have'} been voided or changed since it was created. Delete this draft and create it again.`, status: 409 }
   }
 
   const res = await postIntercompanyCharge(admin, {
