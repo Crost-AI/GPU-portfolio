@@ -64,16 +64,20 @@ const nextConfig = {
       { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
       { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
       { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-      // The enforcing policy; see lib/security/csp-enforcing.mjs. The strict nonce policy rides
-      // beside it as report-only, set per request by proxy.ts.
-      {
-        key: 'Content-Security-Policy',
-        value: buildEnforcingCsp({
-          development: process.env.NODE_ENV === 'development',
-          supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
-        }),
-      },
     ]
+
+    // The enforcing policy (lib/security/csp-enforcing.mjs), ONLY on the paths proxy.ts's matcher
+    // skips; the proxy sets it on everything else. Sent from here on every path, Vercel also put it
+    // on the request, where Next read it for the render nonce ahead of the proxy's own policy and
+    // rendered every script without one. proxy.ts explains; tests/csp-enforcing-coverage.test.ts
+    // pins that each path gets the policy from exactly one place.
+    const enforcingCsp = [{
+      key: 'Content-Security-Policy',
+      value: buildEnforcingCsp({
+        development: process.env.NODE_ENV === 'development',
+        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      }),
+    }]
 
     const noCacheHeaders = [
       { key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate' },
@@ -86,6 +90,11 @@ const nextConfig = {
       {
         source: '/((?!_next/static).*)',
         headers: securityHeaders,
+      },
+      // The complement of proxy.ts's matcher (less _next/static, which carries no security headers).
+      {
+        source: '/:path(_next/image.*|favicon.ico.*|api/inbound-email|api/inbound-email/.*|149e9513-01fa-4fb0-aad4-566afd725d1b.*|(?!api/|_next/static).*\\.(?:svg|png|jpg|jpeg|gif|webp))',
+        headers: enforcingCsp,
       },
       // Prevent caching on the auth routes.
       { source: '/auth/:path*', headers: noCacheHeaders },

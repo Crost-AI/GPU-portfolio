@@ -6,9 +6,28 @@ import { hasAccess, resolveAccessContext } from '@/lib/access/effective'
 import { DOMAIN_META } from '@/lib/access/domains'
 import { adminOnlyMessage, adminOnlyRule, adminRuleNeedsBody, UNREADABLE } from '@/lib/access/admin-only'
 import { buildReportOnlyCsp, generateNonce, NONCE_HEADER, REPORT_ONLY_HEADER } from '@/lib/security/csp'
+import { buildEnforcingCsp } from '@/lib/security/csp-enforcing.mjs'
 import { companyEntityDenial, dealEntityDenial, rlsRowDenial, rowCompanyDenial } from '@/lib/access/entity-gate'
 
+// The ENFORCING policy, on every response this proxy produces. It used to come from next.config.mjs
+// `headers()`, and on Vercel a config header lands on the REQUEST as well as the response: the
+// render saw this policy, which has no nonce, under `content-security-policy` — the header Next reads
+// its nonce from first — so every script and chunk went out un-nonced and the report-only policy
+// flagged the app's own code (the `[csp-nonce]` log in app/layout.tsx is how that was found).
+// next.config.mjs now sends it only on the paths this proxy's matcher skips;
+// tests/csp-enforcing-coverage.test.ts pins that every path gets it from exactly one of the two.
+const ENFORCING_CSP = buildEnforcingCsp({
+  development: process.env.NODE_ENV === 'development',
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+})
+
 export async function proxy(request: NextRequest) {
+  const response = await route(request)
+  response.headers.set('Content-Security-Policy', ENFORCING_CSP)
+  return response
+}
+
+async function route(request: NextRequest) {
   const { pathname } = request.nextUrl
   const isApiRoute = pathname.startsWith('/api')
 

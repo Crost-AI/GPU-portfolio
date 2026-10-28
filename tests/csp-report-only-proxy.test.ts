@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * REQUEST (so Next nonces its own bootstrap and the layouts can read it) and on the RESPONSE (so
  * the browser evaluates it). Never on an API response, which carries no scripts.
  *
- * The enforcing policy from next.config.mjs is not touched here and is not tested here — it
- * applies as before, beside this one.
+ * The enforcing policy is set here too, on every response the proxy produces (next.config.mjs
+ * sends it only on paths the proxy skips; tests/csp-enforcing-coverage.test.ts covers the split).
  */
 
 const getUser = vi.hoisted(() => vi.fn())
@@ -92,7 +92,24 @@ describe('report-only CSP on page responses', () => {
     const ours = nonceIn(res.headers.get(REPORT_ONLY_HEADER)!)
     expect(res.headers.get('x-middleware-request-content-security-policy')).toBe(res.headers.get(REPORT_ONLY_HEADER))
     expect(nonceIn(res.headers.get('x-middleware-request-content-security-policy')!)).toBe(ours)
-    expect(res.headers.get('content-security-policy')).toBeNull()
+    expect(res.headers.get('content-security-policy')).not.toContain('nonce-')
+  })
+
+  it('puts the enforcing policy on every response, pages, APIs and redirects alike', async () => {
+    const page = await proxy(req('/auth'))
+    const api = await proxy(req('/api/v1/meta'))
+    const redirect = await proxy(req('/dashboard'))
+    expect(redirect.status).toBe(307)
+    for (const res of [page, api, redirect]) {
+      const csp = res.headers.get('content-security-policy')
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'")
+      expect(csp).not.toContain('nonce-')
+    }
+  })
+
+  it('never hands the render the enforcing policy as its request CSP', async () => {
+    const res = await proxy(req('/auth'))
+    expect(res.headers.get('x-middleware-request-content-security-policy')).toBe(res.headers.get(REPORT_ONLY_HEADER))
   })
 
   it('does not put unsafe-eval in the production policy', async () => {
