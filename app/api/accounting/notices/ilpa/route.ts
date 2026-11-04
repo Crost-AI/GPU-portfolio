@@ -8,6 +8,8 @@ import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { rateLimit } from '@/lib/rate-limit'
 import { loadCcdNotices } from '@/lib/ilpa/ccd-load'
 import { ccdSheetRows } from '@/lib/ilpa/ccd'
+import { loadAccessContext } from '@/lib/access/effective'
+import { seesIndividualCarry } from '@/lib/access/carry-visibility'
 
 export const runtime = 'nodejs'
 
@@ -36,7 +38,9 @@ export async function GET(req: NextRequest) {
   const id = sp.get('id') ?? ''
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
-  const out = await loadCcdNotices(admin, gate.fundId, group, kind, id, sp.get('lp'))
+  // The route is gated on lp_capital; a distribution's carry lines are GP economics (Crost #87).
+  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  const out = await loadCcdNotices(admin, gate.fundId, group, kind, id, sp.get('lp'), seesIndividualCarry(access))
   if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status })
 
   if (sp.get('format') === 'json') {

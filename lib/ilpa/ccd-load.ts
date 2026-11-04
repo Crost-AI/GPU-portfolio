@@ -38,11 +38,18 @@ export async function loadCcdNotices(
   group: string,
   kind: NoticeKind,
   id: string,
-  lpEntityId?: string | null,
+  lpEntityId: string | null | undefined,
+  /**
+   * Whether the caller may see individual carry (gp_economics read: seesIndividualCarry). Without
+   * it a distribution's carry lines are left out, and so is everything that would let them be
+   * worked out: the notice total and earlier distributions count partners' lines only.
+   */
+  seesCarry: boolean,
 ): Promise<{ ok: true; notices: CcdNotice[]; fileStem: string } | { ok: false; error: string; status: number }> {
   const reg = await loadNoticeRegister(admin, fundId, group, kind, id)
   if ('error' in reg) return { ok: false, error: reg.error, status: reg.status }
-  const targets = lpEntityId ? reg.lines.filter(l => l.lpEntityId === lpEntityId) : reg.lines
+  const lines = seesCarry ? reg.lines : reg.lines.filter(l => l.role !== 'carry')
+  const targets = lpEntityId ? lines.filter(l => l.lpEntityId === lpEntityId) : lines
   if (targets.length === 0) return { ok: false, error: 'That partner has no line on this notice', status: 404 }
 
   const vehicleId = await vehicleIdByName(admin, fundId, group)
@@ -70,10 +77,10 @@ export async function loadCcdNotices(
   for (const d of distributions) {
     if (kind === 'distribution' && d.distributionId === id) continue
     if (kind === 'distribution' ? !(d.date < reg.noticeDate) : d.date > reg.noticeDate) continue
-    for (const l of d.lines) distributionsPrior.set(l.lpEntityId, roundCents((distributionsPrior.get(l.lpEntityId) ?? 0) + l.amount))
+    for (const l of d.lines) if (seesCarry || l.role !== 'carry') distributionsPrior.set(l.lpEntityId, roundCents((distributionsPrior.get(l.lpEntityId) ?? 0) + l.amount))
   }
 
-  const noticeTotal = roundCents(reg.lines.reduce((s, l) => s + l.amount, 0))
+  const noticeTotal = roundCents(lines.reduce((s, l) => s + l.amount, 0))
   let build: (line: NoticeLine) => CcdTransaction[]
 
   if (kind === 'capital_call') {
