@@ -183,9 +183,11 @@ export const staleMessage = (routeError: string) =>
   `${routeError} The latest assumptions have been loaded; make your change again and save.`
 
 /**
- * The Fleet tab's save, start to finish: PATCH at the loaded revision; on a 409, reload the plan and
- * answer the stale message; on any other refusal, the route's own words. `saved` gets the recompiled
- * plan the PATCH answers with.
+ * The Fleet tab's save, start to finish: PATCH at the loaded revision; `saved` gets the recompiled plan
+ * the PATCH answers with. On a 409, `stale` gets the message BEFORE the plan is reloaded: the reload
+ * bumps the revision and remounts the form (it is keyed by revision), so the warning must be held by
+ * something the remount does not reset (FleetTab). Any other refusal is returned in the route's words
+ * for the form to show.
  */
 export async function saveFleetPlan<T>(input: {
   fetcher: Fetcher
@@ -194,12 +196,14 @@ export async function saveFleetPlan<T>(input: {
   fleet: FleetAssumptions
   reload: () => Promise<unknown>
   saved: (plan: T) => Promise<unknown> | void
+  stale: (message: string) => void
 }): Promise<string | null> {
   const r = await patchFleet<T>(input.fetcher, input.planId, input.revision, input.fleet)
   if (r.ok) { await input.saved(r.data); return null }
   if (r.status === 409) {
+    input.stale(staleMessage(r.error))
     await input.reload().catch(() => null)
-    return staleMessage(r.error)
+    return null
   }
   return r.error
 }

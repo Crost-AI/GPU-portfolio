@@ -242,26 +242,41 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
   const [data, setData] = useState<FleetScenariosResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [planId, setPlanId] = useState<string | null>(planFromUrl)
-  const [fleet, setFleet] = useState<{ planId: string; fleet: FleetAssumptions | null } | null>(null)
+  // Everything scenario-specific is held with the selection that loaded it, and shown only while that
+  // selection is still the one picked: a switch in flight shows loading, a failed one its error, and
+  // neither ever shows the previous scenario's figures or assumptions under the new name.
+  const [detailFor, setDetailFor] = useState<{ planId: string | null; detail: ScenarioDetail | null } | { planId: string | null; error: string } | null>(null)
+  const [fleet, setFleet] = useState<{ planId: string; fleet: FleetAssumptions | null; error?: string } | null>(null)
   const [seeding, setSeeding] = useState(false)
   const [drawer, setDrawer] = useState(false)
 
   const load = useCallback(() => getScenarios(lf, planId), [lf, planId])
-  const apply = (r: Awaited<ReturnType<typeof getScenarios>>) => {
-    if (r.ok) { setData(r.data); setError(null) } else setError(r.error)
+  /** A response for the selection `requested`: the headline is the latest good one; the detail is that selection's. */
+  const apply = (r: Awaited<ReturnType<typeof getScenarios>>, requested: string | null) => {
+    if (r.ok) {
+      setData(r.data); setError(null)
+      setDetailFor({ planId: requested, detail: r.data.detail })
+    } else if (!data) {
+      setError(r.error)
+    } else {
+      setDetailFor({ planId: requested, error: r.error })
+    }
   }
   useEffect(() => {
     let cancelled = false
-    void load().then(r => { if (!cancelled) apply(r) })
+    void load().then(r => { if (!cancelled) apply(r, planId) })
     return () => { cancelled = true }
-  }, [load])
+  }, [load]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The detail plan: the one asked for, else the primary the route chose.
   const detailId = planId ?? data?.primaryPlanId ?? data?.plans[0]?.id ?? null
   useEffect(() => {
     if (!detailId) return
     let cancelled = false
-    void getFleetPlan(lf, detailId).then(r => { if (!cancelled && r.ok) setFleet({ planId: detailId, fleet: r.data.plan.fleet }) })
+    void getFleetPlan(lf, detailId).then(r => {
+      if (cancelled) return
+      setFleet(r.ok ? { planId: detailId, fleet: r.data.plan.fleet } : { planId: detailId, fleet: null, error: r.error })
+    })
     return () => { cancelled = true }
   }, [lf, detailId])
 
@@ -279,7 +294,7 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
     const r = await seedScenarios(lf)
     setSeeding(false)
     if (!r.ok) { setError(r.error); return }
-    apply(await load())
+    apply(await load(), planId)
   }
 
   if (!data) {
@@ -306,7 +321,11 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
   }
 
   const selected = data.plans.find(p => p.id === detailId) ?? null
-  const exportHref = selected && fleet?.planId === selected.id && fleet.fleet ? scenarioExportHref(vehicle, selected.id, fleet.fleet) : null
+  // Only what was loaded for the scenario now picked.
+  const current = detailFor && detailFor.planId === planId ? detailFor : null
+  const selectedFleet = fleet && fleet.planId === detailId ? fleet : null
+  const exportHref = selected && selectedFleet?.fleet ? scenarioExportHref(vehicle, selected.id, selectedFleet.fleet) : null
+  const assumptionsHint = selectedFleet?.error ?? (selectedFleet ? undefined : 'Loading this scenario\u2019s assumptions')
 
   return (
     <div className="space-y-4">
@@ -332,30 +351,37 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
             <select id="scenario-pick" className="h-9 rounded-md border border-input bg-background px-2 text-sm" value={detailId ?? ''} onChange={e => choose(e.target.value)}>
               {data.plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
-            <Button type="button" size="sm" variant="outline" onClick={() => setDrawer(true)} disabled={!fleet?.fleet}>Assumptions</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setDrawer(true)} disabled={!selectedFleet?.fleet} title={assumptionsHint}>Assumptions</Button>
             {exportHref
               ? <Button asChild size="sm" variant="outline"><a href={exportHref}><Download className="mr-1.5 h-4 w-4" />Export</a></Button>
               : <Button type="button" size="sm" variant="outline" disabled><Download className="mr-1.5 h-4 w-4" />Export</Button>}
           </div>
         }
       >
-        {data.detail ? (
-          <div className="space-y-4">
+        {selectedFleet?.error && <div className="mb-3"><ErrorAlert>Could not load this scenario&rsquo;s assumptions: {selectedFleet.error}</ErrorAlert></div>}
+        {!current ? (
+          <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground" data-detail-loading>
+            <Loader2 className="h-4 w-4 animate-spin" />Loading {selected?.name ?? 'the scenario'}&hellip;
+          </div>
+        ) : 'error' in current ? (
+          <ErrorAlert>Could not load {selected?.name ?? 'this scenario'}: {current.error}</ErrorAlert>
+        ) : current.detail ? (
+          <div className="space-y-4" data-detail-for={current.planId ?? 'primary'}>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Operating cash flow</h3>
-              <ReportTable table={data.detail.operating} />
+              <ReportTable table={current.detail.operating} />
             </div>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Investor waterfall</h3>
-              <ReportTable table={data.detail.waterfall} />
+              <ReportTable table={current.detail.waterfall} />
             </div>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Resulting rate, $ per GPU-hour</h3>
-              <ReportTable table={data.detail.rates} />
+              <ReportTable table={current.detail.rates} />
             </div>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Investor flows</h3>
-              <InvestorFlowBlocks blocks={data.detail.investorFlows} />
+              <InvestorFlowBlocks blocks={current.detail.investorFlows} />
             </div>
           </div>
         ) : (
@@ -367,7 +393,7 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
           <SheetTitle className="text-lg font-semibold">{selected?.name ?? 'Scenario'}: assumptions</SheetTitle>
           <p className="mb-4 mt-1 text-sm text-muted-foreground">Read-only. Change them on the Forecast page&rsquo;s Fleet tab.</p>
-          {fleet?.fleet && <AssumptionsSummary fleet={fleet.fleet} />}
+          {selectedFleet?.fleet && <AssumptionsSummary fleet={selectedFleet.fleet} />}
         </SheetContent>
       </Sheet>
     </div>

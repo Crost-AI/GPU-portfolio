@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 
 /**
  * ── GPU fleet (P5) ── The Scenarios page (P5-5), on the model pack's own numbers.
@@ -22,7 +23,7 @@ import { scenarioComparison, scenarioDetail } from '@/lib/gpu/report'
 import { PACK_SCENARIOS, type PackScenarioId } from '@/lib/gpu/fixtures/pack-v3'
 import { PACK_SCENARIO_TERMS, packAssumptions } from '@/lib/gpu/fixtures/pack-v3-fleet'
 import type { FleetScenariosResponse } from '@/lib/forecast/service'
-import { FleetAssumptionsForm } from '@/components/gpu/fleet-assumptions-form'
+import { FleetAssumptionsForm, FleetTab, SAVED_MESSAGE } from '@/components/gpu/fleet-assumptions-form'
 import { fromFleetForm, saveFleetPlan, staleMessage, toFleetForm } from '@/components/gpu/fleet-assumptions'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -37,9 +38,9 @@ function run(id: PackScenarioId, patch: Partial<FleetAssumptions> = {}): FleetSc
 }
 
 /** What GET fleet-scenarios answers for the six pack scenarios, for a caller with or without gp_economics. */
-function response(showCarry: boolean, patch: Partial<FleetAssumptions> = {}): FleetScenariosResponse {
+function response(showCarry: boolean, patch: Partial<FleetAssumptions> = {}, detailOf: PackScenarioId = 'base'): FleetScenariosResponse {
   const raw = Object.fromEntries(IDS.map(id => [planId(id), run(id, patch)]))
-  const detail = raw[planId('base')]
+  const detail = raw[planId(detailOf)]
   return {
     results: Object.fromEntries(Object.entries(raw).map(([k, r]) => [k, redactScenarioResult(r, showCarry)])),
     comparison: scenarioComparison(raw, { showCarry }),
@@ -253,7 +254,7 @@ describe('the Forecast Fleet tab', () => {
     const saved = vi.fn()
     const reload = vi.fn(async () => null)
     const fleet = packAssumptions('base')
-    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet, reload, saved })).toBeNull()
+    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet, reload, saved, stale: () => {} })).toBeNull()
     expect(calls[0].url).toBe('/api/accounting/forecast/p1')
     expect(calls[0].init?.method).toBe('PATCH')
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ expectedRevision: 7, fleet })
@@ -261,24 +262,70 @@ describe('the Forecast Fleet tab', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
-  it('a stale-revision 409 reloads the plan and says so', async () => {
+  it('a stale-revision 409 hands the warning over BEFORE reloading, then reloads the plan', async () => {
     const routeError = 'The plan changed since you loaded it (revision 7 is now 8). Reload and try again.'
     const fetcher = async () => new Response(JSON.stringify({ error: routeError }), { status: 409 })
-    const reload = vi.fn(async () => null)
+    const order: string[] = []
+    const reload = vi.fn(async () => { order.push('reload') })
+    const stale = vi.fn((m: string) => { order.push(`stale:${m}`) })
     const saved = vi.fn()
-    const message = await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved })
-    expect(reload).toHaveBeenCalledTimes(1)
+    const result = await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved, stale })
+    expect(result).toBeNull()
+    expect(order).toEqual([`stale:${staleMessage(routeError)}`, 'reload'])
     expect(saved).not.toHaveBeenCalled()
-    expect(message).toBe(staleMessage(routeError))
-    expect(message).toMatch(/latest assumptions have been loaded/)
+    expect(staleMessage(routeError)).toMatch(/latest assumptions have been loaded/)
   })
 
   it('another refusal (the engine’s input error) comes back in the route’s words, without a reload', async () => {
     const fetcher = async () => new Response(JSON.stringify({ error: 'saleYear must be between 1 and years' }), { status: 400 })
     const reload = vi.fn(async () => null)
-    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved: () => {} }))
+    const stale = vi.fn()
+    expect(await saveFleetPlan({ fetcher, planId: 'p1', revision: 7, fleet: packAssumptions('base'), reload, saved: () => {}, stale }))
       .toBe('saleYear must be between 1 and years')
+    expect(stale).not.toHaveBeenCalled()
     expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('the real 409 path: the reload remounts the form with the latest plan, and the warning survives it', async () => {
+    // A host that owns the plan as the Forecast view does: the reload swaps in revision 8 with someone
+    // else's utilization (90%), which remounts the revision-keyed form.
+    const routeError = 'The plan changed since you loaded it (revision 7 is now 8). Reload and try again.'
+    const theirs = packAssumptions('base', { utilization: 0.9 })
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: routeError }), { status: 409 }))
+    function Host() {
+      const [plan, setPlan] = useState({ id: 'p1', revision: 7, fleet: packAssumptions('base') as FleetAssumptions | null })
+      return (
+        <FleetTab plan={plan} canEdit fetcher={fetcher} onSaved={() => {}}
+          reload={async () => { setPlan({ id: 'p1', revision: 8, fleet: theirs }) }} />
+      )
+    }
+    render(wrap(<Host />))
+    fireEvent.change(screen.getByLabelText('Utilization, %'), { target: { value: '80' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    // The form now shows the latest plan (remounted with revision 8) ...
+    await waitFor(() => expect((screen.getByLabelText('Utilization, %') as HTMLInputElement).value).toBe('90'))
+    // ... and the warning that the save was rejected is still on screen.
+    expect(screen.getByText(staleMessage(routeError))).toBeTruthy()
+    expect(JSON.parse(String((fetcher.mock.calls[0] as unknown[])[1] && ((fetcher.mock.calls[0] as unknown[])[1] as RequestInit).body))).toMatchObject({ expectedRevision: 7 })
+  })
+
+  it('the warning clears on the next save attempt', async () => {
+    const routeError = 'The plan changed since you loaded it.'
+    const responses = [
+      new Response(JSON.stringify({ error: routeError }), { status: 409 }),
+      new Response(JSON.stringify({ plan: { id: 'p1', revision: 9 } }), { status: 200 }),
+    ]
+    const fetcher = async () => responses.shift()!
+    function Host() {
+      const [plan, setPlan] = useState({ id: 'p1', revision: 7, fleet: packAssumptions('base') as FleetAssumptions | null })
+      return <FleetTab plan={plan} canEdit fetcher={fetcher} onSaved={() => {}} reload={async () => { setPlan(p => ({ ...p, revision: 8 })) }} />
+    }
+    render(wrap(<Host />))
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    await screen.findByText(staleMessage(routeError))
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    await screen.findByText('Saved. The plan has been recompiled.')
+    expect(screen.queryByText(staleMessage(routeError))).toBeNull()
   })
 
   it('the form, in a real DOM, saves exactly what it loaded, and shows a stale message', async () => {
@@ -319,5 +366,113 @@ describe('the lead page’s Base case tiles', () => {
     const calls: string[] = []
     await getVehicleScenarios(async url => { calls.push(url); return new Response('{}') }, 'H200 SPV I')
     expect(calls).toEqual(['/api/accounting/forecast/fleet-scenarios?group=H200%20SPV%20I'])
+  })
+})
+
+describe('review follow-ups (#114): outcomes survive the remount, saved versions, scenario switches', () => {
+  it('a successful save remounts the form (new revision) and still says Saved', async () => {
+    const fetcher = async () => new Response(JSON.stringify({ plan: { id: 'p1', revision: 8 } }), { status: 200 })
+    function Host() {
+      const [plan, setPlan] = useState({ id: 'p1', revision: 7, fleet: packAssumptions('base') as FleetAssumptions | null })
+      return <FleetTab<{ plan: { id: string; revision: number } }> plan={plan} canEdit fetcher={fetcher} reload={async () => {}}
+        onSaved={next => setPlan(p => ({ ...p, revision: next.plan.revision }))} />
+    }
+    render(wrap(<Host />))
+    fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+    expect(await screen.findByText(SAVED_MESSAGE)).toBeTruthy()
+    expect(document.querySelectorAll('[data-saved-notice]')).toHaveLength(1)
+  })
+
+  describe('a saved version selected on the Forecast page', () => {
+    function Host() {
+      const [version, setVersion] = useState<{ versionNo: number; label: string | null } | null>(null)
+      return (
+        <>
+          <button type="button" onClick={() => setVersion({ versionNo: 2, label: 'Published' })}>View version 2</button>
+          <FleetTab plan={{ id: 'p1', revision: 7, fleet: packAssumptions('base', { utilization: 0.8 }) }} canEdit fetcher={async () => new Response('{}')}
+            reload={async () => {}} onSaved={() => {}} savedVersion={version} onBackToDraft={() => setVersion(null)} />
+        </>
+      )
+    }
+
+    it('does not show the working draft’s assumptions beside the version’s figures, and says why', () => {
+      render(wrap(<Host />))
+      expect((screen.getByLabelText('Utilization, %') as HTMLInputElement).value).toBe('80')
+      fireEvent.click(screen.getByText('View version 2'))
+      expect(screen.queryByLabelText('Utilization, %')).toBeNull()
+      expect(screen.getByText('Fleet assumptions: saved version 2 (Published)')).toBeTruthy()
+      expect(screen.getByText(/frozen with it, which are not shown here/)).toBeTruthy()
+    })
+
+    it('going back to the draft starts the form afresh: unsaved edits made before the switch are gone', () => {
+      render(wrap(<Host />))
+      fireEvent.change(screen.getByLabelText('Utilization, %'), { target: { value: '85' } })
+      fireEvent.click(screen.getByText('View version 2'))
+      fireEvent.click(screen.getByRole('button', { name: 'Back to the working draft' }))
+      expect((screen.getByLabelText('Utilization, %') as HTMLInputElement).value).toBe('80')
+    })
+  })
+
+  describe('switching scenarios', () => {
+    // Each test starts on the primary: a previous switch leaves ?plan= in the shared location.
+    beforeEach(() => { window.history.replaceState(null, '', '/funds/v1/scenarios') })
+
+    /** Answers the scenarios route per ?plan= and the plan route per id; `hold` keeps a plan's response pending. */
+    function stub(opts: { failScenario?: string; failPlan?: string; hold?: string } = {}) {
+      const pending: (() => void)[] = []
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        const plan = new URL(url, 'http://x').searchParams.get('plan')
+        if (url.startsWith('/api/accounting/forecast/fleet-scenarios')) {
+          if (plan && plan === opts.hold) await new Promise<void>(resolve => pending.push(resolve))
+          if (plan && plan === opts.failScenario) return new Response(JSON.stringify({ error: 'Scenario engine failed' }), { status: 500 })
+          const id = (plan ? IDS.find(i => planId(i) === plan) : 'base') ?? 'base'
+          return new Response(JSON.stringify(response(true, {}, id)), { status: 200 })
+        }
+        const id = url.split('/').pop()!.split('?')[0]
+        if (id === opts.failPlan) return new Response(JSON.stringify({ error: 'Plan not found' }), { status: 404 })
+        const scenario = IDS.find(i => planId(i) === id) ?? 'base'
+        return new Response(JSON.stringify({ plan: { id, name: scenario, revision: 1, fleet: packAssumptions(scenario) } }), { status: 200 })
+      }))
+      return { release: () => pending.splice(0).forEach(r => r()) }
+    }
+    /** The annual investor multiple shown in the detail section: Base 2.02x, Oversupply 1.43x. */
+    const detailMultiple = () => document.querySelector('[data-detail-for] [data-cadence="annual"] [data-multiple]')?.textContent ?? null
+
+    it('a successful switch shows the new scenario’s detail, never the old one under the new name', async () => {
+      const { release } = stub({ hold: planId('oversupply') })
+      render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+      await waitFor(() => expect(detailMultiple()).toBe('2.02x'))
+      fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: planId('oversupply') } })
+      // In flight: the new name, a loading state, and none of Base case's figures.
+      expect(screen.getByText('Oversupply in detail')).toBeTruthy()
+      expect(document.querySelector('[data-detail-loading]')).toBeTruthy()
+      expect(detailMultiple()).toBeNull()
+      release()
+      await waitFor(() => expect(detailMultiple()).toBe('1.43x'))
+    })
+
+    it('a failed switch says so under the new name and shows no old figures', async () => {
+      stub({ failScenario: planId('oversupply') })
+      render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+      await waitFor(() => expect(detailMultiple()).toBe('2.02x'))
+      fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: planId('oversupply') } })
+      expect(await screen.findByText('Could not load Oversupply: Scenario engine failed')).toBeTruthy()
+      expect(screen.getByText('Oversupply in detail')).toBeTruthy()
+      expect(detailMultiple()).toBeNull()
+      // The headline (the whole comparison) is unaffected.
+      expect(headlineRow('investorMultiple')[0]).toBe('2.02x')
+    })
+
+    it('a failed assumptions load disables Assumptions and Export for that scenario instead of showing the last one’s', async () => {
+      stub({ failPlan: planId('oversupply') })
+      render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+      const assumptions = await screen.findByRole('button', { name: 'Assumptions' })
+      await waitFor(() => expect((assumptions as HTMLButtonElement).disabled).toBe(false))
+      fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: planId('oversupply') } })
+      expect(await screen.findByText(/Could not load this scenario.s assumptions: Plan not found/)).toBeTruthy()
+      expect((screen.getByRole('button', { name: 'Assumptions' }) as HTMLButtonElement).disabled).toBe(true)
+      expect(screen.getByRole('button', { name: 'Assumptions' }).getAttribute('title')).toBe('Plan not found')
+      expect(screen.queryByRole('link', { name: /Export/ })).toBeNull()
+    })
   })
 })

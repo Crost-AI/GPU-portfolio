@@ -26,9 +26,7 @@ import { onApplied } from '@/lib/pending-actions/applied-event'
 import { NO_ADJUSTMENTS } from '@/lib/forecast/adjustments'
 import { isGpuSpv } from '@/lib/vehicle-kinds'
 import { useCanWrite } from '@/components/access-context'
-import { FleetAssumptionsForm } from '@/components/gpu/fleet-assumptions-form'
-import { saveFleetPlan } from '@/components/gpu/fleet-assumptions'
-import type { FleetAssumptions } from '@/lib/gpu/scenario'
+import { FleetTab } from '@/components/gpu/fleet-assumptions-form'
 
 type PlanListItem = PlanDetail['plan'] & { versions: { id: string; versionNo: number; label: string | null; status: string; publishedAt: string }[] }
 type View = 'combined' | 'plan' | 'actual' | 'variance'
@@ -349,14 +347,8 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
   // page loaded. A 409 means someone saved in between: reload the plan and say so. A success recompiles
   // like any other plan edit (the PATCH answers with the recompiled plan; the series follows).
   const canWriteBooks = useCanWrite('accounting')
-  const saveFleet = useCallback(async (fleet: FleetAssumptions): Promise<string | null> => {
-    if (!detail) return 'Open a plan first.'
-    return saveFleetPlan<PlanDetail>({
-      fetcher: lf, planId: detail.plan.id, revision: detail.plan.revision, fleet,
-      reload: () => loadDetail(detail.plan.id),
-      saved: async next => { setDetail(next); await loadSeries() },
-    })
-  }, [detail, lf, loadDetail, loadSeries])
+  const reloadFleetPlan = useCallback(() => (detail ? loadDetail(detail.plan.id) : Promise.resolve(null)), [detail, loadDetail])
+  const fleetSaved = useCallback(async (next: PlanDetail) => { setDetail(next); await loadSeries() }, [loadSeries])
 
   // A copy of the open plan as a new scenario — its portfolio, rules, capital and hand edits.
   const copyAsScenario = useCallback(async () => {
@@ -735,13 +727,16 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
       )}
 
       {/* ── GPU fleet (P5) ── The fleet's plan (servers, rates, utilization) is the scenario engine's.
-          Keyed by plan and revision, so a save or a stale-revision reload starts the form afresh. */}
+          FleetTab keys the form by revision and holds the stale-revision warning across the remount. */}
       {tab === 'fleet' && (detail ? (
-        <FleetAssumptionsForm
-          key={`${detail.plan.id}:${detail.plan.revision}`}
-          fleet={detail.plan.fleet}
+        <FleetTab<PlanDetail>
+          plan={detail.plan}
           canEdit={canWriteBooks && !versionId}
-          onSave={saveFleet}
+          fetcher={lf}
+          reload={reloadFleetPlan}
+          onSaved={fleetSaved}
+          savedVersion={versionId ? detail.versions.find(v => v.id === versionId) ?? { versionNo: 0, label: null } : null}
+          onBackToDraft={() => setVersionId('')}
         />
       ) : (
         <div className="mb-6 rounded-card border bg-card p-6 shadow-sm dark:shadow-none">

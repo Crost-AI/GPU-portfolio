@@ -6,21 +6,86 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { CADENCE_LABELS, type FleetAssumptions } from '@/lib/gpu/scenario'
 import { ErrorAlert, Field, selectCls } from './fleet-ui'
-import { blankFleet, fromFleetForm, toFleetForm, type AssetRowForm, type FleetForm, type TypeRowForm } from './fleet-assumptions'
+import { blankFleet, fromFleetForm, saveFleetPlan, toFleetForm, type AssetRowForm, type FleetForm, type TypeRowForm } from './fleet-assumptions'
+import type { Fetcher } from './fleet-api'
 import { ShellSection } from './parts'
 
 // ── GPU fleet (P5) ── The Forecast page's Fleet tab on a GPU SPV: the plan's fleet assumptions, which
 // the scenario engine runs (lib/gpu/scenario.ts) and the Scenarios page compares. Saving replaces
-// them whole and recompiles the plan, as any other plan edit does. The parent mounts this once per
+// them whole and recompiles the plan, as any other plan edit does. FleetTab mounts the form once per
 // plan revision (its key), so a reload after a save, or after a stale-revision 409, starts it afresh.
+
+export const SAVED_MESSAGE = 'Saved. The plan has been recompiled.'
+
+type Outcome = { kind: 'saved' } | { kind: 'stale'; text: string }
+
+/**
+ * The Fleet tab: the form, keyed by plan and revision so a save or a reload starts it afresh, and above
+ * it the outcome of the last save. Both outcomes remount the form before its submit returns (a save
+ * answers with a new revision; a 409 reloads one), so the outcome is held HERE, in a component the
+ * remount does not reset, and set before the plan changes.
+ *
+ * A saved version shows its frozen financials, but its frozen fleet is not served as JSON; showing
+ * the working draft's assumptions beside them would pass them off as the version's. So with a saved
+ * version selected the form is not shown at all, and leaving it remounts the form from the draft.
+ */
+export function FleetTab<T>({ plan, canEdit, fetcher, reload, onSaved, savedVersion = null, onBackToDraft }: {
+  plan: { id: string; revision: number; fleet: FleetAssumptions | null }
+  canEdit: boolean
+  fetcher: Fetcher
+  /** Reload the plan (a new revision remounts the form). */
+  reload: () => Promise<unknown>
+  /** The recompiled plan the PATCH answered with. */
+  onSaved: (plan: T) => Promise<unknown> | void
+  /** The saved version being viewed, if any. */
+  savedVersion?: { versionNo: number; label: string | null } | null
+  onBackToDraft?: () => void
+}) {
+  const [outcome, setOutcome] = useState<Outcome | null>(null)
+  const onSave = (fleet: FleetAssumptions) => {
+    setOutcome(null)
+    return saveFleetPlan<T>({
+      fetcher, planId: plan.id, revision: plan.revision, fleet, reload,
+      saved: next => { setOutcome({ kind: 'saved' }); return onSaved(next) },
+      stale: text => setOutcome({ kind: 'stale', text }),
+    })
+  }
+
+  if (savedVersion) {
+    return (
+      <div className="mb-6 rounded-card border bg-card p-6 shadow-sm dark:shadow-none" data-saved-version-notice>
+        <h2 className="text-base font-semibold">
+          Fleet assumptions: saved version {savedVersion.versionNo}{savedVersion.label ? ` (${savedVersion.label})` : ''}
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          This version&rsquo;s figures were worked out from the fleet assumptions frozen with it, which are not shown here.
+          The form edits the working draft; switch back to it to see and change the draft&rsquo;s assumptions.
+        </p>
+        {onBackToDraft && (
+          <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onBackToDraft}>Back to the working draft</Button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {outcome?.kind === 'stale' && <div className="mb-3" data-stale-notice><ErrorAlert>{outcome.text}</ErrorAlert></div>}
+      {outcome?.kind === 'saved' && <p className="mb-3 text-sm text-muted-foreground" data-saved-notice>{SAVED_MESSAGE}</p>}
+      <FleetAssumptionsForm key={`${plan.id}:${plan.revision}`} fleet={plan.fleet} canEdit={canEdit} onSave={onSave} showSaved={false} />
+    </>
+  )
+}
 
 const EMPTY_ASSET: AssetRowForm = { typeCode: '', servers: '1', gpusPerServer: '8', hardwareCost: '', capitalizedCosts: '' }
 const EMPTY_TYPE: TypeRowForm = { code: '', anchorRate: '', priceChanges: '', utilization: '' }
 
 const num = 'text-right tabular-nums'
 
-export function FleetAssumptionsForm({ fleet, canEdit, onSave }: {
+export function FleetAssumptionsForm({ fleet, canEdit, onSave, showSaved = true }: {
   fleet: FleetAssumptions | null
+  /** Say "Saved" itself; FleetTab says it instead, above the form, so it survives the remount. */
+  showSaved?: boolean
   canEdit: boolean
   /** Saves the assumptions; resolves to the route's error text, or null once saved. */
   onSave: (fleet: FleetAssumptions) => Promise<string | null>
@@ -166,7 +231,7 @@ export function FleetAssumptionsForm({ fleet, canEdit, onSave }: {
 
       {error && <ErrorAlert>{error}</ErrorAlert>}
       <div className="flex items-center justify-end gap-3">
-        {saved && <p className="text-sm text-muted-foreground">Saved. The plan has been recompiled.</p>}
+        {saved && showSaved && <p className="text-sm text-muted-foreground">{SAVED_MESSAGE}</p>}
         <Button type="submit" disabled={!canEdit || busy}>
           {busy && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}Save fleet assumptions
         </Button>
