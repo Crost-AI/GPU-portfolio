@@ -96,6 +96,18 @@ export async function hiddenFleetIdsInFund(admin: SupabaseClient, fundId: string
 }
 
 /**
+ * hiddenFleetIdsInFund for a caller whose access context is already in hand: the same answer
+ * without reading the membership and the access context again.
+ */
+export async function hiddenFleetIdsFor(admin: SupabaseClient, access: AccessContext): Promise<Set<string>> {
+  if (!fleetCompanyDenied(access, FLEET_HOLDING_TYPE, 'read')) return new Set()
+  const { data, error } = await (admin as any).from('companies').select('id')
+    .eq('fund_id', access.fundId).eq('holding_type', FLEET_HOLDING_TYPE)
+  if (error) throw error
+  return new Set(((data as any[]) ?? []).map(r => r.id as string))
+}
+
+/**
  * Leave out, in the query itself, the rows about a hidden company — so they never take a place in a
  * limit and no read is spent on them. Rows about no company stay: `not.in` alone would drop them,
  * since a comparison with null is never true. `hidden` is a fund's fleet companies (a handful of
