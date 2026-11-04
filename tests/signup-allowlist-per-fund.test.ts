@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { readFileSync } from 'fs'
+import { PUBLIC_EMAIL_DOMAINS, PUBLIC_EMAIL_FAMILIES } from '@/lib/onboarding/wizard'
 import { memoryAdmin } from './helpers/memory-admin'
 
 /**
@@ -59,5 +60,20 @@ describe('the signup allow-list is per fund', () => {
     expect(sql).toMatch(/add column if not exists fund_id uuid references public\.funds\(id\) on delete cascade/)
     expect(sql).toMatch(/unique nulls not distinct \(fund_id, email_pattern\)/)
     expect(sql).not.toMatch(/create or replace function/i) // the gate (hook_before_user_created) is untouched
+  })
+
+  // Crost #130: the backfill gives a row a fund only when its owner is unambiguous, never copies a
+  // row to a second fund, and never infers a fund from its members' own addresses.
+  it('the backfill assigns only unambiguous owners and copies nothing', () => {
+    const sql = readFileSync('supabase/migrations/20261104120200_allowed_signups_per_fund.sql', 'utf8')
+    const backfill = sql.slice(sql.indexOf('-- Backfill:'))
+    expect(backfill).not.toMatch(/insert\s+into\s+public\.allowed_signups/i)
+    expect(backfill).not.toMatch(/split_part\(lower\(u\.email\)/i)
+    expect(backfill.match(/having count\(distinct (fm\.fund_id|f\.id)\) = 1/g)).toHaveLength(2)
+    // The consumer mailbox list matches the app's (lib/onboarding/wizard.ts), so a wildcard on a
+    // consumer domain is never given to the fund that happens to claim it.
+    const listed = new Set(Array.from(backfill.match(/<> all \(array\[([\s\S]*?)\]\)/)![1].matchAll(/'([^']+)'/g), m => m[1]))
+    expect(listed).toEqual(PUBLIC_EMAIL_DOMAINS)
+    expect(backfill).toContain(`!~ '${PUBLIC_EMAIL_FAMILIES.source}'`)
   })
 })

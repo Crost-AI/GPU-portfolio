@@ -38,46 +38,52 @@ begin
   end if;
 end $$;
 
--- Backfill: give each existing entry the fund (or funds) it evidently belongs to.
---   1. An exact address that is a fund member's: that member's fund.
---   2. A '*@domain' pattern: every fund whose email_domain is that domain, or that has a member
---      at that domain. The first such fund takes the row; each further one gets a copy.
+-- Backfill: give an existing entry a fund only where its owner is unambiguous. A row is never
+-- copied to a second fund, and a fund is never inferred from its members' own addresses: a member's
+-- personal or former-employer domain would otherwise put one fund's wildcard on another fund's list
+-- (Crost #130).
+--   1. An exact address that is a member of exactly one fund: that fund.
+--   2. A '*@domain' pattern that exactly one fund claims as its email_domain, unless the domain is a
+--      consumer mailbox (the list is lib/onboarding/wizard.ts PUBLIC_EMAIL_DOMAINS and
+--      PUBLIC_EMAIL_FAMILIES; tests/signup-allowlist-per-fund.test.ts keeps the two in step).
 --   3. With only one fund in the deployment, every remaining row is that fund's.
--- Anything left has no fund: it still lets that address sign up, but no fund's settings show it.
+-- Anything else keeps a NULL fund: it still lets that address sign up, but no fund's settings show it.
 
-with matches as (
-  select s.id, fm.fund_id
+with exact_owner as (
+  select s.id, min(fm.fund_id::text)::uuid as fund_id
   from public.allowed_signups s
   join auth.users u on lower(u.email) = s.email_pattern
   join public.fund_members fm on fm.user_id = u.id
   where s.fund_id is null and s.email_pattern not like '*@%'
-  union
-  select s.id, f.id
-  from public.allowed_signups s
-  join public.funds f on lower(f.email_domain) = substr(s.email_pattern, 3)
-  where s.fund_id is null and s.email_pattern like '*@%'
-  union
-  select s.id, fm.fund_id
-  from public.allowed_signups s
-  join auth.users u on split_part(lower(u.email), '@', 2) = substr(s.email_pattern, 3)
-  join public.fund_members fm on fm.user_id = u.id
-  where s.fund_id is null and s.email_pattern like '*@%'
+  group by s.id
+  having count(distinct fm.fund_id) = 1
 ),
-ranked as (
-  select id, fund_id, row_number() over (partition by id order by fund_id) as n from matches
+domain_owner as (
+  select s.id, min(f.id::text)::uuid as fund_id
+  from public.allowed_signups s
+  join public.funds f on lower(btrim(f.email_domain)) = substr(s.email_pattern, 3)
+  where s.fund_id is null and s.email_pattern like '*@%'
+    and substr(s.email_pattern, 3) <> all (array[
+    'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'passport.com', 'yahoo.com',
+    'ymail.com', 'rocketmail.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'aim.com', 'proton.me',
+    'protonmail.com', 'protonmail.ch', 'pm.me', 'gmx.com', 'gmx.net', 'gmx.de', 'web.de', 'zoho.com',
+    'zohomail.com', 'yandex.com', 'yandex.ru', 'mail.ru', 'mail.com', 'fastmail.com', 'fastmail.fm', 'hey.com',
+    'tutanota.com', 'tuta.io', 'qq.com', '163.com', '126.com', 'naver.com', 'hanmail.net', 'comcast.net',
+    'verizon.net', 'att.net', 'sbcglobal.net', 'btinternet.com'
+    ])
+    and substr(s.email_pattern, 3) !~ '^(gmx|yahoo|hotmail|outlook|live|googlemail|aol|yandex)\.[a-z.]{2,6}$'
+  group by s.id
+  having count(distinct f.id) = 1
 ),
-copies as (
-  insert into public.allowed_signups (email_pattern, fund_id, created_at)
-  select s.email_pattern, r.fund_id, s.created_at
-  from ranked r join public.allowed_signups s on s.id = r.id
-  where r.n > 1
-  on conflict do nothing
-  returning id
+owners as (
+  select id, fund_id from exact_owner
+  union all
+  select id, fund_id from domain_owner
 )
 update public.allowed_signups s
-set fund_id = r.fund_id
-from ranked r
-where r.id = s.id and r.n = 1;
+set fund_id = o.fund_id
+from owners o
+where o.id = s.id;
 
 update public.allowed_signups
 set fund_id = (select id from public.funds limit 1)
