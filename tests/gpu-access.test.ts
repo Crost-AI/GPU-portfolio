@@ -249,8 +249,9 @@ describe('5. the four slugs are section landings, not entities', () => {
 })
 
 describe('6. the Forecast page on a GPU SPV', () => {
-  it('swaps Investments for Fleet', () => {
-    expect(forecastTabsFor('gpu_spv')).toEqual(['charts', 'fleet', 'capital', 'financials'])
+  it('swaps Investments for Fleet and has no Capital planning tab', () => {
+    // P5-5: no Capital planning tab either; its content is the construction view's, never mounted here.
+    expect(forecastTabsFor('gpu_spv')).toEqual(['charts', 'fleet', 'financials'])
   })
 
   it('leaves every other kind\u2019s tabs as they were', () => {
