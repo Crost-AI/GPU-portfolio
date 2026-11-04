@@ -21,9 +21,10 @@ vi.mock('@/lib/accounting/from-portfolio', async importOriginal => ({
   draftEntryForTransaction: (...args: any[]) => (derive as any)(...args),
 }))
 const saveNav = vi.fn(async (..._args: any[]) => ({ ok: true, navId: 'nav-1', booking: { status: 'no_change', message: 'The ledger already carries this NAV.' } }))
+const rebook = vi.fn(async (..._args: any[]) => [] as any[])
 vi.mock('@/lib/portfolio/fof-nav', () => ({
   saveNavStatement: (...args: any[]) => (saveNav as any)(...args),
-  rebookNavsFrom: async () => [],
+  rebookNavsFrom: (...args: any[]) => (rebook as any)(...args),
 }))
 
 import { getTool } from '@/lib/accounting/agent-tools'
@@ -41,7 +42,7 @@ const preview = (name: string, input: Record<string, unknown>) =>
   DESTRUCTIVE_PREVIEWS[name]({ admin: store.admin, fundId: 'fund-1', userId: 'me', access }, input)
 
 beforeEach(() => {
-  retract.mockClear(); derive.mockClear(); saveNav.mockClear()
+  retract.mockClear(); derive.mockClear(); saveNav.mockClear(); rebook.mockClear()
   store = memoryAdmin({
     fund_vehicles: [{ id: 'v1', fund_id: 'fund-1', name: 'Fund I', active: true, kind: 'fund', aliases: null }],
     companies: [
@@ -297,6 +298,17 @@ describe('the fund register', () => {
     // mark after it, so its 5,000 does move the holding's value, and the result says so.
     expect(store.tables.investment_transactions.find(t => t.id === 't-fhmark')!.unrealized_value_change).toBe(16_000)
     expect(await run('recalculate_fund_distributions', { company: 'fh' })).toMatchObject({ changed: [], unchanged: 2 })
+  })
+
+  it('recalculating an unlinked distribution re-books the manager NAV marks after it', async () => {
+    // The mark after the distribution is a NAV statement's: absorbInNextMark leaves it alone, so the
+    // NAV must be re-derived against the corrected cost (Codex on #128).
+    store.tables.fund_nav_statements.push({ id: 'nav-1', fund_id: 'fund-1', company_id: 'fh', vehicle_id: 'v1', as_of_date: '2024-06-30', investment_transaction_id: 't-fhmark' })
+    store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited = 0
+    const out = await run('recalculate_fund_distributions', { company: 'fh' })
+    expect(out).toMatchObject({ changed: [{ transactionId: 't-dist', returnOfCapital: { from: 0, to: 15_000 } }] })
+    expect(store.tables.investment_transactions.find(t => t.id === 't-fhmark')!.unrealized_value_change).toBe(1_000)
+    expect(rebook).toHaveBeenCalledWith(store.admin, 'fund-1', 'me', { companyId: 'fh', vehicleId: 'v1', since: '2024-06-01', inclusive: true })
   })
 
   it('saves a NAV statement through the one NAV writer', async () => {

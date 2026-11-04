@@ -570,6 +570,14 @@ export async function recalculateFundDistributions(
         })
       : await updateInvestmentTransaction(admin, who, companyId, t.id, { cost_basis_exited: worked.returnOfCapital })
         .then(async o => o.ok ? absorbInNextMark(admin, who, companyId, vehicleName, t.transaction_date, from - worked.returnOfCapital) : o)
+        .then(async o => {
+          if (!o.ok) return o
+          // absorbInNextMark leaves a mark a NAV statement owns to rebookNavsFrom, as
+          // updateFundNotice does: re-derive the later NAV marks against the corrected cost.
+          const { rebookNavsFrom } = await import('./fof-nav')
+          await rebookNavsFrom(admin, who.fundId, who.userId, { companyId, vehicleId, since: String(t.transaction_date), inclusive: true })
+          return o
+        })
     if (!out.ok) {
       return fail(out.status, `Stopped at the ${t.transaction_date} distribution of ${amount}: ${out.error}`
         + (changed.length ? ` The ${changed.length} before it were re-booked.` : ''), { changed })
