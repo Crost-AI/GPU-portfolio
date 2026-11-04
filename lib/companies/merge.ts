@@ -105,17 +105,26 @@ export async function mergeCompanies(
     if (moveError) return dbFail(moveError, 'company-merge-register')
     registerRowsMoved += ((data as any[]) ?? []).length
   }
+  // Anything that could not be moved. The merged record is deleted only when this stays empty: its
+  // delete cascades whatever is still on it (and removes stored documents), so a failed move would
+  // otherwise lose those rows.
+  const unmoved: string[] = []
   let termsDropped = 0
   if (register.terms.length) {
-    const { data: intoTerms } = await (admin as any).from('fund_holding_terms').select('vehicle_id').eq('fund_id', who.fundId).eq('company_id', intoId)
-    const held = new Set(((intoTerms as any[]) ?? []).map(t => String(t.vehicle_id)))
-    for (const t of register.terms) {
-      if (held.has(String(t.vehicle_id))) {
-        await (admin as any).from('fund_holding_terms').delete().eq('id', t.id).eq('fund_id', who.fundId)
-        termsDropped++
-      } else {
-        await (admin as any).from('fund_holding_terms').update({ company_id: intoId }).eq('id', t.id).eq('fund_id', who.fundId)
-        registerRowsMoved++
+    const { data: intoTerms, error: intoTermsError } = await (admin as any).from('fund_holding_terms').select('vehicle_id').eq('fund_id', who.fundId).eq('company_id', intoId)
+    if (intoTermsError) unmoved.push(`fund terms (${intoTermsError.message})`)
+    else {
+      const held = new Set(((intoTerms as any[]) ?? []).map(t => String(t.vehicle_id)))
+      for (const t of register.terms) {
+        if (held.has(String(t.vehicle_id))) {
+          const { error: dropError } = await (admin as any).from('fund_holding_terms').delete().eq('id', t.id).eq('fund_id', who.fundId)
+          if (dropError) unmoved.push(`fund terms (${dropError.message})`)
+          else termsDropped++
+        } else {
+          const { error: termError } = await (admin as any).from('fund_holding_terms').update({ company_id: intoId }).eq('id', t.id).eq('fund_id', who.fundId)
+          if (termError) unmoved.push(`fund terms (${termError.message})`)
+          else registerRowsMoved++
+        }
       }
     }
   }
@@ -125,25 +134,28 @@ export async function mergeCompanies(
   for (const table of MERGE_MOVED_TABLES) {
     const { data, error: moveError } = await (admin as any).from(table).update({ company_id: intoId })
       .eq('fund_id', who.fundId).eq('company_id', fromId).select('id')
-    if (moveError) warnings.push(`${table} could not be moved: ${moveError.message}`)
+    if (moveError) unmoved.push(`${table} (${moveError.message})`)
     else if (((data as any[]) ?? []).length) rowsMoved[table] = ((data as any[]) ?? []).length
   }
 
   // Metrics the kept record does not already track move with their values; one it tracks under the
   // same slug stays behind (and goes with the merged record).
-  const [{ data: fromMetrics }, { data: intoMetrics }] = await Promise.all([
+  const [{ data: fromMetrics, error: fromMetricsError }, { data: intoMetrics, error: intoMetricsError }] = await Promise.all([
     (admin as any).from('metrics').select('id, slug').eq('fund_id', who.fundId).eq('company_id', fromId),
     (admin as any).from('metrics').select('slug').eq('fund_id', who.fundId).eq('company_id', intoId),
   ])
+  const metricsReadError = fromMetricsError ?? intoMetricsError
+  if (metricsReadError) unmoved.push(`metrics (${metricsReadError.message})`)
   const tracked = new Set(((intoMetrics as any[]) ?? []).map(m => m.slug))
   const movable = ((fromMetrics as any[]) ?? []).filter(m => !tracked.has(m.slug)).map(m => m.id)
   const metricsLeft = ((fromMetrics as any[]) ?? []).length - movable.length
-  if (movable.length) {
+  if (movable.length && !metricsReadError) {
     const { error: metricError } = await (admin as any).from('metrics').update({ company_id: intoId }).eq('fund_id', who.fundId).in('id', movable)
-    if (metricError) warnings.push(`Metrics could not be moved: ${metricError.message}`)
+    if (metricError) unmoved.push(`metrics (${metricError.message})`)
     else {
       rowsMoved.metrics = movable.length
-      await (admin as any).from('metric_values').update({ company_id: intoId }).eq('fund_id', who.fundId).in('metric_id', movable)
+      const { error: valuesError } = await (admin as any).from('metric_values').update({ company_id: intoId }).eq('fund_id', who.fundId).in('metric_id', movable)
+      if (valuesError) unmoved.push(`metric values (${valuesError.message})`)
     }
   }
   if (metricsLeft) warnings.push(`${metricsLeft} metric(s) ${into.name} already tracks under the same name were not moved.`)
@@ -159,17 +171,24 @@ export async function mergeCompanies(
     ...(Array.isArray(from.portfolio_group) ? from.portfolio_group : []),
   ]))
   // Re-read: moving transactions may already have added entities.
-  const { data: fresh } = await (admin as any).from('companies').select('portfolio_group').eq('id', intoId).maybeSingle()
-  for (const g of (Array.isArray(fresh?.portfolio_group) ? fresh.portfolio_group : [])) if (!groups.includes(g)) groups.push(g)
-  const { error: intoError } = await (admin as any).from('companies').update({ aliases, portfolio_group: groups }).eq('id', intoId).eq('fund_id', who.fundId)
-  if (intoError) warnings.push(`The aliases could not be saved: ${intoError.message}`)
+  const { data: fresh, error: freshError } = await (admin as any).from('companies').select('portfolio_group').eq('id', intoId).maybeSingle()
+  if (freshError) unmoved.push(`${from.name}'s names and entities (${freshError.message})`)
+  else {
+    for (const g of (Array.isArray(fresh?.portfolio_group) ? fresh.portfolio_group : [])) if (!groups.includes(g)) groups.push(g)
+    const { error: intoError } = await (admin as any).from('companies').update({ aliases, portfolio_group: groups }).eq('id', intoId).eq('fund_id', who.fundId)
+    // Its name is how imports and emailed updates still find the holding: kept until saved.
+    if (intoError) unmoved.push(`${from.name}'s names and entities (${intoError.message})`)
+  }
 
-  // 5. The merged record.
-  const removed = from.holding_type === 'fund'
-    ? await deleteFundHolding(admin, who, fromId, loadScope)
-    : await deleteCompany(admin, who, fromId, loadScope)
+  // 5. The merged record: deleted only once everything on it has moved.
+  const removed: { ok: true } | { ok: false; error: string } = unmoved.length
+    ? { ok: false, error: `${from.name} is kept, because some of its records could not be moved: ${unmoved.join('; ')}. Nothing was lost; merge again to finish.` }
+    : from.holding_type === 'fund'
+      ? await deleteFundHolding(admin, who, fromId, loadScope)
+      : await deleteCompany(admin, who, fromId, loadScope)
   let keptBecause: string | undefined
-  if (!removed.ok) {
+  if (!removed.ok && unmoved.length) keptBecause = removed.error
+  else if (!removed.ok) {
     keptBecause = removed.error
     await (admin as any).from('chart_of_accounts').update({ is_active: false }).eq('fund_id', who.fundId).eq('company_id', fromId)
   }
