@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // portfolio domain, investments feature (lib/access/route-domains.ts).
 import { assertWriteAccess } from '@/lib/api-helpers'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 import { loadAccessContext } from '@/lib/access/effective'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { resolveHoldingVehicle } from '@/lib/portfolio/fof-register'
@@ -20,6 +21,10 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
+  // ── GPU fleet (P3) ── A fleet company is not found to a caller without fleet write (#91), rather than
+  // named in the not-a-fund-holding refusal below.
+  const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const body = await req.json().catch(() => ({}))
   const resolved = await resolveHoldingVehicle(admin, gate.fundId, params.id, body?.vehicleId,

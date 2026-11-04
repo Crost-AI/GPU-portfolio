@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // portfolio domain, investments feature (lib/access/route-domains.ts).
 import { assertWriteAccess } from '@/lib/api-helpers'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { noticeChangesFrom, updateFundNotice } from '@/lib/portfolio/fund-register-write'
 import { outcomeResponse } from '@/lib/service-outcome'
@@ -19,6 +20,10 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
+  // ── GPU fleet (P3) ── A fleet company is not found to a caller without fleet write (#91), rather than
+  // named in the not-a-fund-holding refusal below.
+  const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const body = await req.json().catch(() => ({}))
   const scope = await loadEntityScope(admin, gate)
