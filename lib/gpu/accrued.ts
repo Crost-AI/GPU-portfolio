@@ -10,6 +10,7 @@
 // Pure: the caller supplies the waterfall events, the vehicle's terms and its book NAV.
 
 import { roundCents } from '@/lib/accounting/ledger'
+import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { distribute, replay, type CashTiers, type CashWaterfallTerms, type WaterfallEvent } from './waterfall'
 
 export interface AccruedProfitShare {
@@ -47,4 +48,16 @@ export function accruedProfitShare(input: { events: WaterfallEvent[]; terms: Cas
     investorMemo: tiers.toLP,
     paidToDate: state.carryPaid,
   }
+}
+
+/**
+ * Who may see the memo, on every surface that shows it (its route, the statements' memo row, the
+ * agent's letter brief), so the gates cannot drift: gp_economics on its own switch AND behind the
+ * gpu_fleet switch (a route's feature key replaces the domain's switch at the gate, #113), and the
+ * books' read, because book NAV is the ledger restated.
+ */
+export function canSeeAccruedMemo(access: AccessContext): boolean {
+  return hasAccess(access, 'gp_economics', 'read')
+    && hasAccess(access, 'gp_economics', 'read', 'gpu_fleet')
+    && hasAccess(access, 'accounting', 'read')
 }

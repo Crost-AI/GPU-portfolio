@@ -43,6 +43,12 @@ describe('the statements route and the accrued profit-share memo', () => {
     expect(mocks.build.mock.calls[0][4]).toEqual({ accruedMemo: false })
   })
 
+  it("does not without the books' read, on the memo route's own gate (canSeeAccruedMemo)", async () => {
+    mocks.access = access({ gp_economics: 'read' })
+    await get()
+    expect(mocks.build.mock.calls[0][4]).toEqual({ accruedMemo: false })
+  })
+
   it('does not while gpu_fleet is off or hidden, as the memo route is gated on it', async () => {
     for (const gpuFleet of ['off', 'hidden'] as const) {
       mocks.build.mockClear()

@@ -22,9 +22,8 @@ import { loadCapitalPostings } from '@/lib/accounting/capital-source'
 import { loadPostedLedger } from '@/lib/accounting/load'
 import { loadContingencyByDate, loadDeclaredReserves, loadWaterfallHistory, reserveOn } from '@/lib/accounting/distributions'
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
-import { accruedProfitShare } from '@/lib/gpu/accrued'
+import { accruedProfitShare, canSeeAccruedMemo } from '@/lib/gpu/accrued'
 import { gpuBookNav } from '@/lib/gpu/book-nav'
-import { hasAccess } from '@/lib/access/effective'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -36,8 +35,8 @@ export async function GET(req: NextRequest) {
   const resolved = await resolveGroupWithAccess(admin, gate, req.nextUrl.searchParams.get('group'))
   if (resolved instanceof NextResponse) return resolved
   const { group, access } = resolved
-  if (!hasAccess(access, 'gp_economics', 'read')) return NextResponse.json({ error: 'You do not have access to GP economics.' }, { status: 403 })
-  if (!hasAccess(access, 'accounting', 'read')) return NextResponse.json({ error: 'You do not have access to the books.' }, { status: 403 })
+  // The gate checked gp_economics behind gpu_fleet; the rest of the memo's gate, shared with every surface.
+  if (!canSeeAccruedMemo(access)) return NextResponse.json({ error: 'The accrued profit share needs GP economics and the books.' }, { status: 403 })
   const refused = await assertVehicleKind(admin, gate.fundId, group, 'gpu_spv')
   if (refused) return refused
 

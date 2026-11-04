@@ -191,6 +191,25 @@ describe('LP letter tools', () => {
     expect(spy.mock.calls.at(-1)![3]).toEqual({ template: null, showCarry: false })
   })
 
+  it("lp_letter_brief asks for the accrued memo only on its route's gate: gp_economics, the books, gpu_fleet on", async () => {
+    const { loadLetterBrief } = await import('@/lib/lp-letters/draft-from-brief')
+    const spy = vi.mocked(loadLetterBrief)
+    const asked = async (a: AccessContext) => {
+      await H.lp_letter_brief(ctx(a), { vehicle: 'Fund I', year: 2026, quarter: 3 })
+      return (spy.mock.calls.at(-1)![3] as any).accruedMemo
+    }
+    const gpBooks = member({ lp_relations: 'write', gp_economics: 'read', accounting: 'read' })
+    expect(await asked(gpBooks)).toBe(true)
+    // No books' read: book NAV is the ledger restated.
+    expect(await asked(member({ lp_relations: 'write', gp_economics: 'read' }))).toBe(false)
+    // gpu_fleet off or hidden: the memo's route is refused, so the brief does not carry it either.
+    for (const v of ['off', 'hidden'] as const) {
+      expect(await asked({ ...gpBooks, features: { ...gpBooks.features, gpu_fleet: v } }), v).toBe(false)
+    }
+    // No gp_economics: no profit share at all.
+    expect(await asked(member({ lp_relations: 'write', accounting: 'read' }))).toBe(false)
+  })
+
   it('marks a letter final, the only kind that can be shared; unsharing a draft is allowed', async () => {
     await expect(H.lp_share_letter(ctx(), { letter_id: 'l1', investors: ['Acme'] })).rejects.toThrow('Mark the letter final')
     expect(store.tables.lp_letter_shares).toEqual([])

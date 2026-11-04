@@ -3,6 +3,7 @@
 // they can't see is not found here either.
 
 import { hasAccess } from '@/lib/access/effective'
+import { canSeeAccruedMemo } from '@/lib/gpu/accrued'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
@@ -73,8 +74,9 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
-    // Shown to this caller, not saved: the accrued profit-share memo may ride along with gp_economics.
-    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), { ...briefOpts(input, ctx), accruedMemo: true })
+    // Shown to this caller, not saved: the accrued profit-share memo may ride along, on the same gate
+    // as its own route (gp_economics, gpu_fleet on, the books' read).
+    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), { ...briefOpts(input, ctx), accruedMemo: canSeeAccruedMemo(ctx.access) })
     return { template: template.name, ...brief }
   },
 

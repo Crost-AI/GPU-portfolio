@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { accruedProfitShare } from './accrued'
+import { accruedProfitShare, canSeeAccruedMemo } from './accrued'
+import type { AccessContext } from '@/lib/access/effective'
+import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { F1, PACK_INPUTS, PACK_TERMS } from './fixtures/pack-v3'
 import type { WaterfallEvent } from './waterfall'
 
@@ -47,5 +49,32 @@ describe('accruedProfitShare: the manager share if book NAV were distributed tod
     expect(a).toEqual(b)
     // Dated: the quarter's pref on the 132,578.96 still unreturned is due first.
     expect(a.tiers.prefDue).toBeGreaterThan(0)
+  })
+})
+
+describe('canSeeAccruedMemo: one gate for every surface that shows the memo', () => {
+  const ctx = (grants: AccessContext['grants'], features: Partial<FeatureVisibilityMap> = {}): AccessContext => ({
+    fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, grants, defaults: {},
+    features: { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gp_economics: 'everyone', gpu_fleet: 'everyone', ...features } as FeatureVisibilityMap,
+  })
+  const both = { gp_economics: 'read', accounting: 'read' } as const
+
+  it('allows gp_economics with the books, gpu_fleet on', () => {
+    expect(canSeeAccruedMemo(ctx(both))).toBe(true)
+  })
+  it('denies without the books', () => {
+    expect(canSeeAccruedMemo(ctx({ gp_economics: 'write' }))).toBe(false)
+  })
+  it('denies without gp_economics', () => {
+    expect(canSeeAccruedMemo(ctx({ accounting: 'write' }))).toBe(false)
+  })
+  it('denies while gpu_fleet is off or hidden, an admin included', () => {
+    for (const v of ['off', 'hidden'] as const) {
+      expect(canSeeAccruedMemo(ctx(both, { gpu_fleet: v })), v).toBe(false)
+      expect(canSeeAccruedMemo({ ...ctx(both, { gpu_fleet: v }), role: 'admin' }), `admin, ${v}`).toBe(false)
+    }
+  })
+  it("denies while gp_economics' own switch is off, gpu_fleet on (#113)", () => {
+    expect(canSeeAccruedMemo(ctx(both, { gp_economics: 'off' }))).toBe(false)
   })
 })
