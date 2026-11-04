@@ -16,7 +16,7 @@ import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { approveFundReview, type FundApproval } from '@/lib/portfolio/fof-reviews'
 import { isFundReviewType, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
 import { visibleCompanyIds } from '@/lib/access/scope'
-import { excludeHiddenCompanies, fleetCompanyDenied, FLEET_HOLDING_TYPE, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
+import { excludeHiddenCompanies, fleetCompanyDenied, FLEET_HOLDING_TYPE, hiddenFleetIdsFor } from '@/lib/access/fleet-company'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 
 export type ReviewRow = Pick<
@@ -77,7 +77,7 @@ export async function loadReviewForAccess(
   if (visible !== null && (!review.company_id || !visible.includes(review.company_id))) return null
   // ── GPU fleet (P3) ── A review about a fleet company is fleet data (#91): the page's read gets
   // that from RLS (20261019310000); this read is the service role's, so it says it here.
-  if (review.company_id && (await hiddenFleetIdsInFund(admin, access.fundId, access.userId)).has(review.company_id)) return null
+  if (review.company_id && (await hiddenFleetIdsFor(admin, access)).has(review.company_id)) return null
   if (scopeFundReviews([review], access).length === 0) return null
   if (isFundReviewType(review.issue_type) && !hasAccess(access, 'portfolio', 'read', 'investments')) return null
   return review
@@ -337,7 +337,7 @@ export async function loadReviewQueue(admin: SupabaseClient, access: AccessConte
   const visible = await visibleCompanyIds(admin, access)
   if (visible !== null && visible.length === 0) return { total: 0, counts: {}, items: [], needsReviewEmails: [] }
   // ── GPU fleet (P3) ── Reviews and emails about a fleet company the caller may not read stay out (#91).
-  const hiddenFleet = await hiddenFleetIdsInFund(admin, access.fundId, access.userId)
+  const hiddenFleet = await hiddenFleetIdsFor(admin, access)
   let q = (admin as any)
     .from('parsing_reviews')
     .select(`

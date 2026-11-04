@@ -21,6 +21,7 @@ import { deleteCompany } from '@/lib/companies/delete'
 import { deleteFundHolding } from '@/lib/portfolio/fund-holding-delete'
 import { moveInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
+import { FLEET_HOLDING_TYPE } from '@/lib/access/fleet-company'
 
 /** Rows that follow the holding as they are. */
 export const MERGE_MOVED_TABLES = [
@@ -57,6 +58,10 @@ export async function mergeCompanies(
   const from = ((rows as any[]) ?? []).find(r => r.id === fromId)
   const into = ((rows as any[]) ?? []).find(r => r.id === intoId)
   if (!from || !into) return fail(404, 'Company not found')
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company is the SPV's own; merging it away (or a holding into
+  // it) would move or delete what its fleet pages, KPIs and gates (#91) read.
+  const fleet = [from, into].find(r => r.holding_type === FLEET_HOLDING_TYPE)
+  if (fleet) return fail(400, `${fleet.name} is a GPU SPV's fleet company and cannot be merged.`)
 
   // The register follows its transactions, and only a fund holding has one.
   const where = (t: string) => (admin as any).from(t).select('*').eq('fund_id', who.fundId).eq('company_id', fromId)

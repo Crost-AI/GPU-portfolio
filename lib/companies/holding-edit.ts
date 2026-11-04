@@ -15,6 +15,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logActivity } from '@/lib/activity'
 import { mergeGroupsForWrite } from '@/lib/access/scope'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
+import { FLEET_HOLDING_TYPE } from '@/lib/access/fleet-company'
 
 export type HoldingType = 'company' | 'fund' | 'crypto'
 const HOLDING_TYPES: HoldingType[] = ['company', 'fund', 'crypto']
@@ -282,6 +283,11 @@ export async function setHoldingType(
     .from('companies').select('id, name, holding_type').eq('id', companyId).eq('fund_id', who.fundId).maybeSingle()
   if (error) return dbFail(error, 'company-holding-type')
   if (!company) return fail(404, 'Company not found')
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company is the SPV's own, created with it and read by its
+  // fleet pages and KPIs; changing its kind would drop it out of the fleet gates (#91) and orphan it.
+  if (company.holding_type === FLEET_HOLDING_TYPE) {
+    return fail(400, `${company.name} is a GPU SPV's fleet company; its kind cannot be changed.`)
+  }
   const from = (company.holding_type ?? 'company') as HoldingType
   if (from === type) return fail(400, `${company.name} is already a ${type === 'fund' ? 'fund holding' : type === 'crypto' ? 'digital asset' : 'company'}.`)
 

@@ -7,6 +7,7 @@ import { createCompany } from '@/lib/companies/create'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { scopeCompanyRows, scopeGroups, scopeTransactions } from '@/lib/access/scope'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -38,6 +39,9 @@ export async function GET(req: NextRequest) {
     .select('id, name, stage, status, industry, aliases, tags, portfolio_group, contact_email, holding_type, metrics(id), inbound_emails(received_at)')
     .eq('fund_id', membership.fund_id)
   if (!allHoldings) query = query.eq('holding_type', 'company')
+  // ── GPU fleet (P3) ── Every holding includes a GPU SPV's fleet company, which does not exist to a
+  // caller without fleet read (#91, #129): left out in the query, as the other per-row readers do.
+  else query = excludeHiddenCompanies(query, await hiddenFleetIdsInFund(admin, membership.fund_id, user.id), 'id')
   const { data, error } = await query.order('name') as { data: CompanyRow[] | null; error: { message: string } | null }
 
   if (error) return dbError(error, 'companies')
