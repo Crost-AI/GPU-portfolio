@@ -475,6 +475,15 @@ export async function editPartnershipInvoice(
   const dropAdj = Array.from(new Set(args.removeAdjustmentIds ?? [])).filter(a => inv.adjustments.some(x => x.id === a))
   const adjusting = parsedAdj.adjustments.length > 0 || dropAdj.length > 0
   if (adjusting && inv.status !== 'draft') return { error: 'This invoice is issued, so the fund has been told its amount due. Void it and bill again to change its adjustments, or put the adjustment on the next invoice.', status: 409 }
+  // A draft is not necessarily unbooked here: an issue can book its charge and fail before marking
+  // it issued, or still be running. Retrying the issue keeps the charge as booked, so an amount
+  // changed under it would be billed at one figure and settled at another. Void unwinds it first.
+  if (inv.status === 'draft' && (adjusting || remove.length > 0 || addIds.length > 0)) {
+    const { data: live, error: liveErr } = await admin.from('intercompany_transactions' as any)
+      .select('id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
+    if (liveErr) return { error: `Could not check this invoice's charge: ${liveErr.message}`, status: 500 }
+    if (live) return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running), so its amount is booked. Void it to unwind the charge, then bill again.', status: 409 }
+  }
   const adjustmentTotal = roundCents(
     inv.adjustments.filter(a => !dropAdj.includes(a.id)).reduce((sum, a) => sum + a.amount, 0)
     + parsedAdj.adjustments.reduce((sum, a) => sum + a.amount, 0),
@@ -701,9 +710,9 @@ export async function issuePartnershipInvoice(
   if (inv.status !== 'draft') return { error: `This invoice is already ${inv.status}.`, status: 409 }
 
   const { data: prior, error: priorErr } = await admin.from('intercompany_transactions' as any)
-    .select('id, from_entry_id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
+    .select('id, from_entry_id, amount').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
   if (priorErr) return { error: `Could not check whether this invoice is already booked: ${priorErr.message}`, status: 500 }
-  if (prior) return replayIssue(admin, fundId, id, inv.to.vehicleId, prior as { id: string; from_entry_id: string | null })
+  if (prior) return replayIssue(admin, fundId, id, inv.to.vehicleId, prior as { id: string; from_entry_id: string | null; amount: number })
 
   // The lines are re-read, not trusted from creation: an entry voided or changed since cannot be
   // billed as it was, and the fund must not be charged for what the books no longer say.
@@ -725,7 +734,7 @@ export async function issuePartnershipInvoice(
     partnershipInvoiceId: id,
   })
   if ('error' in res) return { error: res.error, status: res.duplicate ? 409 : 400 }
-  return markIssued(admin, fundId, id, res.id, true)
+  return markIssued(admin, fundId, id, res.id, inv.amount, true)
 }
 
 /**
@@ -748,7 +757,7 @@ async function replayIssue(
   fundId: string,
   id: string,
   payerVehicleId: string,
-  charge: { id: string; from_entry_id: string | null },
+  charge: { id: string; from_entry_id: string | null; amount: number },
 ): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
   if (!charge.from_entry_id) {
     return { error: 'This invoice is being issued by another request. Refresh in a moment; if this persists, void the invoice and create it again.', status: 409 }
@@ -759,7 +768,7 @@ async function replayIssue(
     .maybeSingle()
   if (error) return { error: `Could not check the fund's entry for this invoice: ${error.message}`, status: 500 }
   const status = (entry as any)?.status as string | undefined
-  if (status === 'posted') return markIssued(admin, fundId, id, charge.id)
+  if (status === 'posted') return markIssued(admin, fundId, id, charge.id, Number(charge.amount))
   if (status === 'draft') {
     return { error: `The fund's entry for this invoice (${charge.from_entry_id}) is a draft. Post or void it, then issue the invoice again.`, status: 409 }
   }
@@ -784,30 +793,36 @@ async function replayIssue(
 
 /**
  * Mark a draft invoice issued by the charge that booked it. Conditional on `draft`, so a row another
- * request already marked is not rewritten; that is still success if it names this same charge.
+ * request already marked is not rewritten; that is still success if it names this same charge. And
+ * conditional on the amount the charge booked: an expense edit that slipped in while the charge was
+ * being booked leaves the draft at another figure, and the invoice is not issued over it.
  */
 async function markIssued(
   admin: SupabaseClient,
   fundId: string,
   id: string,
   chargeId: string,
+  /** What the charge booked: the draft's amount must still be this. */
+  bookedAmount: number,
   /** This request has just booked the charge: if the invoice is gone, so is the booking. */
   fresh = false,
 ): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
   const now = new Date().toISOString()
   const { data: updated, error } = await admin.from('partnership_invoices' as any).update({
     status: 'issued', issued_at: now, intercompany_transaction_id: chargeId, updated_at: now,
-  }).eq('id', id).eq('fund_id', fundId).eq('status', 'draft').select('id')
+  }).eq('id', id).eq('fund_id', fundId).eq('status', 'draft').eq('amount', bookedAmount).select('id')
   const booked = `The fund's side is booked (charge ${chargeId})`
   if (error) return { error: `${booked}, but the invoice could not be marked issued: ${error.message}. Issue it again to finish.`, status: 500 }
   if (((updated as any[]) ?? []).length > 0) return { ok: true, intercompanyTransactionId: chargeId }
 
   const { data: row, error: readErr } = await admin.from('partnership_invoices' as any)
-    .select('status, intercompany_transaction_id').eq('id', id).eq('fund_id', fundId).maybeSingle()
+    .select('status, intercompany_transaction_id, amount').eq('id', id).eq('fund_id', fundId).maybeSingle()
   if (readErr) return { error: `${booked}, but the invoice could not be re-read: ${readErr.message}`, status: 500 }
   const r = row as any
   if (r?.status === 'issued' && r.intercompany_transaction_id === chargeId) return { ok: true, intercompanyTransactionId: chargeId }
-  const state = r?.status ?? 'gone'
+  const state = r?.status === 'draft'
+    ? `a draft for ${Number(r.amount).toFixed(2)}, not the ${bookedAmount.toFixed(2)} booked (its expenses changed)`
+    : r?.status ?? 'gone'
   if (!fresh) return { error: `${booked}, but the invoice changed while it was being issued (it is now ${state}).`, status: 409 }
 
   // The invoice was voided (its lines released) while this request booked it. A payable for an

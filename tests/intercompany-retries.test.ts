@@ -20,7 +20,7 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleNameById: async (_a: unknown, _f: string, id: string) => NAMES[id] ?? null,
 }))
 vi.mock('@/lib/accounting/persist', () => ({ persistEntry: mocks.persist, liveEntryByRef: mocks.liveEntryByRef }))
-import { deletePartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
+import { deletePartnershipInvoice, editPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
 import { intercompanyBalances, settleIntercompanyCharge } from '@/lib/accounting/intercompany'
 
 function fakeDb(tables: Record<string, Row[]>) {
@@ -723,5 +723,57 @@ describe('deleting a draft invoice', () => {
     const db = world()
     expect(await deletePartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
     expect(db.tables.partnership_invoices).toHaveLength(0)
+  })
+})
+
+// In this fork a draft can already carry a booked charge (an issue that failed before marking the
+// invoice issued, or one still running), and a retried issue keeps the charge as booked. So its
+// expenses cannot change under it, and an edit that slips in mid-issue stops the issue (Codex on #133).
+describe('editing a draft invoice whose charge is booked', () => {
+  const twoLines = (db: ReturnType<typeof world>) => {
+    db.tables.partnership_invoices[0].amount = 120
+    db.tables.partnership_invoice_lines.push({ fund_id: FUND, invoice_id: 'inv-1', journal_entry_id: 'exp-2', journal_posting_id: 'exp-2-p', amount: 20, active: true })
+    db.tables.journal_entries.push({ id: 'exp-2', fund_id: FUND, vehicle_id: MANCO, book: 'actual', status: 'posted', entry_date: '2026-02-15', vendor_id: null })
+    db.tables.journal_postings.push({ id: 'exp-2-p', book: 'actual', amount: 20 })
+  }
+
+  it('refuses an expense removal after an issue failed to mark the invoice, and the retry keeps the booked amount', async () => {
+    const db = world()
+    twoLines(db)
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ error: expect.any(String) })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', amount: 120 })
+
+    const edit = await editPartnershipInvoice(db.admin, FUND, 'u', 'inv-1', { removePostingIds: ['exp-2-p'] })
+    expect(edit).toMatchObject({ status: 409, error: expect.stringContaining('intercompany charge') })
+    expect(db.tables.partnership_invoices[0].amount).toBe(120)
+    expect(db.tables.partnership_invoice_lines).toHaveLength(2)
+
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', amount: 120 })
+  })
+
+  it('an expense removed while the charge is being booked stops the issue, which unwinds', async () => {
+    const db = world()
+    twoLines(db)
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    db.gateInserts(async table => { if (table === 'intercompany_transactions') { reached(); await held } })
+
+    const issuing = issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    await atInsert
+    db.gateInserts(null)
+    // No charge exists yet, so the edit is allowed; the issue already read 120.
+    expect(await editPartnershipInvoice(db.admin, FUND, 'u', 'inv-1', { removePostingIds: ['exp-2-p'] })).toMatchObject({ ok: true })
+    go()
+
+    expect(await issuing).toMatchObject({ status: 409, error: expect.stringContaining('not the 120.00 booked') })
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'draft', amount: 100 })
+    expect(db.tables.intercompany_transactions.every(c => c.status === 'void')).toBe(true)
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(db.tables.intercompany_transactions.find(c => c.status !== 'void')).toMatchObject({ amount: 100 })
   })
 })
