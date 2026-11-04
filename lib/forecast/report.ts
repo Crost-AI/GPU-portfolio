@@ -198,9 +198,13 @@ function isClearingAccount(a: Account | undefined, cashIds: Set<string>): boolea
  * Entries with a forecast kind already say what they are and pass through as they are.
  */
 export function resolveSettlements(entries: FlowEntry[], byId: Map<string, Account>, cashIds: Set<string>): FlowEntry[] {
-  type Lot = { remaining: number; size: number; legs: Posting[] }
+  // A lot is one accrual on a clearing account: its other legs (`legs`, sized to `size`), what is
+  // still unsettled (`remaining`), the partner the clearing leg named (`lp`, null when none) and
+  // the accounts its legs are on (to tell which accrual a correction reverses).
+  type Lot = { remaining: number; size: number; legs: Posting[]; lp: string | null; accounts: Set<string> }
   const lots = new Map<string, Lot[]>()
   const touchesCash = (e: FlowEntry) => e.postings.some(p => cashIds.has(p.accountId))
+  const prune = (accountId: string) => lots.set(accountId, (lots.get(accountId) ?? []).filter(l => Math.abs(l.remaining) >= 0.005))
   // By date; on one date the accruals first, so a call and its wire on the same day still pair up.
   const order = entries.map((e, i) => ({ e, i })).sort((x, y) =>
     x.e.date.localeCompare(y.e.date) || Number(touchesCash(x.e)) - Number(touchesCash(y.e)) || x.i - y.i)
@@ -217,12 +221,33 @@ export function resolveSettlements(entries: FlowEntry[], byId: Map<string, Accou
       if (!origin.length || Math.abs(originTotal) < 0.005) continue
       for (const p of clearing) {
         if (Math.abs(p.amount) < 0.005) continue
-        // The origin legs, scaled to offset this leg alone.
-        const scale = -p.amount / originTotal
-        const legs = origin.map(o => ({ ...o, amount: o.amount * scale }))
+        // A leg naming a partner holds that partner's origin legs, when the entry has any: a
+        // declaration's payable to one LP is that LP's capital, not a share of every partner's.
+        const lp = p.lpEntityId ?? null
+        const own = lp ? origin.filter(o => (o.lpEntityId ?? null) === lp) : []
+        const ownTotal = own.reduce((s, o) => s + o.amount, 0)
+        const src = own.length && Math.abs(ownTotal) >= 0.005 ? own : origin
+        const srcTotal = src === own ? ownTotal : originTotal
+        const srcAccounts = new Set(src.map(o => o.accountId))
+        // A correction runs the balance the other way: it cancels outstanding lots first (the one
+        // it reverses, by its accounts, before the oldest), so a payment never settles an accrual
+        // that was reversed. Only what is left over is a lot of its own.
+        let left = p.amount
         const queue = lots.get(p.accountId) ?? []
-        queue.push({ remaining: p.amount, size: p.amount, legs })
-        lots.set(p.accountId, queue)
+        const opposite = queue.filter(l => Math.sign(l.remaining) === -Math.sign(left) && (!lp || !l.lp || l.lp === lp))
+        const reverses = (l: Lot) => Array.from(l.accounts).some(a => srcAccounts.has(a))
+        for (const lot of [...opposite.filter(reverses), ...opposite.filter(l => !reverses(l))]) {
+          if (Math.abs(left) < 0.005) break
+          const take = Math.min(Math.abs(left), Math.abs(lot.remaining))
+          lot.remaining -= Math.sign(lot.remaining) * take
+          left -= Math.sign(left) * take
+        }
+        prune(p.accountId)
+        if (Math.abs(left) < 0.005) continue
+        // The origin legs, scaled to offset what is left of this leg.
+        const scale = -left / srcTotal
+        const legs = src.map(o => ({ ...o, amount: o.amount * scale }))
+        lots.set(p.accountId, [...(lots.get(p.accountId) ?? []), { remaining: left, size: left, legs, lp, accounts: srcAccounts }])
       }
       continue
     }
@@ -233,10 +258,15 @@ export function resolveSettlements(entries: FlowEntry[], byId: Map<string, Accou
     const rest: Posting[] = []
     for (const p of e.postings) {
       if (cashIds.has(p.accountId)) continue
-      const queue = isClearingAccount(byId.get(p.accountId), cashIds) ? lots.get(p.accountId) : undefined
+      const queue = isClearingAccount(byId.get(p.accountId), cashIds) ? lots.get(p.accountId) ?? [] : []
+      // A payment naming a partner settles that partner's lots, then lots that named no one; one
+      // naming no one settles oldest first. Lots running the same way as the payment are skipped.
+      const lp = p.lpEntityId ?? null
+      const candidates = lp ? [...queue.filter(l => l.lp === lp), ...queue.filter(l => l.lp === null)] : queue
       let left = p.amount
-      while (queue?.length && Math.abs(left) >= 0.005 && Math.sign(queue[0].remaining) === -Math.sign(left)) {
-        const lot = queue[0]
+      for (const lot of candidates) {
+        if (Math.abs(left) < 0.005) break
+        if (Math.sign(lot.remaining) !== -Math.sign(left)) continue
         const take = Math.min(Math.abs(left), Math.abs(lot.remaining))
         const share = take / Math.abs(lot.size)
         // The lot's legs offset the accrual, so they already carry the settlement's sign: a
@@ -244,8 +274,8 @@ export function resolveSettlements(entries: FlowEntry[], byId: Map<string, Accou
         pieces.push(lot.legs.map(l => ({ ...l, amount: l.amount * share, entryDate: p.entryDate ?? l.entryDate })))
         lot.remaining -= Math.sign(lot.remaining) * take
         left -= Math.sign(left) * take
-        if (Math.abs(lot.remaining) < 0.005) queue.shift()
       }
+      if (queue.length) prune(p.accountId)
       if (Math.abs(left) >= 0.005) rest.push(left === p.amount ? p : { ...p, amount: left })
     }
     if (!pieces.length) continue

@@ -249,4 +249,34 @@ describe('cash that settles an earlier accrual', () => {
     expect(r.cashFlows!.distributed).toEqual([-100_000])
     expect(r.cashDetail!.find(l => l.key === 'distributed:gp')!.values).toEqual([-10_000])
   })
+
+  it('paying one partner settles only that partner\'s payable: an LP and the GP paid in different months', () => {
+    // The native declaration names each partner on its own payable leg, and each payment names the
+    // partner it pays (buildDistributionDeclarationEntry / buildDistributionSettlementEntry).
+    const C: Account[] = [...B, { id: 'dp', fundId: 'f', code: '2200', name: 'Distributions payable', type: 'liability', subtype: 'distributions_payable' }]
+    const entries = [
+      lp('2026-01-31', [['cap', 90_000, 'lp-a'], ['cap', 10_000, 'gp-1'], ['dp', -90_000, 'lp-a'], ['dp', -10_000, 'gp-1']]),
+      lp('2026-02-10', [['dp', 90_000, 'lp-a'], ['op', -90_000]]),
+      lp('2026-03-10', [['dp', 10_000, 'gp-1'], ['op', -10_000]]),
+    ]
+    const r = buildReport({
+      view: 'actual', accounts: C, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+      actualsAvailableThrough: '2026-03', closedThrough: null, start: '2026-02', end: '2026-03', interval: 'month',
+      actualEntries: entries, planEntries: [], gpEntityIds: new Set(['gp-1']),
+    })
+    expect(r.cashFlows!.distributed).toEqual([-90_000, -10_000])
+    expect(r.cashDetail!.find(l => l.key === 'distributed:gp')!.values).toEqual([0, -10_000])
+  })
+
+  it('a reversed accrual is cancelled, so the payment is the replacement\'s', () => {
+    const r = run([
+      lp('2026-01-10', [['mgmt', 100], ['accrued', -100]]),
+      lp('2026-01-15', [['accrued', 100], ['mgmt', -100]]), // the fee accrual reversed (non-cash)
+      lp('2026-01-20', [['rent', 100], ['accrued', -100]]),
+      lp('2026-02-05', [['accrued', 100], ['op', -100]]),
+    ])
+    expect(r.cashDetail!.find(l => l.key === 'mgmt')?.values ?? [0, 0, 0, 0]).toEqual([0, 0, 0, 0])
+    expect(r.cashDetail!.find(l => l.key === 'rent')!.values).toEqual([0, 0, -100, 0])
+    expect(r.cashDetail!.find(l => l.key === 'accrued')).toBeUndefined()
+  })
 })
