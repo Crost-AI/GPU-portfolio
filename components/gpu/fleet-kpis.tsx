@@ -114,7 +114,11 @@ export function PublishMonth({ fetcher, month, fleet, canWrite }: {
     })
     return () => { cancelled = true }
   }, [fetcher, month])
-  const zero = fleet != null && !monthHasFigures(fleet)
+  // The page's figures count staged rows (a correction not yet posted, say); publishing counts posted
+  // rows only. So the page's figures describe what is published only when no staged row counts: only
+  // then may the confirm say publishing writes zeros.
+  const pendingCounted = fleet?.includesStaged === true
+  const zero = fleet != null && !pendingCounted && !monthHasFigures(fleet)
   // Disabled without the grant, while the month is loading, and for a month with only unposted rows.
   // An all-zero month that is posted (an idle period, a correction) publishes.
   const hint = !canWrite ? PUBLISH_HINT
@@ -138,9 +142,16 @@ export function PublishMonth({ fetcher, month, fleet, canWrite }: {
           return null
         }}>
         <p className="text-sm text-muted-foreground" data-confirm="publish">
-          Writes {month}&rsquo;s utilization, revenue and rate figures to the fleet company, from posted rows only
-          {fleet?.includesStaged ? '; the staged rows counted on this page are left out until they are posted' : ''}. Publishing the month again overwrites it.
+          Writes {month}&rsquo;s utilization, revenue and rate figures to the fleet company, from posted rows only. Publishing the
+          month again overwrites it.
         </p>
+        {pendingCounted && (
+          <p className="rounded-lg bg-warning-subtle px-3 py-2 text-sm text-warning" data-confirm="pending">
+            The figures on this page include staged rows that are not posted yet{rows.state === 'ok' && rows.pending > 0 ? ` (${rows.pending} for ${month})` : ''}.
+            Publishing writes the posted figures, not these: a staged correction is not published until it is posted. Post those
+            rows first to publish what this page shows.
+          </p>
+        )}
         {zero && (
           <p className="text-sm text-muted-foreground" data-confirm="zero">
             Every figure for {month} is zero on this page: publishing writes zeros, and removes a rate published for the month

@@ -284,7 +284,7 @@ describe('publishing a month to the fleet company', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
     const dialog = await screen.findByRole('dialog')
     expect(dialog.textContent).toContain('posted rows only')
-    expect(dialog.textContent).toContain('staged rows counted on this page are left out')
+    expect(dialog.textContent).toContain('Publishing writes the posted figures, not these')
     expect(bodies).toHaveLength(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
     const link = await screen.findByRole('link', { name: 'Open fleet company metrics' })
@@ -306,6 +306,20 @@ describe('publishing a month to the fleet company', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
     expect(await screen.findByText(/Published 2026-09: 2 metrics written, 1 removed/)).toBeTruthy()
     expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
+  })
+
+  it('a staged all-zero correction over a posted month promises no zeros: it says the posted figures are published', async () => {
+    // Posted: 100 hours and 200 revenue. Staged: a correction to zero, which this page counts and publishing does not.
+    const staged = { ...FLEET, rentedHours: 0, utilizationPct: 0, grossRevenue: 0, fee: 0, net: 0, realizedRate: null, includesStaged: true }
+    const { fetcher } = queueWith([{ status: 'posted', periodEnd: '2026-09-30' }, { status: 'staged', periodEnd: '2026-09-30' }])
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={staged} canWrite />)
+    const publish = screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement
+    await waitFor(() => expect(publish.disabled).toBe(false))
+    fireEvent.click(publish)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).not.toContain('Every figure for 2026-09 is zero')
+    expect(dialog.textContent).toContain('Publishing writes the posted figures, not these')
+    expect(dialog.textContent).toContain('(1 for 2026-09)')
   })
 
   it('a month with only unposted rows cannot be published yet, and says why; the month\u2019s rows are read for that month', async () => {
