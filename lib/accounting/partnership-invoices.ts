@@ -444,6 +444,13 @@ export async function deletePartnershipInvoice(
   const { data } = await admin.from('partnership_invoices' as any).select('id, status').eq('fund_id', fundId).eq('id', id).maybeSingle()
   if (!data) return { error: 'Invoice not found', status: 404 }
   if ((data as any).status !== 'draft') return { error: `This invoice is ${(data as any).status}. Only a draft can be deleted; void an issued one.`, status: 409 }
+  // A draft can carry a charge: an issue that failed partway, or one still running (intercompany_once).
+  // Deleting the invoice would orphan it (partnership_invoice_id is on delete set null), which is what
+  // voiding exists to avoid: void unwinds the charge with the invoice (releaseDraftCharge).
+  const { data: charge, error: chargeErr } = await admin.from('intercompany_transactions' as any)
+    .select('id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
+  if (chargeErr) return { error: `Could not check this invoice's charge: ${chargeErr.message}`, status: 500 }
+  if (charge) return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running). Void it instead: that unwinds the charge with it.', status: 409 }
   // Its lines go with it (on delete cascade), which frees their postings.
   const { error } = await admin.from('partnership_invoices' as any).delete().eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
   return error ? { error: `The invoice could not be deleted: ${error.message}`, status: 400 } : { ok: true }

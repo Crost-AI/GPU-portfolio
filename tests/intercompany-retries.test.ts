@@ -20,7 +20,7 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleNameById: async (_a: unknown, _f: string, id: string) => NAMES[id] ?? null,
 }))
 vi.mock('@/lib/accounting/persist', () => ({ persistEntry: mocks.persist, liveEntryByRef: mocks.liveEntryByRef }))
-import { issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
+import { deletePartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
 import { intercompanyBalances, settleIntercompanyCharge } from '@/lib/accounting/intercompany'
 
 function fakeDb(tables: Record<string, Row[]>) {
@@ -88,6 +88,21 @@ function fakeDb(tables: Record<string, Row[]>) {
       in: (c: string, vs: unknown[]) => { filters.push(r => vs.includes(r[c])); return q },
       like: (c: string, pattern: string) => { const re = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`); filters.push(r => re.test(String(r[c] ?? ''))); return q },
       is: (c: string, v: unknown) => { filters.push(r => (r[c] ?? null) === v); return q },
+      // A PostgREST or(): top-level `col.[not.]op.value` terms, for the in/is/eq the code sends.
+      or: (expr: string) => {
+        const terms = expr.split(/,(?![^(]*\))/).map(t => {
+          const [c, ...rest] = t.split('.')
+          const negate = rest[0] === 'not'
+          const [op, ...v] = negate ? rest.slice(1) : rest
+          const value = v.join('.')
+          const test = (r: Row) => op === 'in' ? value.replace(/^\(|\)$/g, '').split(',').includes(String(r[c]))
+            : op === 'is' ? (r[c] ?? null) === (value === 'null' ? null : value)
+            : String(r[c]) === value
+          return (r: Row) => test(r) !== negate
+        })
+        filters.push(r => terms.some(t => t(r)))
+        return q
+      },
       order: (c: string) => { order = c; return q },
       range: (lo: number, hi: number) => { range = [lo, hi]; return q },
       limit: (n: number) => { limit = n; return q },
@@ -685,5 +700,28 @@ describe('intercompany balances', () => {
       expect(reads.map(r => r.range)).toEqual([[0, 999], [1000, 1999]])
       expect(reads.every(r => r.order === 'id')).toBe(true)
     }
+  })
+})
+
+// Upstream #176 adds Delete for a draft invoice. The charge's link is on delete set null, so deleting a
+// draft that carries one would orphan the charge (the case 20261014190000_intercompany_once closed):
+// such a draft is voided, which unwinds it, never deleted.
+describe('deleting a draft invoice', () => {
+  it('is refused while the draft carries a live charge, which stays linked', async () => {
+    const db = world()
+    db.tables.intercompany_transactions.push({
+      id: 'ic-orphan', fund_id: FUND, from_vehicle_id: FUNDV, to_vehicle_id: MANCO, kind: 'expense_reimbursement',
+      charge_date: '2026-04-05', amount: 100, status: 'accrued', partnership_invoice_id: 'inv-1', from_entry_id: null,
+    })
+    const res = await deletePartnershipInvoice(db.admin, FUND, 'inv-1')
+    expect(res).toMatchObject({ status: 409, error: expect.stringContaining('Void it instead') })
+    expect(db.tables.partnership_invoices).toHaveLength(1)
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', partnership_invoice_id: 'inv-1' })
+  })
+
+  it('goes through for a draft with no charge', async () => {
+    const db = world()
+    expect(await deletePartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
+    expect(db.tables.partnership_invoices).toHaveLength(0)
   })
 })
