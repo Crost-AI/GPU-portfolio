@@ -55,7 +55,7 @@ describe('the signup allow-list is per fund', () => {
   })
 
   it('the migration scopes entries to a fund and keeps the signup gate deployment-wide', () => {
-    const sql = readFileSync('supabase/migrations/20261017030000_allowed_signups_per_fund.sql', 'utf8')
+    const sql = readFileSync('supabase/migrations/20261104120200_allowed_signups_per_fund.sql', 'utf8')
     expect(sql).toMatch(/add column if not exists fund_id uuid references public\.funds\(id\) on delete cascade/)
     expect(sql).toMatch(/unique nulls not distinct \(fund_id, email_pattern\)/)
     expect(sql).not.toMatch(/create or replace function/i) // the gate (hook_before_user_created) is untouched

@@ -1,5 +1,5 @@
 // Fund connections: two funds agreeing that some of their LPs are the same LP, so a report card can
-// show an LP everything they hold across both. See supabase/migrations/20261016030000_fund_connections.sql
+// show an LP everything they hold across both. See supabase/migrations/20261104120000_fund_connections.sql
 // for the model; the short version is two levels of consent, both from admins:
 //
 //   1. A connection between two funds: one fund's admin asks, the other fund's admin accepts.
