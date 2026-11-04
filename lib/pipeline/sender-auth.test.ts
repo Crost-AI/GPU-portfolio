@@ -5,26 +5,35 @@ import { authenticationRejection, matchInboundDomain } from '@/lib/resend/inboun
 const h = (Name: string, Value: string) => ({ Name, Value })
 
 describe('postmarkSenderVerified — a member treatment needs more than a From header', () => {
-  it('accepts DMARC pass, or a DKIM or SPF pass aligned with the From domain, in the topmost results', () => {
-    expect(postmarkSenderVerified('gp@fund.example', [h('Authentication-Results', 'mx.example; dmarc=pass header.from=fund.example')])).toBe(true)
-    expect(postmarkSenderVerified('gp@fund.example', [h('Authentication-Results', 'mx.example; dkim=pass header.d=fund.example')])).toBe(true)
-    expect(postmarkSenderVerified('gp@mail.fund.example', [h('Authentication-Results', 'mx.example; spf=pass smtp.mailfrom=bounce@fund.example')])).toBe(true)
+  const POSTMARK_SPF_PASS = h('Received-SPF', 'Pass (sender SPF authorized) identity=mailfrom; envelope-from="gp@fund.example"; receiver=inbound.postmarkapp.com')
+
+  it('accepts the topmost Received-SPF pass for an envelope sender aligned with From', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [POSTMARK_SPF_PASS])).toBe(true)
+    expect(postmarkSenderVerified('gp@mail.fund.example', [h('Received-SPF', 'Pass identity=mailfrom; envelope-from="bounce@fund.example"')])).toBe(true)
   })
 
-  it('refuses a pass for some other domain, a lower header the sender wrote, and no headers at all', () => {
-    expect(postmarkSenderVerified('gp@fund.example', [h('Authentication-Results', 'mx.example; dkim=pass header.d=attacker.example')])).toBe(false)
-    expect(postmarkSenderVerified('gp@fund.example', [
-      h('Authentication-Results', 'mx.example; dkim=none; spf=softfail smtp.mailfrom=attacker.example'),
-      h('Authentication-Results', 'forged; dmarc=pass'),
-    ])).toBe(false)
+  it('refuses an unaligned envelope sender, an SPF that did not pass, and no headers at all', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [h('Received-SPF', 'Pass identity=mailfrom; envelope-from="x@attacker.example"')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [h('Received-SPF', 'Softfail identity=mailfrom; envelope-from="gp@fund.example"')])).toBe(false)
     expect(postmarkSenderVerified('gp@fund.example', [])).toBe(false)
     expect(postmarkSenderVerified('gp@fund.example', undefined)).toBe(false)
   })
 
-  it('falls back to an aligned Received-SPF pass', () => {
-    expect(postmarkSenderVerified('gp@fund.example', [h('Received-SPF', 'Pass (sender SPF authorized) identity=mailfrom; envelope-from="gp@fund.example"; receiver=x')])).toBe(true)
-    expect(postmarkSenderVerified('gp@fund.example', [h('Received-SPF', 'Pass identity=mailfrom; envelope-from="x@attacker.example"')])).toBe(false)
-    expect(postmarkSenderVerified('gp@fund.example', [h('Received-SPF', 'Softfail identity=mailfrom; envelope-from="gp@fund.example"')])).toBe(false)
+  // Crost #136 and Codex on #137: Authentication-Results can be the sender's own.
+  it('never trusts Authentication-Results: a forged pass over Postmark\'s failing SPF is refused', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [
+      h('Received-SPF', 'Fail (sender not authorized) identity=mailfrom; envelope-from="gp@fund.example"; receiver=inbound.postmarkapp.com'),
+      h('Authentication-Results', 'attacker.invalid; dmarc=pass header.from=fund.example'),
+    ])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [h('Authentication-Results', 'mx.example; dmarc=pass header.from=fund.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [h('Authentication-Results', 'x; spf=fail (dmarc=pass) smtp.mailfrom=fund.example')])).toBe(false)
+  })
+
+  it('reads only the topmost Received-SPF: a pass the sender wrote below Postmark\'s fail does not count', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [
+      h('Received-SPF', 'Fail identity=mailfrom; envelope-from="gp@fund.example"; receiver=inbound.postmarkapp.com'),
+      POSTMARK_SPF_PASS,
+    ])).toBe(false)
   })
 })
 
