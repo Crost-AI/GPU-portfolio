@@ -53,7 +53,7 @@ export function matchInboundDomain<T extends { resend_inbound_domain: string | n
     if (!domain) continue
     const matches = settings.filter(s => s.resend_inbound_domain?.trim().toLowerCase() === domain)
     // Two funds claiming one domain is a misconfiguration or a takeover attempt: deliver to neither,
-    // rather than to whichever row came first (20261101210000 makes it impossible from now on).
+    // rather than to whichever row came first (20261104150200 makes it impossible from now on).
     if (matches.length > 1) {
       console.warn(`[inbound-email/resend] ${matches.length} funds claim the inbound domain ${domain}; delivering to none`)
       return null

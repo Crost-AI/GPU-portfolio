@@ -551,7 +551,7 @@ export async function PATCH(req: NextRequest) {
       .update(settingsUpdates)
       .eq('fund_id', membership.fund_id)
 
-    // The unique indexes (20261101210000) catch a race the check above missed.
+    // The unique indexes (20261104150200) catch a race the check above missed.
     if (error?.code === '23505') {
       return NextResponse.json({ error: 'Another fund already uses that inbound address. Choose a different one.' }, { status: 409 })
     }
