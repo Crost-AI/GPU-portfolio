@@ -286,6 +286,21 @@ describe('publishing a month to the fleet company', () => {
     expect(screen.getByText(/Published 2026-09: 2 metrics written/)).toBeTruthy()
   })
 
+  it('an all-zero posted correction can be published, and the confirm says what that does', async () => {
+    // A month first published with a rate of 2, then corrected to zero hours (metrics-publish.test.ts).
+    const zero = { ...FLEET, rentedHours: 0, utilizationPct: 0, grossRevenue: 0, fee: 0, net: 0, realizedRate: null, includesStaged: false }
+    const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 0, 'gpu-revenue': 0 }, removed: ['gpu-realized-rate'] } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={zero} canWrite />)
+    const publish = screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement
+    expect(publish.disabled).toBe(false)
+    fireEvent.click(publish)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('Every figure for 2026-09 is zero')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    expect(await screen.findByText(/Published 2026-09: 2 metrics written, 1 removed/)).toBeTruthy()
+    expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
+  })
+
   it('a refused publish stays in the dialog in the route\u2019s words, and no link appears', async () => {
     const message = 'Vehicle not found'
     const { fetcher } = queue({ status: 404, body: { error: message } })

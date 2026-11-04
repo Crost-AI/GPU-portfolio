@@ -66,7 +66,11 @@ export function KpiRow({ kpi, label }: { kpi: Kpi; label: string }) {
 
 export const PUBLISH_HINT = 'Publishing to the fleet company needs write access to the GPU fleet.'
 
-/** Whether the month has anything entered to publish (the KPI reply carries no row count). */
+/**
+ * Whether any of the month's figures is non-zero. Not a gate: an all-zero month is a real idle period
+ * or a correction, and publishing it overwrites the month and removes a rate published earlier
+ * (publishFleetKpis). It only changes what the confirmation says.
+ */
 export const monthHasFigures = (k: Pick<Kpi, 'rentedHours' | 'grossRevenue' | 'fee' | 'downtimeHours'> | null | undefined) =>
   !!k && (k.rentedHours > 0 || k.grossRevenue > 0 || k.fee > 0 || k.downtimeHours > 0)
 
@@ -95,8 +99,9 @@ export function PublishMonth({ fetcher, month, fleet, canWrite }: {
 }) {
   const [open, setOpen] = useState(false)
   const [reply, setReply] = useState<PublishReply | null>(null)
-  const empty = !monthHasFigures(fleet)
-  const hint = !canWrite ? PUBLISH_HINT : empty ? `Nothing is entered for ${month} yet.` : null
+  const zero = fleet != null && !monthHasFigures(fleet)
+  // Disabled only without the grant, or while the month's figures are still loading.
+  const hint = !canWrite ? PUBLISH_HINT : fleet == null ? `Loading ${month}\u2019s figures\u2026` : null
   return (
     <div className="flex flex-col items-end gap-1" data-region="publish">
       <Button size="sm" variant="outline" data-action="publish" disabled={hint != null} title={hint ?? undefined} onClick={() => { setReply(null); setOpen(true) }}>
@@ -116,6 +121,12 @@ export function PublishMonth({ fetcher, month, fleet, canWrite }: {
           Writes {month}&rsquo;s utilization, revenue and rate figures to the fleet company, from posted rows only
           {fleet?.includesStaged ? '; the staged rows counted on this page are left out until they are posted' : ''}. Publishing the month again overwrites it.
         </p>
+        {zero && (
+          <p className="text-sm text-muted-foreground" data-confirm="zero">
+            Every figure for {month} is zero on this page: publishing writes zeros, and removes a rate published for the month
+            earlier (an idle month, or a correction to one already published).
+          </p>
+        )}
       </FormDialog>
     </div>
   )

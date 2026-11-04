@@ -399,16 +399,20 @@ describe('fleet KPIs', () => {
     expect(combineLtm([a, b])).toEqual({ grossRevenue: 150, utilizationPct: 30, includesStaged: true })
   })
 
-  it('Publish needs fleet write and a month with something entered; it posts { action: publish, month }', async () => {
+  it('Publish needs fleet write and the month loaded, zeros included; it posts { action: publish, month }', async () => {
     const publish = (canWrite: boolean, fleet = month().fleet) => inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={fleet} canWrite={canWrite} />)
     expect(isDisabled(button(publish(true), 'publish'))).toBe(false)
     expect(publish(true)).toContain('Publish 2026-09 to metrics')
     expect(isDisabled(button(publish(false), 'publish'))).toBe(true)
     expect(publish(false)).toContain(PUBLISH_HINT)
-    const empty = { ...month().fleet, rentedHours: 0, grossRevenue: 0, fee: 0, downtimeHours: 0 }
-    expect(monthHasFigures(empty)).toBe(false)
-    expect(isDisabled(button(publish(true, empty), 'publish'))).toBe(true)
-    expect(publish(true, empty)).toContain('Nothing is entered for 2026-09 yet.')
+    // An all-zero month (an idle period, or a correction to zero) can still be published: it overwrites
+    // the month and removes a rate published earlier.
+    const zero = { ...month().fleet, rentedHours: 0, grossRevenue: 0, fee: 0, downtimeHours: 0, realizedRate: null }
+    expect(monthHasFigures(zero)).toBe(false)
+    expect(isDisabled(button(publish(true, zero), 'publish'))).toBe(false)
+    // Only while the month is loading is there nothing to publish yet.
+    const loading = inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={null} canWrite />)
+    expect(isDisabled(button(loading, 'publish'))).toBe(true)
 
     const { fetcher, calls } = fakeFetcher({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75 }, removed: [] } })
     const r = await publishKpis(vehicleFetcher('GPU SPV I', fetcher), '2026-09')
