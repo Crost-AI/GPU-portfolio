@@ -47,6 +47,11 @@ vi.mock('@/lib/lp-letters/aggregate', () => ({
 const createMessage = vi.fn(async () => ({ text: 'Fund AI letter.\n\nMissing information\n- Birch update.', usage: { inputTokens: 1, outputTokens: 1 } }))
 vi.mock('@/lib/ai', () => ({ createFundAIProvider: async () => ({ provider: { createMessage }, model: 'm', providerType: 'anthropic' }) }))
 vi.mock('@/lib/ai/usage', () => ({ logAIUsage: async () => {} }))
+// The real loader, watched: which options each tool loads a brief with.
+vi.mock('@/lib/lp-letters/draft-from-brief', async orig => {
+  const real = await orig<typeof import('@/lib/lp-letters/draft-from-brief')>()
+  return { ...real, loadLetterBrief: vi.fn(real.loadLetterBrief) }
+})
 
 import { LETTER_HANDLERS as H } from '@/lib/agent/letter-tools'
 import { getTool } from '@/lib/accounting/agent-tools'
@@ -175,6 +180,15 @@ describe('LP letter tools', () => {
     const out = await H.lp_write_letter(ctx(), { letter_id: 'l1', full_draft: 'Our IRR is 40%.\nMissing information' }) as any
     expect(out.review_flags).toEqual(expect.arrayContaining(['"40%" does not appear in the sources.']))
     expect(((await H.lp_write_letter(ctx(), { letter_id: 'l1', mark_final: true })) as any).review_flags).toBeUndefined()
+  })
+
+  it("reviews a full draft against the saved draft's brief: the paid profit share with gp_economics, never the accrued memo", async () => {
+    const { loadLetterBrief } = await import('@/lib/lp-letters/draft-from-brief')
+    const spy = vi.mocked(loadLetterBrief)
+    await H.lp_write_letter(ctx(member({ lp_relations: 'write', gp_economics: 'read' })), { letter_id: 'l1', full_draft: 'Text.' })
+    expect(spy.mock.calls.at(-1)![3]).toEqual({ template: null, showCarry: true })
+    await H.lp_write_letter(ctx(member({ lp_relations: 'write' })), { letter_id: 'l1', full_draft: 'Text.' })
+    expect(spy.mock.calls.at(-1)![3]).toEqual({ template: null, showCarry: false })
   })
 
   it('marks a letter final, the only kind that can be shared; unsharing a draft is allowed', async () => {

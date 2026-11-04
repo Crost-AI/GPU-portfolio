@@ -152,9 +152,11 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     // A full draft written from chat is reviewed against the letter's sources, as a drafted one is.
     let review_flags: string[] | undefined
     if (fullDraft !== undefined) {
+      // Against the brief a saved draft is written from: the PAID profit share for a gp_economics
+      // writer, as lp_draft_letter's, and never the accrued memo.
       const { brief, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, {
         vehicle: row.portfolio_group, year: row.period_year, quarter: row.period_quarter, yearEnd: !!row.is_year_end,
-      }, { template: row.template_id ?? null })
+      }, { template: row.template_id ?? null, showCarry: hasAccess(ctx.access, 'gp_economics', 'read') })
       review_flags = checkLetterDraft(fullDraft, brief, investorNames)
     }
     return { letter: summary(row), sections_written: sections?.length ?? 0, ...(review_flags ? { review_flags } : {}) }
