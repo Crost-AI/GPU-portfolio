@@ -15,7 +15,7 @@ import { vehicleIdByName } from './vehicle-id'
 import { loadChart } from './chart-load'
 import { computeCapitalAccounts, totalNav } from './capital-account'
 import { trialBalance, balanceSheet, incomeStatement } from './statements'
-import { vehicleKindByName } from './vehicle-domain'
+import { refuseGpuSpvTax, vehicleKindByName } from './vehicle-domain'
 import { closesToOwnerEquity, equityLabel } from './vocab'
 import { changesInMembersCapital } from './members-capital'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
@@ -419,6 +419,7 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   holding_k_ones: async ({ admin, fundId, portfolioGroup }, input) => {
+    await assertTaxSupported(admin, fundId, portfolioGroup)
     const taxYear = Number(input?.taxYear)
     if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
@@ -428,12 +429,14 @@ const HANDLERS: Record<string, AgentToolHandler> = {
 
   mark_holding_k_one: async ({ admin, fundId, portfolioGroup, userId }, input) => {
     if (!userId) throw new Error('Recording a K-1 needs a signed-in member.')
+    await assertTaxSupported(admin, fundId, portfolioGroup)
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
     if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
     return unwrap(await markReceivedK1(admin, fundId, userId, vehicleId, input))
   },
 
   tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    await assertTaxSupported(admin, fundId, portfolioGroup)
     const taxYear = Number(input?.taxYear)
     if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
     const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId ?? null, taxYear, { preview: true })
@@ -443,6 +446,7 @@ const HANDLERS: Record<string, AgentToolHandler> = {
 
   post_tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
     if (!userId) throw new Error('Posting tax adjustments needs a signed-in member.')
+    await assertTaxSupported(admin, fundId, portfolioGroup)
     const taxYear = Number(input?.taxYear)
     if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
     const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId, taxYear, {
@@ -690,6 +694,16 @@ export async function resolveVehicleForTool(
   // returning. The unnamed default still never picks a manco.
   if (requested?.trim()) return (await resolveVehicleWithAccess(admin, access, requested, tool.scope)).name
   return resolveVehicle(admin, fundId, requested, { access })
+}
+
+/**
+ * ── GPU fleet (P1) ── Tax fails closed on a GPU SPV until K-1 character understands its chart
+ * (refuseGpuSpvTax, #68). The tax tools call the tax page's functions without its routes in front,
+ * so they say the same refusal here, before reading or writing anything.
+ */
+async function assertTaxSupported(admin: _Sb, fundId: string, portfolioGroup: string): Promise<void> {
+  const refused = await refuseGpuSpvTax(admin as any, fundId, { group: portfolioGroup })
+  if (refused) throw new Error(((await refused.json()) as { error: string }).error)
 }
 
 /** Journal-import tool input: structured `transactions` from a connector, or a pasted QuickBooks Journal `text`. */
