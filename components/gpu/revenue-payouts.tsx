@@ -191,9 +191,9 @@ export function AutoPostSwitch({ value, error, canWrite, saving, onChange }: {
 }
 
 /**
- * The matches the bank auto-match run proposes, as this page can see them: each expected payout with
- * exactly one fitting deposit (suggestedMatches). Confirming one posts the match action, the same gate
- * as Match.
+ * The single-fit matches the bank auto-match run proposes, as this page can see them (suggestedMatches:
+ * a deposit that fits one expected payout and no other). Confirming one posts the match action, the
+ * same gate as Match.
  */
 export function SuggestedMatches({ payouts, money, canMatch, matching, onConfirm }: {
   payouts: PayoutView[]
@@ -207,7 +207,7 @@ export function SuggestedMatches({ payouts, money, canMatch, matching, onConfirm
     <div className="space-y-2" data-region="suggested-matches">
       <h3 className="text-base font-semibold">Suggested matches</h3>
       {list.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No expected payout has exactly one fitting bank deposit right now.</p>
+        <p className="text-sm text-muted-foreground">No expected payout has a bank deposit that fits it alone right now.</p>
       ) : (
         <ul className="space-y-1.5">
           {list.map(({ payout, txn }) => (
@@ -226,8 +226,10 @@ export function SuggestedMatches({ payouts, money, canMatch, matching, onConfirm
         </ul>
       )}
       <p className="text-caption text-muted-foreground">
-        The bank page&rsquo;s auto-match run proposes these same matches. A deposit that also fits a partner&rsquo;s open capital call is
-        left to a person there, which this list cannot see: check the bank page before confirming one that might be a partner&rsquo;s wire.
+        Each suggestion is a deposit that fits one expected payout and nothing else, the single fits the bank page&rsquo;s auto-match
+        run proposes. A deposit that fits several payouts is left to the Match picker above. The run also leaves to a person a deposit
+        that fits a partner&rsquo;s open capital call, which this list cannot see: check the bank page before confirming one that
+        might be a partner&rsquo;s wire.
       </p>
     </div>
   )

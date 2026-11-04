@@ -7,11 +7,15 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCurrency, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import type { Kpi } from '@/lib/gpu/kpis'
+import { monthBounds } from '@/lib/gpu/kpis'
 import Link from 'next/link'
 import { ErrorAlert, Field, FormDialog } from './fleet-ui'
 import { todayIso } from './fleet-math'
 import type { Fetcher } from './fleet-api'
-import { fleetCompanyHref, getKpis, kpiCaption, previousMonth, publishKpis, type FleetKpis, type PublishReply } from './revenue-api'
+import {
+  fleetCompanyHref, getKpis, kpiCaption, listEarnings, monthRowCounts, previousMonth, publishKpis, stagedOnlyHint,
+  type FleetKpis, type PublishReply,
+} from './revenue-api'
 
 // ── GPU fleet (P5) ── Fleet KPIs from GET /api/fleet/kpis: utilization, revenue, realized rate and
 // uptime, for a month and the trailing twelve. Figures count staged rows as well as posted ones, and
@@ -99,15 +103,31 @@ export function PublishMonth({ fetcher, month, fleet, canWrite }: {
 }) {
   const [open, setOpen] = useState(false)
   const [reply, setReply] = useState<PublishReply | null>(null)
+  // The month's entered rows: publishing writes POSTED rows only, so a month whose rows are all still
+  // staged would publish zeros. Read for this month only (the route bounds by period end).
+  const [rows, setRows] = useState<{ state: 'loading' } | { state: 'ok'; posted: number; pending: number } | { state: 'error'; error: string }>({ state: 'loading' })
+  useEffect(() => {
+    let cancelled = false
+    const { start, end } = monthBounds(month)
+    void listEarnings(fetcher, start, end).then(r => {
+      if (!cancelled) setRows(r.ok ? { state: 'ok', ...monthRowCounts(r.data.rows, month) } : { state: 'error', error: r.error })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, month])
   const zero = fleet != null && !monthHasFigures(fleet)
-  // Disabled only without the grant, or while the month's figures are still loading.
-  const hint = !canWrite ? PUBLISH_HINT : fleet == null ? `Loading ${month}\u2019s figures\u2026` : null
+  // Disabled without the grant, while the month is loading, and for a month with only unposted rows.
+  // An all-zero month that is posted (an idle period, a correction) publishes.
+  const hint = !canWrite ? PUBLISH_HINT
+    : fleet == null || rows.state === 'loading' ? `Loading ${month}\u2019s figures\u2026`
+    : rows.state === 'ok' ? stagedOnlyHint(rows, month)
+    : null
   return (
     <div className="flex flex-col items-end gap-1" data-region="publish">
       <Button size="sm" variant="outline" data-action="publish" disabled={hint != null} title={hint ?? undefined} onClick={() => { setReply(null); setOpen(true) }}>
         Publish {month} to metrics
       </Button>
       {hint && <p className="text-caption text-muted-foreground" data-hint="publish">{hint}</p>}
+      {rows.state === 'error' && <p className="text-caption text-muted-foreground" data-hint="rows">Could not check which of {month}&rsquo;s rows are posted ({rows.error}); only posted rows are published.</p>}
       {reply && <PublishOutcome reply={reply} />}
       <FormDialog open={open} onOpenChange={setOpen} title={`Publish ${month} to the fleet company's metrics?`}
         submitLabel="Publish"
@@ -141,15 +161,18 @@ export function AssetKpiCard({ fetcher, assetId, canWrite }: { fetcher: Fetcher;
     void getKpis(fetcher, month).then(r => { if (!cancelled) setKpis(r.ok ? { state: 'ok', data: r.data } : { state: 'error', error: r.error }) })
     return () => { cancelled = true }
   }, [fetcher, month])
+  // The reply for the month picked, or null while that month is still loading: a reply for the month
+  // before is never taken for this one (it would judge the new month by the old month's figures).
+  const current = kpis.state === 'ok' && kpis.data.month === month ? kpis.data : null
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <Field id="asset-kpi-month" label="Month">
           <Input id="asset-kpi-month" type="month" value={month} onChange={e => /^\d{4}-\d{2}$/.test(e.target.value) && setMonth(e.target.value)} className="h-9 w-40 tabular-nums" />
         </Field>
-        <PublishMonth key={month} fetcher={fetcher} month={month} fleet={kpis.state === 'ok' ? kpis.data.fleet : null} canWrite={canWrite} />
+        <PublishMonth key={month} fetcher={fetcher} month={month} fleet={current ? current.fleet : null} canWrite={canWrite} />
       </div>
-      {kpis.state === 'loading' ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      {kpis.state === 'loading' || (kpis.state === 'ok' && !current) ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         : kpis.state === 'error' ? <ErrorAlert>{kpis.error}</ErrorAlert>
         : <AssetKpis kpis={kpis.data} assetId={assetId} />}
     </div>

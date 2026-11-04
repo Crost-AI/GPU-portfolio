@@ -16,7 +16,7 @@ import { AccessProvider, type ClientAccess } from '@/components/access-context'
 import { CurrencyProvider } from '@/components/currency-context'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { RevenueView } from '@/components/gpu/revenue-view'
-import { PublishMonth } from '@/components/gpu/fleet-kpis'
+import { AssetKpiCard, PublishMonth } from '@/components/gpu/fleet-kpis'
 import type { Fetcher } from '@/components/gpu/fleet-api'
 
 // Vitest globals are off, so Testing Library cannot register its own cleanup.
@@ -261,19 +261,26 @@ describe('publishing a month to the fleet company', () => {
     gpuCount: 8, availableHours: 5760, rentedHours: 4320, utilizationPct: 75, grossRevenue: 8640, fee: 864, net: 7776,
     realizedRate: 2, downtimeHours: 0, uptimePct: 100, revenuePerGpuMonth: 1080, includesStaged: true,
   }
-  const queue = (...replies: { status: number; body: unknown }[]) => {
+  const POSTED = [{ status: 'posted', periodEnd: '2026-09-30' }]
+  /** The month's entered rows answer the GET; the publish POSTs take the queued replies and are recorded. */
+  const queue = (...replies: { status: number; body: unknown }[]) => queueWith(POSTED, ...replies)
+  const queueWith = (rows: unknown[], ...replies: { status: number; body: unknown }[]) => {
     const bodies: unknown[] = []
-    const fetcher: Fetcher = async (_path, init) => {
+    const paths: string[] = []
+    const fetcher: Fetcher = async (path, init) => {
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+      if (!init?.method || init.method === 'GET') { paths.push(path); return json(200, { rows }) }
       bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined)
       const r = replies.shift() ?? { status: 200, body: {} }
-      return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } })
+      return json(r.status, r.body)
     }
-    return { fetcher, bodies }
+    return { fetcher, bodies, paths }
   }
 
   it('confirms the month, publishes it, and links to the fleet company the reply names', async () => {
     const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75, 'gpu-revenue': 8640 }, removed: [] } })
     render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
     const dialog = await screen.findByRole('dialog')
     expect(dialog.textContent).toContain('posted rows only')
@@ -292,7 +299,7 @@ describe('publishing a month to the fleet company', () => {
     const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 0, 'gpu-revenue': 0 }, removed: ['gpu-realized-rate'] } })
     render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={zero} canWrite />)
     const publish = screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement
-    expect(publish.disabled).toBe(false)
+    await waitFor(() => expect(publish.disabled).toBe(false))
     fireEvent.click(publish)
     const dialog = await screen.findByRole('dialog')
     expect(dialog.textContent).toContain('Every figure for 2026-09 is zero')
@@ -301,13 +308,48 @@ describe('publishing a month to the fleet company', () => {
     expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
   })
 
+  it('a month with only unposted rows cannot be published yet, and says why; the month\u2019s rows are read for that month', async () => {
+    const { fetcher, bodies, paths } = queueWith([{ status: 'staged', periodEnd: '2026-09-30' }])
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    expect(await screen.findByText(/Only unposted rows for 2026-09/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(paths[0]).toBe('/api/fleet/ops/earnings?from=2026-09-01&to=2026-09-30')
+    expect(bodies).toHaveLength(0)
+  })
+
   it('a refused publish stays in the dialog in the route\u2019s words, and no link appears', async () => {
     const message = 'Vehicle not found'
     const { fetcher } = queue({ status: 404, body: { error: message } })
     render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Publish' }))
     expect(await within(screen.getByRole('dialog')).findByText(message)).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'Open fleet company metrics' })).toBeNull()
+  })
+})
+
+describe('the asset page\u2019s month card', () => {
+  it('judges a newly picked month only by its own reply: Publish waits while it loads', async () => {
+    const kpi = { gpuCount: 8, availableHours: 5760, rentedHours: 4320, utilizationPct: 75, grossRevenue: 8640, fee: 864, net: 7776, realizedRate: 2, downtimeHours: 0, uptimePct: 100, revenuePerGpuMonth: 1080, includesStaged: false }
+    const fetcher: Fetcher = (path) => {
+      const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      if (path.startsWith('/api/fleet/ops/earnings')) return json({ rows: [{ status: 'posted', periodEnd: path.match(/to=(\d{4}-\d{2})/)![1] + '-28' }] })
+      const month = path.match(/month=(\d{4}-\d{2})/)![1]
+      // The month picked first answers; the next one is still on its way.
+      if (month === '2026-08') return new Promise(() => {})
+      return json({ month, fleet: kpi, byType: {}, byAsset: { a1: { ...kpi, name: 'H200 #1' } }, ltm: kpi })
+    }
+    render(<CurrencyProvider currency="USD"><AssetKpiCard fetcher={fetcher} assetId="a1" canWrite /></CurrencyProvider>)
+    const picker = screen.getByLabelText('Month') as HTMLInputElement
+    const first = picker.value
+    await waitFor(() => expect((screen.getByRole('button', { name: `Publish ${first} to metrics` }) as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.getAllByText('75.0%').length).toBeGreaterThan(0)
+    fireEvent.change(picker, { target: { value: '2026-08' } })
+    const next = screen.getByRole('button', { name: 'Publish 2026-08 to metrics' }) as HTMLButtonElement
+    expect(next.disabled).toBe(true)
+    expect(screen.getByText(/Loading 2026-08/)).toBeTruthy()
+    // The month before's figures are not shown as this month's.
+    expect(screen.queryAllByText('75.0%')).toHaveLength(0)
   })
 })

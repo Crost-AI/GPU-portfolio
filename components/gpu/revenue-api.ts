@@ -385,11 +385,33 @@ export const setAutoPost = (f: Fetcher, on: boolean) => send<OpsSettings>(f, set
 export const fleetCompanyHref = (companyId: string) => `/companies/${encodeURIComponent(companyId)}`
 
 /**
- * The matches the bank auto-match run would propose, from what this page already reads: an expected
- * payout with exactly one fitting deposit (bank-auto-match-run's rule; it also sets aside a deposit
- * that fits a partner's open call, which only the run can see). Confirming one posts the payouts
- * route's match action.
+ * Single-fit matches, from what this page already reads: an expected payout whose one fitting deposit
+ * fits no other expected payout. The bank auto-match run decides per deposit (a deposit fitting
+ * several payouts is ambiguous, bank-auto-match-run), so a deposit shared between payouts is left to
+ * the Match picker, never offered twice. The run also sets aside a deposit that fits a partner's open
+ * call, which only it can see. Confirming one posts the payouts route's match action.
  */
 export function suggestedMatches(payouts: PayoutView[]): { payout: PayoutView; txn: PayoutView['candidates'][number] }[] {
-  return payouts.filter(p => p.status === 'expected' && p.candidates.length === 1).map(p => ({ payout: p, txn: p.candidates[0] }))
+  const expected = payouts.filter(p => p.status === 'expected')
+  const fits = new Map<string, number>()
+  for (const p of expected) for (const t of p.candidates) fits.set(t.id, (fits.get(t.id) ?? 0) + 1)
+  return expected
+    .filter(p => p.candidates.length === 1 && fits.get(p.candidates[0].id) === 1)
+    .map(p => ({ payout: p, txn: p.candidates[0] }))
+}
+
+/** A month's entered rows by what publishing does with them: it publishes POSTED rows only. */
+export function monthRowCounts(rows: Pick<EarningView, 'status' | 'periodEnd'>[], month: string): { posted: number; pending: number } {
+  const inMonth = rows.filter(r => r.periodEnd.slice(0, 7) === month)
+  return {
+    posted: inMonth.filter(r => r.status === 'posted').length,
+    pending: inMonth.filter(r => r.status === 'staged' || r.status === 'unmatched').length,
+  }
+}
+
+/** Why a month cannot be published yet: it has rows, none of them posted, so publishing would write zeros. */
+export function stagedOnlyHint(counts: { posted: number; pending: number }, month: string): string | null {
+  return counts.posted === 0 && counts.pending > 0
+    ? `Only unposted rows for ${month}: post them on the Revenue & payouts page first. Publishing now would write zeros.`
+    : null
 }

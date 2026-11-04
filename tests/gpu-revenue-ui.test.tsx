@@ -16,7 +16,7 @@ import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, PO
 import { AUTO_POST_HINT, AutoPostSwitch, PayoutsTable, SuggestedMatches, TieOutCard } from '@/components/gpu/revenue-payouts'
 import { AssetKpis, KpiRow, LtmTiles, PUBLISH_HINT, PublishMonth, PublishOutcome, lastCompleteMonth, ltmCaption, monthHasFigures } from '@/components/gpu/fleet-kpis'
 import {
-  combineLtm, derived, entryRowFor, fleetCompanyHref, setAutoPost, suggestedMatches, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
+  combineLtm, derived, entryRowFor, fleetCompanyHref, monthRowCounts, setAutoPost, stagedOnlyHint, suggestedMatches, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
   type EarningView, type EntryRow, type FleetKpis, type PayoutView, type ReceivableTieOut,
 } from '@/components/gpu/revenue-api'
@@ -319,15 +319,34 @@ describe('payouts', () => {
     expect(await setAutoPost(fetcher, false)).toEqual({ ok: false, status: 403, error: message })
   })
 
+  it('never suggests a deposit that fits more than one expected payout, as the bank run calls that ambiguous', () => {
+    const shared = PAYOUT.candidates[0]
+    const pA = { ...PAYOUT, id: 'pA', candidates: [shared] }
+    // A competing payout of the same amount with the shared deposit and another of its own.
+    const pB = { ...PAYOUT, id: 'pB', candidates: [shared, { id: 't2', txnDate: '2026-10-07', amount: 23_328, description: 'OTHER', status: 'drafted' }] }
+    expect(suggestedMatches([pA, pB])).toEqual([])
+    // Two payouts that each see only the same one deposit: neither is offered.
+    expect(suggestedMatches([pA, { ...pA, id: 'pC' }])).toEqual([])
+    // A matched payout no longer competes for the deposit.
+    expect(suggestedMatches([pA, { ...pB, status: 'matched' as const }]).map(m => m.payout.id)).toEqual(['pA'])
+    const html = renderToStaticMarkup(<SuggestedMatches payouts={[pA, pB]} money={money} canMatch matching={null} onConfirm={() => {}} />)
+    expect(html).not.toContain('data-suggestion=')
+    expect(html).toContain('fits several payouts is left to the Match picker')
+  })
+
   it('suggests a match only for an expected payout with exactly one fitting deposit', () => {
-    const two = { ...PAYOUT, id: 'p2', candidates: [...PAYOUT.candidates, { id: 't2', txnDate: '2026-10-07', amount: 23_328, description: 'OTHER', status: 'drafted' }] }
+    // Its own two deposits, shared with no other payout: two fits, so a person picks.
+    const two = { ...PAYOUT, id: 'p2', candidates: [
+      { id: 't3', txnDate: '2026-10-06', amount: 23_328, description: 'A', status: 'unmatched' },
+      { id: 't4', txnDate: '2026-10-07', amount: 23_328, description: 'B', status: 'drafted' },
+    ] }
     const matched = { ...PAYOUT, id: 'p3', status: 'matched' as const }
     const none = { ...PAYOUT, id: 'p4', candidates: [] }
     expect(suggestedMatches([PAYOUT, two, matched, none]).map(m => [m.payout.id, m.txn.id])).toEqual([['p1', 't1']])
     const html = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT, two]} money={money} canMatch matching={null} onConfirm={() => {}} />)
     expect(html).toContain('data-suggestion="p1"')
     expect(html).not.toContain('data-suggestion="p2"')
-    expect(html).toContain('left to a person')
+    expect(html).toContain('leaves to a person a deposit that fits a partner')
     expect(isDisabled(button(html, 'confirm-match'))).toBe(false)
     const locked = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT]} money={money} canMatch={false} matching={null} onConfirm={() => {}} />)
     expect(isDisabled(button(locked, 'confirm-match'))).toBe(true)
@@ -399,20 +418,24 @@ describe('fleet KPIs', () => {
     expect(combineLtm([a, b])).toEqual({ grossRevenue: 150, utilizationPct: 30, includesStaged: true })
   })
 
-  it('Publish needs fleet write and the month loaded, zeros included; it posts { action: publish, month }', async () => {
-    const publish = (canWrite: boolean, fleet = month().fleet) => inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={fleet} canWrite={canWrite} />)
-    expect(isDisabled(button(publish(true), 'publish'))).toBe(false)
-    expect(publish(true)).toContain('Publish 2026-09 to metrics')
-    expect(isDisabled(button(publish(false), 'publish'))).toBe(true)
+  it('Publish needs fleet write and the month\u2019s rows read; zeros publish, a month with only unposted rows does not', async () => {
+    // Statically the month's rows are still being read: disabled, and saying so; without the grant, the grant's hint.
+    const publish = (canWrite: boolean, fleet: ReturnType<typeof month>['fleet'] | null = month().fleet) =>
+      inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={fleet} canWrite={canWrite} />)
+    expect(isDisabled(button(publish(true), 'publish'))).toBe(true)
+    expect(publish(true)).toContain('Loading 2026-09')
     expect(publish(false)).toContain(PUBLISH_HINT)
-    // An all-zero month (an idle period, or a correction to zero) can still be published: it overwrites
-    // the month and removes a rate published earlier.
+    expect(publish(true, null)).toContain('Loading 2026-09')
+
+    // What decides once read: posted rows publish (zeros included); only unposted rows do not.
+    const row = (status: EarningView['status'], periodEnd = '2026-09-30') => ({ status, periodEnd })
+    expect(monthRowCounts([row('posted'), row('staged'), row('unmatched'), row('ignored'), row('posted', '2026-08-31')], '2026-09')).toEqual({ posted: 1, pending: 2 })
+    expect(stagedOnlyHint({ posted: 0, pending: 2 }, '2026-09')).toContain('Publishing now would write zeros')
+    expect(stagedOnlyHint({ posted: 1, pending: 2 }, '2026-09')).toBeNull()
+    // Nothing entered at all is not blocked: publishing then removes values the month no longer has.
+    expect(stagedOnlyHint({ posted: 0, pending: 0 }, '2026-09')).toBeNull()
     const zero = { ...month().fleet, rentedHours: 0, grossRevenue: 0, fee: 0, downtimeHours: 0, realizedRate: null }
     expect(monthHasFigures(zero)).toBe(false)
-    expect(isDisabled(button(publish(true, zero), 'publish'))).toBe(false)
-    // Only while the month is loading is there nothing to publish yet.
-    const loading = inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={null} canWrite />)
-    expect(isDisabled(button(loading, 'publish'))).toBe(true)
 
     const { fetcher, calls } = fakeFetcher({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75 }, removed: [] } })
     const r = await publishKpis(vehicleFetcher('GPU SPV I', fetcher), '2026-09')
