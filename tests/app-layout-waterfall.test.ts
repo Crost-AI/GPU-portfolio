@@ -48,7 +48,7 @@ vi.mock('@/lib/supabase/server', () => ({
   getUser: async () => ({ id: 'user-1', email: 'me@fund.test' }),
 }))
 vi.mock('@/lib/cache/layout', () => ({
-  getFundData: () => settle('getFundData', { id: 'fund-1', name: 'Laconia Capital', logo_url: null }),
+  getFundData: () => settle('getFundData', { id: 'fund-1', name: 'Example Capital', logo_url: null }),
   getMembership: () => settle('getMembership', { role }),
   getFundSettings: () => settle('getFundSettings', {
     currency: 'EUR',
@@ -159,7 +159,7 @@ describe('the (app) layout', () => {
         },
         "fofActive": false,
         "fundLogo": null,
-        "fundName": "Laconia Capital",
+        "fundName": "Example Capital",
         "hasAIKey": false,
         "isAdmin": true,
         "lpPortalEnabled": false,
@@ -233,7 +233,7 @@ describe('the (app) layout', () => {
         },
         "fofActive": false,
         "fundLogo": null,
-        "fundName": "Laconia Capital",
+        "fundName": "Example Capital",
         "hasAIKey": false,
         "isAdmin": false,
         "lpPortalEnabled": false,
@@ -307,7 +307,7 @@ describe('the (app) layout', () => {
         },
         "fofActive": false,
         "fundLogo": null,
-        "fundName": "Laconia Capital",
+        "fundName": "Example Capital",
         "hasAIKey": false,
         "isAdmin": false,
         "lpPortalEnabled": false,

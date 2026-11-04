@@ -20,7 +20,18 @@ const BLOCKED = new Set([
 const SKIP = /(^|\/)(package-lock\.json|vendor\/|public\/|demo-widget\/data\/)|\.(png|jpe?g|gif|ico|webp|pdf|woff2?|ttf|otf|zip|tgz|xlsx)$/
 const hash = (w: string) => createHash('sha256').update(w).digest('hex').slice(0, 16)
 
-const files = execSync('git ls-files', { encoding: 'utf8' }).split('\n').filter(f => f && !SKIP.test(f))
+// Migrations already applied in production still name clients in their comments. They are not
+// edited (CLAUDE.md: a shipped migration is never changed; the CLI and deploy/local's runner track
+// them by name), so they are skipped here rather than scrubbed. Add nothing to this list: a new
+// migration is new text and must pass like any other file.
+const APPLIED_MIGRATIONS_WITH_NAMES = new Set([
+  'supabase/migrations/20260716000003_backfill_associate_carry.sql',
+  'supabase/migrations/20260716000004_backfill_lp_positions_irr.sql',
+  'supabase/migrations/20261012120000_vehicle_letterhead.sql',
+])
+
+const files = execSync('git ls-files', { encoding: 'utf8' }).split('\n')
+  .filter(f => f && !SKIP.test(f) && !APPLIED_MIGRATIONS_WITH_NAMES.has(f))
 const textOf = (f: string) => {
   try { return statSync(f).size < 2_000_000 ? readFileSync(f, 'utf8') : '' } catch { return '' }
 }
