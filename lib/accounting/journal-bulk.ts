@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordAudit } from '@/lib/audit/events'
 import { closedPeriodRanges, dateInAnyClosedPeriod } from './periods'
-import { ACTUAL_BOOK } from './books'
+import { ACTUAL_BOOK, isLedgerBook, type LedgerBook } from './books'
+import { closedTaxYears } from '@/lib/tax/year-close'
 import { postExistingEntryWithAllocation } from './continuous-allocation'
 import { owningTransactions, type OwningTransaction } from './ownership'
 
@@ -26,6 +27,11 @@ export interface BulkScope {
   afterId: string | null
   /** Only drafts with this source_type (e.g. 'quickbooks'); null for any. */
   sourceType?: string | null
+  /**
+   * Which book's drafts. The actual ledger unless said otherwise. The only tax-book drafts are an
+   * outside journal's tax-routed entries (quickbooks/book-routing.ts); the tax run posts its own.
+   */
+  book?: LedgerBook
 }
 
 export interface BulkOutcome {
@@ -52,6 +58,7 @@ export function readBulkScope(body: unknown): BulkScope {
     end: (b.end as string) || null,
     afterId: typeof b.afterId === 'string' ? b.afterId : null,
     sourceType: typeof b.sourceType === 'string' && b.sourceType ? b.sourceType : null,
+    book: isLedgerBook(b.book) ? b.book : ACTUAL_BOOK,
   }
 }
 
@@ -83,6 +90,7 @@ export async function runBulkDraftAction(
   },
 ): Promise<{ ok: true; outcome: BulkOutcome } | { ok: false; error: unknown }> {
   const { fundId, vehicleId, group, action, scope, userId, investments, allocate } = opts
+  const book = scope.book ?? ACTUAL_BOOK
   const pageSize = Math.max(1, Math.min(opts.batchSize ?? BULK_BATCH, BULK_BATCH))
 
   // Candidate drafts — scoped to the vehicle, ordered by id for a stable keyset, with
@@ -90,7 +98,7 @@ export async function runBulkDraftAction(
   let query = (admin as any)
     .from('journal_entries')
     .select('id, entry_date, source_ref, journal_postings(amount)')
-    .eq('book', ACTUAL_BOOK)
+    .eq('book', book)
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
     .eq('status', 'draft')
@@ -112,7 +120,13 @@ export async function runBulkDraftAction(
   const hasMore = rows.length > pageSize
   const batch = rows.slice(0, pageSize)
 
-  const closed = await closedPeriodRanges(admin, fundId, group)
+  // Each book answers to its own lock: the actual book to closed fiscal periods, the tax book to
+  // closed tax years (20260827000005_tax_year_close.sql). Neither to the other's.
+  const closed = book === ACTUAL_BOOK ? await closedPeriodRanges(admin, fundId, group) : []
+  let closedYears = new Set<number>()
+  if (book !== ACTUAL_BOOK) {
+    try { closedYears = await closedTaxYears(admin, fundId, vehicleId as string) } catch (e) { return { ok: false, error: e } }
+  }
 
   const target: string[] = []
   const skipped: { id: string; reason: string }[] = []
@@ -124,9 +138,13 @@ export async function runBulkDraftAction(
       skipped.push({ id: e.id, reason: `In a closed period (${e.entry_date}) — reopen it first.` })
       continue
     }
+    if (closedYears.has(Number(String(e.entry_date).slice(0, 4)))) {
+      skipped.push({ id: e.id, reason: `In closed tax year ${String(e.entry_date).slice(0, 4)} — reopen it on the Tax page first.` })
+      continue
+    }
     // A draft an investment transaction owns (the derived fallback kept back when its allocation
     // failed): voiding it is deleting the transaction, which a bulk discard must not do silently.
-    if (action === 'void') {
+    if (action === 'void' && book === ACTUAL_BOOK) {
       let owners: OwningTransaction[]
       try {
         owners = await owningTransactions(admin, fundId, { id: e.id, source_ref: e.source_ref ?? null })
@@ -157,7 +175,18 @@ export async function runBulkDraftAction(
 
   let changedIds: string[] = []
   if (target.length > 0) {
-    if (action === 'post') {
+    if (action === 'post' && book !== ACTUAL_BOOK) {
+      // A tax-book draft is a book-to-tax difference: nothing to adopt and nothing to allocate —
+      // partner allocation is an actual-book operation (continuous-allocation.ts). So posting it is
+      // the status flip alone, which the tax-year trigger still guards.
+      for (const id of target) {
+        const { data: flipped, error: flipErr } = await (admin as any).from('journal_entries')
+          .update({ status: 'posted', posted_at: new Date().toISOString() })
+          .eq('id', id).eq('fund_id', fundId).eq('book', book).eq('status', 'draft').select('id')
+        if (flipErr) { skipped.push({ id, reason: flipErr.message }); continue }
+        if (!((flipped as any[]) ?? []).length) skipped.push({ id, reason: 'No longer a draft.' })
+      }
+    } else if (action === 'post') {
       // Every post goes through the choke point: it adopts investment lines and allocates to
       // partners. A raw status flip here used to skip both.
       for (const id of target) {
@@ -169,14 +198,14 @@ export async function runBulkDraftAction(
       }
     } else {
       const { error: upErr } = await (admin as any)
-        .from('journal_entries').update({ status: 'void', posted_at: null }).in('id', target).eq('fund_id', fundId).eq('status', 'draft')
+        .from('journal_entries').update({ status: 'void', posted_at: null }).in('id', target).eq('fund_id', fundId).eq('book', book).eq('status', 'draft')
       if (upErr) return { ok: false, error: upErr }
     }
     // Keep any bank transactions that point at these entries in step — the same two states
     // the single-entry bank actions use.
     const failed = new Set(skipped.map(item => item.id))
     changedIds = target.filter(id => !failed.has(id))
-    if (changedIds.length > 0) {
+    if (changedIds.length > 0 && book === ACTUAL_BOOK) {
       await (admin as any).from('bank_transactions')
         .update({ status: action === 'post' ? 'reconciled' : 'ignored' })
         .in('journal_entry_id', changedIds)
@@ -188,7 +217,7 @@ export async function runBulkDraftAction(
     // One record per batch, naming every entry: who posted or discarded them, in what scope.
     await recordAudit(admin as any, {
       fundId, vehicleId, actorId: userId, action: action === 'post' ? 'entries.bulk_post' : 'entries.bulk_void',
-      subjectType: 'journal_entries', details: { entryIds: changedIds, count: changedIds.length, ...(allocate === false ? { allocate: false } : {}) },
+      subjectType: 'journal_entries', details: { entryIds: changedIds, count: changedIds.length, ...(allocate === false ? { allocate: false } : {}), ...(book !== ACTUAL_BOOK ? { book } : {}) },
     })
   }
 
