@@ -153,14 +153,14 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
 
   delete_fund_holding: async (ctx: AgentToolContext, input: any) => {
     const userId = requireUser(ctx.userId)
-    const holding = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access)
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
     const out = unwrap(await deleteFundHolding(ctx.admin, { fundId: ctx.fundId, userId }, holding.id, () => entityScopeFor(ctx.admin, ctx.access)))
     return { deleted: { id: out.id, name: out.name }, accountsRemoved: out.accountsRemoved, ...(out.warning ? { warning: out.warning } : {}) }
   },
 
   clear_fund_register: async (ctx: AgentToolContext, input: any) => {
     const userId = requireUser(ctx.userId)
-    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
     const vehicle = await resolveVehicleRow(ctx.admin, ctx.access, await vehicleOf(input, ctx.access, ctx.admin, ctx.fundId))
     const out = unwrap(await clearFundRegister(ctx.admin, { fundId: ctx.fundId, userId }, company.id, vehicle.id))
     return {
@@ -171,7 +171,7 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   delete_inactive_company_accounts: async (ctx: AgentToolContext, input: any) => {
-    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
     const vehicleId = await vehicleIdByName(ctx.admin, ctx.fundId, ctx.portfolioGroup)
     if (!vehicleId) throw new Error(`No entity named ${ctx.portfolioGroup}.`)
     const out = unwrap(await deleteInactiveCompanyAccounts(ctx.admin, ctx.fundId, vehicleId, company.id))
@@ -228,8 +228,8 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
 
   merge_companies: async (ctx: AgentToolContext, input: any) => {
     const userId = requireUser(ctx.userId)
-    const from = await resolveCompany(ctx.admin, ctx.fundId, text(input?.from, 'from'), ctx.access)
-    const into = await resolveCompany(ctx.admin, ctx.fundId, text(input?.into, 'into'), ctx.access)
+    const from = await resolveCompany(ctx.admin, ctx.fundId, text(input?.from, 'from'), ctx.access, 'write')
+    const into = await resolveCompany(ctx.admin, ctx.fundId, text(input?.into, 'into'), ctx.access, 'write')
     const scope = () => entityScopeFor(ctx.admin, ctx.access)
     const { vehicleNames } = await scope()
     return unwrap(await mergeCompanies(ctx.admin, { fundId: ctx.fundId, userId, vehicleNames }, from.id, into.id, scope))
@@ -341,7 +341,7 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
   },
 
   delete_fund_holding: async (deps, input) => {
-    const holding = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access)
+    const holding = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
     const where = { fund_id: deps.fundId, company_id: holding.id }
     const [events, navs, terms, transactions, accounts] = await Promise.all([
       count(deps.admin, 'fund_capital_events', where), count(deps.admin, 'fund_nav_statements', where),
@@ -360,7 +360,7 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
   },
 
   clear_fund_register: async (deps, input) => {
-    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access)
+    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
     const vehicle = await resolveVehicleRow(deps.admin, deps.access, await vehicleOf(input, deps.access, deps.admin, deps.fundId))
     const rows = unwrap(await readRegisterRows(deps.admin, deps.fundId, company.id, vehicle.id))
     const released = rows.transactionsReleased.length
@@ -378,7 +378,7 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
     const vehicle = String(input.vehicle ?? '')
     const vehicleId = await vehicleIdByName(deps.admin, deps.fundId, vehicle)
     if (!vehicleId) throw new Error(`No entity named ${vehicle}.`)
-    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access)
+    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
     const read = unwrap(await readInactiveCompanyAccounts(deps.admin, deps.fundId, vehicleId, company.id))
     const blocked = read.postings > 0 || read.scheduleLines > 0
     return {
@@ -493,8 +493,8 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
   },
 
   merge_companies: async (deps, input) => {
-    const from = await resolveCompany(deps.admin, deps.fundId, text(input.from, 'from'), deps.access)
-    const into = await resolveCompany(deps.admin, deps.fundId, text(input.into, 'into'), deps.access)
+    const from = await resolveCompany(deps.admin, deps.fundId, text(input.from, 'from'), deps.access, 'write')
+    const into = await resolveCompany(deps.admin, deps.fundId, text(input.into, 'into'), deps.access, 'write')
     if (from.id === into.id) throw new Error('Choose two different records to merge.')
     const where = { fund_id: deps.fundId, company_id: from.id }
     const [transactions, events, navs, terms, notes, documents, metrics] = await Promise.all([

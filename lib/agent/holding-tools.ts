@@ -35,27 +35,27 @@ function needUser(ctx: AgentToolContext): string {
 
 export const HOLDING_HANDLERS: Record<string, AgentToolHandler> = {
   update_company: async (ctx: AgentToolContext, input: any) => {
-    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     const vehicleNames = (await entityScopeFor(ctx.admin, ctx.access)).vehicleNames
     return unwrap(await updateCompanyDetails(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null, vehicleNames }, company.id, companyChangeFromInput(input)))
   },
 
   set_holding_type: async (ctx: AgentToolContext, input: any) => {
-    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     return unwrap(await setHoldingType(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null }, company.id, input?.holding_type))
   },
 
   move_investment: async (ctx: AgentToolContext, input: any) => {
     if (!input?.transaction_id) throw new Error('transaction_id is required (list_investments gives it)')
-    const from = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
-    const to = await resolveCompany(ctx.admin, ctx.fundId, String(input?.to_company ?? ''), ctx.access)
+    const from = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
+    const to = await resolveCompany(ctx.admin, ctx.fundId, String(input?.to_company ?? ''), ctx.access, 'write')
     const vehicleNames = (await entityScopeFor(ctx.admin, ctx.access)).vehicleNames
     const out = unwrap(await moveInvestmentTransaction(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null, vehicleNames }, from.id, String(input.transaction_id), to.id))
     return { moved: input.transaction_id, from: out.from, to: out.to, transaction: out.transaction, ledger: out.ledger }
   },
 
   set_fund_terms: async (ctx: AgentToolContext, input: any) => {
-    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     const vehicleId = await holdingVehicle(ctx, holding.id, input?.vehicle)
     // The tool's snake_case names to the register's fields.
     const snake = (k: string) => k.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)
@@ -68,7 +68,7 @@ export const HOLDING_HANDLERS: Record<string, AgentToolHandler> = {
 
   record_fund_notice: async (ctx: AgentToolContext, input: any) => {
     const userId = needUser(ctx)
-    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     const vehicleId = await holdingVehicle(ctx, holding.id, input?.vehicle)
     const out = unwrap(await recordFundNotice(ctx.admin, { fundId: ctx.fundId, userId }, {
       companyId: holding.id,
@@ -92,7 +92,7 @@ export const HOLDING_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   record_nav_statement: async (ctx: AgentToolContext, input: any) => {
-    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access)
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
     if (holding.holding_type !== 'fund') {
       throw new Error(`${holding.name} is not a fund holding, so it has no NAV statements. Make it one with set_holding_type first.`)
     }

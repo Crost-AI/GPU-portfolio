@@ -18,7 +18,7 @@ const shown = (v: unknown) => (Array.isArray(v) ? (v.length ? v.join(', ') : 'no
 
 export async function previewUpdateCompany(deps: ActionDeps, input: any): Promise<PreviewResult> {
   // Only a company linked to one of the stager's entities resolves.
-  const company = await resolveCompany(deps.admin, deps.fundId, String(input?.company ?? ''), deps.access)
+  const company = await resolveCompany(deps.admin, deps.fundId, String(input?.company ?? ''), deps.access, 'write')
   const { vehicleNames } = await entityScopeFor(deps.admin, deps.access)
   const plan = unwrap(await planCompanyChange(deps.admin, { fundId: deps.fundId, vehicleNames }, company.id, companyChangeFromInput(input)))
   const changes = Object.fromEntries(Object.keys(plan.updates).map(k => [LABELS[k] ?? k, { from: plan.before[k], to: plan.updates[k] }]))
@@ -35,7 +35,7 @@ export async function previewUpdateCompany(deps: ActionDeps, input: any): Promis
 
 export async function executeUpdateCompany(deps: ActionDeps, input: any): Promise<Record<string, unknown>> {
   // Resolved again with the approver's access, and planned again against the live record.
-  const company = await resolveCompany(deps.admin, deps.fundId, String(input?.company ?? ''), deps.access)
+  const company = await resolveCompany(deps.admin, deps.fundId, String(input?.company ?? ''), deps.access, 'write')
   const { vehicleNames } = await entityScopeFor(deps.admin, deps.access)
   return unwrap(await updateCompanyDetails(deps.admin, { fundId: deps.fundId, userId: deps.userId, vehicleNames }, company.id, companyChangeFromInput(input)))
 }
