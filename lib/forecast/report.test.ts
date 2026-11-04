@@ -169,6 +169,31 @@ describe('cash that settles an earlier accrual', () => {
     actualEntries: entries, planEntries: [],
   })
 
+  it('a GPU disposal is not depreciation cash: equipment and accumulated depreciation are not clearing', () => {
+    const G: Account[] = [
+      ...B,
+      { id: 'cost', fundId: 'f', code: '1600-a1', name: 'GPU equipment — a1', type: 'asset', subtype: 'fixed_asset' },
+      { id: 'accum', fundId: 'f', code: '1650-a1', name: 'Accumulated depreciation — a1', type: 'asset', subtype: 'accumulated_depreciation' },
+      { id: 'dep', fundId: 'f', code: '5300', name: 'Depreciation', type: 'expense' },
+      { id: 'loss', fundId: 'f', code: '4500', name: 'Gain (loss) on disposal', type: 'income' },
+    ]
+    const entries = [
+      lp('2026-01-02', [['cost', 50_000], ['op', -50_000]]),
+      lp('2026-01-31', [['dep', 10_000], ['accum', -10_000]]),
+      lp('2026-02-28', [['dep', 10_000], ['accum', -10_000]]),
+      // Sold for 25,000: cost and accumulated depreciation come off, the rest is the loss.
+      lp('2026-03-15', [['op', 25_000], ['accum', 20_000], ['cost', -50_000], ['loss', 5_000]]),
+    ]
+    const r = buildReport({
+      view: 'actual', accounts: G, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+      actualsAvailableThrough: '2026-03', closedThrough: null, start: '2025-12', end: '2026-03', interval: 'month',
+      actualEntries: entries, planEntries: [],
+    })
+    // Depreciation never moved cash, so no month shows it as a cash expense.
+    expect(r.cashDetail!.find(l => l.key === 'dep')?.values ?? [0, 0, 0, 0]).toEqual([0, 0, 0, 0])
+    expect(r.cash[3]!.ending).toBe(-25_000)
+  })
+
   it('a call booked to a receivable and collected later is capital called when the wire lands', () => {
     const r = run([
       lp('2026-01-02', [['due', 100_000], ['cap', -60_000, 'lp-a'], ['cap', -40_000, 'lp-b']]),

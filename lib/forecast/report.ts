@@ -169,10 +169,16 @@ export function investmentFundingLoans(entries: FlowEntry[], byId: Map<string, A
  * A balance an entry parks money in until cash settles it: a receivable, a payable, an accrual, a
  * distribution declared. Not cash, an investment, a loan or equity — those are what the cash is FOR.
  */
+const FIXED_ASSET_SUBTYPES = new Set(['fixed_asset', 'accumulated_depreciation'])
+
 function isClearingAccount(a: Account | undefined, cashIds: Set<string>): boolean {
   if (!a || cashIds.has(a.id)) return false
   if (a.type !== 'asset' && a.type !== 'liability') return false
   if (a.type === 'asset' && (a.subtype === 'investment' || a.companyId)) return false
+  // ── GPU fleet ── Equipment and its accumulated depreciation are what cash buys and sells, not a
+  // balance waiting for cash. Treated as clearing, a GPU disposal's 1650 leg settled the
+  // depreciation "lots" and showed accumulated depreciation as a 5300 cash expense.
+  if (a.type === 'asset' && FIXED_ASSET_SUBTYPES.has(a.subtype ?? '')) return false
   if (a.type === 'liability' && BORROWING_SUBTYPES.has(a.subtype ?? '')) return false
   return true
 }
