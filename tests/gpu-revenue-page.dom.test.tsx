@@ -16,6 +16,8 @@ import { AccessProvider, type ClientAccess } from '@/components/access-context'
 import { CurrencyProvider } from '@/components/currency-context'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { RevenueView } from '@/components/gpu/revenue-view'
+import { AssetKpiCard, PublishMonth } from '@/components/gpu/fleet-kpis'
+import type { Fetcher } from '@/components/gpu/fleet-api'
 
 // Vitest globals are off, so Testing Library cannot register its own cleanup.
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -37,13 +39,13 @@ const EARNINGS = [row('new', { supersedesId: 'old', gross: 9000, net: 8136 }), r
 const PAYOUTS = { payouts: [], receivable: { asOf: '2026-10-20', ledger1150: 7776, postedNet: 7776, matchedPayouts: 0, expected: 7776, difference: 0 } }
 
 /** Answers by route and method; the POSTs to the earnings and import routes take their replies in order. */
-function server(posts: Record<string, unknown[]>, status: Record<string, number[]> = {}, payouts: unknown = PAYOUTS) {
+function server(posts: Record<string, unknown[]>, status: Record<string, number[]> = {}, payouts: unknown = PAYOUTS, settings: unknown = { autoPostPayoutMatches: false }) {
   const sent: { path: string; body: any }[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const path = String(input)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    if (init?.method === 'POST') {
+    if (init?.method === 'POST' || init?.method === 'PATCH') {
       sent.push({ path, body })
       const key = path.split('?')[0]
       const code = status[key]?.shift() ?? 200
@@ -52,6 +54,7 @@ function server(posts: Record<string, unknown[]>, status: Record<string, number[
     if (path.startsWith('/api/fleet/assets')) return json({ assets: ASSETS })
     if (path.startsWith('/api/fleet/ops/earnings')) return json({ rows: EARNINGS })
     if (path.startsWith('/api/fleet/ops/payouts')) { sent.push({ path: `GET ${path}`, body: undefined }); return json(payouts) }
+    if (path.startsWith('/api/fleet/ops/settings')) return json(settings)
     return json({})
   }))
   return sent
@@ -139,6 +142,41 @@ describe('the Revenue & payouts page', () => {
     expect(match.title).toMatch(/write access to Accounting/)
   })
 
+  it('the auto-post switch shows the stored setting, PATCHes a change, and shows a 403 in the route\u2019s words', async () => {
+    const message = 'Changing how payouts are booked needs write access to Fund accounting.'
+    const sent = server({ '/api/fleet/ops/settings': [{ error: message }] }, { '/api/fleet/ops/settings': [403] })
+    mount()
+    const sw = await screen.findByRole('switch')
+    await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect((sw as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.getByText(/Off \(the default\)/)).toBeTruthy()
+    fireEvent.click(sw)
+    await waitFor(() => expect(posts(sent)).toHaveLength(1))
+    expect(posts(sent)[0].path).toBe('/api/fleet/ops/settings?group=GPU%20SPV%20I')
+    expect(posts(sent)[0].body).toEqual({ autoPostPayoutMatches: true, group: 'GPU SPV I' })
+    expect(await screen.findByText(message)).toBeTruthy()
+    expect(sw.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('a stored "on" setting reads as on', async () => {
+    server({}, {}, PAYOUTS, { autoPostPayoutMatches: true })
+    mount()
+    const sw = await screen.findByRole('switch')
+    await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it('Confirm match on a suggestion posts the match action for its one deposit', async () => {
+    const single = { ...PAYOUTS, payouts: [{
+      id: 'p1', payoutDate: '2026-10-05', amount: 7776, reference: 'PO-1', note: null, status: 'expected', bankTransactionId: null, entryId: null,
+      candidates: [{ id: 't1', txnDate: '2026-10-06', amount: 7776, description: 'PAYOUT', status: 'unmatched' }],
+    }] }
+    const sent = server({ '/api/fleet/ops/payouts': [{ payoutId: 'p1', entryId: 'je' }] }, {}, single)
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm match' }))
+    await waitFor(() => expect(posts(sent)).toHaveLength(1))
+    expect(posts(sent)[0].body).toEqual({ action: 'match', payoutId: 'p1', txnId: 't1', group: 'GPU SPV I' })
+  })
+
   it('Cancel in the confirmation sends nothing more', async () => {
     const sent = server({ '/api/fleet/ops/earnings': [{ needsReversal: [{ id: 'new', supersedesId: 'old', entryId: 'je-old', entryDate: '2026-09-30' }] }] })
     mount()
@@ -215,5 +253,117 @@ describe('the Revenue & payouts page', () => {
       rows: [{ assetId: 'h1', period_start: start, period_end: end, rented_hours: 4320, gross: 8640, fee: 864, net: 7776 }],
     })
     expect(await screen.findByRole('status')).toBeTruthy()
+  })
+})
+
+describe('publishing a month to the fleet company', () => {
+  const FLEET = {
+    gpuCount: 8, availableHours: 5760, rentedHours: 4320, utilizationPct: 75, grossRevenue: 8640, fee: 864, net: 7776,
+    realizedRate: 2, downtimeHours: 0, uptimePct: 100, revenuePerGpuMonth: 1080, includesStaged: true,
+  }
+  const POSTED = [{ status: 'posted', periodEnd: '2026-09-30' }]
+  /** The month's entered rows answer the GET; the publish POSTs take the queued replies and are recorded. */
+  const queue = (...replies: { status: number; body: unknown }[]) => queueWith(POSTED, ...replies)
+  const queueWith = (rows: unknown[], ...replies: { status: number; body: unknown }[]) => {
+    const bodies: unknown[] = []
+    const paths: string[] = []
+    const fetcher: Fetcher = async (path, init) => {
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+      if (!init?.method || init.method === 'GET') { paths.push(path); return json(200, { rows }) }
+      bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined)
+      const r = replies.shift() ?? { status: 200, body: {} }
+      return json(r.status, r.body)
+    }
+    return { fetcher, bodies, paths }
+  }
+
+  it('confirms the month, publishes it, and links to the fleet company the reply names', async () => {
+    const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75, 'gpu-revenue': 8640 }, removed: [] } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('posted rows only')
+    expect(dialog.textContent).toContain('Publishing writes the posted figures, not these')
+    expect(bodies).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    const link = await screen.findByRole('link', { name: 'Open fleet company metrics' })
+    expect(link.getAttribute('href')).toBe('/companies/c1')
+    expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
+    expect(screen.getByText(/Published 2026-09: 2 metrics written/)).toBeTruthy()
+  })
+
+  it('an all-zero posted correction can be published, and the confirm says what that does', async () => {
+    // A month first published with a rate of 2, then corrected to zero hours (metrics-publish.test.ts).
+    const zero = { ...FLEET, rentedHours: 0, utilizationPct: 0, grossRevenue: 0, fee: 0, net: 0, realizedRate: null, includesStaged: false }
+    const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 0, 'gpu-revenue': 0 }, removed: ['gpu-realized-rate'] } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={zero} canWrite />)
+    const publish = screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement
+    await waitFor(() => expect(publish.disabled).toBe(false))
+    fireEvent.click(publish)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('Every figure for 2026-09 is zero')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    expect(await screen.findByText(/Published 2026-09: 2 metrics written, 1 removed/)).toBeTruthy()
+    expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
+  })
+
+  it('a staged all-zero correction over a posted month promises no zeros: it says the posted figures are published', async () => {
+    // Posted: 100 hours and 200 revenue. Staged: a correction to zero, which this page counts and publishing does not.
+    const staged = { ...FLEET, rentedHours: 0, utilizationPct: 0, grossRevenue: 0, fee: 0, net: 0, realizedRate: null, includesStaged: true }
+    const { fetcher } = queueWith([{ status: 'posted', periodEnd: '2026-09-30' }, { status: 'staged', periodEnd: '2026-09-30' }])
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={staged} canWrite />)
+    const publish = screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement
+    await waitFor(() => expect(publish.disabled).toBe(false))
+    fireEvent.click(publish)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).not.toContain('Every figure for 2026-09 is zero')
+    expect(dialog.textContent).toContain('Publishing writes the posted figures, not these')
+    expect(dialog.textContent).toContain('(1 for 2026-09)')
+  })
+
+  it('a month with only unposted rows cannot be published yet, and says why; the month\u2019s rows are read for that month', async () => {
+    const { fetcher, bodies, paths } = queueWith([{ status: 'staged', periodEnd: '2026-09-30' }])
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    expect(await screen.findByText(/Only unposted rows for 2026-09/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(paths[0]).toBe('/api/fleet/ops/earnings?from=2026-09-01&to=2026-09-30')
+    expect(bodies).toHaveLength(0)
+  })
+
+  it('a refused publish stays in the dialog in the route\u2019s words, and no link appears', async () => {
+    const message = 'Vehicle not found'
+    const { fetcher } = queue({ status: 404, body: { error: message } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Publish' }))
+    expect(await within(screen.getByRole('dialog')).findByText(message)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Open fleet company metrics' })).toBeNull()
+  })
+})
+
+describe('the asset page\u2019s month card', () => {
+  it('judges a newly picked month only by its own reply: Publish waits while it loads', async () => {
+    const kpi = { gpuCount: 8, availableHours: 5760, rentedHours: 4320, utilizationPct: 75, grossRevenue: 8640, fee: 864, net: 7776, realizedRate: 2, downtimeHours: 0, uptimePct: 100, revenuePerGpuMonth: 1080, includesStaged: false }
+    const fetcher: Fetcher = (path) => {
+      const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      if (path.startsWith('/api/fleet/ops/earnings')) return json({ rows: [{ status: 'posted', periodEnd: path.match(/to=(\d{4}-\d{2})/)![1] + '-28' }] })
+      const month = path.match(/month=(\d{4}-\d{2})/)![1]
+      // The month picked first answers; the next one is still on its way.
+      if (month === '2026-08') return new Promise(() => {})
+      return json({ month, fleet: kpi, byType: {}, byAsset: { a1: { ...kpi, name: 'H200 #1' } }, ltm: kpi })
+    }
+    render(<CurrencyProvider currency="USD"><AssetKpiCard fetcher={fetcher} assetId="a1" canWrite /></CurrencyProvider>)
+    const picker = screen.getByLabelText('Month') as HTMLInputElement
+    const first = picker.value
+    await waitFor(() => expect((screen.getByRole('button', { name: `Publish ${first} to metrics` }) as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.getAllByText('75.0%').length).toBeGreaterThan(0)
+    fireEvent.change(picker, { target: { value: '2026-08' } })
+    const next = screen.getByRole('button', { name: 'Publish 2026-08 to metrics' }) as HTMLButtonElement
+    expect(next.disabled).toBe(true)
+    expect(screen.getByText(/Loading 2026-08/)).toBeTruthy()
+    // The month before's figures are not shown as this month's.
+    expect(screen.queryAllByText('75.0%')).toHaveLength(0)
   })
 })

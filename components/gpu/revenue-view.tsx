@@ -12,9 +12,9 @@ import { todayIso } from './fleet-math'
 import { vehicleFetcher } from './waterfall-api'
 import { EntryForm } from './revenue-entry'
 import { EarningsTable, OPS_WRITE_HINT, ReversalConfirm } from './revenue-earnings'
-import { AutoPostPlaceholder, PayoutsTable, RecordPayoutDialog, TieOutCard } from './revenue-payouts'
+import { AutoPostSwitch, PayoutsTable, RecordPayoutDialog, SuggestedMatches, TieOutCard } from './revenue-payouts'
 import {
-  entryRowFor, ignoreEarnings, lastTwelveMonths, listEarnings, listPayouts, matchPayout, postEarnings, previousMonth, recordPayout,
+  entryRowFor, getOpsSettings, ignoreEarnings, setAutoPost, lastTwelveMonths, listEarnings, listPayouts, matchPayout, postEarnings, previousMonth, recordPayout,
   type EarningView, type EntryRow, type NeedsReversal, type PayoutView, type ReceivableTieOut,
 } from './revenue-api'
 
@@ -49,6 +49,10 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
   const [choice, setChoice] = useState<Record<string, string>>({})
   const [matching, setMatching] = useState<string | null>(null)
   const [payoutError, setPayoutError] = useState<string | null>(null)
+  // Whether the bank run books payout matches itself; null while read (or when the read failed).
+  const [autoPost, setAutoPostState] = useState<boolean | null>(null)
+  const [autoPostError, setAutoPostError] = useState<string | null>(null)
+  const [savingAutoPost, setSavingAutoPost] = useState(false)
   const [recordOpen, setRecordOpen] = useState(false)
 
   // The servers to enter for: on the books and running (in service or offline), as of today.
@@ -81,6 +85,24 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
     })
     return () => { cancelled = true }
   }, [fetcher, payoutsVersion])
+
+  useEffect(() => {
+    let cancelled = false
+    void getOpsSettings(fetcher).then(r => {
+      if (cancelled) return
+      if (r.ok) setAutoPostState(r.data.autoPostPayoutMatches)
+      else setAutoPostError(`The payout setting could not be read: ${r.error}`)
+    })
+    return () => { cancelled = true }
+  }, [fetcher])
+
+  async function changeAutoPost(on: boolean) {
+    setSavingAutoPost(true); setAutoPostError(null)
+    const r = await setAutoPost(fetcher, on)
+    setSavingAutoPost(false)
+    if (r.ok) setAutoPostState(r.data.autoPostPayoutMatches)
+    else setAutoPostError(r.error)
+  }
 
   const reloadEarnings = () => setEarningsVersion(n => n + 1)
   const reloadPayouts = () => setPayoutsVersion(n => n + 1)
@@ -185,10 +207,13 @@ export function RevenueView({ vehicle }: { vehicle: string; vehicleId: string | 
                   matching={matching} onMatch={(id, txn) => { void match(id, txn) }}
                 />
                 <p className="text-caption text-muted-foreground">
-                  Matching books the deposit against the receivable (Dr 1000 / Cr 1150). The bank page&rsquo;s auto-match run also
-                  matches a payout when exactly one fits a deposit, so a payout may show as matched without being matched here.
+                  Matching books the deposit against the receivable (Dr 1000 / Cr 1150). With the setting below on, the bank page&rsquo;s
+                  auto-match run books a single-fit match itself, so a payout may show as matched without being matched here.
                 </p>
-                <AutoPostPlaceholder />
+                <SuggestedMatches payouts={payouts.data.payouts} money={money} canMatch={canWriteFleet && canBook} matching={matching}
+                  onConfirm={(id, txn) => { void match(id, txn) }} />
+                <AutoPostSwitch value={autoPost} error={autoPostError} canWrite={canWriteFleet && canBook} saving={savingAutoPost}
+                  onChange={on => { void changeAutoPost(on) }} />
               </div>
               <TieOutCard tie={payouts.data.receivable} money={money} />
             </div>

@@ -7,10 +7,15 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCurrency, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import type { Kpi } from '@/lib/gpu/kpis'
-import { ErrorAlert, Field } from './fleet-ui'
+import { monthBounds } from '@/lib/gpu/kpis'
+import Link from 'next/link'
+import { ErrorAlert, Field, FormDialog } from './fleet-ui'
 import { todayIso } from './fleet-math'
 import type { Fetcher } from './fleet-api'
-import { getKpis, kpiCaption, previousMonth, type FleetKpis } from './revenue-api'
+import {
+  fleetCompanyHref, getKpis, kpiCaption, listEarnings, monthRowCounts, previousMonth, publishKpis, stagedOnlyHint,
+  type FleetKpis, type PublishReply,
+} from './revenue-api'
 
 // ── GPU fleet (P5) ── Fleet KPIs from GET /api/fleet/kpis: utilization, revenue, realized rate and
 // uptime, for a month and the trailing twelve. Figures count staged rows as well as posted ones, and
@@ -63,21 +68,103 @@ export function KpiRow({ kpi, label }: { kpi: Kpi; label: string }) {
   )
 }
 
+export const PUBLISH_HINT = 'Publishing to the fleet company needs write access to the GPU fleet.'
+
 /**
- * Publishing a month's KPIs to the fleet company's metrics arrives with P3 PR B (#98: POST
- * /api/fleet/kpis { action: 'publish' }). Until that is on main the button is shown disabled with why.
+ * Whether any of the month's figures is non-zero. Not a gate: an all-zero month is a real idle period
+ * or a correction, and publishing it overwrites the month and removes a rate published earlier
+ * (publishFleetKpis). It only changes what the confirmation says.
  */
-export function PublishPlaceholder() {
+export const monthHasFigures = (k: Pick<Kpi, 'rentedHours' | 'grossRevenue' | 'fee' | 'downtimeHours'> | null | undefined) =>
+  !!k && (k.rentedHours > 0 || k.grossRevenue > 0 || k.fee > 0 || k.downtimeHours > 0)
+
+/** What a publish did, and where to see it. Rendered statically by the tests. */
+export function PublishOutcome({ reply }: { reply: PublishReply }) {
+  const n = Object.keys(reply.written).length
   return (
-    <div className="flex flex-col items-end gap-1" data-placeholder="publish">
-      <Button size="sm" variant="outline" disabled title="Publishing arrives with the fleet company metrics">Publish month to metrics</Button>
-      <p className="text-caption text-muted-foreground">Arrives with the fleet company metrics.</p>
+    <p role="status" className="text-sm text-success" data-published={reply.month}>
+      Published {reply.month}: {n} {n === 1 ? 'metric' : 'metrics'} written{reply.removed.length ? `, ${reply.removed.length} removed` : ''}.{' '}
+      <Link href={fleetCompanyHref(reply.companyId)} className="underline underline-offset-2" data-link="fleet-company">Open fleet company metrics</Link>
+    </p>
+  )
+}
+
+/**
+ * Publish a month's KPIs to the fleet company's metrics (POST /api/fleet/kpis, fleet write). The
+ * route publishes POSTED rows only, so a staged row waits until it is posted. The fleet company's
+ * link comes from the reply: no route on main names it beforehand.
+ */
+export function PublishMonth({ fetcher, month, fleet, canWrite }: {
+  fetcher: Fetcher
+  month: string
+  /** The month's fleet KPI, to tell whether anything was entered; null while loading. */
+  fleet: Kpi | null
+  canWrite: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [reply, setReply] = useState<PublishReply | null>(null)
+  // The month's entered rows: publishing writes POSTED rows only, so a month whose rows are all still
+  // staged would publish zeros. Read for this month only (the route bounds by period end).
+  const [rows, setRows] = useState<{ state: 'loading' } | { state: 'ok'; posted: number; pending: number } | { state: 'error'; error: string }>({ state: 'loading' })
+  useEffect(() => {
+    let cancelled = false
+    const { start, end } = monthBounds(month)
+    void listEarnings(fetcher, start, end).then(r => {
+      if (!cancelled) setRows(r.ok ? { state: 'ok', ...monthRowCounts(r.data.rows, month) } : { state: 'error', error: r.error })
+    })
+    return () => { cancelled = true }
+  }, [fetcher, month])
+  // The page's figures count staged rows (a correction not yet posted, say); publishing counts posted
+  // rows only. So the page's figures describe what is published only when no staged row counts: only
+  // then may the confirm say publishing writes zeros.
+  const pendingCounted = fleet?.includesStaged === true
+  const zero = fleet != null && !pendingCounted && !monthHasFigures(fleet)
+  // Disabled without the grant, while the month is loading, and for a month with only unposted rows.
+  // An all-zero month that is posted (an idle period, a correction) publishes.
+  const hint = !canWrite ? PUBLISH_HINT
+    : fleet == null || rows.state === 'loading' ? `Loading ${month}\u2019s figures\u2026`
+    : rows.state === 'ok' ? stagedOnlyHint(rows, month)
+    : null
+  return (
+    <div className="flex flex-col items-end gap-1" data-region="publish">
+      <Button size="sm" variant="outline" data-action="publish" disabled={hint != null} title={hint ?? undefined} onClick={() => { setReply(null); setOpen(true) }}>
+        Publish {month} to metrics
+      </Button>
+      {hint && <p className="text-caption text-muted-foreground" data-hint="publish">{hint}</p>}
+      {rows.state === 'error' && <p className="text-caption text-muted-foreground" data-hint="rows">Could not check which of {month}&rsquo;s rows are posted ({rows.error}); only posted rows are published.</p>}
+      {reply && <PublishOutcome reply={reply} />}
+      <FormDialog open={open} onOpenChange={setOpen} title={`Publish ${month} to the fleet company's metrics?`}
+        submitLabel="Publish"
+        onSubmit={async () => {
+          const r = await publishKpis(fetcher, month)
+          if (!r.ok) return r.error
+          setReply(r.data)
+          return null
+        }}>
+        <p className="text-sm text-muted-foreground" data-confirm="publish">
+          Writes {month}&rsquo;s utilization, revenue and rate figures to the fleet company, from posted rows only. Publishing the
+          month again overwrites it.
+        </p>
+        {pendingCounted && (
+          <p className="rounded-lg bg-warning-subtle px-3 py-2 text-sm text-warning" data-confirm="pending">
+            The figures on this page include staged rows that are not posted yet{rows.state === 'ok' && rows.pending > 0 ? ` (${rows.pending} for ${month})` : ''}.
+            Publishing writes the posted figures, not these: a staged correction is not published until it is posted. Post those
+            rows first to publish what this page shows.
+          </p>
+        )}
+        {zero && (
+          <p className="text-sm text-muted-foreground" data-confirm="zero">
+            Every figure for {month} is zero on this page: publishing writes zeros, and removes a rate published for the month
+            earlier (an idle month, or a correction to one already published).
+          </p>
+        )}
+      </FormDialog>
     </div>
   )
 }
 
 /** The asset page's card: one server's month, with a month picker, and the fleet's trailing twelve. */
-export function AssetKpiCard({ fetcher, assetId }: { fetcher: Fetcher; assetId: string }) {
+export function AssetKpiCard({ fetcher, assetId, canWrite }: { fetcher: Fetcher; assetId: string; canWrite: boolean }) {
   const [month, setMonth] = useState(() => lastCompleteMonth())
   const [kpis, setKpis] = useState<{ state: 'loading' } | { state: 'ok'; data: FleetKpis } | { state: 'error'; error: string }>({ state: 'loading' })
   useEffect(() => {
@@ -85,12 +172,18 @@ export function AssetKpiCard({ fetcher, assetId }: { fetcher: Fetcher; assetId: 
     void getKpis(fetcher, month).then(r => { if (!cancelled) setKpis(r.ok ? { state: 'ok', data: r.data } : { state: 'error', error: r.error }) })
     return () => { cancelled = true }
   }, [fetcher, month])
+  // The reply for the month picked, or null while that month is still loading: a reply for the month
+  // before is never taken for this one (it would judge the new month by the old month's figures).
+  const current = kpis.state === 'ok' && kpis.data.month === month ? kpis.data : null
   return (
     <div className="space-y-3">
-      <Field id="asset-kpi-month" label="Month">
-        <Input id="asset-kpi-month" type="month" value={month} onChange={e => /^\d{4}-\d{2}$/.test(e.target.value) && setMonth(e.target.value)} className="h-9 w-40 tabular-nums" />
-      </Field>
-      {kpis.state === 'loading' ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <Field id="asset-kpi-month" label="Month">
+          <Input id="asset-kpi-month" type="month" value={month} onChange={e => /^\d{4}-\d{2}$/.test(e.target.value) && setMonth(e.target.value)} className="h-9 w-40 tabular-nums" />
+        </Field>
+        <PublishMonth key={month} fetcher={fetcher} month={month} fleet={current ? current.fleet : null} canWrite={canWrite} />
+      </div>
+      {kpis.state === 'loading' || (kpis.state === 'ok' && !current) ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         : kpis.state === 'error' ? <ErrorAlert>{kpis.error}</ErrorAlert>
         : <AssetKpis kpis={kpis.data} assetId={assetId} />}
     </div>
