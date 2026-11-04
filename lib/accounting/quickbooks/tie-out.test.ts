@@ -148,9 +148,9 @@ describe('real ledger normal-side balances', () => {
       { id: 'cash', fundId: 'f', code: '1000', name: 'Cash', type: 'asset' },
       { id: 'lp', fundId: 'f', code: '3100-lp', name: 'Partner', type: 'equity' },
     ]
-    const ledger = trialBalance(accounts, [{ accountId: 'cash', amount: 1523889, currency: 'USD' }, { accountId: 'lp', amount: -1523889, currency: 'USD' }])
+    const ledger = trialBalance(accounts, [{ accountId: 'cash', amount: 1500000, currency: 'USD' }, { accountId: 'lp', amount: -1500000, currency: 'USD' }])
     const result = compareTrialBalance(ledger, [], new Map())
-    expect(result.lines.map(l => l.difference)).toEqual([1523889, -1523889])
+    expect(result.lines.map(l => l.difference)).toEqual([1500000, -1500000])
   })
 })
 

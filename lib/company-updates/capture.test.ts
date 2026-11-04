@@ -349,7 +349,7 @@ describe('loadStoredInboundEmail fallback', () => {
                 return { data: null, error: { message: 'canceling statement due to statement timeout' } }
               }
               if (cols.startsWith('Name:')) {
-                return { data: { Name: 'huge.pdf', ContentType: 'application/pdf', ContentLength: 38_101_605, StoragePath: null, ContentError: null }, error: null }
+                return { data: { Name: 'huge.pdf', ContentType: 'application/pdf', ContentLength: 38_000_000, StoragePath: null, ContentError: null }, error: null }
               }
               return {
                 data: {
@@ -369,7 +369,7 @@ describe('loadStoredInboundEmail fallback', () => {
     expect(email.raw_payload?.TextBody).toBe('Body survives')
     expect(email.raw_payload?.FromFull).toEqual({ Email: 'a@b.test', Name: 'Ada' })
     expect(email.raw_payload?.Attachments).toEqual([
-      expect.objectContaining({ Name: 'huge.pdf', ContentLength: 38_101_605, ContentError: expect.stringMatching(/too large to load/) }),
+      expect.objectContaining({ Name: 'huge.pdf', ContentLength: 38_000_000, ContentError: expect.stringMatching(/too large to load/) }),
     ])
     expect(selects.some(s => s.includes('raw_payload->Attachments->0->Name'))).toBe(true)
   })

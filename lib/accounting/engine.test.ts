@@ -320,13 +320,13 @@ describe('schedule of investments', () => {
 
   it('fair value counts the unrealized ASSET, not the unrealized income account', () => {
     const p: Posting[] = [
-      { accountId: 'cost', amount: 2_749_992.64, currency: 'USD' },
-      { accountId: 'unrl', amount: 1_178_583.08, currency: 'USD' },
-      { accountId: 'unrlInc', amount: -1_178_583.08, currency: 'USD' }, // the credit side of the mark
+      { accountId: 'cost', amount: 2_700_000.00, currency: 'USD' },
+      { accountId: 'unrl', amount: 1_200_000.00, currency: 'USD' },
+      { accountId: 'unrlInc', amount: -1_200_000.00, currency: 'USD' }, // the credit side of the mark
     ]
-    const soi = scheduleOfInvestments(accts, p, 3_992_163.79)
-    expect(soi.ledgerCost).toBe(2_749_992.64)
-    expect(soi.ledgerFairValue).toBe(3_928_575.72) // NOT 5,107,158.80
+    const soi = scheduleOfInvestments(accts, p, 4_000_000.00)
+    expect(soi.ledgerCost).toBe(2_700_000.00)
+    expect(soi.ledgerFairValue).toBe(3_900_000.00) // NOT 5,100,000.00
   })
   it('fair value = cost + unrealized, with % of net assets', () => {
     const p: Posting[] = [
@@ -388,20 +388,20 @@ describe('statement of cash flows', () => {
     // (operating). Classifying by the entry's source_type would dump the whole thing
     // into financing.
     const cash: CashPosting[] = [
-      { entryId: 'payoff', accountId: 'cash', amount: -20_689.95, sourceType: 'loan_repayment' },
-      { entryId: 'payoff', accountId: 'note', amount: 14_992.64, sourceType: 'loan_repayment' },
-      { entryId: 'payoff', accountId: 'int', amount: 5_697.31, sourceType: 'loan_repayment' },
+      { entryId: 'payoff', accountId: 'cash', amount: -21_000.00, sourceType: 'loan_repayment' },
+      { entryId: 'payoff', accountId: 'note', amount: 15_000.00, sourceType: 'loan_repayment' },
+      { entryId: 'payoff', accountId: 'int', amount: 5_700.00, sourceType: 'loan_repayment' },
     ]
     const scf = statementOfCashFlows('cash', cash, accts, 100_000)
 
-    expect(scf.financing.total).toBe(-14_992.64)
+    expect(scf.financing.total).toBe(-15_000.00)
     expect(scf.financing.lines[0]).toMatchObject({ code: '2200', name: 'Note payable' })
 
-    expect(scf.operating.total).toBe(-5_697.31)
+    expect(scf.operating.total).toBe(-5_700.00)
     expect(scf.operating.lines[0]).toMatchObject({ code: '5300', name: 'Interest expense' })
 
-    expect(scf.netChange).toBe(-20_689.95) // still ties to the actual cash moved
-    expect(scf.endingCash).toBe(79_310.05)
+    expect(scf.netChange).toBe(-21_000.00) // still ties to the actual cash moved
+    expect(scf.endingCash).toBe(79_000.00)
   })
 
   it('collapses per-LP capital accounts into one 3100 Partners’ capital line', () => {
@@ -440,8 +440,8 @@ describe('statement of cash flows', () => {
     // purchase can appear in the cash sections — but omitting them entirely makes the
     // loan look like it was repaid without ever being borrowed.
     const cash: CashPosting[] = [
-      { entryId: 'draw', accountId: 'inv', amount: 2_749_992.64, sourceType: 'investment', entryDate: '2026-02-02', memo: 'Investment funded by loan' },
-      { entryId: 'draw', accountId: 'note', amount: -2_749_992.64, sourceType: 'investment', entryDate: '2026-02-02', memo: 'Investment funded by loan' },
+      { entryId: 'draw', accountId: 'inv', amount: 2_700_000.00, sourceType: 'investment', entryDate: '2026-02-02', memo: 'Investment funded by loan' },
+      { entryId: 'draw', accountId: 'note', amount: -2_700_000.00, sourceType: 'investment', entryDate: '2026-02-02', memo: 'Investment funded by loan' },
     ]
     const scf = statementOfCashFlows('cash', cash, accts, 0)
     expect(scf.netChange).toBe(0)
@@ -452,7 +452,7 @@ describe('statement of cash flows', () => {
     expect(scf.nonCash[0]).toMatchObject({
       date: '2026-02-02',
       description: 'Investment funded by loan',
-      amount: 2_749_992.64,
+      amount: 2_700_000.00,
     })
   })
 
@@ -473,8 +473,8 @@ describe('balance sheet for books that keep retained earnings', () => {
   // net income is never closed into capital. Prior years roll into retained earnings.
   const accounts: Account[] = [
     { id: 'cash', fundId: 'f', code: '1000', name: 'Cash', type: 'asset', subtype: 'cash' },
-    { id: 'david', fundId: 'f', code: '3010', name: 'David Contribution', type: 'equity', subtype: 'member_contributions' },
-    { id: 'jeff', fundId: 'f', code: '3020', name: 'Jeff Contribution', type: 'equity', subtype: 'member_contributions' },
+    { id: 'robin', fundId: 'f', code: '3010', name: 'Robin Contribution', type: 'equity', subtype: 'member_contributions' },
+    { id: 'casey', fundId: 'f', code: '3020', name: 'Casey Contribution', type: 'equity', subtype: 'member_contributions' },
     { id: 're', fundId: 'f', code: '3300', name: 'Retained Earnings', type: 'equity', subtype: 'retained_earnings' },
     { id: 'fees', fundId: 'f', code: '4010', name: 'Fees', type: 'income', subtype: 'management_fee_income' },
     { id: 'rent', fundId: 'f', code: '5100', name: 'Rent', type: 'expense', subtype: 'occupancy' },
@@ -485,12 +485,12 @@ describe('balance sheet for books that keep retained earnings', () => {
     { accountId: 'fees', amount: -100_000, currency: 'USD', entryDate: '2024-03-01' },
     { accountId: 'rent', amount: 30_000, currency: 'USD', entryDate: '2024-06-01' },
     { accountId: 'cash', amount: -30_000, currency: 'USD', entryDate: '2024-06-01' },
-    { accountId: 'david', amount: 20_000, currency: 'USD', entryDate: '2024-12-15' },
-    { accountId: 'jeff', amount: 10_000, currency: 'USD', entryDate: '2024-12-15' },
+    { accountId: 'robin', amount: 20_000, currency: 'USD', entryDate: '2024-12-15' },
+    { accountId: 'casey', amount: 10_000, currency: 'USD', entryDate: '2024-12-15' },
     { accountId: 'cash', amount: -30_000, currency: 'USD', entryDate: '2024-12-15' },
     // A journal entry straight to retained earnings, as QuickBooks books allow.
     { accountId: 're', amount: 5_000, currency: 'USD', entryDate: '2024-12-31' },
-    { accountId: 'david', amount: -5_000, currency: 'USD', entryDate: '2024-12-31' },
+    { accountId: 'robin', amount: -5_000, currency: 'USD', entryDate: '2024-12-31' },
     // 2025: 40k of fees.
     { accountId: 'cash', amount: 40_000, currency: 'USD', entryDate: '2025-02-01' },
     { accountId: 'fees', amount: -40_000, currency: 'USD', entryDate: '2025-02-01' },
@@ -499,8 +499,8 @@ describe('balance sheet for books that keep retained earnings', () => {
   it('lists each equity account, rolls prior years into retained earnings and shows this year apart', () => {
     const bs = balanceSheet(accounts, postings, { equityLabel: "Members' capital", asOf: '2025-06-30' })
     expect(bs.equity.rows).toEqual([
-      { code: '3010', name: 'David Contribution', amount: -15_000 },
-      { code: '3020', name: 'Jeff Contribution', amount: -10_000 },
+      { code: '3010', name: 'Robin Contribution', amount: -15_000 },
+      { code: '3020', name: 'Casey Contribution', amount: -10_000 },
       { code: '3300', name: 'Retained Earnings', amount: 65_000 }, // −5k posted + 70k of 2024 net income
       { code: '', name: 'Net income', amount: 40_000 },
     ])

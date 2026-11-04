@@ -132,9 +132,9 @@ const ACT = (over: Partial<ConstructionActuals> = {}): ConstructionActuals => ({
   committedCapital: 18_500_000,
   calledCapital: 12_000_000,
   uncalledCapital: 6_500_000,
-  managementFeesIncurred: 3_745_945,     // workbook B53
-  orgCostsIncurred: 49_241,              // workbook B51
-  partnershipExpensesIncurred: 668_154,  // workbook B52
+  managementFeesIncurred: 3_700_000,     // workbook B53
+  orgCostsIncurred: 49_000,              // workbook B51
+  partnershipExpensesIncurred: 670_000,  // workbook B52
   ledgerAvailable: true,
   deployedInitial: 8_000_000,
   deployedFollowOn: 1_500_000,
@@ -148,22 +148,22 @@ describe('constructionModel — capital', () => {
   it('walks committed down to investable', () => {
     const m = constructionModel(ACT(), A(RUN_OUT), NOW)
     expect(m.capital.feesProjected).toBe(0)
-    expect(m.capital.lifetimeFees).toBeCloseTo(3_745_945, 2)
-    expect(m.capital.lifetimeExpenses).toBeCloseTo(717_395, 2)
-    expect(m.capital.investable).toBeCloseTo(14_036_660, 2)  // workbook B54
+    expect(m.capital.lifetimeFees).toBeCloseTo(3_700_000, 2)
+    expect(m.capital.lifetimeExpenses).toBeCloseTo(720_000, 2)
+    expect(m.capital.investable).toBeCloseTo(14_000_000, 2)  // workbook B54
     expect(m.capital.calledCapital).toBe(12_000_000)
     expect(m.capital.uncalledCapital).toBe(6_500_000)
-    expect(m.capital.incurredExpenses).toBe(4_463_340)
+    expect(m.capital.incurredExpenses).toBe(4_500_000)
     expect(m.capital.projectedExpenses).toBe(0)
-    expect(m.capital.totalExpenses).toBe(4_463_340)
+    expect(m.capital.totalExpenses).toBe(4_500_000)
   })
 
   it('adds projected fees to incurred ones when the term is still running', () => {
-    const running = constructionModel(ACT({ managementFeesIncurred: 1_895_945 }), A(), NOW)
+    const running = constructionModel(ACT({ managementFeesIncurred: 1_900_000 }), A(), NOW)
     expect(running.capital.feesProjected).toBeGreaterThan(0)
-    expect(running.capital.lifetimeFees).toBeCloseTo(1_895_945 + running.capital.feesProjected, 2)
+    expect(running.capital.lifetimeFees).toBeCloseTo(1_900_000 + running.capital.feesProjected, 2)
     // More lifetime fees means less investable capital. That direction is the whole point.
-    expect(running.capital.investable).toBeLessThan(18_500_000 - 1_895_945 - 717_395)
+    expect(running.capital.investable).toBeLessThan(18_500_000 - 1_900_000 - 720_000)
   })
 
   it('reports projected organizational costs separately from partnership expenses', () => {
@@ -181,23 +181,23 @@ describe('constructionModel — capital', () => {
 
   it('remaining is investable less deployed capital', () => {
     const m = constructionModel(ACT(), A(RUN_OUT), NOW)
-    // 14,036,660 − 9,500,000
-    expect(m.capital.remaining).toBeCloseTo(4_536_660, 2)
+    // 14,000,000 − 9,500,000
+    expect(m.capital.remaining).toBeCloseTo(4_500_000, 2)
     expect(m.capital.deployedTotal).toBe(9_500_000)
   })
 
   it('counts the deals still to do against the target portfolio size', () => {
     const m = constructionModel(ACT(), A({ ...RUN_OUT, targetPortfolioSize: 20 }), NOW)
     expect(m.capital.plannedNewDeals).toBe(2)
-    expect(m.capital.avgPerRemainingDeal).toBeCloseTo(4_536_660 / 2, 2)
+    expect(m.capital.avgPerRemainingDeal).toBeCloseTo(4_500_000 / 2, 2)
   })
 
   it('costs the stage mix and reports the gap', () => {
-    // 2 seed deals × 500k × (1 + 1.0 follow-on) = 2M planned against 4,536,660 remaining.
+    // 2 seed deals × 500k × (1 + 1.0 follow-on) = 2M planned against 4,500,000 remaining.
     const stages = dealRows(2, { key: 'seed', label: 'Seed', initialCheck: 500_000, initialPostMoney: 11_000_000, followOnMultiple: 1, dilutionFactor: 0.3 })
     const m = constructionModel(ACT(), A({ ...RUN_OUT, stages, targetPortfolioSize: 20 }), NOW)
     expect(m.capital.plannedCost).toBe(2_000_000)
-    expect(m.capital.gap).toBeCloseTo(2_536_660, 2)
+    expect(m.capital.gap).toBeCloseTo(2_500_000, 2)
     expect(m.warnings).toEqual([])
   })
 
@@ -250,7 +250,7 @@ describe('constructionModel — returns', () => {
     const preSeed = m.returns.stages.find(s => s.key === 'pre_seed_1')!
     expect(preSeed.initialOwnership).toBeCloseTo(0.0714286, 6)   // 500k / 7M
     expect(preSeed.ownershipAtExit).toBeCloseTo(0.0214286, 6)    // × 0.3
-    expect(preSeed.exitToReturnFund).toBeCloseTo(863_333_333, -3) // 18.5M / 0.0214286
+    expect(preSeed.exitToReturnFund).toBeCloseTo(860_000_000, -3) // 18.5M / 0.0214286
     expect(preSeed.allocation).toBe(1_000_000)                    // one 500k check + one 500k follow-on
   })
 
@@ -268,7 +268,7 @@ describe('constructionModel — returns', () => {
 
   it('states the multiple on invested alongside the multiple on committed', () => {
     const m = constructionModel(ACT(), A({ ...RUN_OUT, stages: MIX, targetFundMultiple: 5 }), NOW)
-    // 92.5M / 14,036,660 investable — the number the portfolio actually has to clear.
+    // 92.5M / 14,000,000 investable — the number the portfolio actually has to clear.
     expect(m.returns.impliedMultipleOnInvested).toBeCloseTo(6.59, 2)
   })
 
@@ -474,10 +474,10 @@ describe('Fund III, against the source workbook', () => {
       }),
       NOW,
     )
-    expect(m.capital.investable).toBeCloseTo(14_036_660, 2)         // workbook B54
+    expect(m.capital.investable).toBeCloseTo(14_000_000, 2)         // workbook B54
     expect(m.returns.requiredPortfolioValue).toBe(92_500_000)        // workbook B61
     expect(m.returns.wAvgOwnershipAtExit).toBeCloseTo(0.0134, 4)     // workbook G71 / F62
-    expect(m.returns.exitToReturnFund).toBeCloseTo(1_377_992_745, -4) // workbook F64
+    expect(m.returns.exitToReturnFund).toBeCloseTo(1_400_000_000, -4) // workbook F64
     expect(m.returns.sensitivity.find(row => row.isWeightedAverage)?.exitToReturnFund)
       .toBeCloseTo(m.returns.exitToReturnFund!, 2)
   })
@@ -517,7 +517,7 @@ describe('an unplanned vehicle', () => {
     expect(m.capital.companyCount).toBe(18)
     // No fee terms stated, so nothing is projected — only what the ledger actually incurred.
     expect(m.capital.feesProjected).toBe(0)
-    expect(m.capital.investable).toBeCloseTo(14_036_660, 2)
+    expect(m.capital.investable).toBeCloseTo(14_000_000, 2)
   })
 })
 

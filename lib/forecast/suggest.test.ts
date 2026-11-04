@@ -60,9 +60,9 @@ describe('suggestRule', () => {
   })
 
   it('a one-off in short history is not spread forward (loan interest)', () => {
-    const s = suggestRule({ actuals: new Map([['2026-03', 5697.31]]), closedFrom: '2026-02', closedThrough: '2026-09' })!
+    const s = suggestRule({ actuals: new Map([['2026-03', 5700.00]]), closedFrom: '2026-02', closedThrough: '2026-09' })!
     expect(s).toMatchObject({ method: 'manual', params: { amounts: {} } })
-    expect(s.evidence).toMatch(/One-off: 5,697 in Mar 2026/)
+    expect(s.evidence).toMatch(/One-off: 5,700 in Mar 2026/)
   })
 
   it('a small steady income since the books began is averaged from its first month', () => {

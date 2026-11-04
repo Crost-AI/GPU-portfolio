@@ -52,21 +52,21 @@ select finding, detail, value
  order by ord, detail;
 
 -- REPAIR, only if row 1 is greater than zero. You said every fund-of-funds investment sits in
--- 3SE Fund I; CHECK THE NAME against your fund_vehicles rows before running this.
+-- Northwind Holdings Fund I; CHECK THE NAME against your fund_vehicles rows before running this.
 --
 --   update public.fund_capital_events e
 --      set vehicle_id = v.id
 --     from public.fund_vehicles v
 --    where e.vehicle_id is null
 --      and v.fund_id = e.fund_id
---      and lower(v.name) = lower('3SE Fund I');
+--      and lower(v.name) = lower('Northwind Holdings Fund I');
 --
 --   update public.fund_nav_statements n
 --      set vehicle_id = v.id
 --     from public.fund_vehicles v
 --    where n.vehicle_id is null
 --      and v.fund_id = n.fund_id
---      and lower(v.name) = lower('3SE Fund I');
+--      and lower(v.name) = lower('Northwind Holdings Fund I');
 --
 -- Then re-run 20261006220000 (it is re-runnable) so the terms backfill picks up the newly
 -- resolvable holdings.

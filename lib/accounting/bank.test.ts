@@ -93,7 +93,7 @@ describe('parseTransactionsCsv', () => {
   })
 
   it('handles a newline embedded in a quoted field (brokerage export)', () => {
-    const csv = 'Date,Description,Amount($),Running Balance\n06/30/2026,"MORGAN STANLEY BANK N.A.\n(Period 06/01-06/30)",0.50,"60,064.45"'
+    const csv = 'Date,Description,Amount($),Running Balance\n06/30/2026,"MORGAN STANLEY BANK N.A.\n(Period 06/01-06/30)",0.50,"60,000.00"'
     const { rows, errors } = parseTransactionsCsv(csv)
     expect(errors).toEqual([])
     expect(rows).toHaveLength(1)
