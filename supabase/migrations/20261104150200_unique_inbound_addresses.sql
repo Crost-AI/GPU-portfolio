@@ -7,8 +7,10 @@
 -- If two funds already share a value, the index for that column is skipped with a NOTICE naming
 -- how many: clear the wrong fund's value in Settings and run this file again.
 --
--- Also clears the legacy plaintext postmark_webhook_token wherever an encrypted copy exists (the
--- webhook route already prefers the encrypted one, and retires the plaintext on use).
+-- The legacy plaintext postmark_webhook_token is NOT cleared here: an encrypted copy may not decrypt
+-- under the fund's current data key (saving a Claude key used to replace it), and the plaintext is
+-- then the only working token. The webhook route retires it once a delivery has proved it,
+-- re-encrypting it under the current key first (retireLegacyWebhookToken).
 --
 -- Idempotent: safe to run twice.
 
@@ -42,8 +44,3 @@ begin
       where nullif(btrim(postmark_inbound_address), '') is not null;
   end if;
 end $$;
-
-update public.fund_settings
-   set postmark_webhook_token = null
- where postmark_webhook_token is not null
-   and postmark_webhook_token_encrypted is not null;
