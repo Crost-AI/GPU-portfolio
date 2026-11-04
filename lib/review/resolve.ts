@@ -16,6 +16,7 @@ import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { approveFundReview, type FundApproval } from '@/lib/portfolio/fof-reviews'
 import { isFundReviewType, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
 import { visibleCompanyIds } from '@/lib/access/scope'
+import { excludeHiddenCompanies, fleetCompanyDenied, FLEET_HOLDING_TYPE, hiddenFleetIdsInFund } from '@/lib/access/fleet-company'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 
 export type ReviewRow = Pick<
@@ -74,6 +75,9 @@ export async function loadReviewForAccess(
   const visible = await visibleCompanyIds(admin, access)
   // A scoped caller sees only reviews about one of their companies (the page's filterByCompany).
   if (visible !== null && (!review.company_id || !visible.includes(review.company_id))) return null
+  // ── GPU fleet (P3) ── A review about a fleet company is fleet data (#91): the page's read gets
+  // that from RLS (20261019310000); this read is the service role's, so it says it here.
+  if (review.company_id && (await hiddenFleetIdsInFund(admin, access.fundId, access.userId)).has(review.company_id)) return null
   if (scopeFundReviews([review], access).length === 0) return null
   if (isFundReviewType(review.issue_type) && !hasAccess(access, 'portfolio', 'read', 'investments')) return null
   return review
@@ -103,6 +107,19 @@ export async function resolveReview(
     return fail(400, 'resolved_value is required for manually_corrected')
   }
   if (review.resolution) return fail(409, 'Already resolved')
+
+  // ── GPU fleet (P3) ── A review about a fleet company — whatever its resolution — needs fleet write
+  // (#91): not found otherwise, before anything is claimed or written. Said here, not in the route,
+  // so the agent's resolve_review (service role, no RLS) is held to it as well.
+  if (review.company_id) {
+    const { data: company, error: companyError } = await (admin as any).from('companies').select('holding_type')
+      .eq('id', review.company_id).eq('fund_id', caller.fundId).maybeSingle()
+    if (companyError) return dbFail(companyError, 'review-resolve-fleet')
+    if (company?.holding_type === FLEET_HOLDING_TYPE
+        && fleetCompanyDenied(await caller.loadAccess(), FLEET_HOLDING_TYPE, 'write')) {
+      return fail(404, 'Not found')
+    }
+  }
 
   // A FUND-HOLDING proposal (lib/portfolio/fof-email.ts) is one entity's: a member may resolve it —
   // approve or dismiss — only for an entity of theirs, and one naming no entity is for unscoped
@@ -319,6 +336,8 @@ export async function resolveReview(
 export async function loadReviewQueue(admin: SupabaseClient, access: AccessContext, opts: { limit?: number } = {}) {
   const visible = await visibleCompanyIds(admin, access)
   if (visible !== null && visible.length === 0) return { total: 0, counts: {}, items: [], needsReviewEmails: [] }
+  // ── GPU fleet (P3) ── Reviews and emails about a fleet company the caller may not read stay out (#91).
+  const hiddenFleet = await hiddenFleetIdsInFund(admin, access.fundId, access.userId)
   let q = (admin as any)
     .from('parsing_reviews')
     .select(`
@@ -331,6 +350,7 @@ export async function loadReviewQueue(admin: SupabaseClient, access: AccessConte
     .eq('fund_id', access.fundId)
     .is('resolution', null)
   if (visible !== null) q = q.in('company_id', visible)
+  q = excludeHiddenCompanies(q, hiddenFleet)
   const { data, error } = await q.order('created_at', { ascending: false }).limit(Math.min(Math.max(opts.limit ?? 100, 1), 500))
   if (error) throw new Error(`review queue read failed: ${error.message}`)
 
@@ -359,6 +379,7 @@ export async function loadReviewQueue(admin: SupabaseClient, access: AccessConte
     .eq('fund_id', access.fundId)
     .eq('processing_status', 'needs_review')
   if (visible !== null) eq = eq.in('company_id', visible)
+  eq = excludeHiddenCompanies(eq, hiddenFleet)
   const { data: emails, error: emailError } = await eq.order('received_at', { ascending: false }).limit(100)
   if (emailError) throw new Error(`inbound_emails read failed: ${emailError.message}`)
   const emailRows = (emails as any[]) ?? []
