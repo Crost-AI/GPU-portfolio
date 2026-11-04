@@ -37,7 +37,7 @@ import { fleetSchedule, type FleetScheduleRow } from '@/lib/gpu/fleet-schedule'
 import type { GpuAsset, GpuAssetTypeRow } from '@/lib/gpu/types'
 import { vehicleIdByName } from './vehicle-id'
 import { loadCarryTerms, type VehicleCarryTerms } from './carry'
-import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from './distributions'
+import { loadContingencyByDate, loadDeclaredReserves, loadWaterfallHistory, reserveOn, type DeclaredReserve } from './distributions'
 import { cashWaterfallEvents, cashWaterfallTerms } from './distribution-waterfall'
 import { accruedProfitShare, type AccruedProfitShare } from '@/lib/gpu/accrued'
 import { gpuBookNav } from '@/lib/gpu/book-nav'
@@ -140,7 +140,7 @@ export interface LedgerData {
   /** A GPU SPV's register, for the fleet schedule's detail; absent for every other kind. */
   fleet?: { assets: GpuAsset[]; types: GpuAssetTypeRow[] }
   /** What the accrued profit-share memo is computed from, loaded only when asked for (a GPU SPV). */
-  accruedMemo?: { terms: VehicleCarryTerms; contingencyByDate: Map<string, number>; reserve: number }
+  accruedMemo?: { terms: VehicleCarryTerms; contingencyByDate: Map<string, number>; reserves: DeclaredReserve[] }
 }
 
 /** Min entryDate across postings, ignoring nulls. */
@@ -253,10 +253,10 @@ export async function loadLedgerData(
   }
   let accruedMemo: LedgerData['accruedMemo']
   if (isGpuSpv(kind) && opts.accruedMemo) {
-    const [terms, contingencyByDate, reserve] = await Promise.all([
-      loadCarryTerms(admin, fundId, group), loadContingencyByDate(admin, fundId, group), lastReserve(admin, fundId, group),
+    const [terms, contingencyByDate, reserves] = await Promise.all([
+      loadCarryTerms(admin, fundId, group), loadContingencyByDate(admin, fundId, group), loadDeclaredReserves(admin, fundId, group),
     ])
-    if (terms.kind === 'distributable_cash') accruedMemo = { terms, contingencyByDate, reserve: reserve ?? 0 }
+    if (terms.kind === 'distributable_cash') accruedMemo = { terms, contingencyByDate, reserves }
   }
   return {
     accounts, postings, capitalPostings, sourcedPostings, names,
@@ -366,13 +366,16 @@ export function computePayload(data: LedgerData, period: StatementPeriod): State
   }
 }
 
-/** The memo as at `asOf`: the distributions so far replayed, book NAV distributed hypothetically. */
+/**
+ * The memo as at `asOf`: the distributions so far replayed, book NAV distributed hypothetically. Each
+ * period (comparisons included) takes the reserve declared on or before its own end.
+ */
 function accruedMemoFor(data: LedgerData, cumulative: LedgerData['postings'], asOf: string): AccruedProfitShare & { memo: 'not booked' } {
   const m = data.accruedMemo!
   const h = loadWaterfallHistory(data.capitalPostings, new Set(m.terms.recipients.map(r => r.lpEntityId)), asOf, m.contingencyByDate)
   const cash = cashWaterfallTerms(m.terms)
   const terms = cash.dayCount === 'periodic' ? { ...cash, dayCount: '30_360' as const } : cash
-  const nav = gpuBookNav(data.accounts, cumulative, m.reserve)
+  const nav = gpuBookNav(data.accounts, cumulative, reserveOn(m.reserves, asOf))
   return { ...accruedProfitShare({ events: cashWaterfallEvents(h.contributions, h.priors, asOf), terms, bookNav: nav.bookNav, asOf }), memo: 'not booked' }
 }
 

@@ -9,11 +9,11 @@ import { memoryAdmin } from './helpers/memory-admin'
  * share as PAID and ACCRUED (memo, not booked) only for a writer with gp_economics.
  */
 
-const mocks = vi.hoisted(() => ({ terms: null as any, capital: [] as any[], ledger: [] as any[] }))
+const mocks = vi.hoisted(() => ({ terms: null as any, capital: [] as any[], ledger: [] as any[], reserves: [] as { date: string; reserve: number }[] }))
 vi.mock('@/lib/accounting/carry', async orig => ({ ...(await orig<typeof import('@/lib/accounting/carry')>()), loadCarryTerms: async () => mocks.terms }))
 vi.mock('@/lib/accounting/capital-source', () => ({ loadCapitalPostings: async () => ({ postings: mocks.capital }) }))
 vi.mock('@/lib/accounting/distributions', async orig => ({
-  ...(await orig<typeof import('@/lib/accounting/distributions')>()), loadContingencyByDate: async () => new Map(), lastReserve: async () => null,
+  ...(await orig<typeof import('@/lib/accounting/distributions')>()), loadContingencyByDate: async () => new Map(), loadDeclaredReserves: async () => mocks.reserves,
 }))
 vi.mock('@/lib/accounting/vehicle-domain', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/vehicle-domain')>()), vehicleKindByName: async (_a: unknown, _f: unknown, name: string) => (name === 'GPU SPV I' ? 'gpu_spv' : 'fund'),
@@ -51,7 +51,7 @@ const BASE_Y3 = [
   { lpEntityId: 'mgr', amount: 156_052.87, sourceType: 'distribution', entryDate: '2029-12-31' },
 ]
 
-beforeEach(() => { mocks.terms = CASH_TERMS; mocks.capital = BASE_Y3; mocks.ledger = [{ accountId: '1600', amount: 1_305_000, currency: 'USD' }, { accountId: '1650', amount: -704_700, currency: 'USD' }] })
+beforeEach(() => { mocks.terms = CASH_TERMS; mocks.capital = BASE_Y3; mocks.reserves = []; mocks.ledger = [{ accountId: '1600', amount: 1_305_000, currency: 'USD' }, { accountId: '1650', amount: -704_700, currency: 'USD' }] })
 
 describe('loadFleetLetterData', () => {
   it("the investors' position, paid profit share and, only when asked for, the accrued memo at book NAV (600,300)", async () => {
@@ -70,6 +70,16 @@ describe('loadFleetLetterData', () => {
     expect(f.irrToDate).toBe(xirr(own))
     expect(f.irrToDate!).toBeCloseTo(0.1963, 3)
     expect(f.projected).toBeNull()
+  })
+
+  it("the memo's book NAV takes the reserve declared on or before the letter's date, not a later one", async () => {
+    mocks.reserves = [{ date: '2030-03-31', reserve: 100_000 }]
+    const q4 = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true, accruedMemo: true }))!
+    expect(q4.profitShare!.accrued!.bookNav).toBe(600_300)
+    expect(q4.profitShare!.accrued!.carryMemo).toBe(180_090)
+    mocks.reserves = [{ date: '2029-12-31', reserve: 100_000 }]
+    const declared = (await loadFleetLetterData({} as any, 'f1', 'GPU SPV I', '2029-12-31', { showCarry: true, accruedMemo: true }))!
+    expect(declared.profitShare!.accrued!.bookNav).toBe(500_300)
   })
 
   it('without gp_economics there is no profit share, paid or accrued', async () => {

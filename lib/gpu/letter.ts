@@ -11,7 +11,7 @@ import { loadCarryTerms } from '@/lib/accounting/carry'
 import { loadCapitalPostings } from '@/lib/accounting/capital-source'
 import { bucketForSourceType } from '@/lib/accounting/capital-account'
 import { loadPostedLedger } from '@/lib/accounting/load'
-import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
+import { loadContingencyByDate, loadDeclaredReserves, loadWaterfallHistory, reserveOn } from '@/lib/accounting/distributions'
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import { roundCents } from '@/lib/accounting/ledger'
 import { xirr } from '@/lib/xirr'
@@ -68,8 +68,8 @@ export async function loadFleetLetterData(
   if (opts.showCarry) {
     let accrued: AccruedProfitShare | null = null
     if (opts.accruedMemo) {
-      const [ledger, reserve] = await Promise.all([loadPostedLedger(admin, fundId, vehicle, asOf), lastReserve(admin, fundId, vehicle)])
-      const nav = gpuBookNav(ledger.accounts, ledger.postings, reserve ?? 0)
+      const [ledger, reserves] = await Promise.all([loadPostedLedger(admin, fundId, vehicle, asOf), loadDeclaredReserves(admin, fundId, vehicle)])
+      const nav = gpuBookNav(ledger.accounts, ledger.postings, reserveOn(reserves, asOf))
       accrued = accruedProfitShare({ events, terms: dated, bookNav: nav.bookNav, asOf })
     }
     profitShare = { paid: position.managerProfitSharePaid, accrued }

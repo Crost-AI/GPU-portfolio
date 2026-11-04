@@ -16,7 +16,7 @@ const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounti
 const access = (grants: AccessContext['grants']): AccessContext => ({
   fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, features: FEATURES, grants, defaults: {},
 })
-const mocks = vi.hoisted(() => ({ access: null as any, kind: 'gpu_spv' as string | null, loads: vi.fn() }))
+const mocks = vi.hoisted(() => ({ access: null as any, kind: 'gpu_spv' as string | null, loads: vi.fn(), reserves: [] as { date: string; reserve: number }[] }))
 
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u1' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
@@ -49,7 +49,7 @@ vi.mock('@/lib/accounting/load', async orig => ({
 vi.mock('@/lib/accounting/distributions', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/distributions')>()),
   loadContingencyByDate: async () => new Map(),
-  lastReserve: async () => null,
+  loadDeclaredReserves: async () => mocks.reserves,
 }))
 
 import { GET } from '@/app/api/accounting/accrued-profit-share/route'
@@ -59,7 +59,7 @@ import { hasAccess } from '@/lib/access/effective'
 
 const get = (q = 'group=GPU%20SPV%20I&asOf=2028-12-31') => GET(new NextRequest(`http://x/api/accounting/accrued-profit-share?${q}`))
 
-beforeEach(() => { vi.clearAllMocks(); mocks.kind = 'gpu_spv'; mocks.access = access({ accounting: 'read', gp_economics: 'read' }) })
+beforeEach(() => { vi.clearAllMocks(); mocks.kind = 'gpu_spv'; mocks.reserves = []; mocks.access = access({ accounting: 'read', gp_economics: 'read' }) })
 
 describe('the gate: gp_economics, behind the gpu_fleet switch', () => {
   // What gateApiRequest (proxy.ts) decides for this path, on its registry entry.
@@ -113,6 +113,13 @@ describe('GET accrued-profit-share', () => {
     const res = await get('group=Fund%20I')
     expect(res.status).toBe(404)
     expect(mocks.loads).not.toHaveBeenCalled()
+  })
+
+  it("subtracts the reserve declared on or before asOf; a later declaration does not change an earlier memo", async () => {
+    mocks.reserves = [{ date: '2029-06-30', reserve: 100_000 }]
+    expect(await (await get()).json()).toMatchObject({ asOf: '2028-12-31', bookNav: 1_000_000, carryMemo: 260_226.31 })
+    mocks.reserves = [{ date: '2028-06-30', reserve: 100_000 }, { date: '2029-06-30', reserve: 0 }]
+    expect((await (await get()).json()).bookNav).toBe(900_000)
   })
 
   it('refuses a malformed asOf', async () => {

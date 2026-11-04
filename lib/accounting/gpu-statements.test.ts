@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CHART } from './chart'
 import { NO_CARRY } from './carry'
-import { computePayload, loadLedgerData, type LedgerData } from './statement-package'
+import { reserveOn } from './distributions'
+import { buildStatementPackageFromData, computePayload, loadLedgerData, type LedgerData } from './statement-package'
 import { memoryAdmin } from '@/tests/helpers/memory-admin'
 import { A1, A2, C1, C2, GPU_ACCOUNTS, GPU_ENTRIES, VC_ENTRIES, YEAR, chart, ledger } from '@/tests/helpers/statement-fixtures'
 
@@ -119,7 +120,7 @@ describe('loadLedgerData reads the register for a GPU SPV only', () => {
 describe('the accrued profit-share memo in the statement package (gp_economics only, never booked)', () => {
   const memoTerms = { ...NO_CARRY, kind: 'distributable_cash' as const, prefRate: 0.08, carryRate: 0.3, prefDayCount: '30_360' as const, rocLpShare: 1, recipients: [{ lpEntityId: 'mgr', pct: 100 }] }
   // Contributed 1,000,000 on 5 Jan 2027 (the call entry above, per LP 'lp1'); no distribution yet.
-  const withMemo = (reserve = 0) => ({ ...ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), accruedMemo: { terms: memoTerms, contingencyByDate: new Map(), reserve } })
+  const withMemo = (reserves: { date: string; reserve: number }[] = []) => ({ ...ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), accruedMemo: { terms: memoTerms, contingencyByDate: new Map(), reserves } })
 
   it('is present when loaded for it, and changes no balance in any statement', () => {
     const plain = computePayload(ledger(GPU_ACCOUNTS, 'gpu_spv', GPU_ENTRIES), YEAR)
@@ -130,6 +131,27 @@ describe('the accrued profit-share memo in the statement package (gp_economics o
     expect(memo.accruedProfitShare!.carryMemo).toBe(0)
     const { accruedProfitShare: _m, ...rest } = memo
     expect(rest).toEqual(plain)
+  })
+
+  it("each period takes the reserve declared on or before its own end: a later declaration does not reach back", () => {
+    const H1 = { start: '2027-01-01', end: '2027-06-30', label: 'H1' } as any
+    const later = [{ date: '2027-09-30', reserve: 100_000 }]
+    const navOf = (reserves: typeof later, period: any) => computePayload(withMemo(reserves), period).accruedProfitShare!.bookNav
+    // H1 ends before the September declaration: its memo is as if there were none.
+    expect(navOf(later, H1)).toBe(navOf([], H1))
+    // The year ends after it: its book NAV is 100,000 lower.
+    expect(navOf(later, YEAR)).toBe(navOf([], YEAR) - 100_000)
+    // A declaration with no reserve, after one with, sets it back to zero.
+    expect(navOf([...later, { date: '2027-12-15', reserve: 0 }], YEAR)).toBe(navOf([], YEAR))
+  })
+
+  it('a comparison column in the package takes its own date\'s reserve', () => {
+    const data = withMemo([{ date: '2027-09-30', reserve: 100_000 }])
+    const pkg = buildStatementPackageFromData(data, new URLSearchParams({ preset: 'custom', start: '2027-07-01', end: '2027-12-31', compare: '1' }))
+    expect(pkg.comparisons?.map(c => c.period.end)).toEqual(['2027-06-30'])
+    const H1 = computePayload(withMemo(), { start: '2027-01-01', end: '2027-06-30', label: 'H1' } as any).accruedProfitShare!.bookNav
+    expect(pkg.comparisons![0].accruedProfitShare!.bookNav).toBe(H1)
+    expect(pkg.payload.accruedProfitShare!.bookNav).toBe(computePayload(withMemo(), YEAR).accruedProfitShare!.bookNav - 100_000)
   })
 
   it('is absent unless asked for: by default, as every export, PDF and tax/K-1 loader reads', () => {
@@ -146,5 +168,23 @@ describe('the accrued profit-share memo in the statement package (gp_economics o
     })
     expect('accruedMemo' in (await loadLedgerData(admin as any, 'f1', 'GPU SPV I'))).toBe(false)
     expect((await loadLedgerData(admin as any, 'f1', 'GPU SPV I', { accruedMemo: true })).accruedMemo?.terms.kind).toBe('distributable_cash')
+  })
+
+  it("loads the vehicle's declared reserves with their dates, oldest first; drafts and other vehicles are not", async () => {
+    const { admin } = memoryAdmin({
+      fund_vehicles: [{ id: 'v1', fund_id: 'f1', name: 'GPU SPV I', kind: 'gpu_spv' }],
+      vehicle_waterfall_terms: [{ fund_id: 'f1', vehicle_id: 'v1', kind: 'distributable_cash', carry_rate: 0.3, pref_rate: 0.08, catchup_rate: 1, pref_compounds: false, carry_recipients: [{ lp_entity_id: 'mgr', pct: 100 }], pref_day_count: '30_360', roc_lp_share: 1 }],
+      gpu_assets: [], gpu_asset_types: [],
+      distributions: [
+        { id: 'd3', fund_id: 'f1', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-09-30', reserve_amount: 100_000, created_at: '2027-09-30' },
+        { id: 'd2', fund_id: 'f1', vehicle_id: 'v1', status: 'draft', distribution_date: '2027-08-01', reserve_amount: 50_000, created_at: '2027-08-01' },
+        { id: 'd1', fund_id: 'f1', vehicle_id: 'v1', status: 'declared', distribution_date: '2027-03-31', reserve_amount: null, created_at: '2027-03-31' },
+        { id: 'd9', fund_id: 'f1', vehicle_id: 'v9', status: 'declared', distribution_date: '2027-06-30', reserve_amount: 7_000, created_at: '2027-06-30' },
+      ],
+    })
+    const data = await loadLedgerData(admin as any, 'f1', 'GPU SPV I', { accruedMemo: true })
+    expect(data.accruedMemo?.reserves).toEqual([{ date: '2027-03-31', reserve: 0 }, { date: '2027-09-30', reserve: 100_000 }])
+    expect(reserveOn(data.accruedMemo!.reserves, '2027-09-29')).toBe(0)
+    expect(reserveOn(data.accruedMemo!.reserves, '2027-09-30')).toBe(100_000)
   })
 })

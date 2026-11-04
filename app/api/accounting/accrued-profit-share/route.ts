@@ -20,7 +20,7 @@ import { assertVehicleKind } from '@/lib/accounting/vehicle-domain'
 import { loadCarryTerms } from '@/lib/accounting/carry'
 import { loadCapitalPostings } from '@/lib/accounting/capital-source'
 import { loadPostedLedger } from '@/lib/accounting/load'
-import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from '@/lib/accounting/distributions'
+import { loadContingencyByDate, loadDeclaredReserves, loadWaterfallHistory, reserveOn } from '@/lib/accounting/distributions'
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import { accruedProfitShare } from '@/lib/gpu/accrued'
 import { gpuBookNav } from '@/lib/gpu/book-nav'
@@ -49,16 +49,18 @@ export async function GET(req: NextRequest) {
   if (terms.kind !== 'distributable_cash') {
     return NextResponse.json({ error: 'The accrued profit share is for a distributable-cash waterfall; this vehicle has other terms.' }, { status: 400 })
   }
-  const [{ postings: capital }, ledger, contingencyByDate, reserve] = await Promise.all([
+  const [{ postings: capital }, ledger, contingencyByDate, reserves] = await Promise.all([
     loadCapitalPostings(admin, gate.fundId, group, asOf),
     loadPostedLedger(admin, gate.fundId, group, asOf),
     loadContingencyByDate(admin, gate.fundId, group),
-    lastReserve(admin, gate.fundId, group),
+    loadDeclaredReserves(admin, gate.fundId, group),
   ])
   const cash = cashWaterfallTerms(terms)
   try {
     const h = loadWaterfallHistory(capital, new Set(terms.recipients.map(r => r.lpEntityId)), asOf, contingencyByDate)
-    const nav = gpuBookNav(ledger.accounts, ledger.postings, reserve ?? 0)
+    // The reserve as at the memo's date, as the cash and the capital above are: a later declaration
+    // does not reach back.
+    const nav = gpuBookNav(ledger.accounts, ledger.postings, reserveOn(reserves, asOf))
     // A periodic day count is for scenarios; a dated memo accrues 30E/360.
     return NextResponse.json(accruedProfitShare({
       events: cashWaterfallEvents(h.contributions, h.priors, asOf),
