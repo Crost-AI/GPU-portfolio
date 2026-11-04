@@ -81,6 +81,8 @@ import { readBulkScope, runBulkDraftAction } from './journal-bulk'
 import { addEntityDocument, entityDocumentUploadUrl, listEntityDocuments } from '@/lib/entity-documents/agent'
 import { RECEIPT_TOOL_MANIFEST } from '@/lib/agent/receipt-tools-manifest'
 import { RECEIPT_HANDLERS } from '@/lib/agent/receipt-tools'
+import { ILPA_TOOL_MANIFEST } from '@/lib/agent/ilpa-tools-manifest'
+import { ILPA_HANDLERS } from '@/lib/agent/ilpa-tools'
 
 export { resolveVehicle } from './vehicle-resolver'
 
@@ -472,6 +474,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bindLedger(AGENT_TOOL_MANIFEST, HANDLERS),
   ...bindLedger(ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
   ...bindLedger(RECEIPT_TOOL_MANIFEST, RECEIPT_HANDLERS),
+  ...bindLedger(ILPA_TOOL_MANIFEST, ILPA_HANDLERS),
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
