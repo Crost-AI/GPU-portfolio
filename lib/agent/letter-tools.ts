@@ -2,6 +2,8 @@
 // call (lib/lp-letters/service.ts), with the caller's visible entities, so a letter of an entity
 // they can't see is not found here either.
 
+import { hasAccess } from '@/lib/access/effective'
+import { canSeeAccruedMemo } from '@/lib/gpu/accrued'
 import type { AgentToolContext, AgentToolHandler } from '@/lib/accounting/agent-tools'
 import { entityScopeFor } from '@/lib/access/entity-scope'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
@@ -37,9 +39,11 @@ async function periodOf(ctx: AgentToolContext, input: any): Promise<LetterPeriod
   return { vehicle, year, quarter, yearEnd: !!input?.year_end }
 }
 
-const briefOpts = (input: any) => ({
+const briefOpts = (input: any, ctx: AgentToolContext) => ({
   template: typeof input?.template === 'string' ? input.template : null,
   guidance: typeof input?.guidance === 'string' ? input.guidance.slice(0, 4000) : null,
+  // A GPU SPV letter's profit share PAID is the manager's economics (the accrued memo never goes in a draft).
+  showCarry: hasAccess(ctx.access, 'gp_economics', 'read'),
 })
 
 const summary = (l: any) => ({
@@ -70,7 +74,9 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   lp_letter_brief: async (ctx: AgentToolContext, input: any) => {
-    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), briefOpts(input))
+    // Shown to this caller, not saved: the accrued profit-share memo may ride along, on the same gate
+    // as its own route (gp_economics, gpu_fleet on, the books' read).
+    const { brief, template } = await loadLetterBrief(ctx.admin, ctx.fundId, await periodOf(ctx, input), { ...briefOpts(input, ctx), accruedMemo: canSeeAccruedMemo(ctx.access) })
     return { template: template.name, ...brief }
   },
 
@@ -81,7 +87,7 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     if (!given && await rateLimit({ key: `lp-letter-gen:${userId}`, limit: 5, windowSeconds: 300 })) {
       throw new Error('Too many letters drafted in the last few minutes. Try again shortly.')
     }
-    const opts = briefOpts(input)
+    const opts = briefOpts(input, ctx)
     const loaded = await loadLetterBrief(ctx.admin, ctx.fundId, p, opts)
     const { brief, investorNames } = loaded
     const text = given ?? await writeWithFundAI(ctx.admin, ctx.fundId, userId, brief)
@@ -148,9 +154,11 @@ export const LETTER_HANDLERS: Record<string, AgentToolHandler> = {
     // A full draft written from chat is reviewed against the letter's sources, as a drafted one is.
     let review_flags: string[] | undefined
     if (fullDraft !== undefined) {
+      // Against the brief a saved draft is written from: the PAID profit share for a gp_economics
+      // writer, as lp_draft_letter's, and never the accrued memo.
       const { brief, investorNames } = await loadLetterBrief(ctx.admin, ctx.fundId, {
         vehicle: row.portfolio_group, year: row.period_year, quarter: row.period_quarter, yearEnd: !!row.is_year_end,
-      }, { template: row.template_id ?? null })
+      }, { template: row.template_id ?? null, showCarry: hasAccess(ctx.access, 'gp_economics', 'read') })
       review_flags = checkLetterDraft(fullDraft, brief, investorNames)
     }
     return { letter: summary(row), sections_written: sections?.length ?? 0, ...(review_flags ? { review_flags } : {}) }

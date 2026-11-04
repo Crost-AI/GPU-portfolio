@@ -189,6 +189,13 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // not be reachable while it is off. The handler refuses a vehicle that is not a GPU SPV, and nulls
   // the manager's figures without gp_economics.
   'api/accounting/forecast/fleet-scenarios': { domain: 'accounting', feature: 'gpu_fleet' },
+  // A GPU SPV's accrued profit share: a display memo of the manager's take if book NAV were
+  // distributed today — the manager's economics, so gp_economics (not lp_capital, which the pref
+  // ledger is), behind the gpu_fleet switch like fleet-scenarios: it answers for a GPU SPV only.
+  // Its book NAV is the books restated, so the handler also needs accounting read; it refuses a
+  // vehicle that is not a GPU SPV. A feature key replaces the domain's own switch here (#113), so
+  // the handler also checks gp_economics on its own switch.
+  'api/accounting/accrued-profit-share': { domain: 'gp_economics', feature: 'gpu_fleet' },
 
   // ── GP economics — the carve-out. These used to sit behind the single `accounting` key,
   //    so anyone who could reconcile the bank could read the partners' carry.

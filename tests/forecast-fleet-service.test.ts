@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import type { AccessContext } from '@/lib/access/effective'
 import { GPU_SPV_CHART } from '@/lib/accounting/chart'
@@ -49,6 +49,12 @@ const access = (grants: AccessContext['grants']): AccessContext => ({
 })
 const WRITER = access({ accounting: 'write', gp_economics: 'read' })
 const NO_GP = access({ accounting: 'write' })
+
+// The pitch plan opens in the CURRENT month (its cutoff is last month), and the monthly payout
+// calendar it lays over the pack's years moves the pinned profit share by cents from month to month
+// (#122): so the clock is frozen at the date the pin was taken. Date only, so timers and promises run.
+vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-20T12:00:00Z') })
+afterAll(() => { vi.useRealTimers() })
 
 const FLOW_CODE = { revenue: '4000', processing_fee: '5150', datacenter: '5100', contingency: '5900', insurance: '5200', depreciation: '5300', disposal: '4500', fee: '5000' } as const
 // A pitch on a vehicle with no books: nothing is closed, so the cutoff is last month and the plan opens this month.
