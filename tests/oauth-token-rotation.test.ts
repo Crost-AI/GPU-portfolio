@@ -34,6 +34,7 @@ function db() {
     'fund-1|user-1': { fund_id: 'fund-1', user_id: 'user-1', role: 'admin' },
   }
   let seq = 0
+  let insertGate: (() => Promise<void>) | null = null
 
   function builder(table: string) {
     const filters: Array<(row: any) => boolean> = []
@@ -62,6 +63,7 @@ function db() {
         return chain
       },
       insert: async (rows: Record<string, unknown>[]) => {
+        if (insertGate) await insertGate()
         for (const row of rows) tokens.push({ id: `t${++seq}`, revoked_at: null, last_used_at: null, ...(row as any) })
         return { error: null }
       },
@@ -90,6 +92,8 @@ function db() {
       memberRows = {}
     },
     find: (token: string) => tokens.find(t => t.token_hash === hashToken(token)),
+    /** Hold every insert until the gate resolves: lets a test interleave two rotations. */
+    gateInserts: (g: (() => Promise<void>) | null) => { insertGate = g },
   }
 }
 
@@ -179,6 +183,34 @@ describe('refresh-token rotation', () => {
     expect(store.find(second!.refreshToken)!.revoked_at).not.toBeNull()
     expect(store.find(second!.accessToken)!.revoked_at).not.toBeNull()
     expect(await resolveAccessToken(store.admin, second!.accessToken)).toBeNull()
+  })
+
+  it('a replay revoked while the winning rotation is still minting leaves its new pair revoked too', async () => {
+    // A claims the token and pauses before inserting; B presents the same token, fails the claim and
+    // revokes everything live; only then does A insert. The replay was detected, so A's pair must not
+    // survive (Codex on #135).
+    const first = await issue()
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    store.gateInserts(async () => { reached(); await held })
+
+    const a = rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })
+    await atInsert
+    store.gateInserts(null)
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+    go()
+
+    expect(await a).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+  })
+
+  it('an uncontested rotation still issues a live pair', async () => {
+    const first = await issue()
+    const rotated = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })
+    expect(await resolveAccessToken(store.admin, rotated!.accessToken)).not.toBeNull()
   })
 
   it('re-derives the scope ceiling from the user’s CURRENT role, so a demotion cannot be refreshed away', async () => {

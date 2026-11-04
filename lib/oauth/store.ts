@@ -382,7 +382,7 @@ export async function rotateRefreshToken(
   if (row.client_id !== params.clientId) return null
 
   if (row.revoked_at) {
-    await revokeAllForClient(admin, row.client_id, row.user_id)
+    await revokeOnReplay(admin, row)
     return null
   }
 
@@ -400,6 +400,16 @@ export async function rotateRefreshToken(
     .select('id')
     .maybeSingle()
   if (!claimed) {
+    await revokeOnReplay(admin, row)
+    return null
+  }
+  // A replay detected while this request was minting must not leave its new pair live: revokeOnReplay
+  // moves the presented token's revoked_at off `now` before it revokes the family, so this re-read,
+  // after the insert, sees it whichever of the two finished first.
+  const unlessReplayed = async (issued: IssuedTokens): Promise<IssuedTokens | null> => {
+    const { data: after } = await (admin as any).from('oauth_tokens').select('revoked_at').eq('id', row.id).maybeSingle()
+    const at = (after as any)?.revoked_at
+    if (at && new Date(at).getTime() === new Date(now).getTime()) return issued
     await revokeAllForClient(admin, row.client_id, row.user_id)
     return null
   }
@@ -414,7 +424,7 @@ export async function rotateRefreshToken(
       await revokeAllForClient(admin, row.client_id, row.user_id)
       return null
     }
-    return issueTokens(admin, { clientId: row.client_id, userId: row.user_id, fundId: row.fund_id, scope: row.scope, resource: row.resource })
+    return unlessReplayed(await issueTokens(admin, { clientId: row.client_id, userId: row.user_id, fundId: row.fund_id, scope: row.scope, resource: row.resource }))
   }
 
   // The user may have been demoted or removed from the fund since the token was
@@ -443,7 +453,22 @@ export async function rotateRefreshToken(
     resource: row.resource,
   })
 
-  return issued
+  return unlessReplayed(issued)
+}
+
+/**
+ * The response to a replayed refresh token: revoke every live token for the (client, user) pair.
+ * First, move the presented token's revoked_at off the value a rotation's claim wrote, so a rotation
+ * that claimed it and is still minting sees the replay when it re-reads after its insert (and revokes
+ * its new pair). Stamp first, revoke second: a pair inserted before the revoke is caught by it, and
+ * one inserted after finds the stamp.
+ */
+async function revokeOnReplay(admin: SupabaseClient, row: { id: string; client_id: string; user_id: string }): Promise<void> {
+  const { data } = await (admin as any).from('oauth_tokens').select('revoked_at').eq('id', row.id).maybeSingle()
+  const was = (data as any)?.revoked_at
+  const stamp = was ? new Date(new Date(was).getTime() + 1) : new Date()
+  await (admin as any).from('oauth_tokens').update({ revoked_at: stamp.toISOString() }).eq('id', row.id)
+  await revokeAllForClient(admin, row.client_id, row.user_id)
 }
 
 async function revokeAllForClient(
