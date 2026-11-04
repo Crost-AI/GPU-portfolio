@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { seedCompanyFromDefaults, applyDefaultsToAllCompanies } from './seed-default-metrics'
+import { seedCompanyFromDefaults, applyDefaultsToAllCompanies, templateKindFor } from './seed-default-metrics'
 
 /**
  * A minimal stand-in for the supabase query builder covering only the calls the seeder makes:
@@ -16,6 +16,8 @@ function makeClient(opts: {
   existingByCompany: Record<string, string[]>
   excludedByCompany?: Record<string, string[]>
   companies?: string[]
+  /** holding_type per company id (default: 'company'). */
+  kinds?: Record<string, string>
   /** Fail the read of this table with this message (data: null). */
   failRead?: { table: string; message: string }
   /** Return an error message to fail that insert call. */
@@ -60,7 +62,11 @@ function makeClient(opts: {
         reads.push({ table, ids, range: state.range })
         if (opts.failRead?.table === table) return resolve({ data: null, error: { message: opts.failRead.message } })
         if (table === 'default_metrics') return resolve({ data: opts.templates, error: null })
-        if (table === 'companies') return resolve({ data: (opts.companies ?? []).map(id => ({ id })), error: null })
+        if (table === 'companies') {
+          const all = Array.from(new Set([...(opts.companies ?? []), ...Object.keys(opts.kinds ?? {})]))
+          const rows = all.filter(id => !state.filters.id || state.filters.id === id).map(id => ({ id, holding_type: opts.kinds?.[id] ?? 'company' }))
+          return resolve({ data: rows, error: null })
+        }
         if (table === 'metrics') {
           return resolve({ data: page(rowsFor(opts.existingByCompany, ids ?? [], 'slug')), error: null })
         }
@@ -285,5 +291,51 @@ describe('a concurrent apply', () => {
     expect(res.errors).toEqual([])
     expect(res.inserted).toBe(3) // only the rows actually written
     expect(inserted.filter(r => r.company_id === 'co-1').map(r => r.slug)).toEqual(['arr'])
+  })
+})
+
+// ── GPU fleet (P3) ──
+describe('templates by holding type', () => {
+  const G = (slug: string) => ({ ...T(slug), holding_type: 'gpu_fleet' })
+
+  it('a VC company gets no gpu-* template, even with them present', async () => {
+    const { client, inserted } = makeClient({
+      templates: [T('cash'), G('gpu-utilization'), G('gpu-revenue')],
+      existingByCompany: {}, kinds: { 'co-1': 'company' },
+    })
+    expect(await seedCompanyFromDefaults(client, 'fund-1', 'co-1')).toBe(1)
+    expect(inserted.map(r => r.slug)).toEqual(['cash'])
+  })
+
+  it('a fleet company gets only the gpu-* templates', async () => {
+    const { client, inserted } = makeClient({
+      templates: [T('cash'), T('arr'), G('gpu-utilization'), G('gpu-revenue')],
+      existingByCompany: {}, kinds: { 'fleet-1': 'gpu_fleet' },
+    })
+    expect(await seedCompanyFromDefaults(client, 'fund-1', 'fleet-1')).toBe(2)
+    expect(inserted.map(r => r.slug).sort()).toEqual(['gpu-revenue', 'gpu-utilization'])
+  })
+
+  it('the fund-wide apply copies company templates only', async () => {
+    const { client, inserted } = makeClient({
+      templates: [T('cash'), G('gpu-utilization')],
+      existingByCompany: {}, companies: ['co-1', 'co-2'],
+    })
+    const out = await applyDefaultsToAllCompanies(client, 'fund-1', null)
+    expect(out.inserted).toBe(2)
+    expect(inserted.every(r => r.slug === 'cash')).toBe(true)
+  })
+
+  it('a fund or crypto holding still takes the company templates, as before', async () => {
+    expect(templateKindFor('fund')).toBe('company')
+    expect(templateKindFor('crypto')).toBe('company')
+    expect(templateKindFor(null)).toBe('company')
+    expect(templateKindFor('gpu_fleet')).toBe('gpu_fleet')
+  })
+
+  it('does not seed when the company cannot be read', async () => {
+    const { client, inserted } = makeClient({ templates: [T('cash')], existingByCompany: {}, failRead: { table: 'companies', message: 'down' } })
+    expect(await seedCompanyFromDefaults(client, 'fund-1', 'co-1')).toBe(0)
+    expect(inserted).toEqual([])
   })
 })

@@ -12,6 +12,8 @@ import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 import { retagPortfolioGroup } from './vehicles'
 import { isGpuSpv } from './vehicle-kinds'
+// ── GPU fleet (P3) ──
+import { activeFleetCompanyId, reconcileFleetCompaniesAfterMerge } from '@/lib/gpu/fleet-company'
 
 /** Tables whose rows name a vehicle by id and move to the merge target. */
 export const MERGE_MOVED_TABLES = ['company_notes', 'inbound_deals', 'diligence_deals', 'pending_actions'] as const
@@ -56,8 +58,15 @@ export async function mergeVehicles(
     if (grantErr) return dbFail(grantErr, 'vehicles-merge-grants')
   }
 
+  // ── GPU fleet (P3) ── the target's own fleet company, read before the retag makes the source's
+  // claim the same vehicle (reconciled below).
+  const gpuMerge = isGpuSpv(intoRow.kind)
+  const keepFleetCompany = gpuMerge ? await activeFleetCompanyId(admin, fundId, intoRow.name) : null
+
   // Rewrite every portfolio_group-keyed row from the source's name to the target's name.
   await retagPortfolioGroup(admin, fundId, fromRow.name, intoRow.name)
+  // ── GPU fleet (P3) ── one fleet company per GPU SPV: the source's is retired, keeping its history.
+  if (gpuMerge) await reconcileFleetCompaniesAfterMerge(admin, fundId, intoRow.name, keepFleetCompany)
 
   // Delete the source BEFORE the target takes its name as an alias: a name denotes one entity
   // (fund_vehicles_names_unique), so while the source exists the alias would clash.

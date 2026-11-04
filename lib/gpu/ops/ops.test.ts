@@ -20,7 +20,10 @@ vi.mock('@/lib/accounting/persist', async orig => ({
     if (s.persistError) return { error: s.persistError }
     if (s.throwOnRef && String(entry.sourceRef ?? '').startsWith(s.throwOnRef)) { s.throwOnRef = null; throw new Error('statement timeout') }
     const t = s.m.tables
-    const dup = entry.sourceRef && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
+    // As production: journal_entries_gpu_ops_once makes marketplace: and marketplace-payout: refs
+    // unique; reversal: refs have NO uniqueness constraint, so a second reversal would be written.
+    const unique = /^marketplace(-payout)?:/.test(String(entry.sourceRef ?? ''))
+    const dup = unique && t.journal_entries.find((e: any) => e.source_ref === entry.sourceRef && e.status !== 'void')
     if (dup) return { error: 'already in the books', duplicateOf: dup.id }
     const id = `je-${++s.serial}`
     t.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v-gpu', book: 'actual', status, entry_date: entry.entryDate, source_type: entry.sourceType, source_ref: entry.sourceRef, memo: entry.memo, reference: entry.reference ?? null })
@@ -48,6 +51,14 @@ vi.mock('@/lib/accounting/continuous-allocation', async orig => ({
     if (e.status !== 'draft') return { error: 'Only a draft entry can be posted' }
     e.status = 'posted'
     return {}
+  }),
+}))
+// The bank auto-match's payout gate (#92) reads the caller's access: an admin with gpu_fleet on.
+vi.mock('@/lib/access/effective', async orig => ({
+  ...(await orig<any>()),
+  loadAccessContext: async () => ({
+    fundId: 'f', userId: 'u', role: 'admin', vehicles: { all: true, ids: [] }, grants: {}, defaults: {},
+    features: { ...(await import('@/lib/types/features')).DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gpu_fleet: 'everyone' },
   }),
 }))
 vi.mock('@/lib/accounting/bank-match', async orig => ({
@@ -330,6 +341,8 @@ const inflowRow = (id: string, txn_date: string, amount: number) => ({ id, fund_
 const entriesWith = (prefix: string) => (s.m.tables.journal_entries as any[]).filter(e => String(e.source_ref ?? '').startsWith(prefix))
 
 describe('posting is claimed', () => {
+  // Codex C1: reversal: refs have no database uniqueness (the stand-in above writes duplicates, as
+  // production would), so only the claims can keep the reversal single.
   it('two concurrent confirmed posts of one correction book exactly one reversal and one new entry', async () => {
     await stage(line('H200 #1', 8640, 864))
     await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
@@ -474,7 +487,9 @@ describe('payout matching is claimed', () => {
 })
 
 describe('end to end: post, record a payout, and the bank auto-match books it', () => {
-  it('Dr 1000 / Cr 1150, the bank row reconciled and 1150 cleared, unattended', async () => {
+  it('Dr 1000 / Cr 1150, the bank row reconciled and 1150 cleared, unattended (auto-posting on)', async () => {
+    s.m.tables.fund_members = [{ fund_id: 'f', user_id: 'u', role: 'admin' }]
+    s.m.tables.gpu_fleet_settings = [{ id: 'fs', fund_id: 'f', vehicle_id: 'v-gpu', auto_post_payout_matches: true }]
     await stage()
     await ignoreEarnings(s.m.admin, 'f', G, [byAsset(null).id])
     await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
@@ -939,5 +954,82 @@ describe('round 5: stale snapshots, owned cleanup, completion links', () => {
     }
     const r = await postEarnings(s.m.admin, 'f', G, 'u', [row.id])
     expect(r).toMatchObject({ posted: [{ id: row.id, entryId: row.journal_entry_id }] })
+  })
+})
+
+describe('Codex C1 without a database key on reversal: refs', () => {
+  it('the stand-in writes a second reversal: entry when asked (so the tests below are not masked)', async () => {
+    const { persistEntry } = await import('@/lib/accounting/persist')
+    const e = { fundId: 'f', entryDate: '2026-09-30', sourceType: 'income', sourceRef: 'reversal:je-x', postings: [] } as any
+    await persistEntry(s.m.admin, 'f', G, 'u', e)
+    expect(await persistEntry(s.m.admin, 'f', G, 'u', e)).toMatchObject({ entryId: expect.any(String) })
+    expect(entriesWith('reversal:je-x')).toHaveLength(2)
+  })
+
+  it('three concurrent confirmed posts of one correction, each reaching the reversal step, book one reversal', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged').id
+    const results = await Promise.all([1, 2, 3].map(() => postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })))
+    expect(results.filter(r => 'reversed' in r)).toHaveLength(1)
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(entriesWith('marketplace:')).toHaveLength(2)
+    expect(await gpuOpsCloseIssues(s.m.admin, 'f', G, 'v-gpu', '2026-09-01', '2026-09-30')).toEqual({ blockers: [], warnings: [] })
+  })
+
+  it('a retry that resumes an abandoned correction while the predecessor is held by a live reversal books none', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged')
+    const old = byAsset('a-1', 'posted')
+    // Request A holds the predecessor and is about to insert its reversal; B takes over the
+    // correction's expired claim and reaches the reversal step at the same moment.
+    Object.assign(old, { status: 'reversing', claim_token: 'A', claimed_at: new Date().toISOString() })
+    Object.assign(fix, { status: 'posting', claim_token: 'A-fix', claimed_at: ago(180_000) })
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', [fix.id], { confirmReversal: true })).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
+    expect(entriesWith('reversal:')).toEqual([])
+  })
+})
+
+// ── PR A follow-up (Codex r2, post.ts:178): a transient failure reading the original entry, after
+// the predecessor is claimed posted -> reversing, before any reversal exists.
+describe('a reversal claim abandoned before its entry exists', () => {
+  it('a failed original-entry read puts both rows back; the retry reverses once and posts the correction', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const fix = byAsset('a-1', 'staged').id
+    const old = byAsset('a-1', 'posted')
+    // The first journal read of the holder path is the original entry's (originalEntry).
+    s.m.failNext('journal_entries', 'select', 'connection reset')
+    await expect(postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })).rejects.toMatchObject({ message: 'connection reset' })
+    // Nothing is stranded: the predecessor is posted again, the correction staged, both unclaimed.
+    expect(old).toMatchObject({ status: 'posted', claim_token: null })
+    expect(earnings().find(e => e.id === fix)).toMatchObject({ status: 'staged', claim_token: null })
+    expect(entriesWith('reversal:')).toEqual([])
+    // The importer accepts the period again (no claimed row), and the retry completes.
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', [fix], { confirmReversal: true })
+    expect(r).toMatchObject({ posted: [{ id: fix }], reversed: [{ id: old.id, reversalId: expect.any(String) }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(earnings().map(e => e.status).sort()).toEqual(['posted', 'reversed'])
+  })
+
+  it('a claim abandoned by a request that died (no throw handler ran) is taken over after the lease and completed', async () => {
+    await stage(line('H200 #1', 8640, 864))
+    await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'))
+    await stage(line('H200 #1', 9000, 900))
+    const old = byAsset('a-1', 'posted')
+    Object.assign(old, { status: 'reversing', claim_token: 'dead', claimed_at: ago(30_000) })
+    // Inside the lease: in progress, nothing moves.
+    expect(await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })).toMatchObject({ error: expect.stringMatching(/being reversed by another request/) })
+    expect(old).toMatchObject({ status: 'reversing', claim_token: 'dead' })
+    // After the lease: taken over, reversed once, correction posted. No SQL needed.
+    old.claimed_at = ago(180_000)
+    const r = await postEarnings(s.m.admin, 'f', G, 'u', ids('staged'), { confirmReversal: true })
+    expect(r).toMatchObject({ reversed: [{ id: old.id }] })
+    expect(entriesWith('reversal:')).toHaveLength(1)
+    expect(old.status).toBe('reversed')
   })
 })

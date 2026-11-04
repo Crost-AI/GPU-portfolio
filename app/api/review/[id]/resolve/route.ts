@@ -11,6 +11,7 @@ import { dbError } from '@/lib/api-error'
 import { hasAccess, loadAccessContext } from '@/lib/access/effective'
 import { approveFundReview, type FundApproval } from '@/lib/portfolio/fof-reviews'
 import { isFundReviewType, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 type ReviewRow = Pick<
   ParsingReview,
@@ -72,6 +73,12 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   if (review.resolution) return NextResponse.json({ error: 'Already resolved' }, { status: 409 })
 
   const admin = createAdminClient()
+  // ── GPU fleet (P3) ── A review about a fleet company — whatever its resolution — needs fleet write
+  // (#91): not found otherwise, before anything is claimed or written.
+  if (review.company_id) {
+    const fleetDenied = await refuseFleetCompany(admin, user.id, { companyId: review.company_id }, 'write')
+    if (fleetDenied) return fleetDenied
+  }
 
   // A FUND-HOLDING proposal (lib/portfolio/fof-email.ts) is one entity's: a member may resolve it —
   // approve or dismiss — only for an entity of theirs, and one naming no entity is for unscoped

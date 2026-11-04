@@ -9,6 +9,7 @@ import { mergeVehicles } from '@/lib/vehicles-merge'
 import { outcomeResponse } from '@/lib/service-outcome'
 import { dbError } from '@/lib/api-error'
 import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
+import { ensureFleetCompany } from '@/lib/gpu/fleet-company'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
@@ -144,6 +145,9 @@ export async function POST(req: NextRequest) {
   // A failed seed must not undo the creation (a retry would 409); the chart GET seeds on first look.
   try {
     await ensureVehicleAccounts(admin as any, gate.fundId, (data as any).name)
+    // ── GPU fleet (P3) ── A GPU SPV's fleet company, which carries its KPIs as metrics. Publishing
+    // runs ensureFleetCompany again, so a failure here heals on the first publish.
+    if (kind === 'gpu_spv') await ensureFleetCompany(admin as any, gate.fundId, (data as any).name, gate.userId)
   } catch (e) {
     console.error('Seeding the chart for a new entity failed; it will be seeded on first look:', e)
   }

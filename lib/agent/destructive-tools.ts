@@ -142,7 +142,7 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
 
   delete_company: async (ctx: AgentToolContext, input: any) => {
     const userId = requireUser(ctx.userId)
-    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
     const out = unwrap(await deleteCompany(ctx.admin, { fundId: ctx.fundId, userId }, company.id, () => entityScopeFor(ctx.admin, ctx.access)))
     return { deleted: { id: out.id, name: out.name } }
   },
@@ -285,7 +285,7 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
   },
 
   delete_company: async (deps, input) => {
-    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access)
+    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
     const where = { fund_id: deps.fundId, company_id: company.id }
     const [transactions, documents, notes, metrics] = await Promise.all([
       count(deps.admin, 'investment_transactions', where), count(deps.admin, 'company_documents', where),

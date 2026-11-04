@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveFund } from '@/lib/api-helpers'
 import { SearchParamsError, listCompanyUpdates } from '@/lib/company-updates/search'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 /**
  * A company's reporting timeline: reverse-chronological Company Updates, cursor-paginated.
@@ -15,6 +16,9 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
   const fund = await resolveFund(admin, user.id)

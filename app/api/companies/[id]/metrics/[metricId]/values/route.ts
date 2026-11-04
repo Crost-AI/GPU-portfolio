@@ -5,6 +5,7 @@ import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 import { writeMetricValue } from '@/lib/pending-actions/metric-value'
 import type { AccessContext } from '@/lib/access/effective'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 export async function GET(
   _req: NextRequest,
@@ -14,6 +15,9 @@ export async function GET(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const { data, error } = await supabase
     .from('metric_values')
@@ -48,6 +52,9 @@ export async function POST(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 

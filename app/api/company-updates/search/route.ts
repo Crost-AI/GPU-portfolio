@@ -5,6 +5,7 @@ import { resolveFund } from '@/lib/api-helpers'
 import { SearchParamsError, parseSearchParams, searchCompanyUpdates } from '@/lib/company-updates/search'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeSearchParams } from '@/lib/company-updates/scope'
+import { withoutHiddenFleet } from '@/lib/access/fleet-company'
 
 /**
  * Portfolio update search — the Company Updates corpus only, never the mailbox. Query params:
@@ -26,7 +27,10 @@ export async function GET(req: NextRequest) {
     const requested = parseSearchParams(fund.fundId, Object.fromEntries(req.nextUrl.searchParams.entries()))
     // Only the caller's companies: the search RPC filters on exactly the ids it is given.
     const scope = await loadEntityScopeForUser(admin, user.id)
-    const params = scopeSearchParams(requested, scope ? scope.companyIds : [])
+    // ── GPU fleet (P3) ── without the fleet companies this caller may not read (#91). The set is
+    // applied after parsing, so it is never subject to the 200-id cap on a requested company_ids.
+    const visible = scope ? await withoutHiddenFleet(admin, fund.fundId, scope.access, scope.companyIds) : []
+    const params = scopeSearchParams(requested, visible)
     if (!params) {
       return NextResponse.json({ total: 0, results: [], next_cursor: null, match_mode: 'none', order: 'newest', latency_ms: 0 })
     }

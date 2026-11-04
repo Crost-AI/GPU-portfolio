@@ -7,12 +7,16 @@ import { parseGroupMentions } from '@/lib/notes/mentions'
 import { createCompanyNote } from '@/lib/notes/create'
 import { loadEntityScopeForUser } from '@/lib/access/entity-scope'
 import { scopeNotesQuery } from '@/lib/notes/entity'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
 
@@ -109,6 +113,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const writeCheck = await assertWriteAccess(admin, user.id)
   if (writeCheck instanceof NextResponse) return writeCheck

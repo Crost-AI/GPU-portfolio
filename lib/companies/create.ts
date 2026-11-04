@@ -38,7 +38,7 @@ export async function createCompany(
     /** The caller's entity names, or null for an admin who sees them all (lib/access/entity-scope.ts). */
     vehicleNames: string[] | null
     fields: CompanyFields
-    holdingType?: 'company' | 'crypto'
+    holdingType?: 'company' | 'crypto' | 'gpu_fleet'
     /** The metric defaults to seed; omitted seeds every active default. */
     defaultMetricIds?: string[]
   },
@@ -81,8 +81,9 @@ export async function createCompany(
   if (error || !data) return { ok: false, status: 500, error: 'Could not create the company', dbError: error }
 
   // Company metrics (MRR, cash, burn) describe an operating company. A token has none, and seeding
-  // them would put empty charts on its page.
-  if (holdingType === 'company') await seedCompanyFromDefaults(admin, fundId, data.id, opts.defaultMetricIds)
+  // them would put empty charts on its page. A GPU SPV's fleet company (lib/gpu/fleet-company.ts)
+  // is seeded too: seedCompanyFromDefaults gives it the gpu_fleet templates only.
+  if (holdingType === 'company' || holdingType === 'gpu_fleet') await seedCompanyFromDefaults(admin, fundId, data.id, opts.defaultMetricIds)
 
   logActivity(admin, fundId, userId, 'company.create', { companyName: name })
   return { ok: true, company: data }

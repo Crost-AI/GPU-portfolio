@@ -18,6 +18,7 @@ import {
   type SearchResponse,
   type TimelineArtifact,
 } from './search'
+import { scopeSearchParams } from './scope'
 
 type Admin = { from: (table: any) => any; rpc: (...args: any[]) => any }
 
@@ -127,20 +128,13 @@ export async function getUpdates(deps: GetUpdatesDeps, input: GetUpdatesInput): 
   if (input.ids?.length) return getByIds(deps, input.ids, budget)
 
   const mode = input.mode ?? (input.query ? 'search' : 'list')
-  let companyIds: string[] | null = null
+  let named: string | null = null
   if (input.company) {
-    const id = UUID.test(input.company) && !deps.resolveCompanyId ? input.company : await (deps.resolveCompanyId ?? passthrough)(input.company)
-    companyIds = [id]
-  } else if (deps.visibleCompanyIds !== null) {
-    // No company named: only the caller's. None at all: nothing to search.
-    if (deps.visibleCompanyIds.length === 0) {
-      return { mode, exact_total: 0, returned: 0, has_more: false, next_cursor: null, budget_truncated: false, notes: [], results: [] }
-    }
-    companyIds = deps.visibleCompanyIds
+    named = UUID.test(input.company) && !deps.resolveCompanyId ? input.company : await (deps.resolveCompanyId ?? passthrough)(input.company)
   }
-  const params = parseSearchParams(deps.fundId, {
+  const requested = parseSearchParams(deps.fundId, {
     query: mode === 'list' ? null : input.query ?? null,
-    company_ids: companyIds,
+    company_ids: named ? [named] : null,
     since: input.since,
     until: input.until,
     latest_per_company: mode === 'latest_per_company',
@@ -150,6 +144,13 @@ export async function getUpdates(deps: GetUpdatesDeps, input: GetUpdatesInput): 
     cursor: input.cursor ?? null,
     excerpts: mode === 'list' ? 1 : 3,
   })
+  // Only the caller's companies, applied after parsing: the visible set is an internal scope, not a
+  // requested list, so the parser's 200-id cap on company_ids never applies to it. None of the
+  // caller's companies in the search: nothing to search.
+  const params = scopeSearchParams(requested, deps.visibleCompanyIds)
+  if (!params) {
+    return { mode, exact_total: 0, returned: 0, has_more: false, next_cursor: null, budget_truncated: false, notes: [], results: [] }
+  }
   if (mode === 'search' && !params.query) throw new SearchParamsError('search mode needs a query; use mode: "list" to browse without one')
 
   const response = await searchCompanyUpdates(deps.admin, params)

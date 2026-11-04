@@ -67,7 +67,7 @@ export const UPLOAD_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   company_document_upload_url: async ({ admin, fundId, access }: AgentToolContext, input: any) => {
-    const company = await resolveCompany(admin, fundId, str(input?.company), access)
+    const company = await resolveCompany(admin, fundId, str(input?.company), access, 'write')
     const fileName = uploadFileName(input?.fileName)
     checkDeclaredSize(input?.sizeBytes, MAX_COMPANY_DOCUMENT_BYTES)
     const storagePath = companyDocumentPath(fundId, company.id, fileName)
@@ -82,7 +82,7 @@ export const UPLOAD_HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   add_company_document: async ({ admin, fundId, access, userId }: AgentToolContext, input: any) => {
-    const company = await resolveCompany(admin, fundId, str(input?.company), access)
+    const company = await resolveCompany(admin, fundId, str(input?.company), access, 'write')
     const filename = uploadFileName(input?.filename)
     const storagePath = str(input?.storage_path)
     let size = Number(input?.size_bytes)

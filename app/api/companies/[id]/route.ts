@@ -10,6 +10,7 @@ import { loadEntityScope, loadEntityScopeForUser } from '@/lib/access/entity-sco
 import { mergeGroupsForWrite, scopeGroups } from '@/lib/access/scope'
 import { deleteCompany } from '@/lib/companies/delete'
 import { outcomeResponse } from '@/lib/service-outcome'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const VALID_STATUSES: CompanyStatus[] = ['active', 'exited', 'written-off']
 
@@ -18,6 +19,9 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'read')
+  if (fleetDenied) return fleetDenied
 
   const { data, error } = await supabase
     .from('companies')
@@ -38,6 +42,9 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const writeCheck = await assertWriteAccess(createAdminClient(), user.id)
   if (writeCheck instanceof NextResponse) return writeCheck
@@ -124,6 +131,9 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const admin = createAdminClient()
   const writeCheck = await assertWriteAccess(admin, user.id)

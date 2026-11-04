@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound, redirect } from 'next/navigation'
 import { createClient, getUser } from '@/lib/supabase/server'
 import { resolvePageAccess, canViewPage } from '@/lib/access/page-gate'
+import { fleetCompanyDenied } from '@/lib/access/fleet-company'
 
 export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const params = await props.params;
@@ -14,7 +15,8 @@ export async function generateMetadata(props: { params: Promise<{ id: string }> 
   const page = user ? await resolvePageAccess(user.id) : null
   if (!page || !canViewPage(page, 'portfolio')) return { title: 'Company' }
 
-  const { data } = await supabase.from('companies').select('name').eq('id', params.id).maybeSingle() as { data: { name: string } | null }
+  const { data } = await supabase.from('companies').select('name, holding_type').eq('id', params.id).maybeSingle() as { data: { name: string; holding_type?: string | null } | null }
+  if (fleetCompanyDenied(page.access, data?.holding_type)) return { title: 'Company' }
   return { title: data?.name ?? 'Company' }
 }
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -41,6 +43,10 @@ export default async function CompanyDetailPage(
   // company and its metrics. The page needs its own gate before any of that.
   const page = await resolvePageAccess(user.id)
   if (!page || !canViewPage(page, 'portfolio')) redirect('/dashboard')
+  // ── GPU fleet (P3) ── A GPU SPV's fleet company is its revenue restated: it needs `fleet` too
+  // (#91), and without it the page does not exist for this viewer.
+  const { data: kind } = await (admin as any).from('companies').select('holding_type').eq('id', params.id).eq('fund_id', page.fundId).maybeSingle()
+  if (fleetCompanyDenied(page.access, kind?.holding_type)) notFound()
 
   const data = await loadCompanyPage({ supabase, admin, user, page }, params)
   // Not one of the viewer's companies (or no such company): the same neutral page either way.

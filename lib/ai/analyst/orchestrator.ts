@@ -41,6 +41,7 @@ import {
 } from './types'
 import { listDocuments, KIND_LABELS } from '@/lib/entity-documents'
 import { GOVERNING_DOCUMENTS_GUIDE, resolveDocumentEntity } from '@/lib/entity-documents/analyst'
+import { fleetCompanyDenied } from '@/lib/access/fleet-company'
 
 async function enforceRateLimit(deps: AnalystDependencies, spec: AnalystRateLimitSpec): Promise<void> {
   if (await deps.isRateLimited(spec)) {
@@ -216,12 +217,17 @@ export async function runAnalyst(
     if (!canReadPortfolio) {
       throw new AnalystRequestError('Forbidden', 403, 'FORBIDDEN')
     }
-    const { data: companyCheck } = await deps.admin
+    const { data: companyCheck } = await (deps.admin as any)
       .from('companies')
-      .select('fund_id')
+      .select('fund_id, holding_type')
       .eq('id', scopeInput.companyId)
       .maybeSingle()
     if (!companyCheck || (entityScope.companyIds !== null && !entityScope.companyIds.includes(scopeInput.companyId))) {
+      throw new AnalystRequestError('Not found', 404, 'NOT_FOUND')
+    }
+    // ── GPU fleet (P3) ── A GPU SPV's fleet company is its revenue restated (#91): not found
+    // without fleet read, so its metrics never reach the prompt.
+    if (fleetCompanyDenied(principal.access, companyCheck.holding_type)) {
       throw new AnalystRequestError('Not found', 404, 'NOT_FOUND')
     }
     if (companyCheck.fund_id !== principal.fundId) {

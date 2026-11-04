@@ -55,7 +55,7 @@ const typeOf = (a: { detected_content_type: string | null; declared_content_type
 export const KEYLESS_HANDLERS: Record<string, AgentToolHandler> = {
   company_save_summary: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
     const { resolveCompany } = await import('./portfolio-tools')
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     const summary = typeof input?.summary === 'string' ? input.summary.trim().slice(0, 20_000) : ''
     if (!summary) throw new Error('summary is required.')
     const period = typeof input?.period === 'string' && input.period.trim() ? input.period.trim().slice(0, 50) : null
@@ -190,7 +190,7 @@ export const KEYLESS_HANDLERS: Record<string, AgentToolHandler> = {
     const email = await waitingEmail(admin, fundId, access, String(input?.email ?? ''))
     // Imported here, not at the top: portfolio-tools spreads these handlers into its own map.
     const { resolveCompany } = await import('./portfolio-tools')
-    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access)
+    const company = await resolveCompany(admin, fundId, String(input?.company ?? ''), access, 'write')
     const recorded = clamp(input?.recorded, 0, 10_000, 0)
     const { error } = await (admin as any)
       .from('inbound_emails')

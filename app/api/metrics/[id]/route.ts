@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const VALID_VALUE_TYPES = ['number', 'currency', 'percentage', 'text']
 const VALID_UNIT_POSITIONS = ['prefix', 'suffix']
@@ -34,6 +35,9 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { metricId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const writeCheck = await assertWriteAccess(createAdminClient(), user.id)
   if (writeCheck instanceof NextResponse) return writeCheck
@@ -84,6 +88,9 @@ export async function DELETE(req: NextRequest, props: { params: Promise<{ id: st
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { metricId: params.id }, 'write')
+  if (fleetDenied) return fleetDenied
 
   const writeCheck = await assertWriteAccess(createAdminClient(), user.id)
   if (writeCheck instanceof NextResponse) return writeCheck

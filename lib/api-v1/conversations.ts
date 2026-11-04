@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ChatMessage } from '@/lib/ai/types'
 import type { AnalystPrincipal } from '@/lib/ai/analyst/types'
+import { excludeHiddenCompanies, hiddenFleetIdsInFund, refuseFleetCompany } from '@/lib/access/fleet-company'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
@@ -73,6 +74,9 @@ export async function listConversations(
   principal: AnalystPrincipal,
   options: { limit: number; cursor?: string | null },
 ) {
+  // ── GPU fleet (P3) ── a thread about a fleet company the caller may not read now is left out in
+  // the query (#91), so it never takes a place in a page and the keyset cursor is unaffected.
+  const hidden = await hiddenFleetIdsInFund(admin, principal.fundId, principal.userId)
   let query: any = admin
     .from('analyst_conversations')
     .select('id, title, company_id, deal_id, scope, message_count, created_at, updated_at')
@@ -81,7 +85,7 @@ export async function listConversations(
     .order('updated_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(options.limit + 1)
-
+  query = excludeHiddenCompanies(query, hidden)
   if (options.cursor) {
     const cursor = decodeCursor(options.cursor)
     query = query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`)
@@ -113,6 +117,8 @@ export async function getConversation(
   if (error) throw new Error(error.message)
   if (!data) return null
   const row = data as ConversationRow
+  // ── GPU fleet (P3) ── not found once the caller cannot read the fleet company it is about (#91).
+  if (row.company_id && await refuseFleetCompany(admin, principal.userId, { companyId: row.company_id }, 'read')) return null
   return {
     ...compact(row),
     summary: row.summary ?? null,

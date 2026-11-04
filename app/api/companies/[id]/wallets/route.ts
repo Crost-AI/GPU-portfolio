@@ -11,6 +11,7 @@ import { holdingForRequest, isRealDate, type HoldingContext } from '@/lib/portfo
 import { holdingEntities, holdersAsOf, walletEntity, walletsForEntity } from '@/lib/portfolio/holding-entities'
 import { walletVariances, walletFromRow, balanceFromRow } from '@/lib/portfolio/wallets'
 import { HAS_CHAIN_PROVIDER } from '@/lib/portfolio/balance-providers'
+import { refuseFleetCompany } from '@/lib/access/fleet-company'
 
 /**
  * The public addresses a digital asset is held in, on the holding's own page
@@ -90,6 +91,9 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'read')
+  if (fleetDenied) return fleetDenied
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)
@@ -152,6 +156,9 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'write')
+  if (fleetDenied) return fleetDenied
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)
@@ -245,6 +252,9 @@ export async function DELETE(req: NextRequest, props: { params: Promise<{ id: st
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ── GPU fleet (P3) ── A fleet company needs `fleet` too (#91): not found otherwise.
+  const fleetDenied = await refuseFleetCompany(createAdminClient(), user.id, { companyId: id }, 'write')
+  if (fleetDenied) return fleetDenied
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const ctx = await holdingForRequest(admin, gate, id)
