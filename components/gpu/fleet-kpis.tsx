@@ -7,10 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCurrency, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import type { Kpi } from '@/lib/gpu/kpis'
-import { ErrorAlert, Field } from './fleet-ui'
+import Link from 'next/link'
+import { ErrorAlert, Field, FormDialog } from './fleet-ui'
 import { todayIso } from './fleet-math'
 import type { Fetcher } from './fleet-api'
-import { getKpis, kpiCaption, previousMonth, type FleetKpis } from './revenue-api'
+import { fleetCompanyHref, getKpis, kpiCaption, previousMonth, publishKpis, type FleetKpis, type PublishReply } from './revenue-api'
 
 // ── GPU fleet (P5) ── Fleet KPIs from GET /api/fleet/kpis: utilization, revenue, realized rate and
 // uptime, for a month and the trailing twelve. Figures count staged rows as well as posted ones, and
@@ -63,21 +64,65 @@ export function KpiRow({ kpi, label }: { kpi: Kpi; label: string }) {
   )
 }
 
-/**
- * Publishing a month's KPIs to the fleet company's metrics arrives with P3 PR B (#98: POST
- * /api/fleet/kpis { action: 'publish' }). Until that is on main the button is shown disabled with why.
- */
-export function PublishPlaceholder() {
+export const PUBLISH_HINT = 'Publishing to the fleet company needs write access to the GPU fleet.'
+
+/** Whether the month has anything entered to publish (the KPI reply carries no row count). */
+export const monthHasFigures = (k: Pick<Kpi, 'rentedHours' | 'grossRevenue' | 'fee' | 'downtimeHours'> | null | undefined) =>
+  !!k && (k.rentedHours > 0 || k.grossRevenue > 0 || k.fee > 0 || k.downtimeHours > 0)
+
+/** What a publish did, and where to see it. Rendered statically by the tests. */
+export function PublishOutcome({ reply }: { reply: PublishReply }) {
+  const n = Object.keys(reply.written).length
   return (
-    <div className="flex flex-col items-end gap-1" data-placeholder="publish">
-      <Button size="sm" variant="outline" disabled title="Publishing arrives with the fleet company metrics">Publish month to metrics</Button>
-      <p className="text-caption text-muted-foreground">Arrives with the fleet company metrics.</p>
+    <p role="status" className="text-sm text-success" data-published={reply.month}>
+      Published {reply.month}: {n} {n === 1 ? 'metric' : 'metrics'} written{reply.removed.length ? `, ${reply.removed.length} removed` : ''}.{' '}
+      <Link href={fleetCompanyHref(reply.companyId)} className="underline underline-offset-2" data-link="fleet-company">Open fleet company metrics</Link>
+    </p>
+  )
+}
+
+/**
+ * Publish a month's KPIs to the fleet company's metrics (POST /api/fleet/kpis, fleet write). The
+ * route publishes POSTED rows only, so a staged row waits until it is posted. The fleet company's
+ * link comes from the reply: no route on main names it beforehand.
+ */
+export function PublishMonth({ fetcher, month, fleet, canWrite }: {
+  fetcher: Fetcher
+  month: string
+  /** The month's fleet KPI, to tell whether anything was entered; null while loading. */
+  fleet: Kpi | null
+  canWrite: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [reply, setReply] = useState<PublishReply | null>(null)
+  const empty = !monthHasFigures(fleet)
+  const hint = !canWrite ? PUBLISH_HINT : empty ? `Nothing is entered for ${month} yet.` : null
+  return (
+    <div className="flex flex-col items-end gap-1" data-region="publish">
+      <Button size="sm" variant="outline" data-action="publish" disabled={hint != null} title={hint ?? undefined} onClick={() => { setReply(null); setOpen(true) }}>
+        Publish {month} to metrics
+      </Button>
+      {hint && <p className="text-caption text-muted-foreground" data-hint="publish">{hint}</p>}
+      {reply && <PublishOutcome reply={reply} />}
+      <FormDialog open={open} onOpenChange={setOpen} title={`Publish ${month} to the fleet company's metrics?`}
+        submitLabel="Publish"
+        onSubmit={async () => {
+          const r = await publishKpis(fetcher, month)
+          if (!r.ok) return r.error
+          setReply(r.data)
+          return null
+        }}>
+        <p className="text-sm text-muted-foreground" data-confirm="publish">
+          Writes {month}&rsquo;s utilization, revenue and rate figures to the fleet company, from posted rows only
+          {fleet?.includesStaged ? '; the staged rows counted on this page are left out until they are posted' : ''}. Publishing the month again overwrites it.
+        </p>
+      </FormDialog>
     </div>
   )
 }
 
 /** The asset page's card: one server's month, with a month picker, and the fleet's trailing twelve. */
-export function AssetKpiCard({ fetcher, assetId }: { fetcher: Fetcher; assetId: string }) {
+export function AssetKpiCard({ fetcher, assetId, canWrite }: { fetcher: Fetcher; assetId: string; canWrite: boolean }) {
   const [month, setMonth] = useState(() => lastCompleteMonth())
   const [kpis, setKpis] = useState<{ state: 'loading' } | { state: 'ok'; data: FleetKpis } | { state: 'error'; error: string }>({ state: 'loading' })
   useEffect(() => {
@@ -87,9 +132,12 @@ export function AssetKpiCard({ fetcher, assetId }: { fetcher: Fetcher; assetId: 
   }, [fetcher, month])
   return (
     <div className="space-y-3">
-      <Field id="asset-kpi-month" label="Month">
-        <Input id="asset-kpi-month" type="month" value={month} onChange={e => /^\d{4}-\d{2}$/.test(e.target.value) && setMonth(e.target.value)} className="h-9 w-40 tabular-nums" />
-      </Field>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <Field id="asset-kpi-month" label="Month">
+          <Input id="asset-kpi-month" type="month" value={month} onChange={e => /^\d{4}-\d{2}$/.test(e.target.value) && setMonth(e.target.value)} className="h-9 w-40 tabular-nums" />
+        </Field>
+        <PublishMonth key={month} fetcher={fetcher} month={month} fleet={kpis.state === 'ok' ? kpis.data.fleet : null} canWrite={canWrite} />
+      </div>
       {kpis.state === 'loading' ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         : kpis.state === 'error' ? <ErrorAlert>{kpis.error}</ErrorAlert>
         : <AssetKpis kpis={kpis.data} assetId={assetId} />}

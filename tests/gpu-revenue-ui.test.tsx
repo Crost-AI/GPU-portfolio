@@ -14,9 +14,9 @@ import { CurrencyProvider, formatCurrencyFull, formatCurrencyPrice } from '@/com
 import { EntryTable, ImportSummary } from '@/components/gpu/revenue-entry'
 import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, POST_HINT_NO_FLEET, postHint } from '@/components/gpu/revenue-earnings'
 import { PayoutsTable, TieOutCard, AutoPostPlaceholder } from '@/components/gpu/revenue-payouts'
-import { AssetKpis, KpiRow, LtmTiles, PublishPlaceholder, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
+import { AssetKpis, KpiRow, LtmTiles, PUBLISH_HINT, PublishMonth, PublishOutcome, lastCompleteMonth, ltmCaption, monthHasFigures } from '@/components/gpu/fleet-kpis'
 import {
-  combineLtm, derived, entryRowFor, groupByPeriod, importCsv, importRows, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
+  combineLtm, derived, entryRowFor, fleetCompanyHref, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
   type EarningView, type EntryRow, type FleetKpis, type PayoutView, type ReceivableTieOut,
 } from '@/components/gpu/revenue-api'
@@ -366,7 +366,31 @@ describe('fleet KPIs', () => {
     expect(combineLtm([a, b])).toEqual({ grossRevenue: 150, utilizationPct: 30, includesStaged: true })
   })
 
-  it('Publish is a disabled placeholder until P3 PR B is on main', () => {
-    expect(renderToStaticMarkup(<PublishPlaceholder />)).toMatch(/<button[^>]*disabled=""[^>]*>Publish month to metrics/)
+  it('Publish needs fleet write and a month with something entered; it posts { action: publish, month }', async () => {
+    const publish = (canWrite: boolean, fleet = month().fleet) => inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={fleet} canWrite={canWrite} />)
+    expect(isDisabled(button(publish(true), 'publish'))).toBe(false)
+    expect(publish(true)).toContain('Publish 2026-09 to metrics')
+    expect(isDisabled(button(publish(false), 'publish'))).toBe(true)
+    expect(publish(false)).toContain(PUBLISH_HINT)
+    const empty = { ...month().fleet, rentedHours: 0, grossRevenue: 0, fee: 0, downtimeHours: 0 }
+    expect(monthHasFigures(empty)).toBe(false)
+    expect(isDisabled(button(publish(true, empty), 'publish'))).toBe(true)
+    expect(publish(true, empty)).toContain('Nothing is entered for 2026-09 yet.')
+
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75 }, removed: [] } })
+    const r = await publishKpis(vehicleFetcher('GPU SPV I', fetcher), '2026-09')
+    expect(calls[0].path).toBe('/api/fleet/kpis?group=GPU%20SPV%20I')
+    expect(calls[0].body).toEqual({ action: 'publish', month: '2026-09', group: 'GPU SPV I' })
+    expect(r.ok).toBe(true)
+  })
+
+  it('a publish links to the fleet company named in its reply; a refusal is shown in its own words', async () => {
+    const html = renderToStaticMarkup(<PublishOutcome reply={{ companyId: 'c 1', month: '2026-09', written: { a: 1, b: 2 }, removed: ['c'] }} />)
+    expect(html).toContain(`href="${fleetCompanyHref('c 1')}"`)
+    expect(fleetCompanyHref('c 1')).toBe('/companies/c%201')
+    expect(html).toContain('2 metrics written, 1 removed')
+    const message = 'Changing the fleet register needs write access to the GPU fleet.'
+    const { fetcher } = fakeFetcher({ status: 403, body: { error: message } })
+    expect(await publishKpis(fetcher, '2026-09')).toEqual({ ok: false, status: 403, error: message })
   })
 })
