@@ -8,7 +8,7 @@
  * list itself is the gate, and in each fund the connection can do only what that member can. The
  * web app never sees any of this.
  *
- *   MASTER_ADMIN_EMAILS=taylor@ashgrove.example,taylor@northwind.example
+ *   MASTER_ADMIN_EMAILS=admin@fund-a.example,admin@fund-b.example
  *
  * Separate pools are separated by `|`, one per set of people, so each set keeps its own addresses
  * and so its own roles and grants in each fund. A connection joins the pool that lists its own

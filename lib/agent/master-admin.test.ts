@@ -5,8 +5,8 @@ vi.mock('@/lib/oauth/enabled', () => ({ agentApiEnabled: vi.fn(async (_admin: un
 import { loadPool, masterAdminEmails, masterAdminGroups, matchFund, poolFunds, type MasterAdminPool } from './master-admin'
 
 const ROWS = [
-  { user_id: 'u-northwind', email: 't@northwind.example', fund_id: 'f-northwind', fund_name: 'Northwind Holdings' },
-  { user_id: 'u-lac', email: 't@ashgrove.example', fund_id: 'f-lac', fund_name: 'Ashgrove Capital' },
+  { user_id: 'u-nw', email: 't@northwind.example', fund_id: 'f-nw', fund_name: 'Northwind Holdings' },
+  { user_id: 'u-rb', email: 't@riverbend.example', fund_id: 'f-rb', fund_name: 'Riverbend Capital' },
 ]
 
 function fakeAdmin(rows: unknown[], active: string | null = null) {
@@ -44,10 +44,10 @@ describe('masterAdminGroups', () => {
 
 describe('poolFunds', () => {
   it('keeps one acting admin per fund, chosen stably by email', () => {
-    const funds = poolFunds([...ROWS, { user_id: 'u-a', email: 'a@northwind.example', fund_id: 'f-northwind', fund_name: 'Northwind Holdings' }])
+    const funds = poolFunds([...ROWS, { user_id: 'u-a', email: 'a@northwind.example', fund_id: 'f-nw', fund_name: 'Northwind Holdings' }])
     expect(funds.map(f => [f.fundName, f.email])).toEqual([
       ['Northwind Holdings', 'a@northwind.example'],
-      ['Ashgrove Capital', 't@ashgrove.example'],
+      ['Riverbend Capital', 't@riverbend.example'],
     ])
   })
 
@@ -61,27 +61,27 @@ describe('poolFunds', () => {
 })
 
 describe('loadPool', () => {
-  const owner = { userId: 'u-lac', fundId: 'f-lac', clientId: 'claude' }
+  const owner = { userId: 'u-rb', fundId: 'f-rb', clientId: 'claude' }
 
   it('is off when the variable lists fewer than two addresses', async () => {
-    process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example'
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example'
     expect(await loadPool(fakeAdmin(ROWS), owner)).toBeNull()
   })
 
   it('is off for an owner who is not a listed admin of their own fund', async () => {
-    process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example,t@northwind.example'
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example,t@northwind.example'
     expect(await loadPool(fakeAdmin(ROWS), { ...owner, userId: 'someone-else' })).toBeNull()
   })
 
   it('starts on the authorizing fund, then follows the stored choice', async () => {
-    process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example,t@northwind.example'
-    expect((await loadPool(fakeAdmin(ROWS), owner))?.activeFundId).toBe('f-lac')
-    expect((await loadPool(fakeAdmin(ROWS, 'f-northwind'), owner))?.activeFundId).toBe('f-northwind')
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example,t@northwind.example'
+    expect((await loadPool(fakeAdmin(ROWS), owner))?.activeFundId).toBe('f-rb')
+    expect((await loadPool(fakeAdmin(ROWS, 'f-nw'), owner))?.activeFundId).toBe('f-nw')
   })
 
   it('ignores a stored fund that has left the pool', async () => {
-    process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example,t@northwind.example'
-    expect((await loadPool(fakeAdmin(ROWS, 'f-gone'), owner))?.activeFundId).toBe('f-lac')
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example,t@northwind.example'
+    expect((await loadPool(fakeAdmin(ROWS, 'f-gone'), owner))?.activeFundId).toBe('f-rb')
   })
 
   it('pools a listed address that is a member but not an admin', async () => {
@@ -92,10 +92,10 @@ describe('loadPool', () => {
   })
 
   it('leaves out a fund with agent access switched off', async () => {
-    process.env.MASTER_ADMIN_EMAILS = 't@ashgrove.example,t@northwind.example,t@off.com'
+    process.env.MASTER_ADMIN_EMAILS = 't@riverbend.example,t@northwind.example,t@off.com'
     const rows = [...ROWS, { user_id: 'u-off', email: 't@off.com', fund_id: 'f-off', fund_name: 'Off Fund' }]
     const pool = await loadPool(fakeAdmin(rows), owner)
-    expect(pool?.funds.map(f => f.fundId)).toEqual(['f-northwind', 'f-lac'])
+    expect(pool?.funds.map(f => f.fundId)).toEqual(['f-nw', 'f-rb'])
   })
 })
 
@@ -128,17 +128,17 @@ describe('loadPool with several pools', () => {
 })
 
 describe('matchFund', () => {
-  const pool: MasterAdminPool = { homeUserId: 'u-lac', clientId: 'c', activeFundId: 'f-lac', funds: poolFunds(ROWS) }
+  const pool: MasterAdminPool = { homeUserId: 'u-rb', clientId: 'c', activeFundId: 'f-rb', funds: poolFunds(ROWS) }
 
   it('matches by id, exact name or an unambiguous part', () => {
-    expect((matchFund(pool, 'f-northwind') as any).fundId).toBe('f-northwind')
-    expect((matchFund(pool, 'ashgrove capital') as any).fundId).toBe('f-lac')
-    expect((matchFund(pool, 'northwind') as any).fundId).toBe('f-northwind')
+    expect((matchFund(pool, 'f-nw') as any).fundId).toBe('f-nw')
+    expect((matchFund(pool, 'riverbend capital') as any).fundId).toBe('f-rb')
+    expect((matchFund(pool, 'northwind') as any).fundId).toBe('f-nw')
   })
 
   it('refuses with the choices when nothing or too much matches', () => {
-    expect(matchFund(pool, 'nope')).toMatch(/Choose from: Northwind Holdings, Ashgrove Capital/)
-    expect(matchFund(pool, 'o')).toMatch(/more than one fund/)
+    expect(matchFund(pool, 'nope')).toMatch(/Choose from: Northwind Holdings, Riverbend Capital/)
+    expect(matchFund(pool, 'd')).toMatch(/more than one fund/)
     expect(matchFund(pool, '')).toMatch(/Name the fund/)
   })
 })
