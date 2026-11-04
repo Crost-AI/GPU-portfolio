@@ -5,7 +5,7 @@ import { refuseWithoutCarryAccess } from '@/lib/tax/access'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { currentForm, type TaxFormRecord } from '@/lib/tax/forms'
 import { buildStateWorklist, summarizeWorklist, type PartnerStateRow } from '@/lib/tax/state-worklist'
-import { incomeTotal, emptyLines, type K1Category } from '@/lib/accounting/k1-allocation'
+import { incomeTotal, emptyLines, type K1Category, type K1Lines } from '@/lib/accounting/k1-allocation'
 import { assertK1PackageVisible } from '@/lib/accounting/vehicle-visibility'
 import { refuseGpuSpvTax } from '@/lib/accounting/vehicle-domain'
 
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
 
   // Allocated income per partner, from the package's own lines — the same figure the K-1 shows,
   // so a withholding calculation starts from what the partner was told.
-  const linesByEntity = new Map<string, Record<K1Category, number>>()
+  const linesByEntity = new Map<string, K1Lines>()
   for (const l of ((lineRows as any[]) ?? [])) {
     const cur = linesByEntity.get(l.lp_entity_id) ?? emptyLines()
     cur[l.category as K1Category] = Number(l.amount)
