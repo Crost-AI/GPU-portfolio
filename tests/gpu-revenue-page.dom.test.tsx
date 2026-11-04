@@ -16,6 +16,8 @@ import { AccessProvider, type ClientAccess } from '@/components/access-context'
 import { CurrencyProvider } from '@/components/currency-context'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { RevenueView } from '@/components/gpu/revenue-view'
+import { PublishMonth } from '@/components/gpu/fleet-kpis'
+import type { Fetcher } from '@/components/gpu/fleet-api'
 
 // Vitest globals are off, so Testing Library cannot register its own cleanup.
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -251,5 +253,46 @@ describe('the Revenue & payouts page', () => {
       rows: [{ assetId: 'h1', period_start: start, period_end: end, rented_hours: 4320, gross: 8640, fee: 864, net: 7776 }],
     })
     expect(await screen.findByRole('status')).toBeTruthy()
+  })
+})
+
+describe('publishing a month to the fleet company', () => {
+  const FLEET = {
+    gpuCount: 8, availableHours: 5760, rentedHours: 4320, utilizationPct: 75, grossRevenue: 8640, fee: 864, net: 7776,
+    realizedRate: 2, downtimeHours: 0, uptimePct: 100, revenuePerGpuMonth: 1080, includesStaged: true,
+  }
+  const queue = (...replies: { status: number; body: unknown }[]) => {
+    const bodies: unknown[] = []
+    const fetcher: Fetcher = async (_path, init) => {
+      bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined)
+      const r = replies.shift() ?? { status: 200, body: {} }
+      return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } })
+    }
+    return { fetcher, bodies }
+  }
+
+  it('confirms the month, publishes it, and links to the fleet company the reply names', async () => {
+    const { fetcher, bodies } = queue({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75, 'gpu-revenue': 8640 }, removed: [] } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toContain('posted rows only')
+    expect(dialog.textContent).toContain('staged rows counted on this page are left out')
+    expect(bodies).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Publish' }))
+    const link = await screen.findByRole('link', { name: 'Open fleet company metrics' })
+    expect(link.getAttribute('href')).toBe('/companies/c1')
+    expect(bodies).toEqual([{ action: 'publish', month: '2026-09' }])
+    expect(screen.getByText(/Published 2026-09: 2 metrics written/)).toBeTruthy()
+  })
+
+  it('a refused publish stays in the dialog in the route\u2019s words, and no link appears', async () => {
+    const message = 'Vehicle not found'
+    const { fetcher } = queue({ status: 404, body: { error: message } })
+    render(<PublishMonth fetcher={fetcher} month="2026-09" fleet={FLEET} canWrite />)
+    fireEvent.click(screen.getByRole('button', { name: 'Publish 2026-09 to metrics' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Publish' }))
+    expect(await within(screen.getByRole('dialog')).findByText(message)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Open fleet company metrics' })).toBeNull()
   })
 })
