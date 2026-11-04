@@ -16,10 +16,13 @@ import { roundCents } from './ledger'
 import { ACTUAL_BOOK } from './books'
 import { accountIdByCode, ensureCapitalAccounts, persistEntry } from './persist'
 import { vehicleIdByName } from './vehicle-id'
+import { readVehicleKindByName } from './vehicle-domain'
 import { assembleLoadedLedger, fetchAllRows } from './load'
 import { loadCarryTerms } from './carry'
 import { carryOnUnrealizedForYear } from './book-tax'
-import { proposeAdjustments, type ActualBookYear, type ProposedAdjustment } from './book-tax'
+import { proposeAdjustments, proposeFleetAdjustments, type ActualBookYear, type ProposedAdjustment } from './book-tax'
+import { bucketForSourceType } from './capital-account'
+import { loadFleetTaxYear, unpostedOverlayError, type FleetTaxYear } from '@/lib/gpu/tax-adjustments'
 import {
   buildTaxAdjustmentEntries,
   type TaxAdjustmentAccounts,
@@ -34,6 +37,7 @@ const CODES = {
   deferredOrgCosts: '1400',
   syndicationExpense: '5250',
   capitalizedSyndication: '1450',
+  bridge: '3200',
 } as const
 
 export function taxSourceRef(taxYear: number): string {
@@ -62,9 +66,14 @@ export async function loadActualBookYear(
   group: string,
   taxYear: number,
   opts?: { inceptionDate?: string },
-): Promise<{ year: ActualBookYear; perLpCarry: Map<string, number>; perLpUnrealized: Map<string, number>; perLpFx: Map<string, number>; assetMoves: { unrealized: Map<string, number>; fx: Map<string, number> } } | { error: string }> {
+): Promise<{ year: ActualBookYear; perLpCarry: Map<string, number>; perLpUnrealized: Map<string, number>; perLpFx: Map<string, number>; assetMoves: { unrealized: Map<string, number>; fx: Map<string, number> }; fleet?: FleetYear } | { error: string }> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) return { error: `Unknown vehicle "${group}"` }
+  // ── GPU fleet (P1c) ── Fail closed: a kind that could not be read is not a fund, because on a
+  // GPU SPV's chart the fund-chart reading proposes §709 and syndication from insurance and repairs.
+  const kind = await readVehicleKindByName(admin, fundId, group)
+  if (kind.error) return { error: `Could not read the kind of "${group}", so its chart cannot be read for tax. Try again.` }
+  const isGpu = kind.kind === 'gpu_spv'
 
   const yearStart = `${taxYear}-01-01`
   const yearEnd = `${taxYear}-12-31`
@@ -165,9 +174,30 @@ export async function loadActualBookYear(
     Array.from(perLpCarry.values()).filter(v => v > 0).reduce((s, v) => s + v, 0),
   )
 
-  const organizationalExpense = total(flat.filter(r => inYear(r) && onCode(r, CODES.organizationalExpense)))
-  const organizationalCostsToDate = total(flat.filter(r => onCode(r, CODES.organizationalExpense)))
-  const syndicationExpense = total(flat.filter(r => inYear(r) && onCode(r, CODES.syndicationExpense)))
+  // ── GPU fleet (P1c) ── On a GPU SPV's chart 5200 and 5250 are insurance and repairs, ordinary
+  // operating costs, so there is no §709 or syndication difference to propose from them.
+  const onOrgCode = (r: YearPostingRow, code: string) => !isGpu && onCode(r, code)
+  const organizationalExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.organizationalExpense)))
+  const organizationalCostsToDate = total(flat.filter(r => onOrgCode(r, CODES.organizationalExpense)))
+  const syndicationExpense = total(flat.filter(r => inYear(r) && onOrgCode(r, CODES.syndicationExpense)))
+
+  // ── GPU fleet (P1c) ── The per-server depreciation and disposal-basis differences, and each
+  // partner's share of the year's partnership expenses and realized gains to spread them by — the
+  // buckets the close allocated depreciation and the disposal gain through.
+  let fleet: FleetYear | undefined
+  if (isGpu) {
+    const bucket = (b: 'expenses' | 'realizedGains') => {
+      const m = new Map<string, number>()
+      for (const p of capitalInYear) if (bucketForSourceType(p.sourceType) === b) m.set(p.lpEntityId, roundCents((m.get(p.lpEntityId) ?? 0) + p.amount))
+      return m
+    }
+    const expenses = bucket('expenses')
+    const gains = bucket('realizedGains')
+    fleet = {
+      year: await loadFleetTaxYear(admin, fundId, vehicleId, taxYear),
+      weights: { depreciation: expenses, disposal_basis: Array.from(gains.values()).some(v => v !== 0) ? gains : expenses },
+    }
+  }
 
   // "Begins business" drives the §709 clock. Derived from the earliest posted entry unless the
   // caller knows better — a fund's real commencement date is a fact about the fund, and the
@@ -190,7 +220,14 @@ export async function loadActualBookYear(
     perLpUnrealized,
     perLpFx,
     assetMoves,
+    ...(fleet ? { fleet } : {}),
   }
+}
+
+/** ── GPU fleet (P1c) ── A GPU SPV's per-server differences and the partner weights to allocate them by. */
+interface FleetYear {
+  year: FleetTaxYear
+  weights: { depreciation: Map<string, number>; disposal_basis: Map<string, number> }
 }
 
 /**
@@ -227,6 +264,11 @@ export interface TaxRunResult {
   voided: number
   /** Accounts the vehicle's chart is missing — the run refuses rather than posting a partial set. */
   missingAccounts: string[]
+  /**
+   * ── GPU fleet (P1c) ── Later years to run again: their posted run cleared a server's cumulative
+   * difference on its disposal, and this run changes this year's part of it. Absent when there are none.
+   */
+  rerun?: { taxYear: number; reason: string }[]
 }
 
 /**
@@ -246,9 +288,13 @@ export async function postTaxAdjustments(
 ): Promise<TaxRunResult | { error: string }> {
   const loaded = await loadActualBookYear(admin, fundId, group, taxYear, opts)
   if ('error' in loaded) return loaded
-  const { year, perLpCarry, perLpUnrealized, perLpFx, assetMoves } = loaded
+  const { year, perLpCarry, perLpUnrealized, perLpFx, assetMoves, fleet } = loaded
+  // ── GPU fleet (P1c) ── A disposal clears the server's cumulative difference out of the tax book,
+  // so the earlier years have to have put it there. Refuse, naming the years to run, rather than
+  // leave a balance on a sold server.
+  if (fleet && fleet.year.unposted.length > 0) return { error: unpostedOverlayError(fleet.year.unposted, taxYear) }
 
-  const proposals = proposeAdjustments(year)
+  const proposals = [...proposeAdjustments(year), ...(fleet ? proposeFleetAdjustments(fleet.year) : [])]
   const codes = await accountIdByCode(admin, fundId, group)
   // The unrealized pair by subtype (see loadActualBookYear); the code is only the fallback name.
   const unrealizedPair = await subtypeAccounts(admin, fundId, group, 'unrealized')
@@ -264,6 +310,16 @@ export async function postTaxAdjustments(
     if (p.kind === 'fx_translation' && (!fxPair.assetId || !fxPair.incomeId)) needed.add('1250 / 4300')
     if (p.kind === 'organizational_709') { needed.add(CODES.organizationalExpense); needed.add(CODES.deferredOrgCosts) }
     if (p.kind === 'syndication') { needed.add(CODES.syndicationExpense); needed.add(CODES.capitalizedSyndication) }
+    if (p.kind === 'depreciation') { needed.add('depreciation expense'); needed.add(CODES.bridge) }
+    if (p.kind === 'disposal_basis') { needed.add('disposal gain'); needed.add(CODES.bridge) }
+  }
+  // ── GPU fleet (P1c) ── The depreciation and disposal-gain accounts by subtype (5300 / 4500 on the
+  // GPU chart); the names stand in for codes in `missingAccounts`.
+  if (fleet) {
+    const depreciationId = await subtypeAccount(admin, fundId, group, 'expense', 'depreciation')
+    const disposalId = await subtypeAccount(admin, fundId, group, 'income', 'disposal_gain')
+    if (depreciationId) codes.set('depreciation expense', depreciationId)
+    if (disposalId) codes.set('disposal gain', disposalId)
   }
   const missingAccounts = Array.from(needed).filter(c => !codes.get(c))
   // Refuse rather than post what can be posted: a partial adjustment set reads as a complete one,
@@ -291,7 +347,10 @@ export async function postTaxAdjustments(
 
   // The reversal is the negation of what the close posted, partner by partner.
   const perLpReversal = new Map(Array.from(perLpCarry.entries()).map(([id, amt]) => [id, roundCents(-amt)]))
-  const partnerIds = Array.from(new Set([...perLpReversal.keys(), ...perLpUnrealized.keys(), ...perLpFx.keys()]))
+  const partnerIds = Array.from(new Set([
+    ...perLpReversal.keys(), ...perLpUnrealized.keys(), ...perLpFx.keys(),
+    ...(fleet ? [...fleet.weights.depreciation.keys(), ...fleet.weights.disposal_basis.keys()] : []),
+  ]))
   const capMap =
     partnerIds.length > 0
       ? await ensureCapitalAccounts(admin, fundId, group, partnerIds)
@@ -307,10 +366,30 @@ export async function postTaxAdjustments(
     fx: fxPair.assetId && fxPair.incomeId
       ? { fxIncomeId: fxPair.incomeId, fxAssetId: fxPair.assetId, allocated: perLpFx, capMap, assetMoves: assetMoves.fx }
       : undefined,
+    fleet: fleet
+      ? { depreciationExpenseId: codes.get('depreciation expense')!, disposalGainId: codes.get('disposal gain')!, bridgeId: codes.get(CODES.bridge)!, capMap, weights: fleet.weights }
+      : undefined,
   })
 
+  const later = fleet?.year.laterDisposals ?? []
+  const rerun = later.length > 0
+    ? { rerun: Array.from(new Set(later.map(l => l.taxYear))).sort().map(y => ({
+        taxYear: y,
+        reason: `The ${y} run cleared ${later.filter(l => l.taxYear === y).map(l => l.name).join(', ')} on disposal using this year's difference as it was; run ${y} again after this.`,
+      })) }
+    : {}
+
   if (opts?.preview) {
-    return { taxYear, proposals, entryIds: [], skipped: built.skipped, voided: 0, missingAccounts: [] }
+    return { taxYear, proposals, entryIds: [], skipped: built.skipped, voided: 0, missingAccounts: [], ...rerun }
+  }
+
+  // ── GPU fleet (P1c) ── The fleet differences depend on each other: a disposal clears the server's
+  // cumulative difference INCLUDING this year's depreciation difference, so posting one without the
+  // other leaves a balance on a sold server. If any cannot be built, post none of the run — and
+  // void nothing, so the last complete run stands.
+  const fleetSkipped = built.skipped.filter(k => k.kind === 'depreciation' || k.kind === 'disposal_basis')
+  if (fleetSkipped.length > 0) {
+    return { error: `Nothing was posted for ${taxYear}: ${fleetSkipped.map(k => k.reason).join(' ')}` }
   }
 
   const voided = await voidPriorTaxRun(admin, fundId, group, taxYear)
@@ -331,7 +410,16 @@ export async function postTaxAdjustments(
     entryIds.push(result.entryId)
   }
 
-  return { taxYear, proposals, entryIds, skipped: built.skipped, voided, missingAccounts: [] }
+  return { taxYear, proposals, entryIds, skipped: built.skipped, voided, missingAccounts: [], ...rerun }
+}
+
+/** The vehicle's account of one type and subtype, the lowest code when there are several. */
+async function subtypeAccount(admin: SupabaseClient, fundId: string, group: string, type: string, subtype: string): Promise<string | null> {
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  if (!vehicleId) return null
+  const { data } = await admin.from('chart_of_accounts' as any).select('id, code, type, subtype').eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('subtype', subtype)
+  const rows = ((data as any[]) ?? []).filter(r => r.type === type && r.subtype === subtype).sort((a, b) => String(a.code).localeCompare(String(b.code)))
+  return rows[0]?.id ?? null
 }
 
 /** The vehicle's asset and income accounts of one subtype (the parent, lowest code, of each). */
