@@ -4,6 +4,10 @@ import { describe, it, expect } from 'vitest'
  * ── GPU fleet (P5) ── Nothing VC moved. Every list below is a literal, captured from `main` @
  * d0f0fe5f before the P5 shells existed, so a reviewer can read it and see what a VC fund gets.
  * A GPU entry turning up in any of them fails here.
+ *
+ * Since updated for upstream #165 only: Receipts is listed for a management company (or while a
+ * receipt waits on the entity), and Partnership expenses for a management company and an associate;
+ * the firm-wide list shows both.
  */
 
 import { navSectionsFor, fundsChildrenFor } from '@/components/app-sidebar'
@@ -22,7 +26,7 @@ const access = (d: Domain, f?: FeatureKey) => effectiveAccess(admin, d, f)
 const kids = (kind: string | null, seg: string | null = 'SEG') => fundsChildrenFor(seg, false, kind).map(c => c.href)
 
 const FUND_CHILDREN = [
-  '/funds/SEG', '/funds/SEG/status', '/funds/SEG/bank', '/funds/SEG/receipts', '/funds/SEG/capital-accounts',
+  '/funds/SEG', '/funds/SEG/status', '/funds/SEG/bank', '/funds/SEG/capital-accounts',
   '/funds/SEG/journal', '/funds/SEG/ledger', '/funds/SEG/periods', '/funds/SEG/schedule-of-investments',
   '/funds/SEG/performance', '/funds/SEG/forecast', '/funds/SEG/statements', '/funds/SEG/tax',
 ]
@@ -41,14 +45,14 @@ describe('a VC fund after the GPU shells', () => {
 
   it('entity subnav: a management company', () => {
     expect(kids('manco')).toEqual([
-      '/funds/SEG', '/funds/SEG/status', '/funds/SEG/bank', '/funds/SEG/receipts', '/funds/SEG/journal',
+      '/funds/SEG', '/funds/SEG/status', '/funds/SEG/bank', '/funds/SEG/receipts', '/funds/SEG/partnership-expenses', '/funds/SEG/journal',
       '/funds/SEG/ledger', '/funds/SEG/periods', '/funds/SEG/forecast', '/funds/SEG/statements',
     ])
   })
 
   it('firm-wide subnav', () => {
     expect(kids(null, null)).toEqual([
-      '/funds/status', '/funds/bank', '/funds/receipts', '/funds/capital-accounts', '/funds/journal', '/funds/ledger',
+      '/funds/status', '/funds/bank', '/funds/receipts', '/funds/partnership-expenses', '/funds/capital-accounts', '/funds/journal', '/funds/ledger',
       '/funds/periods', '/funds/schedule-of-investments', '/funds/performance', '/funds/forecast', '/funds/statements', '/funds/tax',
     ])
   })

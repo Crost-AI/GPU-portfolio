@@ -175,9 +175,12 @@ describe('3. a GPU SPV hides only what has no meaning on it', () => {
   })
 
   it('keeps every shared section of the books', () => {
-    for (const slug of ['status', 'bank', 'receipts', 'capital-accounts', 'journal', 'ledger', 'periods', 'performance', 'forecast', 'statements']) {
+    for (const slug of ['status', 'bank', 'capital-accounts', 'journal', 'ledger', 'periods', 'performance', 'forecast', 'statements']) {
       expect(kids, slug).toContain(at(slug))
     }
+    // Upstream #165: Receipts is a management company's section, listed elsewhere only while a
+    // receipt waits on the entity, as for every non-manco kind.
+    expect(kids).not.toContain(at('receipts'))
   })
 
   it('drops the schedule of investments, and Tax until #68', () => {

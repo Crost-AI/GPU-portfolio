@@ -152,24 +152,35 @@ describe('nav entries agree with the routes behind them', () => {
 describe('entity sub-nav by kind', () => {
   const ALL = [...ACCOUNTING_SECTIONS, ...UNLISTED_SECTIONS]
   const hrefs = (kind: string | null) => sectionsForKind(ALL, kind).map(s => s.href)
-  const FUND = [
-    '/funds/status', '/funds/bank', '/funds/receipts', '/funds/capital-accounts', '/funds/journal', '/funds/ledger',
+  // Captured from main @ d40d63ae, then upstream #165's two nav rules: Receipts is listed only for a
+  // management company (where receipts are kept) or while a receipt waits on the entity, and
+  // Partnership expenses only for the entities that pay a fund's expenses and bill it back. The
+  // firm-wide nav (null kind, no entity yet) lists both. Nothing else moved.
+  const FIRM = [
+    '/funds/status', '/funds/bank', '/funds/receipts', '/funds/partnership-expenses', '/funds/capital-accounts', '/funds/journal', '/funds/ledger',
     '/funds/periods', '/funds/schedule-of-investments', '/funds/performance', '/funds/forecast', '/funds/statements',
     '/funds/tax', '/funds/migrate', '/funds/opening-balances', '/funds/allocation-terms',
   ]
-  const without = (...out: string[]) => FUND.filter(h => !out.includes(h))
+  const from = (list: string[], ...out: string[]) => list.filter(h => !out.includes(h))
+  const FUND = from(FIRM, '/funds/receipts', '/funds/partnership-expenses')
+  const without = (...out: string[]) => from(FUND, ...out)
 
-  it('every existing kind sees exactly the sections it saw before (captured from main @ d40d63ae)', () => {
-    for (const kind of ['fund', 'spv', 'direct', 'other', null]) expect(hrefs(kind), String(kind)).toEqual(FUND)
-    expect(hrefs('associate')).toEqual(without('/funds/schedule-of-investments', '/funds/performance'))
+  it('every existing kind sees exactly the sections it saw before (main @ d40d63ae, plus upstream #165)', () => {
+    expect(hrefs(null)).toEqual(FIRM)
+    for (const kind of ['fund', 'spv', 'direct', 'other']) expect(hrefs(kind), String(kind)).toEqual(FUND)
+    expect(hrefs('associate')).toEqual(from(FIRM, '/funds/receipts', '/funds/schedule-of-investments', '/funds/performance'))
     expect(hrefs('individual')).toEqual(without('/funds/capital-accounts', '/funds/performance'))
-    expect(hrefs('manco')).toEqual(without('/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
+    expect(hrefs('manco')).toEqual(from(FIRM, '/funds/capital-accounts', '/funds/schedule-of-investments', '/funds/performance', '/funds/tax'))
+  })
+
+  it('a receipt waiting on any entity brings Receipts back into its nav', () => {
+    expect(sectionsForKind(ALL, 'fund', { receipts: 1 }).map(s => s.href)).toEqual(from(FIRM, '/funds/partnership-expenses'))
   })
 
   // ── GPU fleet (P5) ── the four operating pages, after Forecast, are the GPU SPV's alone.
   const GPU = ['/funds/fleet', '/funds/revenue', '/funds/waterfall', '/funds/scenarios']
 
-  it('a GPU SPV hides only the schedule of investments and Tax (until #68), and adds its four pages', () => {
+  it('a GPU SPV hides only the schedule of investments and Tax (until #68) (and Receipts unless one waits: #165), and adds its four pages', () => {
     const shared = without('/funds/schedule-of-investments', '/funds/tax')
     const at = shared.indexOf('/funds/forecast') + 1
     expect(hrefs('gpu_spv')).toEqual([...shared.slice(0, at), ...GPU, ...shared.slice(at)])
