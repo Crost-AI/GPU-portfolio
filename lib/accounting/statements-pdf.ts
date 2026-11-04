@@ -3,7 +3,8 @@
 // never disagree. Pure HTML builder; the route renders it through renderHtmlToPdf.
 //
 // One statement per page, ASC 946 order: assets and liabilities, operations, cash flows,
-// changes in partners' capital, schedule of investments. Comparison periods become columns.
+// changes in partners' capital, schedule of investments (a GPU SPV's fleet schedule). Comparison
+// periods become columns.
 
 import { pdfFontCss, PDF_SANS, PDF_DISPLAY } from '@/lib/pdf-fonts'
 import { getCurrencySymbol } from '@/lib/currency'
@@ -129,17 +130,17 @@ export function buildStatementsHtml(pkg: StatementPackage, meta: StatementsPdfMe
   )
 
   // 3. Cash flows
-  const cfSection = (which: 'operating' | 'financing') => (p: StatementPayload): Section => {
-    const cf = p.cashFlows
-    if (!cf) return { label: which === 'operating' ? 'Operating activities' : 'Financing activities', rows: [], total: 0 }
-    const s = cf[which]
+  const CF_LABEL = { operating: 'Operating activities', investing: 'Investing activities', financing: 'Financing activities' }
+  const cfSection = (which: 'operating' | 'investing' | 'financing') => (p: StatementPayload): Section => {
+    const s = p.cashFlows?.[which]
+    if (!s) return { label: CF_LABEL[which], rows: [], total: 0 }
     return { label: s.label, rows: s.lines.map(l => ({ code: l.code, name: l.name, amount: l.amount })), total: s.total }
   }
   const nonCash = primary.cashFlows?.nonCash ?? []
   const cashFlows = !primary.cashFlows ? '' : statement(
     'Statement of cash flows', overLabel,
     `<table><thead>${periodHead('over')}</thead><tbody>
-      ${section(cfSection('operating'))}
+      ${section(cfSection('operating'))}${primary.cashFlows.investing ? section(cfSection('investing')) : ''}
       ${section(cfSection('financing'))}
       ${totalRow('Net change in cash', p => p.cashFlows?.netChange)}
       ${totalRow('Opening cash', p => p.cashFlows?.openingCash, false)}
@@ -197,6 +198,23 @@ export function buildStatementsHtml(pkg: StatementPackage, meta: StatementsPdfMe
     </tbody></table>`,
   )
 
+  // 5b. A GPU SPV's fleet schedule, in place of the schedule of investments — the primary period's.
+  const fleet = primary.fleetSchedule
+  const fleetSchedule = !fleet ? '' : statement(
+    'Fleet schedule', `Equipment at cost less accumulated depreciation, ${asOfLabel}`,
+    fleet.length === 0 ? '<p style="font-size:10px;color:#888;">No equipment on the books.</p>'
+      : `<table><thead><tr><th>Server</th><th>Type</th><th style="text-align:right;">GPUs</th><th>In service</th><th style="text-align:right;">Cost</th><th style="text-align:right;">Accumulated depreciation</th><th style="text-align:right;">Net book value</th></tr></thead>
+    <tbody>
+      ${fleet.map(r => `<tr>
+        <td style="${TD}">${esc(r.name)}</td><td style="${TD}color:#888;">${esc(r.typeLabel ?? '—')}</td><td style="${NUM}">${r.gpus ?? '—'}</td>
+        <td style="${TD}color:#888;font-variant-numeric:tabular-nums;">${esc(r.inServiceDate ?? '—')}</td>
+        <td style="${NUM}">${m(r.cost)}</td><td style="${NUM}">${m(-r.accumulated)}</td><td style="${NUM}">${m(r.nbv)}</td>
+      </tr>`).join('')}
+      <tr style="font-weight:600;background:#fafafa;"><td style="${TD}" colspan="4">Total equipment, net</td>
+        <td style="${NUM}">${m(fleet.reduce((s, r) => s + r.cost, 0))}</td><td style="${NUM}">${m(-fleet.reduce((s, r) => s + r.accumulated, 0))}</td><td style="${NUM}">${m(fleet.reduce((s, r) => s + r.nbv, 0))}</td></tr>
+    </tbody></table>`,
+  )
+
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>${pdfFontCss(meta.displayFont)}
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -216,7 +234,7 @@ export function buildStatementsHtml(pkg: StatementPackage, meta: StatementsPdfMe
   ${operations}
   ${cashFlows}
   ${capital}
-  ${schedule}
+  ${schedule}${fleetSchedule}
   <div style="position:fixed;bottom:0;left:0;right:0;padding:6px 0;border-top:1px solid #e5e5e5;background:white;font-size:8.5px;color:#888;">
     ${esc(meta.fundName)} · ${esc(meta.vehicle)} · generated ${esc(meta.generatedAt.slice(0, 10))}. Balance sheet and schedule of investments are cumulative to the period end; operations, cash flows and changes in capital cover the period.
   </div>

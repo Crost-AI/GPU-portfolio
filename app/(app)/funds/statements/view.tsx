@@ -30,6 +30,8 @@ interface PartnerRow {
   ending: number
 }
 interface CFSection { label: string; lines: { code: string; name: string; amount: number }[]; total: number }
+/** A GPU SPV's fleet schedule row (lib/gpu/fleet-schedule.ts). */
+interface FleetRow { code: string; name: string; typeLabel: string | null; gpus: number | null; inServiceDate: string | null; status: string | null; cost: number; accumulated: number; nbv: number }
 interface Period { preset: PeriodPreset; start: string | null; end: string | null; label: string }
 interface Data {
   period: Period
@@ -45,15 +47,21 @@ interface Data {
   changesInPartnersCapital: { partners: PartnerRow[]; totals: PartnerRow }
   cashFlows: {
     operating: CFSection
+    /** A GPU SPV's equipment; absent for every other kind. */
+    investing?: CFSection
     financing: CFSection
     netChange: number
     openingCash: number
     endingCash: number
     nonCash: { entryId: string; date: string | null; description: string; amount: number; legs: { name: string; amount: number }[] }[]
   } | null
+  /** A GPU SPV's fleet schedule; absent for every other kind. */
+  fleetSchedule?: FleetRow[]
   // Prior-period payloads, most-recent-first, present only when ?compare= was sent.
   comparisons?: Omit<Data, 'comparisons'>[]
 }
+
+const NO_INVESTING: CFSection = { label: 'Investing activities', lines: [], total: 0 }
 
 const CAP_COLS: { key: keyof PartnerRow; label: string }[] = [
   { key: 'beginning', label: 'Beginning' },
@@ -225,7 +233,7 @@ export function StatementsView() {
   const cfAsSection = (get: (cf: NonNullable<Data['cashFlows']>) => CFSection) =>
     (d: Omit<Data, 'comparisons'>): Section => {
       const cf = d.cashFlows
-      if (!cf) return { label: get({ operating: { label: '', lines: [], total: 0 }, financing: { label: '', lines: [], total: 0 } } as any).label, rows: [], total: 0 }
+      if (!cf) return { label: get({ operating: { label: '', lines: [], total: 0 }, investing: NO_INVESTING, financing: { label: '', lines: [], total: 0 } } as any).label, rows: [], total: 0 }
       const s = get(cf)
       return { label: s.label, rows: s.lines.map(l => ({ code: l.code, name: l.name, amount: l.amount })), total: s.total }
     }
@@ -422,6 +430,53 @@ export function StatementsView() {
         )}
       </section>
 
+      {/* A GPU SPV's exhibit in place of the schedule of investments: the primary period's servers,
+          totalling the balance sheet's net equipment (1600 − 1650). */}
+      {data.fleetSchedule && (
+        <section>
+          <h2 className="text-base font-semibold">Fleet schedule</h2>
+          <p className="text-xs text-muted-foreground mb-2">Equipment at cost less accumulated depreciation — {asOfLabel}</p>
+          {data.fleetSchedule.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No equipment on the books.</p>
+          ) : (
+            <div className="border rounded-lg overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="text-left px-3 py-2 font-medium">Server</th>
+                    <th className="text-left px-3 py-2 font-medium">Type</th>
+                    <th className="text-right px-3 py-2 font-medium">GPUs</th>
+                    <th className="text-left px-3 py-2 font-medium">In service</th>
+                    <th className="text-right px-3 py-2 font-medium">Cost</th>
+                    <th className="text-right px-3 py-2 font-medium">Accumulated depreciation</th>
+                    <th className="text-right px-3 py-2 font-medium">Net book value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.fleetSchedule.map(r => (
+                    <tr key={r.code} className="border-t">
+                      <td className="px-3 py-1.5">{r.name}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{r.typeLabel ?? '—'}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{r.gpus ?? '—'}</td>
+                      <td className="px-3 py-1.5 tabular-nums text-muted-foreground">{r.inServiceDate ?? '—'}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.cost)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{fmt(-r.accumulated)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.nbv)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t font-semibold bg-muted/30">
+                    <td className="px-3 py-1.5" colSpan={4}>Total equipment, net</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{fmt(data.fleetSchedule.reduce((s, r) => s + r.cost, 0))}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{fmt(-data.fleetSchedule.reduce((s, r) => s + r.accumulated, 0))}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{fmt(data.fleetSchedule.reduce((s, r) => s + r.nbv, 0))}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
       <section>
         <h2 className="text-base font-semibold">Statement of operations</h2>
         <p className="text-xs text-muted-foreground mb-2">Income statement — {overLabel}</p>
@@ -455,6 +510,7 @@ export function StatementsView() {
               <thead><PeriodHead kind="over" /></thead>
               <tbody>
                 <MultiSec pick={cfAsSection(cf => cf.operating)} />
+                {data.cashFlows.investing && <MultiSec pick={cfAsSection(cf => cf.investing ?? NO_INVESTING)} />}
                 <MultiSec pick={cfAsSection(cf => cf.financing)} />
                 <tr className="border-t font-semibold bg-muted/30">
                   <td className="px-3 py-1.5">Net change in cash</td>
