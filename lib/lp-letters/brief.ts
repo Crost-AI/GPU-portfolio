@@ -18,6 +18,7 @@
 import type { PortfolioPreview, CompanyLetterData, PriceEvent } from './aggregate'
 import { fmt } from './generate'
 import { getCurrencySymbol } from '@/lib/currency'
+import type { FleetLetterData } from '@/lib/gpu/letter'
 
 export const MISSING_HEADING = 'Missing information'
 
@@ -60,8 +61,23 @@ export interface LetterBrief {
   basis_notes: string[]
   fund_figures: Figure[]
   companies: BriefCompany[]
+  /** A GPU SPV's letter: the investors' waterfall position and the fleet. Absent for every other entity. */
+  fleet?: FleetBrief
   missing_information: string[]
   excluded: string
+}
+
+export interface FleetBrief {
+  /** The investors' position, vehicle level: capital, preferred return, distributions, DPI, IRR. */
+  position: Figure[]
+  /** The fleet for the quarter, as entered (P3); empty until it is. */
+  fleet: Figure[]
+  /**
+   * The manager's profit share PAID (booked; Q8), for a writer who sees the manager's economics. The
+   * ACCRUED memo is added only to a brief that is shown, never one a saved draft is written from.
+   */
+  profit_share?: Figure[]
+  projected?: Figure[]
 }
 
 export interface BriefInput {
@@ -76,6 +92,55 @@ export interface BriefInput {
   styleGuide: string
   /** Guidance for this one letter, kept with it (lp_letters.generation_prompt). */
   guidance?: string | null
+  /** A GPU SPV's position and fleet (lib/gpu/letter.ts). */
+  fleet?: FleetLetterData | null
+}
+
+const pctOf = (n: number) => `${(n * 100).toFixed(1)}%`
+
+/** A GPU SPV's figures, labelled; the paid profit share and the accrued memo only when supplied. */
+export function fleetBrief(f: FleetLetterData, currency: string, period: string): { brief: FleetBrief; missing: string[] } {
+  const p = f.report.position
+  const missing: string[] = []
+  const position: Figure[] = [
+    { label: 'Capital contributed by investors', value: fmt(p.contributed, currency), basis: 'cash' },
+    { label: 'Capital returned to investors to date', value: fmt(p.capitalReturned, currency), basis: 'cash' },
+    { label: 'Capital still unreturned', value: fmt(p.unreturned, currency), basis: 'cash' },
+    { label: 'Preferred return paid to date', value: fmt(p.prefPaid, currency), basis: 'cash' },
+    { label: 'Preferred return carried forward (unpaid)', value: fmt(p.prefCarriedForward, currency), basis: 'cash' },
+    { label: 'Distributions to investors to date', value: fmt(p.distributedToInvestors, currency), basis: 'cash' },
+  ]
+  if (p.dpi != null) position.push({ label: 'DPI to date, net', value: `${p.dpi.toFixed(2)}x`, basis: 'net' })
+  if (f.irrToDate != null) position.push({ label: 'IRR to date, net (investors\' cash flows only)', value: pctOf(f.irrToDate), basis: 'net' })
+  else missing.push('Investor IRR to date: there are too few dated contributions and distributions to compute it.')
+
+  const k = f.report.kpis
+  const fleet: Figure[] = []
+  if (k) {
+    fleet.push({ label: `Rental revenue, ${period}`, value: fmt(k.revenue, currency), basis: 'gross' })
+    if (k.utilization != null) fleet.push({ label: `Utilisation, ${period}`, value: pctOf(k.utilization), basis: 'cash' })
+    if (k.realizedRatePerGpuHour != null) fleet.push({ label: 'Realised rate per GPU-hour, gross', value: fmt(k.realizedRatePerGpuHour, currency), basis: 'gross' })
+  } else {
+    missing.push(`Fleet KPIs for ${period} (revenue, utilisation, uptime): not entered for the quarter.`)
+  }
+
+  const brief: FleetBrief = { position, fleet }
+  if (f.profitShare) {
+    const a = f.profitShare.accrued
+    brief.profit_share = [
+      { label: 'Manager profit share PAID to date (booked)', value: fmt(f.profitShare.paid, currency), basis: 'cash' },
+      ...(a ? [{ label: `Manager profit share ACCRUED at book NAV, ${a.asOf} (memo, not booked)`, value: fmt(a.carryMemo, currency), basis: 'cash' as const }] : []),
+    ]
+  }
+  if (f.projected) {
+    brief.projected = [
+      ...(f.projected.investorMultiple != null ? [{ label: 'Projected investor multiple (forecast), net', value: `${f.projected.investorMultiple.toFixed(2)}x`, basis: 'net' as const }] : []),
+      ...(f.projected.investorIrr != null ? [{ label: 'Projected investor IRR (forecast), net', value: pctOf(f.projected.investorIrr), basis: 'net' as const }] : []),
+    ]
+  } else {
+    missing.push('A projected outcome from the forecast: not available for this letter yet.')
+  }
+  return { brief, missing }
 }
 
 const MAX_UPDATE_CHARS = 4000
@@ -256,6 +321,8 @@ export function buildLetterBrief(input: BriefInput): LetterBrief {
     missing.push(`Net fund performance (net TVPI, DPI and IRR) for ${fund}: no fund cash flows are recorded, so no net figure can be stated.`)
   }
 
+  const fleet = input.fleet ? fleetBrief(input.fleet, currency, period) : null
+  if (fleet) missing.push(...fleet.missing)
   const asOf = preview.asOf ?? new Date().toISOString().slice(0, 10)
   return {
     fund,
@@ -269,9 +336,17 @@ export function buildLetterBrief(input: BriefInput): LetterBrief {
       `Figures are as of ${asOf}: transactions and cash flows after it are not counted. A company's written-off status is its ` +
         'current one.',
       `Amounts are in ${currency}.`,
+      ...(fleet ? [
+        'The investors\' position is the distributable-cash waterfall replayed on the distributions so far: preferred return on ' +
+          'capital not yet returned, return of capital, then the profit split. Figures are for the investors together, not any one.',
+        ...(fleet.brief.profit_share ? ['The manager\'s profit share is booked only when a distribution pays it: the figure here is what has been PAID.'] : []),
+        ...(fleet.brief.profit_share?.some(x => /ACCRUED/.test(x.label)) ? ['The ACCRUED figure is a memo: what the profit share would be if the book NAV were ' +
+          'distributed today. It is not booked and not owed, and it is for the manager\'s view only: it does not belong in a letter to investors.'] : []),
+      ] : []),
     ],
     fund_figures: fundFigures,
     companies,
+    ...(fleet ? { fleet: fleet.brief } : {}),
     missing_information: missing,
     excluded:
       'No LP or investor-level data: investor names, commitments, capital accounts and investor-level figures are not read. ' +

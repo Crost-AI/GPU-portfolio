@@ -259,10 +259,26 @@ function soiSheet(payloads: StatementPayload[]): XLSX.WorkSheet {
   return sheet(rows, [30, 18, 14, ...valueCols.map(() => 16), 16])
 }
 
-/** Adapts one cash-flow section (operating/financing — `lines`, not `rows`) to the shared `Section` shape. */
-function cfSection(cf: NonNullable<StatementPayload['cashFlows']>, which: 'operating' | 'financing'): Section {
-  const s = cf[which]
+/** Adapts one cash-flow section (operating/investing/financing — `lines`, not `rows`) to the shared `Section` shape. */
+function cfSection(cf: NonNullable<StatementPayload['cashFlows']>, which: 'operating' | 'investing' | 'financing'): Section {
+  const s = cf[which] ?? { label: 'Investing activities', lines: [], total: 0 }
   return { label: s.label, rows: s.lines, total: s.total }
+}
+
+/** A GPU SPV's fleet schedule, the primary period's: one row per server, totalling 1600 − 1650. */
+function fleetSheet(rows: NonNullable<StatementPayload['fleetSchedule']>, asOf: string | null): XLSX.WorkSheet {
+  const out: Row[] = [
+    ['Fleet schedule'], [`Equipment at cost less accumulated depreciation, as of ${asOf ?? 'today'}`], [],
+    ['Account', 'Server', 'Type', 'GPUs', 'In service', 'Status', 'Cost', 'Accumulated depreciation', 'Net book value'],
+  ]
+  for (const r of rows) {
+    out.push([r.code, r.name, r.typeLabel ?? '', r.gpus, r.inServiceDate ?? '', r.status ?? '', money(r.cost), money(-r.accumulated), money(r.nbv)])
+  }
+  out.push([
+    'Total equipment, net', '', '', null, '', '',
+    money(rows.reduce((s, r) => s + r.cost, 0)), money(-rows.reduce((s, r) => s + r.accumulated, 0)), money(rows.reduce((s, r) => s + r.nbv, 0)),
+  ])
+  return sheet(out, [18, 24, 18, 8, 12, 12, 16, 16, 16])
 }
 
 function cashFlowSheet(payloads: StatementPayload[]): XLSX.WorkSheet {
@@ -273,6 +289,8 @@ function cashFlowSheet(payloads: StatementPayload[]): XLSX.WorkSheet {
   const withCf = payloads.filter((p): p is StatementPayload & { cashFlows: NonNullable<StatementPayload['cashFlows']> } => !!p.cashFlows)
   const rows: Row[] = [['Statement of cash flows'], [], periodHeader(withCf)]
   rows.push(...sectionRowsMulti(p => cfSection(p.cashFlows!, 'operating'), withCf))
+  // A GPU SPV's equipment; absent for every other kind, whose sheet is as it was.
+  if (primary.cashFlows.investing) rows.push(...sectionRowsMulti(p => cfSection(p.cashFlows!, 'investing'), withCf))
   rows.push(...sectionRowsMulti(p => cfSection(p.cashFlows!, 'financing'), withCf))
   rows.push(['Net change in cash', '', ...withCf.map(p => money(p.cashFlows!.netChange))])
   rows.push(['Opening cash', '', ...withCf.map(p => money(p.cashFlows!.openingCash))])
@@ -335,6 +353,7 @@ export function buildStatementWorkbook(pkg: StatementPackage, meta: WorkbookMeta
   append(wb, 'Income Statement', incomeStatementSheet(payloads))
   append(wb, 'Partners Capital', capitalSheet(payloads))
   append(wb, 'Schedule of Investments', soiSheet(payloads))
+  if (pkg.payload.fleetSchedule) append(wb, 'Fleet Schedule', fleetSheet(pkg.payload.fleetSchedule, pkg.payload.period.end))
   append(wb, 'Cash Flows', cashFlowSheet(payloads))
   append(wb, 'GL Detail', glDetailSheet(pkg))
   return wb

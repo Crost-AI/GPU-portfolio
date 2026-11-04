@@ -192,6 +192,8 @@ export interface StatementsData {
   }
   cashFlows: {
     operating: CashFlowSectionData
+    /** A GPU SPV's equipment: purchases and disposal proceeds. Absent for every other kind. */
+    investing?: CashFlowSectionData
     financing: CashFlowSectionData
     netChange: number
     openingCash: number
@@ -210,6 +212,19 @@ export interface StatementsData {
      */
     carryWithheld: boolean
   }
+  /** A GPU SPV's fleet schedule, one row per server; absent for every other kind. */
+  fleetSchedule?: FleetScheduleLine[]
+}
+
+export interface FleetScheduleLine {
+  name: string
+  type: string | null
+  gpus: number | null
+  inServiceDate: string | null
+  cost: number
+  /** Accumulated depreciation, a positive figure. */
+  accumulated: number
+  nbv: number
 }
 
 // ---------------------------------------------------------------------------------------------

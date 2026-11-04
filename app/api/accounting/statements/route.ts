@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { buildStatementPackage } from '@/lib/accounting/statement-package'
+import { canSeeAccruedMemo } from '@/lib/gpu/accrued'
 
 // GET — the full statement package for a vehicle, scoped to a statement period:
 //   ?preset=this_quarter|last_quarter|ytd|prior_year|itd   — or —
@@ -25,8 +26,9 @@ export async function GET(req: NextRequest) {
 
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
-  const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
-  if (group instanceof NextResponse) return group
+  const resolved = await resolveGroupWithAccess(admin, gate, req.nextUrl.searchParams.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
 
   // The statement of changes in partners' capital used to be withheld here from a caller without
   // lp_capital. It was theatre: the trial balance below ships the same partners and the same
@@ -34,6 +36,9 @@ export async function GET(req: NextRequest) {
   // is reading partner capital — so `accounting` now implies `lp_capital` outright
   // (see DOMAIN_META.lp_capital.impliedBy) and this package is whole again.
 
-  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams)
+  // A GPU SPV's accrued profit share is a memo of the manager's economics: on the same gate as its
+  // own route (gp_economics, gpu_fleet on, the books' read).
+  const accruedMemo = canSeeAccruedMemo(access)
+  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams, { accruedMemo })
   return NextResponse.json(pkg.comparisons ? { ...pkg.payload, comparisons: pkg.comparisons } : pkg.payload)
 }
