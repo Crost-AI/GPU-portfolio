@@ -546,4 +546,22 @@ describe('the statements view from a real statement package', () => {
     expect('investing' in payload.data.cashFlows!).toBe(false)
     expect(JSON.stringify(payload.data)).toMatchSnapshot()
   })
+
+  it("a GPU SPV: investing between operating and financing, footing to the net change, and the fleet schedule", async () => {
+    const { gpuLedger } = await import('@/tests/helpers/statement-fixtures')
+    const pkg = await realPackage(gpuLedger())
+    statementPackage.mockImplementationOnce(async () => pkg as any)
+    const payload = await DASHBOARD_HANDLERS.show_financial_statements(ctx(access('admin')).ctx, {})
+    const cf = payload.data.cashFlows!
+    expect(Object.keys(cf).slice(0, 3)).toEqual(['operating', 'investing', 'financing'])
+    expect(cf.investing).toEqual({
+      label: 'Investing activities',
+      rows: [{ name: 'Purchases of equipment and capitalized costs', amount: -422_000 }, { name: 'Proceeds from disposal of equipment', amount: 50_000 }],
+      total: -372_000,
+    })
+    expect(cf.operating.total + cf.investing!.total + cf.financing.total).toBe(cf.netChange)
+    expect(payload.data.fleetSchedule).toEqual([
+      { name: 'GPU equipment at cost — srv-2', type: null, gpus: null, inServiceDate: null, cost: 335_000, accumulated: 5_000, nbv: 330_000 },
+    ])
+  })
 })

@@ -746,9 +746,11 @@ export function statementOfCashFlows(
     if (counter.length === 0) continue
 
     if (isInvesting(legs)) {
+      // No account code: each line gathers every server's 1600-<a> account, and the renderers key a
+      // line by its code first, so two lines sharing one would print as one.
       const line = cashAmount < 0
-        ? { code: '1600', name: 'Purchases of equipment and capitalized costs' }
-        : { code: '1600', name: 'Proceeds from disposal of equipment' }
+        ? { code: '', name: 'Purchases of equipment and capitalized costs' }
+        : { code: '', name: 'Proceeds from disposal of equipment' }
       const key = `${line.code}|${line.name}|investing`
       lineMeta.set(key, { ...line, financing: false, investing: true })
       byCounterAccount.set(key, r((byCounterAccount.get(key) ?? 0) + cashAmount))

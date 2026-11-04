@@ -27,8 +27,8 @@ describe("a GPU SPV's cash-flow statement: equipment is investing", () => {
     expect(cf.investing).toEqual({
       label: 'Investing activities',
       lines: [
-        { code: '1600', name: 'Purchases of equipment and capitalized costs', amount: -422_000 },
-        { code: '1600', name: 'Proceeds from disposal of equipment', amount: 50_000 },
+        { code: '', name: 'Purchases of equipment and capitalized costs', amount: -422_000 },
+        { code: '', name: 'Proceeds from disposal of equipment', amount: 50_000 },
       ],
       total: -372_000,
     })
