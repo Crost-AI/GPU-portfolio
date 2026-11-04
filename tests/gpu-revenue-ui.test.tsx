@@ -13,10 +13,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { CurrencyProvider, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import { EntryTable, ImportSummary } from '@/components/gpu/revenue-entry'
 import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, POST_HINT_NO_FLEET, postHint } from '@/components/gpu/revenue-earnings'
-import { PayoutsTable, TieOutCard, AutoPostPlaceholder } from '@/components/gpu/revenue-payouts'
+import { AUTO_POST_HINT, AutoPostSwitch, PayoutsTable, SuggestedMatches, TieOutCard } from '@/components/gpu/revenue-payouts'
 import { AssetKpis, KpiRow, LtmTiles, PUBLISH_HINT, PublishMonth, PublishOutcome, lastCompleteMonth, ltmCaption, monthHasFigures } from '@/components/gpu/fleet-kpis'
 import {
-  combineLtm, derived, entryRowFor, fleetCompanyHref, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
+  combineLtm, derived, entryRowFor, fleetCompanyHref, setAutoPost, suggestedMatches, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
   type EarningView, type EntryRow, type FleetKpis, type PayoutView, type ReceivableTieOut,
 } from '@/components/gpu/revenue-api'
@@ -294,10 +294,43 @@ describe('payouts', () => {
     expect(ok).toContain('Ties out')
   })
 
-  it('the auto-post toggle is a disabled placeholder until the settings route is on main', () => {
-    const html = renderToStaticMarkup(<AutoPostPlaceholder />)
-    expect(html).toContain('data-placeholder="auto-post"')
-    expect(html).toMatch(/<button[^>]*disabled=""/)
+  it('the auto-post switch shows the setting, defaults to propose, and needs fleet and Accounting write', () => {
+    const sw = (value: boolean | null, canWrite = true) => renderToStaticMarkup(<AutoPostSwitch value={value} error={null} canWrite={canWrite} saving={false} onChange={() => {}} />)
+    const switchTag = (html: string) => html.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+    expect(switchTag(sw(false))).toContain('aria-checked="false"')
+    expect(sw(false)).toContain('Off (the default)')
+    expect(isDisabled(switchTag(sw(false)))).toBe(false)
+    expect(switchTag(sw(true))).toContain('aria-checked="true"')
+    expect(sw(true)).toContain('books a payout')
+    expect(isDisabled(switchTag(sw(false, false)))).toBe(true)
+    expect(sw(false, false)).toContain(AUTO_POST_HINT)
+    expect(isDisabled(switchTag(sw(null)))).toBe(true)
+    expect(renderToStaticMarkup(<AutoPostSwitch value={false} error="Changing how payouts are booked needs write access to Fund accounting." canWrite saving={false} onChange={() => {}} />))
+      .toContain('Changing how payouts are booked needs write access to Fund accounting.')
+  })
+
+  it('the switch PATCHes { autoPostPayoutMatches }, and a 403 comes back in the route\u2019s words', async () => {
+    const message = 'Changing how payouts are booked needs write access to Fund accounting.'
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { autoPostPayoutMatches: true } }, { status: 403, body: { error: message } })
+    expect(await setAutoPost(vehicleFetcher('GPU SPV I', fetcher), true)).toEqual({ ok: true, data: { autoPostPayoutMatches: true } })
+    expect(calls[0].path).toBe('/api/fleet/ops/settings?group=GPU%20SPV%20I')
+    expect(calls[0].init?.method).toBe('PATCH')
+    expect(calls[0].body).toEqual({ autoPostPayoutMatches: true, group: 'GPU SPV I' })
+    expect(await setAutoPost(fetcher, false)).toEqual({ ok: false, status: 403, error: message })
+  })
+
+  it('suggests a match only for an expected payout with exactly one fitting deposit', () => {
+    const two = { ...PAYOUT, id: 'p2', candidates: [...PAYOUT.candidates, { id: 't2', txnDate: '2026-10-07', amount: 23_328, description: 'OTHER', status: 'drafted' }] }
+    const matched = { ...PAYOUT, id: 'p3', status: 'matched' as const }
+    const none = { ...PAYOUT, id: 'p4', candidates: [] }
+    expect(suggestedMatches([PAYOUT, two, matched, none]).map(m => [m.payout.id, m.txn.id])).toEqual([['p1', 't1']])
+    const html = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT, two]} money={money} canMatch matching={null} onConfirm={() => {}} />)
+    expect(html).toContain('data-suggestion="p1"')
+    expect(html).not.toContain('data-suggestion="p2"')
+    expect(html).toContain('left to a person')
+    expect(isDisabled(button(html, 'confirm-match'))).toBe(false)
+    const locked = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT]} money={money} canMatch={false} matching={null} onConfirm={() => {}} />)
+    expect(isDisabled(button(locked, 'confirm-match'))).toBe(true)
   })
 })
 

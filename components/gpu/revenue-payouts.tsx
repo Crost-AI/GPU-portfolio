@@ -7,8 +7,8 @@ import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
-import { Field, FormDialog, selectCls } from './fleet-ui'
-import { PAYOUT_STATUS_LABEL, payoutBody, type PayoutView, type ReceivableTieOut } from './revenue-api'
+import { ErrorAlert, Field, FormDialog, selectCls } from './fleet-ui'
+import { PAYOUT_STATUS_LABEL, payoutBody, suggestedMatches, type PayoutView, type ReceivableTieOut } from './revenue-api'
 import { OPS_WRITE_HINT } from './revenue-earnings'
 
 // ── GPU fleet (P5) ── Payouts and the marketplace receivable. Posting a period books its net to
@@ -155,22 +155,80 @@ export function RecordPayoutDialog({ open, onOpenChange, onRecord }: {
   )
 }
 
+export const AUTO_POST_HINT = 'Changing how payouts are booked needs write access to Accounting as well as the GPU fleet.'
+
 /**
- * The auto-post setting arrives with P3 PR B (#98: GET/PATCH /api/fleet/ops/settings). Until that is on
- * main the toggle is shown off and disabled, with what it will do; P5-4b wires it.
+ * Whether the bank auto-match run books a payout match itself (GET/PATCH /api/fleet/ops/settings).
+ * Off by default: the run proposes, and a person confirms each match below. Turning it on lets the run
+ * post to the books, so it needs Accounting write as well as fleet write, as the route does.
  */
-export function AutoPostPlaceholder() {
+export function AutoPostSwitch({ value, error, canWrite, saving, onChange }: {
+  /** null while the setting is read. */
+  value: boolean | null
+  error: string | null
+  canWrite: boolean
+  saving: boolean
+  onChange: (on: boolean) => void
+}) {
   return (
-    <div className="flex items-start gap-3 rounded-lg border border-dashed px-3 py-2" data-placeholder="auto-post">
-      <Switch id="auto-post" checked={false} disabled aria-describedby="auto-post-caption" />
-      <div>
-        <label htmlFor="auto-post" className="text-sm text-muted-foreground">Post payout matches automatically from the bank auto-match run</label>
-        <p id="auto-post-caption" className="text-caption text-muted-foreground">
-          Not available yet: the setting arrives with the operations settings, defaulting to propose rather than post. Today the
-          bank page&rsquo;s auto-match run books a payout&rsquo;s match itself when exactly one expected payout fits a deposit;
-          a deposit that fits several is left for you to match here.
-        </p>
+    <div className="space-y-1 rounded-lg border px-3 py-2" data-region="auto-post">
+      <div className="flex items-start gap-3">
+        <Switch id="auto-post" checked={value === true} disabled={value == null || !canWrite || saving}
+          onCheckedChange={onChange} aria-describedby="auto-post-caption" title={canWrite ? undefined : AUTO_POST_HINT} />
+        <div>
+          <label htmlFor="auto-post" className="text-sm">Post payout matches automatically from the bank auto-match run</label>
+          <p id="auto-post-caption" className="text-caption text-muted-foreground">
+            {value
+              ? 'On: the bank page\u2019s auto-match run books a payout\u2019s match itself when exactly one expected payout fits a deposit.'
+              : 'Off (the default): the run proposes each match and books nothing; the suggested matches below wait for you to confirm.'}
+            {!canWrite && ` ${AUTO_POST_HINT}`}
+          </p>
+        </div>
       </div>
+      {error && <ErrorAlert>{error}</ErrorAlert>}
+    </div>
+  )
+}
+
+/**
+ * The matches the bank auto-match run proposes, as this page can see them: each expected payout with
+ * exactly one fitting deposit (suggestedMatches). Confirming one posts the match action, the same gate
+ * as Match.
+ */
+export function SuggestedMatches({ payouts, money, canMatch, matching, onConfirm }: {
+  payouts: PayoutView[]
+  money: (n: number) => string
+  canMatch: boolean
+  matching: string | null
+  onConfirm: (payoutId: string, txnId: string) => void
+}) {
+  const list = suggestedMatches(payouts)
+  return (
+    <div className="space-y-2" data-region="suggested-matches">
+      <h3 className="text-base font-semibold">Suggested matches</h3>
+      {list.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No expected payout has exactly one fitting bank deposit right now.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {list.map(({ payout, txn }) => (
+            <li key={payout.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm" data-suggestion={payout.id}>
+              <span>
+                Payout <span className="tabular-nums">{payout.payoutDate}</span> · <span className="tabular-nums">{money(payout.amount)}</span>
+                {payout.reference && <> · {payout.reference}</>}
+                <span className="text-muted-foreground"> to the deposit of <span className="tabular-nums">{txn.txnDate}</span>{txn.description ? ` (${txn.description})` : ''}</span>
+              </span>
+              <Button type="button" size="sm" variant="outline" data-action="confirm-match" disabled={!canMatch || matching === payout.id}
+                title={canMatch ? undefined : MATCH_HINT} onClick={() => onConfirm(payout.id, txn.id)}>
+                {matching === payout.id && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Confirm match
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-caption text-muted-foreground">
+        The bank page&rsquo;s auto-match run proposes these same matches. A deposit that also fits a partner&rsquo;s open capital call is
+        left to a person there, which this list cannot see: check the bank page before confirming one that might be a partner&rsquo;s wire.
+      </p>
     </div>
   )
 }
