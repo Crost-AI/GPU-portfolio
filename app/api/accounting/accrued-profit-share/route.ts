@@ -4,16 +4,18 @@
 //
 //   GET ?group=X[&asOf=YYYY-MM-DD]   { asOf, bookNav, tiers, carryMemo, investorMemo, paidToDate }
 //
-// gp_economics (lib/access/route-domains.ts): the answer is the manager's economics, so the gate
-// refuses it to a member without that grant. Its book NAV is the books restated, so the handler also
-// needs accounting read (the registry maps one domain; this payload straddles two). A vehicle that
-// is not a GPU SPV is a 404.
+// gp_economics behind the gpu_fleet switch (lib/access/route-domains.ts): the answer is the
+// manager's economics, so the gate refuses it to a member without that grant, and to everyone while
+// gpu_fleet is off. The route's feature key replaces gp_economics' own switch at the gate (#113), so
+// the handler checks that too. Its book NAV is the books restated, so the handler also needs
+// accounting read (the registry maps one domain; this payload straddles two). A vehicle that is not
+// a GPU SPV is a 404.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { assertVehicleKind } from '@/lib/accounting/vehicle-domain'
 import { loadCarryTerms } from '@/lib/accounting/carry'
 import { loadCapitalPostings } from '@/lib/accounting/capital-source'
@@ -22,7 +24,7 @@ import { lastReserve, loadContingencyByDate, loadWaterfallHistory } from '@/lib/
 import { cashWaterfallEvents, cashWaterfallTerms } from '@/lib/accounting/distribution-waterfall'
 import { accruedProfitShare } from '@/lib/gpu/accrued'
 import { gpuBookNav } from '@/lib/gpu/book-nav'
-import { hasAccess, loadAccessContext } from '@/lib/access/effective'
+import { hasAccess } from '@/lib/access/effective'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -31,9 +33,10 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
-  const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
-  if (group instanceof NextResponse) return group
-  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
+  const resolved = await resolveGroupWithAccess(admin, gate, req.nextUrl.searchParams.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
+  if (!hasAccess(access, 'gp_economics', 'read')) return NextResponse.json({ error: 'You do not have access to GP economics.' }, { status: 403 })
   if (!hasAccess(access, 'accounting', 'read')) return NextResponse.json({ error: 'You do not have access to the books.' }, { status: 403 })
   const refused = await assertVehicleKind(admin, gate.fundId, group, 'gpu_spv')
   if (refused) return refused

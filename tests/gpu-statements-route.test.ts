@@ -5,10 +5,11 @@ import type { AccessContext } from '@/lib/access/effective'
 
 /**
  * GET /api/accounting/statements asks the package for the accrued profit-share memo only for a
- * caller with gp_economics; the statements export (workbook, PDF) never asks.
+ * caller with gp_economics, and only while gpu_fleet is on; the statements export (workbook, PDF)
+ * never asks.
  */
 
-const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gp_economics: 'everyone' }
+const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gp_economics: 'everyone', gpu_fleet: 'everyone' }
 const access = (grants: AccessContext['grants']): AccessContext => ({
   fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, features: FEATURES, grants, defaults: {},
 })
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => ({ access: null as any, build: vi.fn() }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u1' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
 vi.mock('@/lib/api-helpers', () => ({ assertReadAccess: async () => ({ fundId: 'f1', userId: 'u1', role: 'member', need: 'read' }) }))
-vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: async (_a: unknown, _g: unknown, name: string | null) => name }))
+vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupWithAccess: async (_a: unknown, _g: unknown, name: string | null) => ({ group: name, access: mocks.access }) }))
 vi.mock('@/lib/access/effective', async orig => ({ ...(await orig<typeof import('@/lib/access/effective')>()), loadAccessContext: async () => mocks.access }))
 vi.mock('@/lib/accounting/statement-package', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/statement-package')>()),
@@ -40,6 +41,15 @@ describe('the statements route and the accrued profit-share memo', () => {
     mocks.access = access({ accounting: 'write' })
     await get()
     expect(mocks.build.mock.calls[0][4]).toEqual({ accruedMemo: false })
+  })
+
+  it('does not while gpu_fleet is off or hidden, as the memo route is gated on it', async () => {
+    for (const gpuFleet of ['off', 'hidden'] as const) {
+      mocks.build.mockClear()
+      mocks.access = { ...access({ accounting: 'read', gp_economics: 'read' }), role: 'admin', features: { ...FEATURES, gpu_fleet: gpuFleet } }
+      expect((await get()).status, gpuFleet).toBe(200)
+      expect(mocks.build.mock.calls[0][4], gpuFleet).toEqual({ accruedMemo: false })
+    }
   })
 
   it('the export route never asks (an export or PDF can go to investors)', async () => {

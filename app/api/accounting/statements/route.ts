@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { buildStatementPackage } from '@/lib/accounting/statement-package'
-import { hasAccess, loadAccessContext } from '@/lib/access/effective'
+import { hasAccess } from '@/lib/access/effective'
 
 // GET — the full statement package for a vehicle, scoped to a statement period:
 //   ?preset=this_quarter|last_quarter|ytd|prior_year|itd   — or —
@@ -26,8 +26,9 @@ export async function GET(req: NextRequest) {
 
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
-  const group = await resolveGroupOr400(admin, gate, req.nextUrl.searchParams.get('group'))
-  if (group instanceof NextResponse) return group
+  const resolved = await resolveGroupWithAccess(admin, gate, req.nextUrl.searchParams.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
 
   // The statement of changes in partners' capital used to be withheld here from a caller without
   // lp_capital. It was theatre: the trial balance below ships the same partners and the same
@@ -35,8 +36,9 @@ export async function GET(req: NextRequest) {
   // is reading partner capital — so `accounting` now implies `lp_capital` outright
   // (see DOMAIN_META.lp_capital.impliedBy) and this package is whole again.
 
-  // A GPU SPV's accrued profit share is a memo of the manager's economics: only with gp_economics.
-  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
-  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams, { accruedMemo: hasAccess(access, 'gp_economics', 'read') })
+  // A GPU SPV's accrued profit share is a memo of the manager's economics: only with gp_economics,
+  // and only while the gpu_fleet switch is on, as its own route is.
+  const accruedMemo = hasAccess(access, 'gp_economics', 'read') && hasAccess(access, 'gp_economics', 'read', 'gpu_fleet')
+  const pkg = await buildStatementPackage(admin, gate.fundId, group, req.nextUrl.searchParams, { accruedMemo })
   return NextResponse.json(pkg.comparisons ? { ...pkg.payload, comparisons: pkg.comparisons } : pkg.payload)
 }

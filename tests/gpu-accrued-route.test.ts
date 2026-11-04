@@ -7,11 +7,12 @@ import { GPU_SPV_CHART } from '@/lib/accounting/chart'
 import { PACK_INPUTS } from '@/lib/gpu/fixtures/pack-v3'
 
 /**
- * GET /api/accounting/accrued-profit-share: the display memo, gp_economics at the gate and the
- * books' read in the handler; a vehicle that is not a GPU SPV is refused before anything is read.
+ * GET /api/accounting/accrued-profit-share: the display memo, gp_economics behind the gpu_fleet
+ * switch at the gate, gp_economics' own switch and the books' read in the handler; a vehicle that is
+ * not a GPU SPV is refused before anything is read.
  */
 
-const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gp_economics: 'everyone' }
+const FEATURES: FeatureVisibilityMap = { ...DEFAULT_FEATURE_VISIBILITY, accounting: 'everyone', gp_economics: 'everyone', gpu_fleet: 'everyone' }
 const access = (grants: AccessContext['grants']): AccessContext => ({
   fundId: 'f1', userId: 'u1', role: 'member', vehicles: { all: true, ids: [] }, features: FEATURES, grants, defaults: {},
 })
@@ -20,7 +21,7 @@ const mocks = vi.hoisted(() => ({ access: null as any, kind: 'gpu_spv' as string
 vi.mock('@/lib/supabase/server', () => ({ createClient: () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u1' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({}) }))
 vi.mock('@/lib/api-helpers', () => ({ assertReadAccess: async () => ({ fundId: 'f1', userId: 'u1', role: 'member', need: 'read' }) }))
-vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: async (_a: unknown, _g: unknown, name: string | null) => name }))
+vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupWithAccess: async (_a: unknown, _g: unknown, name: string | null) => ({ group: name, access: mocks.access }) }))
 vi.mock('@/lib/access/effective', async orig => ({ ...(await orig<typeof import('@/lib/access/effective')>()), loadAccessContext: async () => mocks.access }))
 vi.mock('@/lib/accounting/vehicle-domain', async orig => ({
   ...(await orig<typeof import('@/lib/accounting/vehicle-domain')>()),
@@ -60,12 +61,26 @@ const get = (q = 'group=GPU%20SPV%20I&asOf=2028-12-31') => GET(new NextRequest(`
 
 beforeEach(() => { vi.clearAllMocks(); mocks.kind = 'gpu_spv'; mocks.access = access({ accounting: 'read', gp_economics: 'read' }) })
 
-describe('the gate: gp_economics', () => {
+describe('the gate: gp_economics, behind the gpu_fleet switch', () => {
+  // What gateApiRequest (proxy.ts) decides for this path, on its registry entry.
+  const entry = ROUTE_DOMAINS[matchRoute('/api/accounting/accrued-profit-share')!]
+  const passes = (a: AccessContext) => hasAccess(a, entry.domain, requiredLevel(entry, 'GET') as any, entry.feature)
+  const fleet = (a: AccessContext, gpuFleet: 'off' | 'hidden' | 'everyone') => ({ ...a, features: { ...a.features, gpu_fleet: gpuFleet } })
+
   it('denies a member without gp_economics, allows one with it', () => {
-    const entry = ROUTE_DOMAINS[matchRoute('/api/accounting/accrued-profit-share')!]
-    expect(entry.domain).toBe('gp_economics')
-    expect(hasAccess(access({ accounting: 'write', lp_capital: 'read' }), entry.domain, requiredLevel(entry, 'GET') as any, entry.feature)).toBe(false)
-    expect(hasAccess(access({ gp_economics: 'read' }), entry.domain, requiredLevel(entry, 'GET') as any, entry.feature)).toBe(true)
+    expect(entry).toEqual({ domain: 'gp_economics', feature: 'gpu_fleet' })
+    expect(passes(access({ accounting: 'write', lp_capital: 'read' }))).toBe(false)
+    expect(passes(access({ gp_economics: 'read' }))).toBe(true)
+  })
+
+  it('denies everyone while gpu_fleet is off or hidden, admins included; allows them with it on', () => {
+    const admin: AccessContext = { ...access({ accounting: 'write', gp_economics: 'write' }), role: 'admin' }
+    for (const off of ['off', 'hidden'] as const) {
+      expect(passes(fleet(access({ accounting: 'read', gp_economics: 'read' }), off)), off).toBe(false)
+      expect(passes(fleet(admin, off)), `admin, ${off}`).toBe(false)
+    }
+    expect(passes(fleet(access({ accounting: 'read', gp_economics: 'read' }), 'everyone'))).toBe(true)
+    expect(passes(fleet(admin, 'everyone'))).toBe(true)
   })
 })
 
@@ -77,6 +92,14 @@ describe('GET accrued-profit-share', () => {
     expect(Object.keys(body).sort()).toEqual(['asOf', 'bookNav', 'carryMemo', 'investorMemo', 'paidToDate', 'tiers'])
     expect(body).toMatchObject({ asOf: '2028-12-31', bookNav: 1_000_000, carryMemo: 260_226.31, investorMemo: 739_773.69, paidToDate: 0 })
     expect(body.tiers).toMatchObject({ prefDue: 0, returnOfCapital: 132_578.96 })
+  })
+
+  it("checks gp_economics on its own switch too: the gate's gpu_fleet key replaces it (#113)", async () => {
+    mocks.access = { ...access({ accounting: 'read', gp_economics: 'read' }), features: { ...FEATURES, gp_economics: 'off' } }
+    const res = await get()
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toMatch(/GP economics/)
+    expect(mocks.loads).not.toHaveBeenCalled()
   })
 
   it("needs the books' read as well: book NAV is the ledger restated", async () => {
