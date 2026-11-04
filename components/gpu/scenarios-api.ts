@@ -75,5 +75,8 @@ export function scenarioExportHref(vehicle: string, planId: string, fleet: Pick<
   return `/api/accounting/forecast/export?${q.toString()}`
 }
 
-/** The series charts' line colours: the categorical slots in fixed order, one per scenario column. */
-export const scenarioHue = (index: number) => `hsl(var(--cat-${Math.min(index, 7) + 1}))`
+/**
+ * The series charts' line colours: the categorical slots in fixed order, one per scenario column.
+ * Past the eighth slot, scenarios fold into muted ink ("Other", DESIGN.md) rather than reuse a hue.
+ */
+export const scenarioHue = (index: number) => (index >= 0 && index < 8 ? `hsl(var(--cat-${index + 1}))` : 'hsl(var(--muted-foreground))')

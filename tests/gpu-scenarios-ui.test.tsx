@@ -16,7 +16,7 @@ import { CurrencyProvider } from '@/components/currency-context'
 import { AccessProvider, type ClientAccess } from '@/components/access-context'
 import { VehicleScope } from '@/components/accounting-vehicle'
 import { AssumptionsSummary, HeadlineTable, InvestorFlowBlocks, ScenariosView } from '@/components/gpu/scenarios-view'
-import { baseCaseReturns, formatReportValue, getVehicleScenarios, scenarioExportHref } from '@/components/gpu/scenarios-api'
+import { baseCaseReturns, formatReportValue, getVehicleScenarios, scenarioExportHref, scenarioHue } from '@/components/gpu/scenarios-api'
 import { DEFAULT_FEATURE_VISIBILITY, type FeatureVisibilityMap } from '@/lib/types/features'
 import { redactScenarioResult, resolveFleet, runFleetScenario, type FleetAssumptions, type FleetScenarioResult } from '@/lib/gpu/scenario'
 import { scenarioComparison, scenarioDetail } from '@/lib/gpu/report'
@@ -473,6 +473,121 @@ describe('review follow-ups (#114): outcomes survive the remount, saved versions
       expect((screen.getByRole('button', { name: 'Assumptions' }) as HTMLButtonElement).disabled).toBe(true)
       expect(screen.getByRole('button', { name: 'Assumptions' }).getAttribute('title')).toBe('Plan not found')
       expect(screen.queryByRole('link', { name: /Export/ })).toBeNull()
+    })
+  })
+})
+
+describe('review follow-ups (#114, second round)', () => {
+  beforeEach(() => { window.history.replaceState(null, '', '/funds/v1/scenarios') })
+
+  /** Scenarios route per ?plan= and plan route per id; `holdPlan` keeps one plan's assumptions pending. */
+  function stub(opts: { failScenario?: string; holdPlan?: string } = {}) {
+    const pending: (() => void)[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const plan = new URL(url, 'http://x').searchParams.get('plan')
+      if (url.startsWith('/api/accounting/forecast/fleet-scenarios')) {
+        if (plan && plan === opts.failScenario) return new Response(JSON.stringify({ error: 'No such fleet plan for this vehicle' }), { status: 404 })
+        const id = (plan ? IDS.find(i => planId(i) === plan) : 'base') ?? 'base'
+        return new Response(JSON.stringify(response(true, {}, id)), { status: 200 })
+      }
+      const id = url.split('/').pop()!.split('?')[0]
+      if (id === opts.holdPlan) await new Promise<void>(resolve => pending.push(resolve))
+      const scenario = IDS.find(i => planId(i) === id) ?? 'base'
+      return new Response(JSON.stringify({ plan: { id, name: scenario, revision: 1, fleet: packAssumptions(scenario) } }), { status: 200 })
+    }))
+    return { release: () => pending.splice(0).forEach(r => r()) }
+  }
+
+  it('the rates table shows $/GPU-hour to the cent: Base case Year 5 is the pack’s $3.57 / $4.37 / $7.15', async () => {
+    stub()
+    render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+    await screen.findByText('Resulting rate, $ per GPU-hour')
+    const y5 = (type: string) => [...document.querySelectorAll(`[data-detail-for] tr[data-row="rate:${type}"] td`)].at(-1)?.textContent
+    await waitFor(() => expect(y5('h200_nvl')).toBe('$3.57'))
+    expect(y5('b200')).toBe('$4.37')
+    expect(y5('b300')).toBe('$7.15')
+  })
+
+  it('while a switch is in flight, Assumptions and Export stay disabled: the last scenario’s are never offered', async () => {
+    const { release } = stub({ holdPlan: planId('oversupply') })
+    render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+    await screen.findByRole('link', { name: /Export/ })
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Assumptions' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.change(screen.getByLabelText('Scenario'), { target: { value: planId('oversupply') } })
+    await waitFor(() => expect(document.querySelector('[data-detail-for]')?.getAttribute('data-detail-for')).toBe(planId('oversupply')))
+    // The detail has arrived, the assumptions have not: nothing of Base case's may be offered.
+    expect((screen.getByRole('button', { name: 'Assumptions' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('link', { name: /Export/ })).toBeNull()
+    release()
+    const link = await screen.findByRole('link', { name: /Export/ })
+    expect(link.getAttribute('href')).toContain(`plan=${planId('oversupply')}`)
+  })
+
+  it('a link to a scenario that no longer exists opens the primary and says so, instead of a dead end', async () => {
+    window.history.replaceState(null, '', '/funds/v1/scenarios?plan=plan-archived')
+    stub({ failScenario: 'plan-archived' })
+    render(wrap(<ScenariosView vehicle="H200 SPV I" vehicleId="v1" />))
+    expect(await screen.findByText(/The scenario in this link could not be opened \(No such fleet plan for this vehicle\)\. Showing the primary scenario instead\./)).toBeTruthy()
+    await waitFor(() => expect(headlineRow('investorMultiple')[0]).toBe('2.02x'))
+    expect(screen.getByLabelText('Scenario')).toBeTruthy()
+    expect(window.location.search).not.toContain('plan=')
+  })
+
+  it('highlights the primary column even when the primary is not the first column', () => {
+    render(wrap(<HeadlineTable comparison={response(true).comparison} plans={PLANS} primaryPlanId={planId('balanced')} />))
+    expect(document.querySelector(`thead th[data-plan="${planId('balanced')}"]`)!.className).toMatch(/bg-brand-50/)
+    expect(document.querySelector(`thead th[data-plan="${planId('base')}"]`)!.className).not.toMatch(/bg-brand-50/)
+  })
+
+  it('folds series past the eighth into muted ink rather than reusing a hue', () => {
+    expect(scenarioHue(0)).toBe('hsl(var(--cat-1))')
+    expect(scenarioHue(7)).toBe('hsl(var(--cat-8))')
+    expect(scenarioHue(8)).toBe('hsl(var(--muted-foreground))')
+    expect(scenarioHue(-1)).toBe('hsl(var(--muted-foreground))')
+  })
+
+  it('the assumptions drawer shows the anchor rate in the vehicle currency, to the cent', () => {
+    render(wrap(<AssumptionsSummary fleet={packAssumptions('base')} />))
+    expect(screen.getByText(/h200_nvl: \$4\.50\/GPU-hr/)).toBeTruthy()
+  })
+
+  describe('the Fleet tab’s save notice belongs to the plan and view it was saved in', () => {
+    function Host() {
+      const [plan, setPlan] = useState({ id: 'p1', revision: 7, fleet: packAssumptions('base') as FleetAssumptions | null })
+      const [version, setVersion] = useState<{ versionNo: number | null; label: string | null } | null>(null)
+      const fetcher = async () => new Response(JSON.stringify({ plan: { id: plan.id, revision: plan.revision + 1 } }), { status: 200 })
+      return (
+        <>
+          <button type="button" onClick={() => setPlan({ id: 'p2', revision: 3, fleet: packAssumptions('balanced') })}>Open plan B</button>
+          <button type="button" onClick={() => setVersion({ versionNo: 2, label: null })}>View version 2</button>
+          <FleetTab<{ plan: { revision: number } }> plan={plan} canEdit fetcher={fetcher} reload={async () => {}}
+            onSaved={next => setPlan(p => ({ ...p, revision: next.plan.revision }))}
+            savedVersion={version} onBackToDraft={() => setVersion(null)} />
+        </>
+      )
+    }
+
+    it('is gone after switching to another plan', async () => {
+      render(wrap(<Host />))
+      fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+      await screen.findByText(SAVED_MESSAGE)
+      fireEvent.click(screen.getByText('Open plan B'))
+      expect(screen.queryByText(SAVED_MESSAGE)).toBeNull()
+    })
+
+    it('is gone after viewing a saved version and coming back', async () => {
+      render(wrap(<Host />))
+      fireEvent.click(screen.getByRole('button', { name: 'Save fleet assumptions' }))
+      await screen.findByText(SAVED_MESSAGE)
+      fireEvent.click(screen.getByText('View version 2'))
+      fireEvent.click(screen.getByRole('button', { name: 'Back to the working draft' }))
+      expect(screen.queryByText(SAVED_MESSAGE)).toBeNull()
+    })
+
+    it('an unknown saved version is named as such, not "version 0"', () => {
+      render(wrap(<FleetTab plan={{ id: 'p1', revision: 1, fleet: null }} canEdit fetcher={async () => new Response('{}')}
+        reload={async () => {}} onSaved={() => {}} savedVersion={{ versionNo: null, label: null }} />))
+      expect(screen.getByText('Fleet assumptions: a saved version')).toBeTruthy()
     })
   })
 })

@@ -38,10 +38,18 @@ export function FleetTab<T>({ plan, canEdit, fetcher, reload, onSaved, savedVers
   /** The recompiled plan the PATCH answered with. */
   onSaved: (plan: T) => Promise<unknown> | void
   /** The saved version being viewed, if any. */
-  savedVersion?: { versionNo: number; label: string | null } | null
+  savedVersion?: { versionNo: number | null; label: string | null } | null
   onBackToDraft?: () => void
 }) {
   const [outcome, setOutcome] = useState<Outcome | null>(null)
+  // The outcome belongs to the plan and view it was saved in: another plan, or a saved version and
+  // back, starts without it (adjusted during render, React's pattern for state derived from props).
+  const scope = `${plan.id}:${savedVersion ? `v${savedVersion.versionNo ?? '?'}` : 'draft'}`
+  const [outcomeScope, setOutcomeScope] = useState(scope)
+  if (outcomeScope !== scope) {
+    setOutcomeScope(scope)
+    setOutcome(null)
+  }
   const onSave = (fleet: FleetAssumptions) => {
     setOutcome(null)
     return saveFleetPlan<T>({
@@ -55,7 +63,7 @@ export function FleetTab<T>({ plan, canEdit, fetcher, reload, onSaved, savedVers
     return (
       <div className="mb-6 rounded-card border bg-card p-6 shadow-sm dark:shadow-none" data-saved-version-notice>
         <h2 className="text-base font-semibold">
-          Fleet assumptions: saved version {savedVersion.versionNo}{savedVersion.label ? ` (${savedVersion.label})` : ''}
+          Fleet assumptions: {savedVersion.versionNo != null ? `saved version ${savedVersion.versionNo}` : 'a saved version'}{savedVersion.label ? ` (${savedVersion.label})` : ''}
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           This version&rsquo;s figures were worked out from the fleet assumptions frozen with it, which are not shown here.

@@ -8,7 +8,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useLedgerFetch } from '@/components/accounting-vehicle'
 import { useCanWrite } from '@/components/access-context'
-import { useCurrency, formatCurrency, formatCurrencyFull } from '@/components/currency-context'
+import { useCurrency, formatCurrency, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import { ChartCard, AXIS, tooltipStyle } from '@/components/fund-chart-kit'
 import { cn } from '@/lib/utils'
 import { CADENCE_LABELS, type Cadence, type FleetAssumptions } from '@/lib/gpu/scenario'
@@ -117,16 +117,21 @@ export function SeriesCharts({ comparison, plans, cadence }: { comparison: Scena
         <SeriesChart title="Distributions to investors by year" table={comparison.series.toInvestors} plans={plans} />
       </div>
       <p className="text-caption text-muted-foreground">
-        By year, on the pack&rsquo;s annual convention. {cadence && cadence !== 'annual' ? `The vehicle distributes on its own cadence: ${CADENCE_LABELS[cadence].toLowerCase()}.` : ''}
+        By year, on the pack&rsquo;s annual convention. {cadence && cadence !== 'annual' ? `The selected scenario distributes on its own cadence: ${CADENCE_LABELS[cadence].toLowerCase()}.` : ''}
       </p>
     </div>
   )
 }
 
 /** A detail table: years across, rows down, a total column when any row has one. */
-export function ReportTable({ table, columnLabel = c => `Y${c}` }: { table: Table; columnLabel?: (c: string | number) => string }) {
+export function ReportTable({ table, columnLabel = c => `Y${c}`, cents = false }: {
+  table: Table
+  columnLabel?: (c: string | number) => string
+  /** Prices, not amounts: two decimals (a $/GPU-hour rate rounded to the dollar cannot be read). */
+  cents?: boolean
+}) {
   const currency = useCurrency()
-  const money = (n: number) => formatCurrencyFull(n, currency)
+  const money = (n: number) => (cents ? formatCurrencyPrice(n, currency) : formatCurrencyFull(n, currency))
   const hasTotal = table.rows.some(r => r.total != null || r.redacted)
   return (
     <div className="overflow-x-auto rounded-card border">
@@ -209,7 +214,7 @@ export function AssumptionsSummary({ fleet }: { fleet: FleetAssumptions }) {
     ['Assets', fleet.assets === 'register' ? 'From the fleet register' : fleet.assets.map(a => `${a.servers} × ${a.typeCode} (${a.gpusPerServer} GPUs, ${money(a.hardwareCost)})`).join('; ')],
     ['Hours per year', fleet.hoursPerYear.toLocaleString()],
     ['Utilization', utilization],
-    ['Price paths', Object.entries(fleet.types).map(([t, v]) => `${t}: $${v.anchorRate}/GPU-hr, ${v.priceChanges.map(pct).join(' / ')}`).join('; ')],
+    ['Price paths', Object.entries(fleet.types).map(([t, v]) => `${t}: ${formatCurrencyPrice(v.anchorRate, currency)}/GPU-hr, ${v.priceChanges.map(pct).join(' / ')}`).join('; ')],
     ['Price change timing', `${pct(fleet.priceChangeTiming)} of a year's change lands in that year`],
     ['Datacenter', `${money(fleet.datacenter.monthly)} a month, +${pct(fleet.datacenter.escalator)} a year from year ${fleet.datacenter.firstEscalationYear}, ${pct(fleet.datacenter.contingencyPct)} contingency`],
     ['Processing fee', pct(fleet.processingFeePct)],
@@ -236,11 +241,21 @@ export function AssumptionsSummary({ fleet }: { fleet: FleetAssumptions }) {
 /** The plan the URL names (?plan=), so a shared link opens the same scenario. */
 const planFromUrl = () => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('plan'))
 
+function setPlanUrl(id: string | null) {
+  try {
+    const url = new URL(window.location.href)
+    if (id) url.searchParams.set('plan', id)
+    else url.searchParams.delete('plan')
+    window.history.replaceState(null, '', url)
+  } catch { /* the URL is a convenience */ }
+}
+
 export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string | null }) {
   const lf = useLedgerFetch() as Fetcher
   const canSeed = useCanWrite('accounting')
   const [data, setData] = useState<FleetScenariosResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [planId, setPlanId] = useState<string | null>(planFromUrl)
   // Everything scenario-specific is held with the selection that loaded it, and shown only while that
   // selection is still the one picked: a switch in flight shows loading, a failed one its error, and
@@ -256,6 +271,12 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
     if (r.ok) {
       setData(r.data); setError(null)
       setDetailFor({ planId: requested, detail: r.data.detail })
+    } else if (!data && requested != null) {
+      // The link named a scenario that is not (or no longer) one of this vehicle's: open the primary
+      // instead of a dead end, and say so.
+      setNotice(`The scenario in this link could not be opened (${r.error}). Showing the primary scenario instead.`)
+      setPlanUrl(null)
+      setPlanId(null)
     } else if (!data) {
       setError(r.error)
     } else {
@@ -281,12 +302,9 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
   }, [lf, detailId])
 
   function choose(id: string) {
+    setNotice(null)
     setPlanId(id)
-    try {
-      const url = new URL(window.location.href)
-      url.searchParams.set('plan', id)
-      window.history.replaceState(null, '', url)
-    } catch { /* the URL is a convenience */ }
+    setPlanUrl(id)
   }
 
   async function seed() {
@@ -330,6 +348,7 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
   return (
     <div className="space-y-4">
       {error && <ErrorAlert>{error}</ErrorAlert>}
+      {notice && <p className="text-sm text-muted-foreground" data-plan-notice>{notice}</p>}
 
       <ShellSection title="Headline comparison" description="The model pack's headline results, one column per scenario.">
         <HeadlineTable comparison={data.comparison} plans={data.plans} primaryPlanId={data.primaryPlanId} />
@@ -377,7 +396,7 @@ export function ScenariosView({ vehicle }: { vehicle: string; vehicleId: string 
             </div>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Resulting rate, $ per GPU-hour</h3>
-              <ReportTable table={current.detail.rates} />
+              <ReportTable table={current.detail.rates} cents />
             </div>
             <div className="space-y-2">
               <h3 className="text-base font-semibold">Investor flows</h3>

@@ -735,7 +735,7 @@ export function ForecastView({ vehicle, vehicleId, kind, initialTab }: { vehicle
           fetcher={lf}
           reload={reloadFleetPlan}
           onSaved={fleetSaved}
-          savedVersion={versionId ? detail.versions.find(v => v.id === versionId) ?? { versionNo: 0, label: null } : null}
+          savedVersion={versionId ? detail.versions.find(v => v.id === versionId) ?? { versionNo: null, label: null } : null}
           onBackToDraft={() => setVersionId('')}
         />
       ) : (
