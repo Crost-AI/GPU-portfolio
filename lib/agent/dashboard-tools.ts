@@ -291,6 +291,8 @@ async function statementsView(ctx: AgentToolContext, input: any): Promise<Statem
       cashFlows: p.cashFlows
         ? {
             operating: cashSection(p.cashFlows.operating),
+            // A GPU SPV's equipment; absent for every other kind.
+            ...(p.cashFlows.investing ? { investing: cashSection(p.cashFlows.investing) } : {}),
             financing: cashSection(p.cashFlows.financing),
             netChange: p.cashFlows.netChange,
             openingCash: p.cashFlows.openingCash,
@@ -304,6 +306,13 @@ async function statementsView(ctx: AgentToolContext, input: any): Promise<Statem
             carryWithheld,
           }
         : null,
+      // A GPU SPV's fleet schedule, in place of the schedule of investments; absent for every other kind.
+      ...(p.fleetSchedule
+        ? { fleetSchedule: p.fleetSchedule.map(row => ({
+            name: row.name, type: row.typeLabel, gpus: row.gpus, inServiceDate: row.inServiceDate,
+            cost: row.cost, accumulated: row.accumulated, nbv: row.nbv,
+          })) }
+        : {}),
     },
   }
 }

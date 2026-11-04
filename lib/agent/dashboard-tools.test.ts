@@ -531,3 +531,37 @@ describe('show_chart', () => {
     await expect(DASHBOARD_HANDLERS.show_chart(c, { ...input, points: Array.from({ length: 61 }, (_, i) => ({ label: `p${i}`, value: i })) })).rejects.toThrow(/At most 60/)
   })
 })
+
+describe('the statements view from a real statement package', () => {
+  const realPackage = async (data: import('@/lib/accounting/statement-package').LedgerData) => {
+    const { buildStatementPackageFromData } = await vi.importActual<typeof import('@/lib/accounting/statement-package')>('@/lib/accounting/statement-package')
+    return buildStatementPackageFromData(data, new URLSearchParams({ preset: 'custom', start: '2027-01-01', end: '2027-12-31' }))
+  }
+
+  it('a fund: the data is unchanged (pinned before the investing section reached this view)', async () => {
+    const { vcLedger } = await import('@/tests/helpers/statement-fixtures')
+    const pkg = await realPackage(vcLedger())
+    statementPackage.mockImplementationOnce(async () => pkg as any)
+    const payload = await DASHBOARD_HANDLERS.show_financial_statements(ctx(access('admin')).ctx, {})
+    expect('investing' in payload.data.cashFlows!).toBe(false)
+    expect(JSON.stringify(payload.data)).toMatchSnapshot()
+  })
+
+  it("a GPU SPV: investing between operating and financing, footing to the net change, and the fleet schedule", async () => {
+    const { gpuLedger } = await import('@/tests/helpers/statement-fixtures')
+    const pkg = await realPackage(gpuLedger())
+    statementPackage.mockImplementationOnce(async () => pkg as any)
+    const payload = await DASHBOARD_HANDLERS.show_financial_statements(ctx(access('admin')).ctx, {})
+    const cf = payload.data.cashFlows!
+    expect(Object.keys(cf).slice(0, 3)).toEqual(['operating', 'investing', 'financing'])
+    expect(cf.investing).toEqual({
+      label: 'Investing activities',
+      rows: [{ name: 'Purchases of equipment and capitalized costs', amount: -422_000 }, { name: 'Proceeds from disposal of equipment', amount: 50_000 }],
+      total: -372_000,
+    })
+    expect(cf.operating.total + cf.investing!.total + cf.financing.total).toBe(cf.netChange)
+    expect(payload.data.fleetSchedule).toEqual([
+      { name: 'GPU equipment at cost — srv-2', type: null, gpus: null, inServiceDate: null, cost: 335_000, accumulated: 5_000, nbv: 330_000 },
+    ])
+  })
+})
