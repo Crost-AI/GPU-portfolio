@@ -400,8 +400,9 @@ export function lpCapitalCode(lpEntityId: string): string {
  * An operating business with partners. The partner-equity block (3000/3100/3200) is the fund
  * chart's code for code, so capital accounts, allocation, calls and distributions run unchanged;
  * 1300/2300/2350 keep the fund chart's codes for the same reason (RECEIVABLE_CODE,
- * DISTRIBUTION_PAYABLE_CODE, ADVANCE_CODE). K-1 CHARACTER DOES NOT: the tax loaders read the fund
- * chart's income and expense codes, so tax refuses a GPU SPV until that is taught (issue #68). What differs is the business: equipment at cost and
+ * DISTRIBUTION_PAYABLE_CODE, ADVANCE_CODE). K-1 CHARACTER DOES NOT: the other codes mean other things
+ * here (4000 rental revenue, 5200/5250 insurance and repairs), so the tax loaders read a GPU SPV by
+ * subtype (P1c, issue #68). What differs is the business: equipment at cost and
  * accumulated depreciation instead of investments at cost and unrealized appreciation, rental
  * revenue instead of realized gains, and the costs of keeping servers racked and rented.
  *
