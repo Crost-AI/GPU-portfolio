@@ -179,6 +179,42 @@ describe('POST /api/inbound-email/resend', () => {
     expect(mocks.runPipeline).not.toHaveBeenCalled()
   })
 
+  // A signed webhook proves Resend delivered the mail, not who sent it: a member's treatment needs
+  // DMARC pass; otherwise the sender must be authorized like anyone else (Codex on #132).
+  describe('mail claiming a member\'s address', () => {
+    const withDmarc = (dmarc: string) => {
+      const signed = resendApi
+      resendApi = url => url.endsWith('/emails/receiving/em_1')
+        ? Response.json({ ...receivedEmail, authentication: { spf: 'pass', dkim: 'pass', dmarc } })
+        : signed(url)
+    }
+    beforeEach(() => { mocks.checkFundMember.mockResolvedValue({ user_id: 'member-1' }) })
+
+    it('without DMARC pass, from an unauthorized address, is dropped', async () => {
+      withDmarc('gray')
+      mocks.isAuthorizedSender.mockResolvedValue(false)
+      const body = JSON.stringify(event)
+      expect((await POST(request(body, sign(body)))).status).toBe(200)
+      expect(inserts).toEqual([])
+      expect(mocks.runPipeline).not.toHaveBeenCalled()
+    })
+
+    it('without DMARC pass, from an authorized address, runs without the member\'s treatment', async () => {
+      withDmarc('gray')
+      const body = JSON.stringify(event)
+      await POST(request(body, sign(body)))
+      expect(mocks.runPipeline).toHaveBeenCalledTimes(1)
+      expect((mocks.runPipeline.mock.calls[0] as unknown[])[4]).toBeNull()
+    })
+
+    it('with DMARC pass, keeps the member\'s treatment', async () => {
+      withDmarc('pass')
+      const body = JSON.stringify(event)
+      await POST(request(body, sign(body)))
+      expect((mocks.runPipeline.mock.calls[0] as unknown[])[4]).toEqual({ userId: 'member-1' })
+    })
+  })
+
   it('answers 503 and stores nothing when Resend cannot be read, so Resend retries', async () => {
     resendApi = () => Response.json({ name: 'internal_server_error', message: 'boom', statusCode: 500 }, { status: 500 })
     const body = JSON.stringify(event)
