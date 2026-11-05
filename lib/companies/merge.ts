@@ -152,11 +152,19 @@ export async function mergeCompanies(
   if (movable.length && !metricsReadError) {
     const { error: metricError } = await (admin as any).from('metrics').update({ company_id: intoId }).eq('fund_id', who.fundId).in('id', movable)
     if (metricError) unmoved.push(`metrics (${metricError.message})`)
-    else {
-      rowsMoved.metrics = movable.length
-      const { error: valuesError } = await (admin as any).from('metric_values').update({ company_id: intoId }).eq('fund_id', who.fundId).in('metric_id', movable)
-      if (valuesError) unmoved.push(`metric values (${valuesError.message})`)
-    }
+    else rowsMoved.metrics = movable.length
+  }
+  // Values follow their definition, wherever it now lives, not only the definitions moved just now: a
+  // merge that moved a definition and failed on its values is finished by the retry, which no longer
+  // finds that definition on the merged record, and the delete below would cascade the values.
+  const { data: keptMetrics, error: keptMetricsError } = await (admin as any).from('metrics').select('id')
+    .eq('fund_id', who.fundId).eq('company_id', intoId)
+  if (keptMetricsError) unmoved.push(`metric values (${keptMetricsError.message})`)
+  else if (((keptMetrics as any[]) ?? []).length) {
+    const { data: movedValues, error: valuesError } = await (admin as any).from('metric_values').update({ company_id: intoId })
+      .eq('fund_id', who.fundId).eq('company_id', fromId).in('metric_id', (keptMetrics as any[]).map(m => m.id)).select('id')
+    if (valuesError) unmoved.push(`metric values (${valuesError.message})`)
+    else if (((movedValues as any[]) ?? []).length) rowsMoved.metric_values = (movedValues as any[]).length
   }
   if (metricsLeft) warnings.push(`${metricsLeft} metric(s) ${into.name} already tracks under the same name were not moved.`)
 
