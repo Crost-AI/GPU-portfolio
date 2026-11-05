@@ -29,6 +29,7 @@ import { resolveVehicleWithAccess } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import type { ActionDeps, PreviewResult } from '@/lib/pending-actions/types'
 import { serverAIRefusal } from '@/lib/ai/server-ai'
+import { previewUpdateCompany } from '@/lib/pending-actions/company-edit'
 
 export const AGENT_TOOL_CALL = 'agent_tool_call'
 
@@ -166,6 +167,11 @@ export async function previewToolCall(deps: ActionDeps, raw: unknown): Promise<P
         input: { company: args.input.company ?? null, subject: args.input.subject ?? null, text: text.slice(0, 500), files },
       },
     }
+  }
+  // A change to a company's record: each field from what it is now to what it would be.
+  if (tool.name === 'update_company') {
+    const p = await previewUpdateCompany(deps, args.input)
+    return { summary: p.summary, details: { tool: tool.name, vehicle, input: args.input, ...p.details } }
   }
   // A destructive change: what it would remove, read now, and that it waits for an admin.
   const destructive = DESTRUCTIVE_PREVIEWS[tool.name]

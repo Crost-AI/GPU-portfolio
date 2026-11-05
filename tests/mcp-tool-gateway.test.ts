@@ -105,6 +105,21 @@ describe('the tool list', () => {
     expect(result._meta.toolListVersion).toBe(toolListVersion(access))
   })
 
+  it('tells a chat to ask for approval in the conversation and approve on the yes', async () => {
+    const { result } = await rpc('initialize', { protocolVersion: '2025-06-18' })
+    expect(result.instructions).toMatch(/Approve in the chat by default/)
+    expect(result.instructions).toMatch(/approve_action .*only after they explicitly say yes/)
+    expect(result.instructions).not.toMatch(/cannot approve/)
+  })
+
+  it("tells a script's key to hand over the link, since it cannot approve what it staged", async () => {
+    keyId = 'key-1'
+    const { result } = await rpc('initialize', { protocolVersion: '2025-06-18' })
+    expect(result.instructions).toMatch(/Give the person the approveUrl/)
+    expect(result.instructions).toMatch(/cannot approve a change it staged/)
+    expect(result.instructions).not.toMatch(/Approve in the chat/)
+  })
+
   it('annotates call_tool as not read-only, so a host asks before running it', () => {
     const call = GATEWAY_TOOLS.find(t => t.name === 'call_tool')!
     expect(call.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true })

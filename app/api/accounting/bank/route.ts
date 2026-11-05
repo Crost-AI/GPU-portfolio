@@ -17,7 +17,7 @@ import { postExistingEntryWithAllocation, setGeneratedAllocationStatus } from '@
 import { underReview, reviewKind } from '@/lib/accounting/bank-review'
 import { loadOwnedCashEntries, ownedCandidates } from '@/lib/accounting/investment-bank-match'
 import { entryCarriesInvestments, BANK_ROW_IS_AN_INVESTMENT } from '@/lib/accounting/ownership'
-import { bankEscrowPostings, guardBankEntries, postBankTransaction, setBankTransactionAccount } from '@/lib/accounting/bank-actions'
+import { bankEscrowPostings, guardBankEntries, postBankTransaction, restoreBankTransaction, setBankTransactionAccount } from '@/lib/accounting/bank-actions'
 import { loadMayTouchInvestments, NEEDS_INVESTMENTS_WRITE } from '@/lib/accounting/investment-access'
 import { loadQuickBooksCashEntries, quickBooksCandidates, quickBooksAlreadyClaimed, readAll } from '@/lib/accounting/bank-quickbooks-match'
 
@@ -272,27 +272,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, status: 'drafted' })
   }
 
-  // Restore: bring an ignored transaction back to draft (un-void its entry) so it
-  // can be edited/posted again. Refused if the entry is in a closed period.
+  // Restore: bring an ignored transaction back to draft (un-void its entry) so it can be
+  // edited/posted again. lib/accounting/bank-actions.ts, shared with restore_bank_transaction.
   if (action === 'restore') {
-    if (underReview((txn as any).raw) && !entryId) {
-      const { error } = await admin.from('bank_transactions' as any).update({ status: 'unmatched' }).eq('id', id).eq('fund_id', gate.fundId)
-      if (error) return dbError(error, 'bank-restore-review')
-      return NextResponse.json({ ok: true, status: 'unmatched' })
-    }
-    if ((txn as any).status !== 'ignored') return NextResponse.json({ error: 'Only an ignored transaction can be restored' }, { status: 400 })
-    if (entryId) {
-      const { data: entry } = await admin.from('journal_entries' as any).select('entry_date').eq('book', ACTUAL_BOOK).eq('id', entryId).eq('fund_id', gate.fundId).maybeSingle()
-      const date = (entry as any)?.entry_date
-      if (date) {
-        const closed = await closedPeriodRanges(admin, gate.fundId, group)
-        if (dateInAnyClosedPeriod(closed, date)) return NextResponse.json({ error: 'That entry is in a closed period — reopen it to edit.' }, { status: 400 })
-      }
-      const { error } = await admin.from('journal_entries' as any).update({ status: 'draft', posted_at: null }).eq('id', entryId).eq('fund_id', gate.fundId)
-      if (error) return dbError(error, 'bank-restore-entry')
-    }
-    await admin.from('bank_transactions' as any).update({ status: 'drafted' }).eq('id', id).eq('fund_id', gate.fundId)
-    return NextResponse.json({ ok: true, status: 'drafted' })
+    const result = await restoreBankTransaction(admin, gate.fundId, group, id)
+    if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json(result)
   }
 
   // Ignore. Voiding the entry is a real ledger change, so it gets the same guards as any
