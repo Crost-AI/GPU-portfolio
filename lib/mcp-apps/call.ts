@@ -116,5 +116,7 @@ async function callThroughGateway(call: McpCall): Promise<McpCallOutcome> {
       ' search_tools lists the tools you may use.'
     )
   }
-  return callMcpTool({ ...call, name: target, args: raw as Record<string, unknown> })
+  // callOne, not callMcpTool: the call_tool request itself is already inside callMcpTool, which adds a
+  // pooled connection's fund line once to what comes back.
+  return callOne({ ...call, name: target, args: raw as Record<string, unknown> })
 }
