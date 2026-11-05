@@ -114,5 +114,6 @@ export async function GET(req: NextRequest) {
     asOf: report.asOf,
     investors,
     vehicleDates,
+    connectedOmitted: linked.omitted,
   })
 }

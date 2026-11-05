@@ -16,6 +16,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { generateLiveReport, type LiveInvestmentRow } from '@/lib/accounting/live-report'
 import { lastDataDates } from '@/lib/accounting/lp-positions'
+import { fetchAllRows, fetchAllRowsIn } from '@/lib/accounting/load'
 import { carryRecipientIds } from '@/lib/access/carry-visibility'
 import { findExact, suggestPairs, type MatchableInvestor, type Suggestion } from './matching'
 
@@ -182,9 +183,10 @@ export async function endConnection(db: Db, opts: { fundId: string; userId: stri
 }
 
 async function investorsOf(db: Db, fundId: string): Promise<MatchableInvestor[]> {
-  const { data, error } = await db.from('lp_investors').select('id, name, contact_email').eq('fund_id', fundId).order('name')
-  if (error) throw error
-  return (data ?? []) as MatchableInvestor[]
+  // Paged: PostgREST caps a read at max_rows, and an investor past it could not be suggested, matched
+  // or approved.
+  return fetchAllRows<MatchableInvestor>((from, to) =>
+    db.from('lp_investors').select('id, name, contact_email').eq('fund_id', fundId).order('name').range(from, to) as any)
 }
 
 async function activeConnection(db: Db, fundId: string, connectionId: string) {
@@ -202,11 +204,9 @@ interface LinkRow {
 }
 
 async function linksOf(db: Db, connectionId: string): Promise<LinkRow[]> {
-  const { data, error } = await db.from('lp_investor_links')
+  return fetchAllRows<LinkRow>((from, to) => db.from('lp_investor_links')
     .select('id, requester_investor_id, recipient_investor_id, requester_approved_at, recipient_approved_at')
-    .eq('connection_id', connectionId)
-  if (error) throw error
-  return (data ?? []) as LinkRow[]
+    .eq('connection_id', connectionId).range(from, to) as any)
 }
 
 /** The pairs on a connection, and the suggested ones not yet proposed, from the caller's side. */
@@ -326,12 +326,12 @@ export async function approvedCounterparts(db: Db, fundId: string, investorIds?:
     return []
   }
   if (rows.length === 0) return []
-  const { data: links } = await db.from('lp_investor_links')
-    .select('connection_id, requester_investor_id, recipient_investor_id, requester_approved_at, recipient_approved_at')
-    .in('connection_id', rows.map(c => c.id))
+  const links = await fetchAllRows<any>((from, to) => db.from('lp_investor_links')
+    .select('id, connection_id, requester_investor_id, recipient_investor_id, requester_approved_at, recipient_approved_at')
+    .in('connection_id', rows.map(c => c.id)).range(from, to) as any)
   const wanted = investorIds ? new Set(investorIds) : null
   const out: Counterpart[] = []
-  for (const l of ((links ?? []) as any[]).filter(isApproved)) {
+  for (const l of links.filter(isApproved)) {
     const c = rows.find(r => r.id === l.connection_id)!
     const weRequested = c.requester_fund_id === fundId
     const investorId = weRequested ? l.requester_investor_id : l.recipient_investor_id
@@ -354,31 +354,48 @@ export interface LinkedRow {
   row: LiveInvestmentRow
 }
 
+/** A connected fund's vehicle on our report: its name alone reads as ours, and can equal one of ours. */
+export const connectedVehicleName = (fundName: string, vehicle: string) => `${fundName}: ${vehicle}`
+
 /**
  * The positions our investors hold in connected funds, from those funds' live reports, through
  * approved pairs only. `omitCarryRecipients`: leave out positions on which the LP receives carry in
  * that fund, for a caller who may not see individual carry (lib/access/carry-visibility.ts).
+ *
+ * Each row's and date's vehicle is named with its fund. A fund reporting in another currency is left
+ * out and named in `omitted`: reports total in our currency and nothing converts, so its figures
+ * would add euros to dollars.
  */
 export async function linkedLiveRows(
   db: Db,
   opts: { fundId: string; investorIds?: string[]; asOf?: string; omitCarryRecipients?: boolean },
-): Promise<{ rows: LinkedRow[]; vehicleDates: { vehicle: string; date: string | null }[] }> {
+): Promise<{ rows: LinkedRow[]; vehicleDates: { vehicle: string; date: string | null }[]; omitted: { investorId: string; label: string }[] }> {
   const counterparts = await approvedCounterparts(db, opts.fundId, opts.investorIds)
-  if (counterparts.length === 0) return { rows: [], vehicleDates: [] }
+  if (counterparts.length === 0) return { rows: [], vehicleDates: [], omitted: [] }
+
+  const currencyOf = async (fundId: string): Promise<string> => {
+    const { data, error } = await db.from('fund_settings').select('currency').eq('fund_id', fundId).maybeSingle()
+    if (error) throw error
+    return (data as any)?.currency || 'USD'
+  }
+  const ourCurrency = await currencyOf(opts.fundId)
 
   const byFund = new Map<string, Counterpart[]>()
   for (const cp of counterparts) byFund.set(cp.linkedFundId, [...(byFund.get(cp.linkedFundId) ?? []), cp])
 
   const rows: LinkedRow[] = []
   const vehicleDates: { vehicle: string; date: string | null }[] = []
+  const omitted: { investorId: string; label: string }[] = []
   for (const [otherFundId, cps] of byFund) {
     const ourOf = new Map(cps.map(cp => [cp.linkedInvestorId, cp.investorId]))
-    const [report, { data: fund }, { data: ents }] = await Promise.all([
+    const [theirCurrency, report, { data: fund }, ents] = await Promise.all([
+      currencyOf(otherFundId),
       generateLiveReport(db, otherFundId, opts.asOf),
       db.from('funds').select('name').eq('id', otherFundId).maybeSingle(),
-      db.from('lp_entities').select('id, entity_name, investor_id').eq('fund_id', otherFundId).in('investor_id', Array.from(ourOf.keys())),
+      fetchAllRowsIn<any>(Array.from(ourOf.keys()), (ids, from, to) =>
+        db.from('lp_entities').select('id, entity_name, investor_id').eq('fund_id', otherFundId).in('investor_id', ids).range(from, to) as any),
     ])
-    const entInfo = new Map(((ents ?? []) as any[]).map(e => [e.id as string, e as { entity_name: string; investor_id: string }]))
+    const entInfo = new Map(ents.map(e => [e.id as string, e as { entity_name: string; investor_id: string }]))
     let mine = report.rows.filter(r => entInfo.has(r.entity_id))
     if (opts.omitCarryRecipients) {
       const groups = Array.from(new Set(mine.map(r => r.portfolio_group)))
@@ -386,13 +403,21 @@ export async function linkedLiveRows(
       mine = mine.filter(r => !recipients.get(r.portfolio_group)?.has(r.entity_id))
     }
     const fundName = (fund as any)?.name ?? 'Connected fund'
+    if (theirCurrency !== ourCurrency) {
+      const investors = new Set(mine.map(r => ourOf.get(entInfo.get(r.entity_id)!.investor_id)!))
+      for (const investorId of investors) omitted.push({ investorId, label: `${fundName} (reported in ${theirCurrency})` })
+      continue
+    }
     for (const r of mine) {
       const e = entInfo.get(r.entity_id)!
-      rows.push({ investorId: ourOf.get(e.investor_id)!, fundId: otherFundId, fundName, entityName: e.entity_name, row: r })
+      rows.push({
+        investorId: ourOf.get(e.investor_id)!, fundId: otherFundId, fundName, entityName: e.entity_name,
+        row: { ...r, portfolio_group: connectedVehicleName(fundName, r.portfolio_group) },
+      })
     }
     const groups = Array.from(new Set(mine.map(r => r.portfolio_group)))
     const dates = await lastDataDates(db, otherFundId, groups)
-    for (const g of groups.sort()) vehicleDates.push({ vehicle: g, date: dates.get(g) ?? null })
+    for (const g of groups.sort()) vehicleDates.push({ vehicle: connectedVehicleName(fundName, g), date: dates.get(g) ?? null })
   }
-  return { rows, vehicleDates }
+  return { rows, vehicleDates, omitted }
 }

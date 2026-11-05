@@ -525,7 +525,7 @@ export async function generateLiveInvestorReportPdf(
   // (lib/fund-connections). Only for a caller who sees every entity: one scoped to some sees those.
   const linked = opts.includeConnected && opts.groups == null
     ? await linkedLiveRows(admin, { fundId, investorIds, omitCarryRecipients: !!opts.omit })
-    : { rows: [], vehicleDates: [] }
+    : { rows: [], vehicleDates: [], omitted: [] }
   for (const l of linked.rows) entInfo.set(`${l.fundId}:${l.row.entity_id}`, { entity_name: l.entityName, investor_id: l.investorId })
   mine.push(...linked.rows.map(l => ({ ...l.row, entity_id: `${l.fundId}:${l.row.entity_id}` })))
   if (mine.length === 0) return null
@@ -560,7 +560,7 @@ export async function generateLiveInvestorReportPdf(
   const asOfFormatted = maxDate ? new Date(maxDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null
 
   const html = buildReportHtml({
-    investorName, rows, totals, excludedGroupNames: [],
+    investorName, rows, totals, excludedGroupNames: Array.from(new Set(linked.omitted.map(o => o.label))),
     fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: contactBlock(letterhead),
     description: settingsRes.data?.lp_report_description ?? null, footerNote: settingsRes.data?.lp_report_footer ?? null,
     asOfFormatted, currency,
