@@ -475,20 +475,14 @@ export async function editPartnershipInvoice(
   const dropAdj = Array.from(new Set(args.removeAdjustmentIds ?? [])).filter(a => inv.adjustments.some(x => x.id === a))
   const adjusting = parsedAdj.adjustments.length > 0 || dropAdj.length > 0
   if (adjusting && inv.status !== 'draft') return { error: 'This invoice is issued, so the fund has been told its amount due. Void it and bill again to change its adjustments, or put the adjustment on the next invoice.', status: 409 }
-  // A draft is not necessarily unbooked here: an issue can book its charge and fail before marking
-  // it issued, or still be running. Retrying the issue keeps the charge as booked, so an amount
-  // changed under it would be billed at one figure and settled at another. Void unwinds it first.
-  if (inv.status === 'draft' && (adjusting || remove.length > 0 || addIds.length > 0)) {
-    const { data: live, error: liveErr } = await admin.from('intercompany_transactions' as any)
-      .select('id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
-    if (liveErr) return { error: `Could not check this invoice's charge: ${liveErr.message}`, status: 500 }
-    if (live) return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running), so its amount is booked. Void it to unwind the charge, then bill again.', status: 409 }
-  }
+  // What this edit expects the adjustments to total; the database's sum replaces it once applied.
   const adjustmentTotal = roundCents(
     inv.adjustments.filter(a => !dropAdj.includes(a.id)).reduce((sum, a) => sum + a.amount, 0)
     + parsedAdj.adjustments.reduce((sum, a) => sum + a.amount, 0),
   )
   let amount = inv.amount
+  let addLines: InvoiceLine[] = []
+  let finalAdjustmentTotal = adjustmentTotal
   if (remove.length > 0 || addIds.length > 0) {
     if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill again to change its expenses.', status: 409 }
     const addable = new Map((await addableInvoiceLines(admin, fundId, inv)).map(l => [l.postingId, l]))
@@ -499,48 +493,41 @@ export async function editPartnershipInvoice(
       + addIds.reduce((sum, p) => sum + addable.get(p)!.amount, 0))
     if (amountDue(next, adjustmentTotal) < 0) return { error: overCredited(next, adjustmentTotal), status: 400 }
 
-    // Add first: a claim another invoice beat us to fails here, before anything is taken off.
-    if (addIds.length > 0) {
-      const lines = addIds.map(p => {
-        const l = addable.get(p)!
-        return p in typed ? { ...l, allocationBasis: String(typed[p] ?? '').trim() || null } : l
-      })
-      const { error } = await admin.from('partnership_invoice_lines' as any).insert(lines.map(l => ({
-        fund_id: fundId, invoice_id: id, journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount,
-        allocation_basis: l.allocationBasis,
-      })))
-      if (error) return { error: (error as any).code === '23505'
-        ? 'Some of these expenses were just billed on another invoice. Refresh and try again.'
-        : `The expenses could not be added: ${error.message}`, status: 409 }
-      for (const l of lines) onInvoice.set(l.postingId, l)
-    }
-    if (remove.length > 0) {
-      const { error } = await admin.from('partnership_invoice_lines' as any).delete()
-        .eq('fund_id', fundId).eq('invoice_id', id).in('journal_posting_id', remove)
-      if (error) return { error: `The expenses could not be removed: ${error.message}`, status: 400 }
-      for (const p of remove) onInvoice.delete(p)
-    }
-    amount = roundCents(Array.from(onInvoice.values()).reduce((sum, l) => sum + l.amount, 0))
+    addLines = addIds.map(p => {
+      const l = addable.get(p)!
+      return p in typed ? { ...l, allocationBasis: String(typed[p] ?? '').trim() || null } : l
+    })
   } else if (amountDue(amount, adjustmentTotal) < 0) {
     return { error: overCredited(amount, adjustmentTotal), status: 400 }
   }
-  if (adjusting) {
-    if (parsedAdj.adjustments.length > 0) {
-      const { error } = await admin.from('partnership_invoice_adjustments' as any).insert(parsedAdj.adjustments.map(a => ({
-        fund_id: fundId, invoice_id: id, description: a.description, amount: a.amount, created_by: userId,
-      })))
-      if (error) return { error: `The adjustments could not be saved: ${error.message}`, status: 400 }
+  // Lines, adjustments and totals change together, under a lock on the invoice, and only while it is
+  // a draft with no charge: a draft can already carry one (an issue that failed before marking it, or
+  // one still running), and a retried issue keeps the charge as booked, so the amount cannot change
+  // under it. Void unwinds the charge first. See 20261104140300_partnership_invoice_edit.
+  if (adjusting || remove.length > 0 || addIds.length > 0) {
+    const { data: edited, error: editErr } = await admin.rpc('apply_partnership_invoice_edit' as any, {
+      p_fund_id: fundId,
+      p_invoice_id: id,
+      p_add_lines: addLines.map(l => ({ journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount, allocation_basis: l.allocationBasis })),
+      p_remove_posting_ids: remove,
+      p_add_adjustments: parsedAdj.adjustments.map(a => ({ description: a.description, amount: a.amount })),
+      p_remove_adjustment_ids: dropAdj,
+      p_user_id: userId,
+    })
+    if (editErr) {
+      if ((editErr as any).code === '23505') return { error: 'Some of these expenses were just billed on another invoice. Refresh and try again.', status: 409 }
+      if (/no expenses left/.test(editErr.message)) return { error: 'That removes every expense. Delete the draft instead.', status: 400 }
+      if (/over-credited/.test(editErr.message)) return { error: 'Those adjustments would take the amount due below zero.', status: 400 }
+      return { error: `The invoice could not be changed: ${editErr.message}`, status: 400 }
     }
-    if (dropAdj.length > 0) {
-      const { error } = await admin.from('partnership_invoice_adjustments' as any).delete().eq('fund_id', fundId).eq('invoice_id', id).in('id', dropAdj)
-      if (error) return { error: `The adjustments could not be removed: ${error.message}`, status: 400 }
-    }
-  }
-  // The amount and the adjustments are written together: the amount due must never read below zero.
-  if (amount !== inv.amount || adjustmentTotal !== inv.adjustmentTotal) {
-    const { error: amtErr } = await admin.from('partnership_invoices' as any).update({ amount, adjustment_total: adjustmentTotal, updated_at: new Date().toISOString() })
-      .eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
-    if (amtErr) return { error: `The invoice total could not be updated: ${amtErr.message}`, status: 400 }
+    const result = edited as { refused?: 'gone' | 'status' | 'charge'; status?: string; amount?: number; adjustment_total?: number }
+    if (result.refused === 'gone') return { error: 'Invoice not found', status: 404 }
+    if (result.refused === 'status') return { error: `This invoice is now ${result.status}, so its expenses and adjustments can no longer be changed. Void it and bill again.`, status: 409 }
+    if (result.refused === 'charge') return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running), so its amount is booked. Void it to unwind the charge, then bill again.', status: 409 }
+    for (const l of addLines) onInvoice.set(l.postingId, l)
+    for (const p of remove) onInvoice.delete(p)
+    amount = Number(result.amount)
+    finalAdjustmentTotal = Number(result.adjustment_total)
   }
 
   const added = new Set(addIds)
@@ -584,7 +571,7 @@ export async function editPartnershipInvoice(
     if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
   }
   if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
-  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, adjusted: parsedAdj.adjustments.length + dropAdj.length, amount, adjustmentTotal, amountDue: amountDue(amount, adjustmentTotal), ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, adjusted: parsedAdj.adjustments.length + dropAdj.length, amount, adjustmentTotal: finalAdjustmentTotal, amountDue: amountDue(amount, finalAdjustmentTotal), ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
 }
 
 /**
