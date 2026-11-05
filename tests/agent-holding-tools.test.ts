@@ -311,6 +311,23 @@ describe('the fund register', () => {
     expect(rebook).toHaveBeenCalledWith(store.admin, 'fund-1', 'me', { companyId: 'fh', vehicleId: 'v1', since: '2024-06-01', inclusive: true })
   })
 
+  it('a refused NAV re-book is reported, and the retry re-books although no distribution still differs', async () => {
+    store.tables.fund_nav_statements.push({ id: 'nav-1', fund_id: 'fund-1', company_id: 'fh', vehicle_id: 'v1', as_of_date: '2024-06-30', investment_transaction_id: 't-fhmark' })
+    store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited = 0
+    rebook.mockResolvedValueOnce([{ status: 'refused', message: 'The statements after this one could not be read.' }])
+    await expect(run('recalculate_fund_distributions', { company: 'fh' })).rejects.toThrow(/could not be read.*Run the recalculation again/)
+    // The correction stands, so the retry finds nothing to change, and still re-books.
+    expect(store.tables.investment_transactions.find(t => t.id === 't-dist')!.cost_basis_exited).toBe(15_000)
+    rebook.mockClear()
+    expect(await run('recalculate_fund_distributions', { company: 'fh' })).toMatchObject({ changed: [], unchanged: 1 })
+    expect(rebook).toHaveBeenCalledWith(store.admin, 'fund-1', 'me', { companyId: 'fh', vehicleId: 'v1', since: '2024-06-01', inclusive: true })
+  })
+
+  it('a dry run re-books nothing', async () => {
+    await run('recalculate_fund_distributions', { company: 'fh', dry_run: true })
+    expect(rebook).not.toHaveBeenCalled()
+  })
+
   it('saves a NAV statement through the one NAV writer', async () => {
     const out = await run('record_nav_statement', { company: 'fh', as_of_date: '2024-06-30', reported_nav: 90_000 })
     expect(out).toMatchObject({ holding: 'Northwind Fund II', booking: { status: 'no_change' } })

@@ -540,6 +540,19 @@ export async function recalculateFundDistributions(
   const ordered = [...((txns.data as any[]) ?? [])].sort((a, b) =>
     String(a.transaction_date).localeCompare(String(b.transaction_date)) || String(a.id).localeCompare(String(b.id)))
 
+  // absorbInNextMark leaves a mark a NAV statement owns to rebookNavsFrom. One sweep from the earliest
+  // distribution, after the corrections, on every run that writes: it is idempotent (a mark already
+  // right is no_change), so a retry whose distributions no longer differ still re-books what an earlier
+  // run left refused. A refusal does not stop the sweep; it is returned here so it is not reported as
+  // success.
+  const refusedNavs = async (): Promise<string[]> => {
+    if (!ordered.length) return []
+    const { rebookNavsFrom } = await import('./fof-nav')
+    const bookings = await rebookNavsFrom(admin, who.fundId, who.userId, { companyId, vehicleId, since: String(ordered[0].transaction_date), inclusive: true })
+    return bookings.filter(b => b.status === 'refused').map(b => b.message)
+  }
+  const AGAIN = 'Run the recalculation again once that is cleared: it re-books them even when no distribution still differs.'
+
   const changed: DistributionRecalculated[] = []
   let unchanged = 0
   // A dry run carries each worked-out figure forward itself, since nothing is written for the next
@@ -570,23 +583,23 @@ export async function recalculateFundDistributions(
         })
       : await updateInvestmentTransaction(admin, who, companyId, t.id, { cost_basis_exited: worked.returnOfCapital })
         .then(async o => o.ok ? absorbInNextMark(admin, who, companyId, vehicleName, t.transaction_date, from - worked.returnOfCapital) : o)
-        .then(async o => {
-          if (!o.ok) return o
-          // absorbInNextMark leaves a mark a NAV statement owns to rebookNavsFrom, as
-          // updateFundNotice does: re-derive the later NAV marks against the corrected cost.
-          const { rebookNavsFrom } = await import('./fof-nav')
-          await rebookNavsFrom(admin, who.fundId, who.userId, { companyId, vehicleId, since: String(t.transaction_date), inclusive: true })
-          return o
-        })
     if (!out.ok) {
+      const refused = changed.length ? await refusedNavs() : []
       return fail(out.status, `Stopped at the ${t.transaction_date} distribution of ${amount}: ${out.error}`
-        + (changed.length ? ` The ${changed.length} before it were re-booked.` : ''), { changed })
+        + (changed.length ? ` The ${changed.length} before it were re-booked.` : '')
+        + (refused.length ? ` NAV marks after them could not be re-booked: ${refused.join(' ')} ${AGAIN}` : ''), { changed })
     }
     changed.push(entry)
   }
 
   if (!opts.dryRun && changed.length && who.userId) {
     logActivity(admin, who.fundId, who.userId, 'fund_holding.distributions_recalculated', { companyId, vehicleId, changed: changed.length })
+  }
+  if (!opts.dryRun) {
+    const refused = await refusedNavs()
+    if (refused.length) {
+      return fail(409, `${changed.length ? `The ${changed.length} distribution(s) that differed were re-booked, but ` : ''}NAV marks after them could not be re-booked: ${refused.join(' ')} ${AGAIN}`, { changed })
+    }
   }
   return done({ holding: holding.value.name, entity: vehicleName, changed, unchanged, dryRun: !!opts.dryRun })
 }
