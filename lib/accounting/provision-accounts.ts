@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { chartForVehicleKind } from './chart'
 import { vehicleIdByName } from './vehicle-id'
 import { vehicleKindByName } from './vehicle-domain'
+import { fetchAllRows } from './load'
 
 /** Write operations only. Ignore duplicates atomically; never overwrite customized accounts. */
 export async function ensureVehicleAccounts(admin: SupabaseClient, fundId: string, group: string): Promise<void> {
@@ -13,10 +14,10 @@ export async function ensureVehicleAccounts(admin: SupabaseClient, fundId: strin
   // was created and is not rewritten on a rename. Keyed on that alone, a renamed vehicle got a
   // second copy of its whole standard chart, and postings landed on the copies. So skip every
   // code the vehicle already has, by vehicle_id; the upsert only settles concurrent creation.
-  const { data: existing, error: readError } = await admin.from('chart_of_accounts' as any)
-    .select('code').eq('fund_id', fundId).eq('vehicle_id', vehicleId)
-  if (readError) throw readError
-  const have = new Set(((existing as any[]) ?? []).map(a => a.code as string))
+  // Paged: a code past PostgREST's row cap would look missing and be inserted again.
+  const existing = await fetchAllRows<{ code: string }>((from, to) => (admin as any).from('chart_of_accounts')
+    .select('id, code').eq('fund_id', fundId).eq('vehicle_id', vehicleId).range(from, to))
+  const have = new Set(existing.map(a => a.code))
   const chart = chartForVehicleKind(kind).filter(a => !have.has(a.code))
   if (!chart.length) return
   const { error } = await admin.from('chart_of_accounts' as any).upsert(chart.map(a => ({

@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
-import { loadPostedLedger } from '@/lib/accounting/load'
+import { fetchAllRows, loadPostedLedger } from '@/lib/accounting/load'
 import { accountBalances } from '@/lib/accounting/ledger'
 import { cashTransferEntryIds, openingCashBefore, summarizeBankRec, type BankTxnState } from '@/lib/accounting/bank'
 
@@ -24,13 +24,15 @@ export async function GET(req: NextRequest) {
   const ledgerCashBalance = cash ? (accountBalances(postings).get(cash.id) ?? 0) : 0
 
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
-  const { data } = await admin
-    .from('bank_transactions' as any)
-    .select('txn_date, amount, status, journal_entry_id')
+  // Paged: the opening balance needs the feed's first date and the summary every row, and a read
+  // stopping at PostgREST's row cap would disagree with bank_reconciliation and close readiness.
+  const rows = await fetchAllRows<any>((from, to) => (admin as any)
+    .from('bank_transactions')
+    .select('id, txn_date, amount, status, journal_entry_id')
     .eq('fund_id', gate.fundId)
     .eq('vehicle_id', vehicleId)
     .neq('status', 'ignored')
-  const rows = (data as any[]) ?? []
+    .range(from, to))
   const transfers = cashTransferEntryIds(sourcedPostings, cash?.id)
   const txns: BankTxnState[] = rows.map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled', cashTransfer: transfers.has(t.journal_entry_id) }))
 
