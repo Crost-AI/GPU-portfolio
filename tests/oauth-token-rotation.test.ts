@@ -25,6 +25,7 @@ interface TokenRow {
   expires_at: string
   revoked_at: string | null
   last_used_at: string | null
+  replayed_at?: string | null
 }
 
 /** An in-memory oauth_tokens + fund_members, honest enough about filters to be worth trusting. */
@@ -34,6 +35,7 @@ function db() {
     'fund-1|user-1': { fund_id: 'fund-1', user_id: 'user-1', role: 'admin' },
   }
   let seq = 0
+  let insertGate: (() => Promise<void>) | null = null
 
   function builder(table: string) {
     const filters: Array<(row: any) => boolean> = []
@@ -62,14 +64,15 @@ function db() {
         return chain
       },
       insert: async (rows: Record<string, unknown>[]) => {
+        if (insertGate) await insertGate()
         for (const row of rows) tokens.push({ id: `t${++seq}`, revoked_at: null, last_used_at: null, ...(row as any) })
         return { error: null }
       },
       maybeSingle: async () => {
-        if (patch) {
-          for (const row of rowsFor()) Object.assign(row, patch)
-        }
-        return { data: rowsFor()[0] ?? null, error: null }
+        // Like PostgREST: an update's filters pick the rows BEFORE the patch, and those rows come back.
+        const matched = rowsFor()
+        if (patch) for (const row of matched) Object.assign(row, patch)
+        return { data: matched[0] ?? null, error: null }
       },
       // Awaiting the chain applies a pending update — how the store issues its revokes.
       then: (resolve: (v: unknown) => unknown, reject: (r: unknown) => unknown) => {
@@ -90,6 +93,8 @@ function db() {
       memberRows = {}
     },
     find: (token: string) => tokens.find(t => t.token_hash === hashToken(token)),
+    /** Hold every insert until the gate resolves: lets a test interleave two rotations. */
+    gateInserts: (g: (() => Promise<void>) | null) => { insertGate = g },
   }
 }
 
@@ -179,6 +184,66 @@ describe('refresh-token rotation', () => {
     expect(store.find(second!.refreshToken)!.revoked_at).not.toBeNull()
     expect(store.find(second!.accessToken)!.revoked_at).not.toBeNull()
     expect(await resolveAccessToken(store.admin, second!.accessToken)).toBeNull()
+  })
+
+  it('a replay revoked while the winning rotation is still minting leaves its new pair revoked too', async () => {
+    // A claims the token and pauses before inserting; B presents the same token, fails the claim and
+    // revokes everything live; only then does A insert. The replay was detected, so A's pair must not
+    // survive (Codex on #135).
+    const first = await issue()
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    store.gateInserts(async () => { reached(); await held })
+
+    const a = rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })
+    await atInsert
+    store.gateInserts(null)
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+    go()
+
+    expect(await a).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+  })
+
+  it('replaying an older token of the family while the next one is minting leaves the new pair revoked', async () => {
+    // R0 rotated into R1. A claims R1 and pauses before inserting; B replays R0. The revoke skips R1,
+    // already claimed, and R0 is not the token A re-reads: only a mark across the family reaches A
+    // (Codex on #135).
+    const r0 = await issue()
+    const r1 = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    store.gateInserts(async () => { reached(); await held })
+
+    const a = rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r1!.refreshToken })
+    await atInsert
+    store.gateInserts(null)
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })).toBeNull()
+    go()
+
+    expect(await a).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+  })
+
+  it('a replay earlier on does not stop a later sign-in from rotating', async () => {
+    const r0 = await issue()
+    const r1 = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })).toBeNull()
+    expect(store.find(r1!.refreshToken)!.revoked_at).not.toBeNull()
+    // Re-authorized: new tokens, unmarked, rotate as usual.
+    const again = await issue()
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: again.refreshToken })).not.toBeNull()
+  })
+
+  it('an uncontested rotation still issues a live pair', async () => {
+    const first = await issue()
+    const rotated = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: first.refreshToken })
+    expect(await resolveAccessToken(store.admin, rotated!.accessToken)).not.toBeNull()
   })
 
   it('re-derives the scope ceiling from the user’s CURRENT role, so a demotion cannot be refreshed away', async () => {
