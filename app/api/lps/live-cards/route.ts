@@ -7,6 +7,7 @@ import { lastDataDates } from '@/lib/accounting/lp-positions'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { scopeReportCardRows } from '@/lib/access/lp-scope'
 import { linkedLiveRows } from '@/lib/fund-connections'
+import { seesIndividualCarry } from '@/lib/access/carry-visibility'
 
 // Everything the LIVE report cards need, in one call: fund header, per-investor rows
 // (aggregated across vehicles), and the last-updated date PER VEHICLE.
@@ -74,7 +75,11 @@ export async function GET(req: NextRequest) {
 
   // The LP's positions in connected funds, through pairs both funds' admins approved
   // (lib/fund-connections). Only onto a card this caller already gets.
-  const linked = await linkedLiveRows(admin, { fundId: gate.fundId, investorIds: Array.from(byInvestor.keys()), asOf })
+  // The rules the investor report's PDF applies: only for a caller who sees every entity, and without
+  // gp_economics, none of the positions on which the LP receives carry in that fund (Crost #139).
+  const linked = scope.vehicleNames === null
+    ? await linkedLiveRows(admin, { fundId: gate.fundId, investorIds: Array.from(byInvestor.keys()), asOf, omitCarryRecipients: !seesIndividualCarry(scope.access) })
+    : { rows: [], vehicleDates: [], omitted: [] }
   for (const l of linked.rows) {
     const g = byInvestor.get(l.investorId)
     if (!g) continue
