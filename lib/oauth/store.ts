@@ -403,13 +403,13 @@ export async function rotateRefreshToken(
     await revokeOnReplay(admin, row)
     return null
   }
-  // A replay detected while this request was minting must not leave its new pair live: revokeOnReplay
-  // moves the presented token's revoked_at off `now` before it revokes the family, so this re-read,
-  // after the insert, sees it whichever of the two finished first.
+  // A replay detected while this request was minting must not leave its new pair live. revokeOnReplay
+  // marks every token of the (client, user) pair before it revokes the live ones, this claimed token
+  // included whichever token of the family was replayed, so this read, after the insert, sees it
+  // whichever of the two finished first.
   const unlessReplayed = async (issued: IssuedTokens): Promise<IssuedTokens | null> => {
-    const { data: after } = await (admin as any).from('oauth_tokens').select('revoked_at').eq('id', row.id).maybeSingle()
-    const at = (after as any)?.revoked_at
-    if (at && new Date(at).getTime() === new Date(now).getTime()) return issued
+    const { data: after, error: afterError } = await (admin as any).from('oauth_tokens').select('replayed_at').eq('id', row.id).maybeSingle()
+    if (!afterError && after && !(after as any).replayed_at) return issued
     await revokeAllForClient(admin, row.client_id, row.user_id)
     return null
   }
@@ -458,16 +458,15 @@ export async function rotateRefreshToken(
 
 /**
  * The response to a replayed refresh token: revoke every live token for the (client, user) pair.
- * First, move the presented token's revoked_at off the value a rotation's claim wrote, so a rotation
- * that claimed it and is still minting sees the replay when it re-reads after its insert (and revokes
- * its new pair). Stamp first, revoke second: a pair inserted before the revoke is caught by it, and
- * one inserted after finds the stamp.
+ * First mark every token of the pair, already-revoked ones included, so a rotation that has claimed
+ * one (any one, not only the token replayed here) and is still minting sees the replay when it
+ * re-reads after its insert, and revokes its new pair. Mark first, revoke second: a pair inserted
+ * before the revoke is caught by it, and one inserted after finds the mark.
  */
-async function revokeOnReplay(admin: SupabaseClient, row: { id: string; client_id: string; user_id: string }): Promise<void> {
-  const { data } = await (admin as any).from('oauth_tokens').select('revoked_at').eq('id', row.id).maybeSingle()
-  const was = (data as any)?.revoked_at
-  const stamp = was ? new Date(new Date(was).getTime() + 1) : new Date()
-  await (admin as any).from('oauth_tokens').update({ revoked_at: stamp.toISOString() }).eq('id', row.id)
+async function revokeOnReplay(admin: SupabaseClient, row: { client_id: string; user_id: string }): Promise<void> {
+  const { error } = await (admin as any).from('oauth_tokens').update({ replayed_at: new Date().toISOString() })
+    .eq('client_id', row.client_id).eq('user_id', row.user_id)
+  if (error) console.error('[oauth] Could not mark a replayed token family:', error.message)
   await revokeAllForClient(admin, row.client_id, row.user_id)
 }
 

@@ -25,6 +25,7 @@ interface TokenRow {
   expires_at: string
   revoked_at: string | null
   last_used_at: string | null
+  replayed_at?: string | null
 }
 
 /** An in-memory oauth_tokens + fund_members, honest enough about filters to be worth trusting. */
@@ -205,6 +206,38 @@ describe('refresh-token rotation', () => {
 
     expect(await a).toBeNull()
     expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+  })
+
+  it('replaying an older token of the family while the next one is minting leaves the new pair revoked', async () => {
+    // R0 rotated into R1. A claims R1 and pauses before inserting; B replays R0. The revoke skips R1,
+    // already claimed, and R0 is not the token A re-reads: only a mark across the family reaches A
+    // (Codex on #135).
+    const r0 = await issue()
+    const r1 = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    store.gateInserts(async () => { reached(); await held })
+
+    const a = rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r1!.refreshToken })
+    await atInsert
+    store.gateInserts(null)
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })).toBeNull()
+    go()
+
+    expect(await a).toBeNull()
+    expect(store.tokens.filter(t => !t.revoked_at)).toEqual([])
+  })
+
+  it('a replay earlier on does not stop a later sign-in from rotating', async () => {
+    const r0 = await issue()
+    const r1 = await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: r0.refreshToken })).toBeNull()
+    expect(store.find(r1!.refreshToken)!.revoked_at).not.toBeNull()
+    // Re-authorized: new tokens, unmarked, rotate as usual.
+    const again = await issue()
+    expect(await rotateRefreshToken(store.admin, { clientId: 'client-1', refreshToken: again.refreshToken })).not.toBeNull()
   })
 
   it('an uncontested rotation still issues a live pair', async () => {
