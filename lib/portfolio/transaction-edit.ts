@@ -77,7 +77,8 @@ async function fundRegisterOwner(admin: any, fundId: string, txnId: string): Pro
       + '(Manager NAV statements), which re-books the mark.'
   }
   if ((events.data ?? []).length > 0) {
-    return 'This was booked from a capital notice in the fund register. Change it from the notice in the fund register on the holding.'
+    return 'This was booked from a capital notice in the fund register. Change the notice instead (update_fund_notice, or '
+      + 'PATCH /api/portfolio/fund-holdings/{id}/events/{eventId}), which re-books this transaction.'
   }
   return null
 }
@@ -112,6 +113,8 @@ export async function updateInvestmentTransaction(
   companyId: string,
   txnId: string,
   body: Record<string, any>,
+  /** Set by the fund register itself (updateFundNotice), the owner of the transaction it re-books. */
+  opts: { asRegister?: boolean } = {},
 ): Promise<Outcome<{ transaction: any; ledger: any }>> {
   const existing = await loadTransaction(admin, who.fundId, companyId, txnId)
   if (!existing) return fail(404, 'Transaction not found')
@@ -121,7 +124,7 @@ export async function updateInvestmentTransaction(
     ?? ('portfolio_group' in body ? groupWriteDenial(who.vehicleNames, body.portfolio_group) : null)
   if (deniedHere) return fail(403, deniedHere)
 
-  const owned = await fundRegisterOwner(admin, who.fundId, txnId)
+  const owned = opts.asRegister ? null : await fundRegisterOwner(admin, who.fundId, txnId)
   if (owned) return fail(409, owned)
 
   // A mis-typed row can be reclassified on edit (e.g. a "Round" that should be a "Valuation
