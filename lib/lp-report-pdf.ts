@@ -4,6 +4,7 @@ import { displayFontOf } from '@/lib/theme'
 import { sanitizeLetterHtml } from '@/lib/sanitize'
 import { lpRatios } from '@/lib/lp-metrics'
 import { generateLiveReport } from '@/lib/accounting/live-report'
+import { carryExcludedLabel } from '@/lib/accounting/look-through'
 import { lastDataDates } from '@/lib/accounting/lp-positions'
 import { linkedLiveRows } from '@/lib/fund-connections'
 import { documentLetterhead, contactBlock } from '@/lib/vehicle-letterhead'
@@ -497,7 +498,8 @@ export async function generateLiveInvestorReportPdf(
   admin: any,
   /** `groups`: only these vehicles (a member scoped to some entities); absent or null = all.
    *  `omit`: positions to leave out, by vehicle → LP entity ids (a carry recipient's, for a caller
-   *  without gp_economics; lib/access/carry-visibility.ts).
+   *  without gp_economics; lib/access/carry-visibility.ts). Given at all, look-through members are
+   *  shown without their share of the carry, and the report says so.
    *  `includeConnected`: add the investor's positions in connected funds (lib/fund-connections) —
    *  the GP's report card does; the LP portal's statement does not yet. */
   opts: { fundId: string; investorIds: string[]; groups?: string[] | null; omit?: Map<string, Set<string>>; includeConnected?: boolean },
@@ -506,7 +508,7 @@ export async function generateLiveInvestorReportPdf(
   if (investorIds.length === 0) return null
 
   const [report, fundRes, settingsRes, entsRes, investorsRes] = await Promise.all([
-    generateLiveReport(admin, fundId),
+    generateLiveReport(admin, fundId, undefined, { hideIndividualCarry: !!opts.omit }),
     admin.from('funds').select('name, logo_url, address').eq('id', fundId).maybeSingle(),
     admin.from('fund_settings').select('currency, lp_report_description, lp_report_footer, theme').eq('fund_id', fundId).maybeSingle(),
     admin.from('lp_entities').select('id, entity_name, investor_id').eq('fund_id', fundId),
@@ -560,7 +562,11 @@ export async function generateLiveInvestorReportPdf(
   const asOfFormatted = maxDate ? new Date(maxDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null
 
   const html = buildReportHtml({
-    investorName, rows, totals, excludedGroupNames: Array.from(new Set(linked.omitted.map(o => o.label))),
+    investorName, rows, totals,
+    excludedGroupNames: Array.from(new Set([
+      ...linked.omitted.map(o => o.label),
+      ...mine.filter((r: any) => r.carryExcluded).map((r: any) => carryExcludedLabel(r.lookThroughVia)),
+    ])),
     fundName: letterhead.name, fundLogo: letterhead.logo, fundAddress: contactBlock(letterhead),
     description: settingsRes.data?.lp_report_description ?? null, footerNote: settingsRes.data?.lp_report_footer ?? null,
     asOfFormatted, currency,

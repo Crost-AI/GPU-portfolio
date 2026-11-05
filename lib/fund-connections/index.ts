@@ -359,8 +359,9 @@ export const connectedVehicleName = (fundName: string, vehicle: string) => `${fu
 
 /**
  * The positions our investors hold in connected funds, from those funds' live reports, through
- * approved pairs only. `omitCarryRecipients`: leave out positions on which the LP receives carry in
- * that fund, for a caller who may not see individual carry (lib/access/carry-visibility.ts).
+ * approved pairs only. `omitCarryRecipients`, for a caller who may not see individual carry
+ * (lib/access/carry-visibility.ts): leave out positions on which the LP receives carry in that fund,
+ * and show a look-through member's position without their share of it.
  *
  * Each row's and date's vehicle is named with its fund. A fund reporting in another currency is left
  * out and named in `omitted`: reports total in our currency and nothing converts, so its figures
@@ -390,7 +391,7 @@ export async function linkedLiveRows(
     const ourOf = new Map(cps.map(cp => [cp.linkedInvestorId, cp.investorId]))
     const [theirCurrency, report, { data: fund }, ents] = await Promise.all([
       currencyOf(otherFundId),
-      generateLiveReport(db, otherFundId, opts.asOf),
+      generateLiveReport(db, otherFundId, opts.asOf, { hideIndividualCarry: opts.omitCarryRecipients }),
       db.from('funds').select('name').eq('id', otherFundId).maybeSingle(),
       fetchAllRowsIn<any>(Array.from(ourOf.keys()), (ids, from, to) =>
         db.from('lp_entities').select('id, entity_name, investor_id').eq('fund_id', otherFundId).in('investor_id', ids).range(from, to) as any),
@@ -412,7 +413,11 @@ export async function linkedLiveRows(
       const e = entInfo.get(r.entity_id)!
       rows.push({
         investorId: ourOf.get(e.investor_id)!, fundId: otherFundId, fundName, entityName: e.entity_name,
-        row: { ...r, portfolio_group: connectedVehicleName(fundName, r.portfolio_group) },
+        row: {
+          ...r,
+          portfolio_group: connectedVehicleName(fundName, r.portfolio_group),
+          ...(r.lookThroughVia ? { lookThroughVia: connectedVehicleName(fundName, r.lookThroughVia) } : {}),
+        },
       })
     }
     const groups = Array.from(new Set(mine.map(r => r.portfolio_group)))

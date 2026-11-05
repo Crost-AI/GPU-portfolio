@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertReadAccess } from '@/lib/api-helpers'
 import { generateLiveReport } from '@/lib/accounting/live-report'
+import { carryExcludedLabel } from '@/lib/accounting/look-through'
 import { lastDataDates } from '@/lib/accounting/lp-positions'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { scopeReportCardRows } from '@/lib/access/lp-scope'
@@ -36,8 +37,10 @@ export async function GET(req: NextRequest) {
   // The report is built fund-wide. The caller's entities decide WHICH LPs get a card; each card
   // carries every one of that LP's positions (scopeReportCardRows).
   const scope = await loadEntityScope(admin, gate)
+  // A look-through member's share of the carry is GP economics, on their home and connected rows alike.
+  const hideIndividualCarry = !seesIndividualCarry(scope.access)
   const [fullReport, { data: fund }, { data: settings }, { data: ents }] = await Promise.all([
-    generateLiveReport(admin, gate.fundId, asOf),
+    generateLiveReport(admin, gate.fundId, asOf, { hideIndividualCarry }),
     admin.from('funds' as any).select('name, logo_url, address').eq('id', gate.fundId).maybeSingle(),
     admin.from('fund_settings' as any).select('currency, lp_report_description, lp_report_footer').eq('fund_id', gate.fundId).maybeSingle(),
     admin.from('lp_entities' as any).select('id, entity_name, investor_id, lp_investors(id, name)').eq('fund_id', gate.fundId),
@@ -51,6 +54,14 @@ export async function GET(req: NextRequest) {
 
   const report = fullReport
   const rows = scopeReportCardRows(report.rows, scope.vehicleNames, id => entInfo.get(id)?.investorId ?? id)
+
+  // What the cards leave out, for the note on each.
+  const excludedNotes = new Map<string, { investorId: string; label: string }>()
+  const noteCarryExcluded = (investorId: string, r: { carryExcluded?: true; lookThroughVia?: string }) => {
+    if (!r.carryExcluded || !r.lookThroughVia) return
+    const label = carryExcludedLabel(r.lookThroughVia)
+    excludedNotes.set(`${investorId}:${label}`, { investorId, label })
+  }
 
   // Group rows by investor; build the card row shape.
   const byInvestor = new Map<string, { investorId: string; investorName: string; rows: any[] }>()
@@ -71,6 +82,7 @@ export async function GET(req: NextRequest) {
       dpi: r.dpi, rvpi: r.rvpi, tvpi: r.tvpi, irr: r.irr,
     })
     byInvestor.set(info.investorId, g)
+    noteCarryExcluded(info.investorId, r)
   }
 
   // The LP's positions in connected funds, through pairs both funds' admins approved
@@ -78,12 +90,13 @@ export async function GET(req: NextRequest) {
   // The rules the investor report's PDF applies: only for a caller who sees every entity, and without
   // gp_economics, none of the positions on which the LP receives carry in that fund (Crost #139).
   const linked = scope.vehicleNames === null
-    ? await linkedLiveRows(admin, { fundId: gate.fundId, investorIds: Array.from(byInvestor.keys()), asOf, omitCarryRecipients: !seesIndividualCarry(scope.access) })
+    ? await linkedLiveRows(admin, { fundId: gate.fundId, investorIds: Array.from(byInvestor.keys()), asOf, omitCarryRecipients: hideIndividualCarry })
     : { rows: [], vehicleDates: [], omitted: [] }
   for (const l of linked.rows) {
     const g = byInvestor.get(l.investorId)
     if (!g) continue
     const r = l.row
+    noteCarryExcluded(l.investorId, r)
     g.rows.push({
       key: `${l.fundId}-${r.entity_id}-${r.portfolio_group}`,
       entityName: l.entityName,
@@ -119,6 +132,6 @@ export async function GET(req: NextRequest) {
     asOf: report.asOf,
     investors,
     vehicleDates,
-    connectedOmitted: linked.omitted,
+    excludedNotes: [...linked.omitted, ...excludedNotes.values()],
   })
 }

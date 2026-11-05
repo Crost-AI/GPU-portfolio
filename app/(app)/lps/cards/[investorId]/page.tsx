@@ -20,7 +20,7 @@ interface Payload {
   investors: Investor[]
   vehicleDates: { vehicle: string; date: string | null }[]
   /** Connected funds left off a card because they report in another currency. */
-  connectedOmitted?: { investorId: string; label: string }[]
+  excludedNotes?: { investorId: string; label: string }[]
 }
 
 const add = (a: number | null, b: number | null): number | null => a == null || b == null ? null : a + b
@@ -76,7 +76,7 @@ export default function LiveCardPage() {
           footerNote={data.footer || undefined}
           asOfFormatted={data.asOf ?? undefined}
           vehicleDataDates={data.vehicleDates.filter(v => investor.rows.some(r => r.portfolioGroup === v.vehicle))}
-          excludedNote={(data.connectedOmitted ?? []).filter(o => o.investorId === investor.investorId).map(o => o.label)}
+          excludedNote={(data.excludedNotes ?? []).filter(o => o.investorId === investor.investorId).map(o => o.label)}
         />
       )}
     </div>
