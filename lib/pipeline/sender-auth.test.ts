@@ -35,6 +35,33 @@ describe('postmarkSenderVerified — a member treatment needs more than a From h
       POSTMARK_SPF_PASS,
     ])).toBe(false)
   })
+
+  // Crost #142: Postmark's documented format lists the sender-chosen HELO before the envelope sender.
+  const documented = (helo: string, envelope: string) => h('Received-SPF', `Pass (sender SPF authorized) identity=mailfrom; client-ip=192.0.2.1; helo=${helo}; envelope-from=${envelope}; receiver=inbound.postmarkapp.com`)
+
+  it('accepts Postmark\'s documented format, bare, quoted or bracketed, and refuses an unaligned sender in it', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.fund.example', 'gp@fund.example')])).toBe(true)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.fund.example', '"gp@fund.example"')])).toBe(true)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.fund.example', '<gp@fund.example>')])).toBe(true)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.fund.example', 'a@evil.example')])).toBe(false)
+  })
+
+  it('a crafted helo= cannot name the envelope sender', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [documented('envelope-from=a@fund.example', 'a@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('envelope-from=fund.example', 'a@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('x envelope-from=a@fund.example', 'a@evil.example')])).toBe(false)
+    // One that adds a whole field: two envelope senders, so neither is believed, in either order.
+    expect(postmarkSenderVerified('gp@fund.example', [documented('x; envelope-from=a@fund.example', 'a@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('x; envelope-from=a@evil.example', 'a@fund.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('x; envelope-from=a@fund.example', '<>')])).toBe(false)
+  })
+
+  it('a quoted local part cannot name the From domain', () => {
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.evil.example', '"a@fund.example"@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.evil.example', '"a;envelope-from=a@fund.example"@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.evil.example', 'a@fund.example@evil.example')])).toBe(false)
+    expect(postmarkSenderVerified('gp@fund.example', [documented('mail.evil.example', 'fund.example')])).toBe(false)
+  })
 })
 
 describe('Resend', () => {
