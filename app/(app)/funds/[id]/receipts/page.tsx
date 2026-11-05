@@ -12,7 +12,7 @@ export default async function ReceiptsPage(props: { params: Promise<{ id: string
     <div className="pt-4 md:pt-8 pb-8 w-full">
       <FundSubpageChrome
         title="Receipts"
-        description="Receipts behind the entries, and the quarterly invoices that bill partnership expenses to the funds."
+        description="Receipts behind the entries, emailed in or uploaded."
         vehicle={vehicle}
         vehicleId={vehicleId}
       >

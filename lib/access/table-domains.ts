@@ -197,6 +197,8 @@ export const TABLE_RULES: Record<string, TableRule> = {
   receipts: { scope: 'service', note: 'Receipts behind journal entries; served by the receipts routes, which resolve the receipt\'s entity (management-company grant for a manco\'s) or require every-entity visibility for an unassigned one.' },
   partnership_invoices: { scope: 'service', note: 'Quarterly partnership-expense invoices between two entities; served by the invoices route, which checks the caller may see both.' },
   partnership_invoice_lines: { scope: 'service', note: 'Which Due-from postings each partnership invoice bills; read and written only with its invoice.' },
+  partnership_invoice_adjustments: { scope: 'service', note: 'Credits and charges typed onto a partnership invoice that change its amount due; read and written only with its invoice.' },
+  partnership_allocation_rules: { scope: 'service', note: 'The saved allocation basis for a vendor\'s expenses billed by one entity to one fund; read and written only by the invoices and receipts routes.' },
 
   // ---- LP capital --------------------------------------------------------------------------
   lp_entities: { scope: 'fund', domain: 'lp_capital' },

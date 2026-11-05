@@ -6,30 +6,43 @@
 //        Dr Due from <fund> (1900-<fund>)   Cr Cash (or the card)
 //      from the bank feed, a typed entry, or a draft made from the receipt (receipts.ts). The
 //      receipt is attached to that entry. Nothing else marks it: the account IS the tag.
-//   2. `previewPartnershipInvoice` lists every POSTED debit to that account in the quarter that no
-//      live invoice has billed yet (receipts-core.ts, billablePostings). Drafts are listed
-//      separately as a warning, never billed: a draft is not yet a cost.
-//   3. `createPartnershipInvoice` freezes those postings and the total into a DRAFT invoice
-//      (partnership_invoice_lines), so the same expense cannot land on two invoices.
+//   2. `previewPartnershipInvoice` lists every POSTED debit to that account dated on or before the
+//      quarter's end that no live invoice has billed yet (receipts-core.ts, billablePostings). That
+//      includes earlier ones nobody billed (paid the week before the quarter opened, or missed
+//      last quarter), flagged `beforePeriod`, so nothing falls between two invoices. Drafts are
+//      listed separately as a warning, never billed: a draft is not yet a cost.
+//   3. `createPartnershipInvoice` freezes those postings (less any the person left off) and the
+//      total into a DRAFT invoice (partnership_invoice_lines), so the same expense cannot land on
+//      two invoices. A line left off stays open for the next one.
 //   4. `issuePartnershipInvoice` books the FUND's side only, as an intercompany expense
 //      reimbursement whose receivable is already on the manco's books:
 //        the fund   Dr Partnership expenses   Cr Due to <manco>
 //      When the fund pays, the charge's settlement (the manco's Intercompany tab) posts the cash on
 //      both sides and clears the receivable: manco Dr Cash / Cr Due from <fund>.
-//   5. `voidPartnershipInvoice` releases the lines for the next invoice. An issued invoice's fund
-//      entry has to be voided first (a void here never silently unposts the other side's books).
+//   ADJUSTMENTS (partnership_invoice_adjustments) are lines typed onto a draft that change what the
+//   fund is asked to pay without billing an expense: a credit for an earlier invoice that asked for
+//   more than the books said (and was paid), or a charge for one that asked for too little. They
+//   are never booked. The books already hold the expenses at what they cost, and the difference in
+//   cash sits in the intercompany accounts; so issuing still books the expenses (`amount`), and
+//   settling the charge moves the amount due (`amount + adjustment_total`), which clears both.
+//   5. `deletePartnershipInvoice` removes a DRAFT and releases its lines; it was never sent.
+//      `voidPartnershipInvoice` is for an ISSUED one: it keeps the number and releases the lines,
+//      and the fund's entry has to be voided first (a void here never unposts the other side's books).
 //
-// The invoice row is the document; the ledger is the fact. The amount on the row never moves after
-// creation, the same way a capital call notice keeps the number the partner was told.
+// The invoice row is the document; the ledger is the fact. Once issued, the amount on the row never
+// moves, the same way a capital call notice keeps the number the partner was told. A draft, never
+// sent, can still gain and lose lines (editPartnershipInvoice), and its amount follows.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { roundCents } from './ledger'
-import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry } from './intercompany'
 import { liveEntryByRef } from './persist'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
-import { INTERCOMPANY_RECEIVABLE_CODE, intercompanyCode } from './chart'
-import { billablePostings, invoiceNumber, quarterBounds, type Quarter } from './receipts-core'
+import { INTERCOMPANY_RECEIVABLE_SUBTYPE } from './chart'
+import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry, intercompanyChart, pickIntercompanyAccounts, type IntercompanyChartRow } from './intercompany'
+import { amountDue, billablePostings, invoiceNumber, isoDateOrNull, parseAdjustments, quarterBounds, type InvoiceAdjustmentInput, type Quarter } from './receipts-core'
+import { allocationRules, saveAllocationRule, startingAllocationBasis, type AllocationSource } from './allocation-basis'
+import { ensureVendor } from './vendors'
 
 export interface InvoiceLine {
   entryId: string
@@ -41,7 +54,16 @@ export interface InvoiceLine {
   amount: number
   receiptCount: number
   status: string
+  /** Dated before the invoice's quarter: an earlier expense nobody billed, carried onto this one. */
+  beforePeriod?: boolean
+  /** Why the fund bears it, printed on the invoice (allocation-basis.ts says where it comes from). */
+  allocationBasis: string | null
+  /** Where a preview line's basis came from; null when none was found. Frozen lines omit it. */
+  allocationSource?: AllocationSource | null
 }
+
+/** A credit (negative) or charge (positive) typed onto an invoice; not an expense, never booked. */
+export interface InvoiceAdjustment { id: string; description: string; amount: number }
 
 /** A line of an existing invoice, with what its posting says NOW (null when the posting is gone). */
 export interface InvoiceDetailLine extends InvoiceLine {
@@ -50,6 +72,8 @@ export interface InvoiceDetailLine extends InvoiceLine {
 
 export interface InvoicePreview {
   quarter: Quarter
+  /** The dates the expenses were read from: `from` null means every earlier unbilled one. */
+  range: { from: string | null; through: string }
   from: { vehicleId: string; name: string }
   to: { vehicleId: string; name: string }
   lines: InvoiceLine[]
@@ -58,6 +82,8 @@ export interface InvoicePreview {
   drafts: InvoiceLine[]
   /** False when the biller's chart has no "Due from <fund>" account yet, so nothing can be billed. */
   hasReceivableAccount: boolean
+  /** The account the quarter is read from: the one linked to the fund, or `1900-<fund>`. */
+  receivableAccount: { id: string; code: string; name: string } | null
   /** An invoice already covering this quarter, if one exists. */
   existing: { id: string; invoiceNumber: string; status: string; amount: number } | null
 }
@@ -68,12 +94,23 @@ async function vehiclePair(admin: SupabaseClient, fundId: string, fromId: string
   return { from: { vehicleId: fromId, name: fromName }, to: { vehicleId: toId, name: toName } }
 }
 
-/** The biller's "Due from <fund>" account, if its chart has one. */
-export async function receivableAccountId(admin: SupabaseClient, fundId: string, fromVehicleId: string, toVehicleId: string): Promise<string | null> {
-  const { data } = await admin.from('chart_of_accounts' as any).select('id')
-    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
-    .eq('code', intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, toVehicleId)).maybeSingle()
-  return (data as any)?.id ?? null
+/** The biller's "Due from <fund>" account, if its chart has one (linked, or by the code convention). */
+export async function receivableAccount(
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, toVehicleId: string,
+): Promise<{ id: string; code: string; name: string } | null> {
+  const hit = pickIntercompanyAccounts(await intercompanyChart(admin, fundId, fromVehicleId), toVehicleId).receivable
+  return hit ? { id: hit.id, code: hit.code, name: hit.name } : null
+}
+
+/**
+ * The biller's accounts that could be a fund's "Due from": its receivables, minus the bare 1900
+ * parent. Each says which entity it is linked to, if any, so a picker can offer the free ones.
+ */
+export function receivableCandidates(chart: IntercompanyChartRow[]) {
+  return chart
+    .filter(a => a.type === 'asset' && a.code !== '1900' && (a.counterparty_vehicle_id || a.subtype === INTERCOMPANY_RECEIVABLE_SUBTYPE || a.subtype === 'receivable'))
+    .map(a => ({ id: a.id, code: a.code, name: a.name, counterpartyVehicleId: a.counterparty_vehicle_id }))
+    .sort((a, b) => a.code.localeCompare(b.code))
 }
 
 interface EntryRow {
@@ -85,7 +122,7 @@ interface EntryRow {
 /** Entries on the biller's books with a posting to any of these accounts (only those postings). */
 async function entriesTouching(
   admin: SupabaseClient, fundId: string, fromVehicleId: string, accountIds: string[],
-  opts: { window?: { start: string; end: string } | null; statuses: string[] },
+  opts: { window?: { start: string | null; end: string } | null; statuses: string[] },
 ): Promise<EntryRow[]> {
   if (accountIds.length === 0) return []
   let q = admin.from('journal_entries' as any)
@@ -93,7 +130,8 @@ async function entriesTouching(
     .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
     .in('status', opts.statuses)
     .in('journal_postings.account_id', accountIds)
-  if (opts.window) q = q.gte('entry_date', opts.window.start).lte('entry_date', opts.window.end)
+  if (opts.window?.start) q = q.gte('entry_date', opts.window.start)
+  if (opts.window) q = q.lte('entry_date', opts.window.end)
   const { data, error } = await q.order('entry_date', { ascending: true }).limit(5000)
   if (error) throw new Error(`The Due-from entries could not be read: ${error.message}`)
   return ((data as any[]) ?? []).map(e => ({ ...e, journal_postings: ((e.journal_postings as any[]) ?? []).map(p => ({ ...p, amount: Number(p.amount) })) }))
@@ -116,26 +154,34 @@ async function lineDetails(admin: SupabaseClient, fundId: string, entries: Entry
   const vendorIds = Array.from(new Set(entries.map(e => e.vendor_id).filter(Boolean))) as string[]
   const [{ data: vendors }, { data: receipts }] = await Promise.all([
     vendorIds.length ? admin.from('vendors' as any).select('id, name').eq('fund_id', fundId).in('id', vendorIds) : Promise.resolve({ data: [] }),
-    ids.length ? admin.from('receipts' as any).select('journal_entry_id').eq('fund_id', fundId).neq('status', 'dismissed').in('journal_entry_id', ids) : Promise.resolve({ data: [] }),
+    ids.length ? admin.from('receipts' as any).select('journal_entry_id, vendor_name, allocation_basis').eq('fund_id', fundId).neq('status', 'dismissed').in('journal_entry_id', ids) : Promise.resolve({ data: [] }),
   ])
   const vendorName = new Map(((vendors as any[]) ?? []).map(v => [v.id as string, v.name as string]))
   const receiptCount = new Map<string, number>()
-  for (const r of ((receipts as any[]) ?? [])) receiptCount.set(r.journal_entry_id, (receiptCount.get(r.journal_entry_id) ?? 0) + 1)
+  // The first receipt that names a vendor, or carries a basis, speaks for its entry.
+  const receiptVendor = new Map<string, string>()
+  const receiptBasis = new Map<string, string>()
+  for (const r of ((receipts as any[]) ?? [])) {
+    receiptCount.set(r.journal_entry_id, (receiptCount.get(r.journal_entry_id) ?? 0) + 1)
+    if (r.vendor_name && !receiptVendor.has(r.journal_entry_id)) receiptVendor.set(r.journal_entry_id, r.vendor_name)
+    if (r.allocation_basis?.trim() && !receiptBasis.has(r.journal_entry_id)) receiptBasis.set(r.journal_entry_id, r.allocation_basis.trim())
+  }
   return (e: EntryRow, postingId: string, amount: number): InvoiceLine => ({
     entryId: e.id, postingId,
     entryDate: e.entry_date,
     memo: e.memo ?? null,
     reference: e.reference ?? null,
-    vendorName: e.vendor_id ? vendorName.get(e.vendor_id) ?? null : null,
+    vendorName: (e.vendor_id ? vendorName.get(e.vendor_id) : null) ?? receiptVendor.get(e.id) ?? null,
     amount,
     receiptCount: receiptCount.get(e.id) ?? 0,
     status: e.status,
+    allocationBasis: receiptBasis.get(e.id) ?? null,
   })
 }
 
 /** The unbilled Due-from debits in the window, posted and draft. */
 async function openLines(
-  admin: SupabaseClient, fundId: string, fromVehicleId: string, receivableId: string, window: { start: string; end: string } | null,
+  admin: SupabaseClient, fundId: string, fromVehicleId: string, receivableId: string, window: { start: string | null; end: string } | null,
 ): Promise<InvoiceLine[]> {
   const entries = await entriesTouching(admin, fundId, fromVehicleId, [receivableId], { window, statuses: ['draft', 'posted'] })
   const billed = await billedPostingIds(admin, fundId, entries.flatMap(e => e.journal_postings.map(p => p.id)))
@@ -156,22 +202,46 @@ async function existingInvoice(admin: SupabaseClient, fundId: string, fromId: st
   return data ? { id: (data as any).id, invoiceNumber: (data as any).invoice_number, status: (data as any).status, amount: Number((data as any).amount) } : null
 }
 
-/** What an invoice for this quarter would bill, without writing anything. */
+/** The dates an invoice reads expenses from: `from` (null for no start) through `through`. */
+export function expenseRange(q: Quarter, from?: string | null, through?: string | null): { from: string | null; through: string } | { error: string } {
+  const f = from ? isoDateOrNull(from) : null
+  const t = through ? isoDateOrNull(through) : q.end
+  if (from && !f) return { error: 'from must be a date (YYYY-MM-DD).' }
+  if (!t) return { error: 'through must be a date (YYYY-MM-DD).' }
+  if (f && f > t) return { error: 'The start date is after the end date.' }
+  return { from: f, through: t }
+}
+
+/**
+ * What an invoice for this quarter would bill, without writing anything: every unbilled debit dated
+ * in the range, which by default is everything up to the quarter's end. `from` / `through` narrow
+ * or move it (the person chooses which expenses this invoice picks up; the quarter still names and
+ * numbers the invoice). Lines from before the quarter are flagged `beforePeriod`.
+ */
 export async function previewPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
-  args: { fromVehicleId: string; toVehicleId: string; year: number; quarter: number },
+  args: { fromVehicleId: string; toVehicleId: string; year: number; quarter: number; from?: string | null; through?: string | null },
 ): Promise<InvoicePreview | { error: string }> {
   let q: Quarter
   try { q = quarterBounds(args.year, args.quarter) } catch (e) { return { error: (e as Error).message } }
+  const range = expenseRange(q, args.from, args.through)
+  if ('error' in range) return range
   const pair = await vehiclePair(admin, fundId, args.fromVehicleId, args.toVehicleId)
   if (!pair) return { error: 'Both entities must be in this fund.' }
   if (args.fromVehicleId === args.toVehicleId) return { error: 'An entity cannot bill itself.' }
-  const receivableId = await receivableAccountId(admin, fundId, args.fromVehicleId, args.toVehicleId)
-  const all = receivableId ? await openLines(admin, fundId, args.fromVehicleId, receivableId, q) : []
+  const receivable = await receivableAccount(admin, fundId, args.fromVehicleId, args.toVehicleId)
+  const [open, rules] = await Promise.all([
+    receivable ? openLines(admin, fundId, args.fromVehicleId, receivable.id, { start: range.from, end: range.through }) : Promise.resolve([]),
+    allocationRules(admin, fundId, args.fromVehicleId, args.toVehicleId),
+  ])
+  const all = open.map(l => ({
+    ...l, beforePeriod: l.entryDate < q.start,
+    ...startingAllocationBasis(l.allocationBasis, l.vendorName, rules),
+  }))
   const lines = all.filter(l => l.status === 'posted')
   return {
-    quarter: q, ...pair, lines, hasReceivableAccount: !!receivableId,
+    quarter: q, range, ...pair, lines, hasReceivableAccount: !!receivable, receivableAccount: receivable,
     total: roundCents(lines.reduce((s, l) => s + l.amount, 0)),
     drafts: all.filter(l => l.status === 'draft'),
     existing: await existingInvoice(admin, fundId, args.fromVehicleId, args.toVehicleId, q),
@@ -185,15 +255,13 @@ export async function previewPartnershipInvoice(
 export async function unbilledByCounterparty(
   admin: SupabaseClient, fundId: string, fromVehicleId: string,
 ): Promise<{ vehicleId: string; name: string; entries: number; amount: number }[]> {
-  const [{ data: vehicles }, { data: accounts }] = await Promise.all([
+  const [{ data: vehicles }, chart] = await Promise.all([
     admin.from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId),
-    admin.from('chart_of_accounts' as any).select('id, code').eq('fund_id', fundId).eq('vehicle_id', fromVehicleId)
-      .like('code', `${INTERCOMPANY_RECEIVABLE_CODE}-%`),
+    intercompanyChart(admin, fundId, fromVehicleId),
   ])
-  const accountByCode = new Map(((accounts as any[]) ?? []).map(a => [a.code as string, a.id as string]))
   const pairs = ((vehicles as any[]) ?? [])
     .filter(v => v.id !== fromVehicleId)
-    .map(v => ({ vehicleId: v.id as string, name: v.name as string, accountId: accountByCode.get(intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, v.id)) }))
+    .map(v => ({ vehicleId: v.id as string, name: v.name as string, accountId: pickIntercompanyAccounts(chart, v.id).receivable?.id }))
     .filter((p): p is { vehicleId: string; name: string; accountId: string } => !!p.accountId)
   if (pairs.length === 0) return []
 
@@ -217,16 +285,41 @@ export async function createPartnershipInvoice(
   admin: SupabaseClient,
   fundId: string,
   userId: string | null,
-  args: { fromVehicleId: string; toVehicleId: string; year: number; quarter: number; invoiceDate?: string | null; memo?: string | null },
-): Promise<{ id: string; invoiceNumber: string; amount: number; lines: number } | { error: string; status?: number }> {
-  const preview = await previewPartnershipInvoice(admin, fundId, args)
-  if ('error' in preview) return { error: preview.error, status: 400 }
+  args: {
+    fromVehicleId: string; toVehicleId: string; year: number; quarter: number; invoiceDate?: string | null; memo?: string | null
+    /** The dates to read expenses from, as in the preview. */
+    from?: string | null; through?: string | null
+    /** Postings to leave off this invoice; they stay open for the next one. */
+    excludePostingIds?: string[] | null
+    /** An allocation basis typed for a line, by posting id: it replaces the one the line started with. */
+    allocations?: Record<string, string> | null
+    /** Lines whose basis is saved for that vendor's future expenses billed to this fund. */
+    rememberPostingIds?: string[] | null
+    /** Credits (negative) and charges (positive) to print below the expenses; they change the amount due. */
+    adjustments?: InvoiceAdjustmentInput[] | null
+  },
+): Promise<{ id: string; invoiceNumber: string; amount: number; adjustmentTotal: number; amountDue: number; lines: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  const parsed = parseAdjustments(args.adjustments ?? null)
+  if ('error' in parsed) return { error: parsed.error, status: 400 }
+  const found = await previewPartnershipInvoice(admin, fundId, args)
+  if ('error' in found) return { error: found.error, status: 400 }
+  const excluded = new Set(args.excludePostingIds ?? [])
+  const typed = args.allocations ?? {}
+  const kept = found.lines
+    .filter(l => !excluded.has(l.postingId))
+    .map(l => (l.postingId in typed ? { ...l, allocationBasis: String(typed[l.postingId] ?? '').trim() || null } : l))
+  const preview = { ...found, lines: kept, total: roundCents(kept.reduce((sum, l) => sum + l.amount, 0)) }
   if (preview.existing) {
-    return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). Void it to bill the quarter again.`, status: 409 }
+    return { error: `${preview.quarter.label} is already billed to ${preview.to.name} on invoice ${preview.existing.invoiceNumber} (${preview.existing.status}). ${preview.existing.status === 'draft' ? 'Delete that draft' : 'Void it'} to bill the quarter again.`, status: 409 }
   }
   if (preview.lines.length === 0) {
-    return { error: `Nothing to bill: no posted debits to Due from ${preview.to.name} in ${preview.quarter.label} that are not already on an invoice.`, status: 400 }
+    return { error: found.lines.length > 0
+      ? 'Nothing to bill: every expense was left off this invoice.'
+      : `Nothing to bill: no posted debits to Due from ${preview.to.name} ${preview.range.from ? `from ${preview.range.from} ` : ''}through ${preview.range.through} that are not already on an invoice.`, status: 400 }
   }
+  const adjustmentTotal = roundCents(parsed.adjustments.reduce((sum, a) => sum + a.amount, 0))
+  const due = amountDue(preview.total, adjustmentTotal)
+  if (due < 0) return { error: overCredited(preview.total, adjustmentTotal), status: 400 }
 
   const { data: settings } = await admin.from('fund_settings' as any).select('currency').eq('fund_id', fundId).maybeSingle()
   const invoiceDate = args.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(args.invoiceDate) ? args.invoiceDate : new Date().toISOString().slice(0, 10)
@@ -244,6 +337,7 @@ export async function createPartnershipInvoice(
       invoice_number: invoiceNumber(preview.quarter, args.toVehicleId, attempt),
       invoice_date: invoiceDate,
       amount: preview.total,
+      adjustment_total: adjustmentTotal,
       currency: (settings as any)?.currency || 'USD',
       memo: args.memo?.trim() || null,
       status: 'draft',
@@ -260,6 +354,7 @@ export async function createPartnershipInvoice(
   // exclusive: a posting another invoice claimed a moment ago fails the whole insert.
   const { error: claimErr } = await admin.from('partnership_invoice_lines' as any).insert(preview.lines.map(l => ({
     fund_id: fundId, invoice_id: row.id, journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount,
+    allocation_basis: l.allocationBasis,
   })))
   if (claimErr) {
     await admin.from('partnership_invoices' as any).delete().eq('id', row.id).eq('fund_id', fundId)
@@ -267,7 +362,25 @@ export async function createPartnershipInvoice(
       ? 'Some of these expenses were billed on another invoice at the same moment. Refresh and try again.'
       : `The invoice lines could not be saved: ${claimErr.message}`, status: 409 }
   }
-  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, lines: preview.lines.length }
+  if (parsed.adjustments.length > 0) {
+    const { error: adjErr } = await admin.from('partnership_invoice_adjustments' as any).insert(parsed.adjustments.map(a => ({
+      fund_id: fundId, invoice_id: row.id, description: a.description, amount: a.amount, created_by: userId,
+    })))
+    if (adjErr) {
+      await admin.from('partnership_invoices' as any).delete().eq('id', row.id).eq('fund_id', fundId)
+      return { error: `The adjustments could not be saved: ${adjErr.message}`, status: 400 }
+    }
+  }
+
+  // Saved last: a rule is a convenience for next quarter, and failing to save one must not undo
+  // an invoice that was made.
+  const remember = new Set(args.rememberPostingIds ?? [])
+  const notSaved: string[] = []
+  for (const l of preview.lines.filter(x => remember.has(x.postingId) && x.allocationBasis)) {
+    const saved = await saveAllocationRule(admin, fundId, userId, { fromVehicleId: args.fromVehicleId, toVehicleId: args.toVehicleId, vendorName: l.vendorName, allocationBasis: l.allocationBasis })
+    if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
+  }
+  return { id: row.id, invoiceNumber: row.invoice_number, amount: preview.total, adjustmentTotal, amountDue: due, lines: preview.lines.length, ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
 }
 
 export interface InvoiceDetail {
@@ -277,7 +390,12 @@ export interface InvoiceDetail {
   periodStart: string
   periodEnd: string
   label: string
+  /** The expenses billed: what issuing books on the fund's side. */
   amount: number
+  adjustments: InvoiceAdjustment[]
+  adjustmentTotal: number
+  /** What the fund is asked to pay, and what settling the charge moves: amount + adjustmentTotal. */
+  amountDue: number
   currency: string
   memo: string | null
   status: 'draft' | 'issued' | 'void'
@@ -288,10 +406,213 @@ export interface InvoiceDetail {
   lines: InvoiceDetailLine[]
 }
 
+/**
+ * The expenses a DRAFT invoice could still pick up: every posted, unbilled debit to the biller's
+ * "Due from <fund>" account, whatever its date, each with the basis it would start with (the
+ * receipt's, else the one saved for its vendor). An issued or void invoice can add nothing.
+ */
+export async function addableInvoiceLines(admin: SupabaseClient, fundId: string, inv: Pick<InvoiceDetail, 'status' | 'from' | 'to'>): Promise<InvoiceLine[]> {
+  if (inv.status !== 'draft') return []
+  const receivable = await receivableAccount(admin, fundId, inv.from.vehicleId, inv.to.vehicleId)
+  if (!receivable) return []
+  const [open, rules] = await Promise.all([
+    openLines(admin, fundId, inv.from.vehicleId, receivable.id, null),
+    allocationRules(admin, fundId, inv.from.vehicleId, inv.to.vehicleId),
+  ])
+  return open
+    .filter(l => l.status === 'posted')
+    .map(l => ({ ...l, ...startingAllocationBasis(l.allocationBasis, l.vendorName, rules) }))
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate))
+}
+
+/**
+ * Edit an invoice already created.
+ *
+ * On any invoice that is not void, `allocations` changes the allocation basis, a note printed beside
+ * each line that is part of no amount or booking. The invoice keeps its number and entries, and the
+ * PDF reads the new text. Lines not named keep theirs; an empty string clears one. `rememberPostingIds`
+ * also saves a line's basis for that vendor's future expenses billed to the same fund.
+ *
+ * `descriptions` changes a line's vendor and description, which are its journal entry's: the
+ * change is made on the entry (memo, and vendor_id via the vendors list), so the books and the
+ * invoice say the same thing. Neither moves an amount, but a closed period refuses it like any
+ * other change to an entry dated in it.
+ *
+ * On a DRAFT, the expenses can change too. `addPostingIds` puts unbilled expenses on it (from
+ * addableInvoiceLines), and `removePostingIds` takes lines off and returns them to unbilled. The
+ * draft's amount follows. An issued invoice's amount is booked on the fund's books, so its expenses
+ * cannot change; void it and bill again.
+ *
+ * Also on a DRAFT only, `addAdjustments` types credits (negative) and charges (positive) below the
+ * expenses and `removeAdjustmentIds` takes them off. They change the amount due, never the amount
+ * booked, and the amount due cannot go below zero.
+ */
+export async function editPartnershipInvoice(
+  admin: SupabaseClient,
+  fundId: string,
+  userId: string | null,
+  id: string,
+  args: {
+    allocations?: Record<string, string> | null
+    rememberPostingIds?: string[] | null
+    addPostingIds?: string[] | null
+    removePostingIds?: string[] | null
+    descriptions?: Record<string, { vendor?: string | null; description?: string | null }> | null
+    addAdjustments?: InvoiceAdjustmentInput[] | null
+    removeAdjustmentIds?: string[] | null
+  },
+): Promise<{ ok: true; updated: number; added: number; removed: number; described: number; adjusted: number; amount: number; adjustmentTotal: number; amountDue: number; basesNotSaved?: string[] } | { error: string; status?: number }> {
+  const inv = await getPartnershipInvoice(admin, fundId, id)
+  if (!inv) return { error: 'Invoice not found', status: 404 }
+  if (inv.status === 'void') return { error: 'This invoice is void. Bill the expenses on a new invoice instead.', status: 409 }
+  const onInvoice = new Map<string, InvoiceLine>(inv.lines.map(l => [l.postingId, l]))
+  const typed = args.allocations ?? {}
+
+  const remove = Array.from(new Set(args.removePostingIds ?? [])).filter(p => onInvoice.has(p))
+  const addIds = Array.from(new Set(args.addPostingIds ?? [])).filter(p => !onInvoice.has(p))
+  const parsedAdj = parseAdjustments(args.addAdjustments ?? null)
+  if ('error' in parsedAdj) return { error: parsedAdj.error, status: 400 }
+  const dropAdj = Array.from(new Set(args.removeAdjustmentIds ?? [])).filter(a => inv.adjustments.some(x => x.id === a))
+  const adjusting = parsedAdj.adjustments.length > 0 || dropAdj.length > 0
+  if (adjusting && inv.status !== 'draft') return { error: 'This invoice is issued, so the fund has been told its amount due. Void it and bill again to change its adjustments, or put the adjustment on the next invoice.', status: 409 }
+  // What this edit expects the adjustments to total; the database's sum replaces it once applied.
+  const adjustmentTotal = roundCents(
+    inv.adjustments.filter(a => !dropAdj.includes(a.id)).reduce((sum, a) => sum + a.amount, 0)
+    + parsedAdj.adjustments.reduce((sum, a) => sum + a.amount, 0),
+  )
+  let amount = inv.amount
+  let addLines: InvoiceLine[] = []
+  let finalAdjustmentTotal = adjustmentTotal
+  if (remove.length > 0 || addIds.length > 0) {
+    if (inv.status !== 'draft') return { error: 'This invoice is issued, so its amount is booked on the fund’s books. Void it and bill again to change its expenses.', status: 409 }
+    const addable = new Map((await addableInvoiceLines(admin, fundId, inv)).map(l => [l.postingId, l]))
+    const missing = addIds.filter(p => !addable.has(p))
+    if (missing.length > 0) return { error: `${missing.length === 1 ? 'One expense is' : `${missing.length} expenses are`} no longer open to bill (already invoiced, unposted or voided). Refresh and try again.`, status: 409 }
+    if (onInvoice.size - remove.length + addIds.length === 0) return { error: 'That removes every expense. Delete the draft instead.', status: 400 }
+    const next = roundCents(Array.from(onInvoice.values()).filter(l => !remove.includes(l.postingId)).reduce((sum, l) => sum + l.amount, 0)
+      + addIds.reduce((sum, p) => sum + addable.get(p)!.amount, 0))
+    if (amountDue(next, adjustmentTotal) < 0) return { error: overCredited(next, adjustmentTotal), status: 400 }
+
+    addLines = addIds.map(p => {
+      const l = addable.get(p)!
+      return p in typed ? { ...l, allocationBasis: String(typed[p] ?? '').trim() || null } : l
+    })
+  } else if (amountDue(amount, adjustmentTotal) < 0) {
+    return { error: overCredited(amount, adjustmentTotal), status: 400 }
+  }
+  // Lines, adjustments and totals change together, under a lock on the invoice, and only while it is
+  // a draft with no charge: a draft can already carry one (an issue that failed before marking it, or
+  // one still running), and a retried issue keeps the charge as booked, so the amount cannot change
+  // under it. Void unwinds the charge first. See 20261104140300_partnership_invoice_edit.
+  if (adjusting || remove.length > 0 || addIds.length > 0) {
+    const { data: edited, error: editErr } = await admin.rpc('apply_partnership_invoice_edit' as any, {
+      p_fund_id: fundId,
+      p_invoice_id: id,
+      p_add_lines: addLines.map(l => ({ journal_entry_id: l.entryId, journal_posting_id: l.postingId, amount: l.amount, allocation_basis: l.allocationBasis })),
+      p_remove_posting_ids: remove,
+      p_add_adjustments: parsedAdj.adjustments.map(a => ({ description: a.description, amount: a.amount })),
+      p_remove_adjustment_ids: dropAdj,
+      p_user_id: userId,
+    })
+    if (editErr) {
+      if ((editErr as any).code === '23505') return { error: 'Some of these expenses were just billed on another invoice. Refresh and try again.', status: 409 }
+      if (/no expenses left/.test(editErr.message)) return { error: 'That removes every expense. Delete the draft instead.', status: 400 }
+      if (/over-credited/.test(editErr.message)) return { error: 'Those adjustments would take the amount due below zero.', status: 400 }
+      return { error: `The invoice could not be changed: ${editErr.message}`, status: 400 }
+    }
+    const result = edited as { refused?: 'gone' | 'status' | 'charge'; status?: string; amount?: number; adjustment_total?: number }
+    if (result.refused === 'gone') return { error: 'Invoice not found', status: 404 }
+    if (result.refused === 'status') return { error: `This invoice is now ${result.status}, so its expenses and adjustments can no longer be changed. Void it and bill again.`, status: 409 }
+    if (result.refused === 'charge') return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running), so its amount is booked. Void it to unwind the charge, then bill again.', status: 409 }
+    for (const l of addLines) onInvoice.set(l.postingId, l)
+    for (const p of remove) onInvoice.delete(p)
+    amount = Number(result.amount)
+    finalAdjustmentTotal = Number(result.adjustment_total)
+  }
+
+  const added = new Set(addIds)
+  const changes = Object.entries(typed)
+    .filter(([postingId]) => onInvoice.has(postingId) && !added.has(postingId))
+    .map(([postingId, basis]) => ({ postingId, basis: String(basis ?? '').trim() || null }))
+    .filter(c => c.basis !== onInvoice.get(c.postingId)!.allocationBasis)
+  for (const c of changes) {
+    const { error } = await admin.from('partnership_invoice_lines' as any).update({ allocation_basis: c.basis })
+      .eq('fund_id', fundId).eq('invoice_id', id).eq('journal_posting_id', c.postingId)
+    if (error) return { error: `The allocation basis could not be saved: ${error.message}`, status: 400 }
+    onInvoice.set(c.postingId, { ...onInvoice.get(c.postingId)!, allocationBasis: c.basis })
+  }
+  // Vendor and description live on the entry, so a rule saved below keys on the vendor as corrected.
+  let described = 0
+  for (const [postingId, d] of Object.entries(args.descriptions ?? {})) {
+    const l = onInvoice.get(postingId)
+    if (!l || !d || typeof d !== 'object') continue
+    const patch: Record<string, unknown> = {}
+    if (typeof d.description === 'string' && (d.description.trim() || null) !== l.memo) patch.memo = d.description.trim() || null
+    let vendorName = l.vendorName
+    if (typeof d.vendor === 'string' && (d.vendor.trim() || null) !== l.vendorName) {
+      const v = d.vendor.trim() ? await ensureVendor(admin, fundId, d.vendor) : null
+      if (d.vendor.trim() && !v) return { error: `The vendor “${d.vendor.trim()}” could not be saved.`, status: 400 }
+      patch.vendor_id = v?.id ?? null
+      vendorName = v?.name ?? null
+    }
+    if (Object.keys(patch).length === 0) continue
+    const { error } = await admin.from('journal_entries' as any).update(patch)
+      .eq('id', l.entryId).eq('fund_id', fundId).eq('book', ACTUAL_BOOK).eq('vehicle_id', inv.from.vehicleId)
+    if (error) return { error: `The expense dated ${l.entryDate} could not be updated: ${error.message}`, status: 400 }
+    onInvoice.set(postingId, { ...l, memo: 'memo' in patch ? (patch.memo as string | null) : l.memo, vendorName })
+    described++
+  }
+
+  const notSaved: string[] = []
+  for (const postingId of args.rememberPostingIds ?? []) {
+    const l = onInvoice.get(postingId)
+    if (!l?.allocationBasis) continue
+    const saved = await saveAllocationRule(admin, fundId, userId, { fromVehicleId: inv.from.vehicleId, toVehicleId: inv.to.vehicleId, vendorName: l.vendorName, allocationBasis: l.allocationBasis })
+    if ('error' in saved) notSaved.push(l.vendorName ?? l.memo ?? l.entryDate)
+  }
+  if (changes.length > 0) await admin.from('partnership_invoices' as any).update({ updated_at: new Date().toISOString() }).eq('id', id).eq('fund_id', fundId)
+  return { ok: true, updated: changes.length, added: addIds.length, removed: remove.length, described, adjusted: parsedAdj.adjustments.length + dropAdj.length, amount, adjustmentTotal: finalAdjustmentTotal, amountDue: amountDue(amount, finalAdjustmentTotal), ...(notSaved.length ? { basesNotSaved: notSaved } : {}) }
+}
+
+/**
+ * Delete a draft invoice and release its expenses for the next one. A draft was never sent and
+ * booked nothing, so it leaves no trace; an issued invoice is voided instead, which keeps its number.
+ */
+export async function deletePartnershipInvoice(
+  admin: SupabaseClient,
+  fundId: string,
+  id: string,
+): Promise<{ ok: true } | { error: string; status?: number }> {
+  const { data } = await admin.from('partnership_invoices' as any).select('id, status').eq('fund_id', fundId).eq('id', id).maybeSingle()
+  if (!data) return { error: 'Invoice not found', status: 404 }
+  if ((data as any).status !== 'draft') return { error: `This invoice is ${(data as any).status}. Only a draft can be deleted; void an issued one.`, status: 409 }
+  // A draft can carry a charge: an issue that failed partway, or one still running (intercompany_once).
+  // Deleting the invoice would orphan it (partnership_invoice_id is on delete set null), which is what
+  // voiding exists to avoid: void unwinds the charge with the invoice (releaseDraftCharge).
+  const { data: charge, error: chargeErr } = await admin.from('intercompany_transactions' as any)
+    .select('id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
+  if (chargeErr) return { error: `Could not check this invoice's charge: ${chargeErr.message}`, status: 500 }
+  if (charge) return { error: 'This draft already has an intercompany charge (an issue failed partway or is still running). Void it instead: that unwinds the charge with it.', status: 409 }
+  // Its lines go with it (on delete cascade), which frees their postings.
+  const { error } = await admin.from('partnership_invoices' as any).delete().eq('id', id).eq('fund_id', fundId).eq('status', 'draft')
+  return error ? { error: `The invoice could not be deleted: ${error.message}`, status: 400 } : { ok: true }
+}
+
+/** The refusal when credits would leave the fund owed money by the invoice that bills it. */
+function overCredited(expenses: number, adjustmentTotal: number): string {
+  return `The adjustments (${roundCents(adjustmentTotal).toFixed(2)}) are more than the expenses billed (${roundCents(expenses).toFixed(2)}), so the amount due would be negative. Credit no more than this invoice bills and carry the rest to the next one.`
+}
+
+async function invoiceAdjustments(admin: SupabaseClient, fundId: string, invoiceId: string): Promise<InvoiceAdjustment[]> {
+  const { data } = await admin.from('partnership_invoice_adjustments' as any)
+    .select('id, description, amount').eq('fund_id', fundId).eq('invoice_id', invoiceId).order('created_at', { ascending: true })
+  return ((data as any[]) ?? []).map(a => ({ id: a.id as string, description: a.description as string, amount: roundCents(Number(a.amount)) }))
+}
+
 /** An invoice's frozen lines, beside what the ledger says about each now. */
 async function invoiceLines(admin: SupabaseClient, fundId: string, invoiceId: string): Promise<InvoiceDetailLine[]> {
   const { data, error } = await admin.from('partnership_invoice_lines' as any)
-    .select('journal_entry_id, journal_posting_id, amount').eq('fund_id', fundId).eq('invoice_id', invoiceId)
+    .select('journal_entry_id, journal_posting_id, amount, allocation_basis').eq('fund_id', fundId).eq('invoice_id', invoiceId)
   if (error) throw new Error(`The invoice lines could not be read: ${error.message}`)
   const rows = ((data as any[]) ?? [])
   if (rows.length === 0) return []
@@ -310,7 +631,12 @@ async function invoiceLines(admin: SupabaseClient, fundId: string, invoiceId: st
   return rows
     .map(r => {
       const e = entryById.get(r.journal_entry_id) ?? { id: r.journal_entry_id, entry_date: '', memo: null, reference: null, status: 'deleted', vendor_id: null, source_type: null, journal_postings: [] }
-      return { ...line(e, r.journal_posting_id, roundCents(Number(r.amount))), currentAmount: nowAmount.get(r.journal_posting_id) ?? null }
+      return {
+        ...line(e, r.journal_posting_id, roundCents(Number(r.amount))),
+        // The line's own, frozen with the invoice; never re-read from the receipt or the rules.
+        allocationBasis: r.allocation_basis ?? null,
+        currentAmount: nowAmount.get(r.journal_posting_id) ?? null,
+      }
     })
     .sort((a, b) => a.entryDate.localeCompare(b.entryDate))
 }
@@ -322,13 +648,15 @@ export async function getPartnershipInvoice(admin: SupabaseClient, fundId: strin
   const inv = data as any
   const pair = await vehiclePair(admin, fundId, inv.from_vehicle_id, inv.to_vehicle_id)
   if (!pair) return null
-  const lines = await invoiceLines(admin, fundId, inv.id)
+  const [lines, adjustments] = await Promise.all([invoiceLines(admin, fundId, inv.id), invoiceAdjustments(admin, fundId, inv.id)])
   const [y, m] = String(inv.period_start).split('-').map(Number)
+  const adjustmentTotal = roundCents(Number(inv.adjustment_total ?? 0))
   return {
     id: inv.id, invoiceNumber: inv.invoice_number, invoiceDate: inv.invoice_date,
     periodStart: inv.period_start, periodEnd: inv.period_end,
     label: `Q${Math.floor((m - 1) / 3) + 1} ${y}`,
-    amount: Number(inv.amount), currency: inv.currency, memo: inv.memo ?? null,
+    amount: Number(inv.amount), adjustments, adjustmentTotal, amountDue: amountDue(Number(inv.amount), adjustmentTotal),
+    currency: inv.currency, memo: inv.memo ?? null,
     status: inv.status, issuedAt: inv.issued_at ?? null,
     intercompanyTransactionId: inv.intercompany_transaction_id ?? null,
     ...pair, lines,
@@ -338,7 +666,7 @@ export async function getPartnershipInvoice(admin: SupabaseClient, fundId: strin
 /** Invoices one entity sent or received, newest period first. */
 export async function listPartnershipInvoices(admin: SupabaseClient, fundId: string, vehicleId: string) {
   const { data } = await admin.from('partnership_invoices' as any)
-    .select('id, invoice_number, invoice_date, period_start, period_end, amount, currency, status, from_vehicle_id, to_vehicle_id, issued_at')
+    .select('id, invoice_number, invoice_date, period_start, period_end, amount, adjustment_total, currency, status, from_vehicle_id, to_vehicle_id, issued_at')
     .eq('fund_id', fundId)
     .or(`from_vehicle_id.eq.${vehicleId},to_vehicle_id.eq.${vehicleId}`)
     .order('period_end', { ascending: false }).order('created_at', { ascending: false })
@@ -369,15 +697,15 @@ export async function issuePartnershipInvoice(
   if (inv.status !== 'draft') return { error: `This invoice is already ${inv.status}.`, status: 409 }
 
   const { data: prior, error: priorErr } = await admin.from('intercompany_transactions' as any)
-    .select('id, from_entry_id').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
+    .select('id, from_entry_id, amount').eq('fund_id', fundId).eq('partnership_invoice_id', id).neq('status', 'void').maybeSingle()
   if (priorErr) return { error: `Could not check whether this invoice is already booked: ${priorErr.message}`, status: 500 }
-  if (prior) return replayIssue(admin, fundId, id, inv.to.vehicleId, prior as { id: string; from_entry_id: string | null })
+  if (prior) return replayIssue(admin, fundId, id, inv.to.vehicleId, prior as { id: string; from_entry_id: string | null; amount: number })
 
   // The lines are re-read, not trusted from creation: an entry voided or changed since cannot be
   // billed as it was, and the fund must not be charged for what the books no longer say.
   const stale = inv.lines.filter(l => l.status !== 'posted' || l.currentAmount == null || Math.abs(l.currentAmount - l.amount) >= 0.005)
   if (stale.length > 0) {
-    return { error: `${stale.length} of this invoice's expenses ${stale.length === 1 ? 'has' : 'have'} been voided or changed since it was created. Void the invoice and create it again.`, status: 409 }
+    return { error: `${stale.length} of this invoice's expenses ${stale.length === 1 ? 'has' : 'have'} been voided or changed since it was created. Delete this draft and create it again.`, status: 409 }
   }
 
   const res = await postIntercompanyCharge(admin, {
@@ -385,14 +713,15 @@ export async function issuePartnershipInvoice(
     kind: 'expense_reimbursement',
     chargeDate: inv.invoiceDate,
     amount: inv.amount,
-    memo: `Partnership expenses ${inv.label}, invoice ${inv.invoiceNumber}`,
+    // The charge books the expenses; settling it moves the amount due, so say so where it is settled.
+    memo: `Partnership expenses ${inv.label}, invoice ${inv.invoiceNumber}${inv.adjustmentTotal !== 0 ? `; ${inv.amountDue.toFixed(2)} due after adjustments` : ''}`,
     payee: inv.from,
     payer: inv.to,
     payeeAlreadyBooked: true,
     partnershipInvoiceId: id,
   })
   if ('error' in res) return { error: res.error, status: res.duplicate ? 409 : 400 }
-  return markIssued(admin, fundId, id, res.id, true)
+  return markIssued(admin, fundId, id, res.id, inv.amount, true)
 }
 
 /**
@@ -415,7 +744,7 @@ async function replayIssue(
   fundId: string,
   id: string,
   payerVehicleId: string,
-  charge: { id: string; from_entry_id: string | null },
+  charge: { id: string; from_entry_id: string | null; amount: number },
 ): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
   if (!charge.from_entry_id) {
     return { error: 'This invoice is being issued by another request. Refresh in a moment; if this persists, void the invoice and create it again.', status: 409 }
@@ -426,7 +755,7 @@ async function replayIssue(
     .maybeSingle()
   if (error) return { error: `Could not check the fund's entry for this invoice: ${error.message}`, status: 500 }
   const status = (entry as any)?.status as string | undefined
-  if (status === 'posted') return markIssued(admin, fundId, id, charge.id)
+  if (status === 'posted') return markIssued(admin, fundId, id, charge.id, Number(charge.amount))
   if (status === 'draft') {
     return { error: `The fund's entry for this invoice (${charge.from_entry_id}) is a draft. Post or void it, then issue the invoice again.`, status: 409 }
   }
@@ -451,30 +780,36 @@ async function replayIssue(
 
 /**
  * Mark a draft invoice issued by the charge that booked it. Conditional on `draft`, so a row another
- * request already marked is not rewritten; that is still success if it names this same charge.
+ * request already marked is not rewritten; that is still success if it names this same charge. And
+ * conditional on the amount the charge booked: an expense edit that slipped in while the charge was
+ * being booked leaves the draft at another figure, and the invoice is not issued over it.
  */
 async function markIssued(
   admin: SupabaseClient,
   fundId: string,
   id: string,
   chargeId: string,
+  /** What the charge booked: the draft's amount must still be this. */
+  bookedAmount: number,
   /** This request has just booked the charge: if the invoice is gone, so is the booking. */
   fresh = false,
 ): Promise<{ ok: true; intercompanyTransactionId: string } | { error: string; status?: number }> {
   const now = new Date().toISOString()
   const { data: updated, error } = await admin.from('partnership_invoices' as any).update({
     status: 'issued', issued_at: now, intercompany_transaction_id: chargeId, updated_at: now,
-  }).eq('id', id).eq('fund_id', fundId).eq('status', 'draft').select('id')
+  }).eq('id', id).eq('fund_id', fundId).eq('status', 'draft').eq('amount', bookedAmount).select('id')
   const booked = `The fund's side is booked (charge ${chargeId})`
   if (error) return { error: `${booked}, but the invoice could not be marked issued: ${error.message}. Issue it again to finish.`, status: 500 }
   if (((updated as any[]) ?? []).length > 0) return { ok: true, intercompanyTransactionId: chargeId }
 
   const { data: row, error: readErr } = await admin.from('partnership_invoices' as any)
-    .select('status, intercompany_transaction_id').eq('id', id).eq('fund_id', fundId).maybeSingle()
+    .select('status, intercompany_transaction_id, amount').eq('id', id).eq('fund_id', fundId).maybeSingle()
   if (readErr) return { error: `${booked}, but the invoice could not be re-read: ${readErr.message}`, status: 500 }
   const r = row as any
   if (r?.status === 'issued' && r.intercompany_transaction_id === chargeId) return { ok: true, intercompanyTransactionId: chargeId }
-  const state = r?.status ?? 'gone'
+  const state = r?.status === 'draft'
+    ? `a draft for ${Number(r.amount).toFixed(2)}, not the ${bookedAmount.toFixed(2)} booked (its expenses changed)`
+    : r?.status ?? 'gone'
   if (!fresh) return { error: `${booked}, but the invoice changed while it was being issued (it is now ${state}).`, status: 409 }
 
   // The invoice was voided (its lines released) while this request booked it. A payable for an

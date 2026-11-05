@@ -27,12 +27,13 @@ import { roundCents } from './ledger'
 import { liveEntryByRef, persistEntry, type LiveEntryRef } from './persist'
 import { fetchAllRows } from './load'
 import { vehicleIdByName } from './vehicle-id'
+import { amountDue } from './receipts-core'
 import {
   INTERCOMPANY_RECEIVABLE_CODE, INTERCOMPANY_PAYABLE_CODE,
   INTERCOMPANY_RECEIVABLE_SUBTYPE, INTERCOMPANY_PAYABLE_SUBTYPE,
   intercompanyCode,
 } from './chart'
-import { ACTUAL_BOOK } from './books'
+import { ACTUAL_BOOK, LEDGER_BOOKS } from './books'
 import type { JournalEntry } from './types'
 
 export const INTERCOMPANY_KINDS = [
@@ -216,9 +217,56 @@ function finalizeCharge(
 
 // ── Chart plumbing ────────────────────────────────────────────────────────────────────────────
 
+/** The chart columns the intercompany account lookups read. */
+export interface IntercompanyChartRow {
+  id: string
+  code: string
+  name: string
+  type: string
+  subtype: string | null
+  counterparty_vehicle_id: string | null
+}
+
+const IC_CHART_COLUMNS = 'id, code, name, type, subtype, counterparty_vehicle_id'
+
+/**
+ * A vehicle's "Due from" and "Due to" accounts for one counterparty, out of its chart.
+ *
+ * The LINK wins: an account whose `counterparty_vehicle_id` names the counterparty is the one,
+ * whatever its code or name, because a chart imported from QuickBooks calls it "Due from Fund III"
+ * under a plain code and nothing in that text says which vehicle it means. Only when nothing is
+ * linked does the code convention (`1900-<cp>` / `2900-<cp>`, what this module creates) decide.
+ * The receivable is the asset side and the payable the liability side.
+ */
+export function pickIntercompanyAccounts<T extends Pick<IntercompanyChartRow, 'id' | 'code' | 'type' | 'counterparty_vehicle_id'>>(
+  accounts: T[],
+  counterpartyVehicleId: string,
+): { receivable: T | null; payable: T | null } {
+  const linked = (type: string) => accounts.find(a => a.counterparty_vehicle_id === counterpartyVehicleId && a.type === type)
+  // A code-convention account linked to someone else is that someone's, not this counterparty's.
+  const byCode = (code: string) => accounts.find(a => a.code === code && (!a.counterparty_vehicle_id || a.counterparty_vehicle_id === counterpartyVehicleId))
+  return {
+    receivable: linked('asset') ?? byCode(intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, counterpartyVehicleId)) ?? null,
+    payable: linked('liability') ?? byCode(intercompanyCode(INTERCOMPANY_PAYABLE_CODE, counterpartyVehicleId)) ?? null,
+  }
+}
+
+/** A vehicle's chart, the columns the lookups above need. */
+export async function intercompanyChart(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<IntercompanyChartRow[]> {
+  const { data, error } = await admin
+    .from('chart_of_accounts' as any)
+    .select(IC_CHART_COLUMNS)
+    .eq('fund_id', fundId)
+    .eq('vehicle_id', vehicleId)
+  if (error) throw new Error(`The chart of accounts could not be read: ${error.message}`)
+  return ((data as any[]) ?? []) as IntercompanyChartRow[]
+}
+
 /**
  * Guarantee that a vehicle's chart can hold an intercompany balance with one named counterparty:
- * the 1900/2900 parents, and a `1900-<cp>` / `2900-<cp>` sub-account beneath each.
+ * the 1900/2900 parents, and a "Due from" / "Due to" sub-account for the counterparty. An account
+ * linked to the counterparty (`pickIntercompanyAccounts`) is used as it is; only a missing side is
+ * created, as `1900-<cp>` / `2900-<cp>`, linked from the start.
  *
  * The same shape as `ensureCapitalAccounts`, and for the same reason. A single pooled "due from
  * affiliates" is unreconcilable the moment there are two affiliates: each counterparty has to agree
@@ -237,42 +285,92 @@ export async function ensureIntercompanyAccounts(
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   if (!vehicleId) throw new Error(`Unknown vehicle "${group}"`)
 
-  const receivableCode = intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, counterparty.vehicleId)
-  const payableCode = intercompanyCode(INTERCOMPANY_PAYABLE_CODE, counterparty.vehicleId)
-
-  const { data: existing } = await admin
-    .from('chart_of_accounts' as any)
-    .select('id, code')
-    .eq('fund_id', fundId)
-    .eq('vehicle_id', vehicleId)
-  const byCode = new Map(((existing as any[]) ?? []).map(a => [a.code as string, a.id as string]))
+  const existing = await intercompanyChart(admin, fundId, vehicleId)
+  const byCode = new Set(existing.map(a => a.code))
+  const found = pickIntercompanyAccounts(existing, counterparty.vehicleId)
 
   const wanted = [
     // The parents. A vehicle whose chart already has them (a manco) keeps what it has; a fund's
     // chart gets them created the first time it is party to a charge, which is the only moment it
     // could possibly need them.
-    { code: INTERCOMPANY_RECEIVABLE_CODE, name: 'Due from affiliates', type: 'asset', subtype: INTERCOMPANY_RECEIVABLE_SUBTYPE },
-    { code: INTERCOMPANY_PAYABLE_CODE, name: 'Due to affiliates', type: 'liability', subtype: INTERCOMPANY_PAYABLE_SUBTYPE },
-    { code: receivableCode, name: `Due from ${counterparty.name}`, type: 'asset', subtype: INTERCOMPANY_RECEIVABLE_SUBTYPE },
-    { code: payableCode, name: `Due to ${counterparty.name}`, type: 'liability', subtype: INTERCOMPANY_PAYABLE_SUBTYPE },
-  ].filter(a => !byCode.has(a.code))
+    ...[
+      { code: INTERCOMPANY_RECEIVABLE_CODE, name: 'Due from affiliates', type: 'asset', subtype: INTERCOMPANY_RECEIVABLE_SUBTYPE, counterparty_vehicle_id: null },
+      { code: INTERCOMPANY_PAYABLE_CODE, name: 'Due to affiliates', type: 'liability', subtype: INTERCOMPANY_PAYABLE_SUBTYPE, counterparty_vehicle_id: null },
+    ].filter(a => !byCode.has(a.code)),
+    ...(found.receivable ? [] : [{ code: intercompanyCode(INTERCOMPANY_RECEIVABLE_CODE, counterparty.vehicleId), name: `Due from ${counterparty.name}`, type: 'asset', subtype: INTERCOMPANY_RECEIVABLE_SUBTYPE, counterparty_vehicle_id: counterparty.vehicleId }]),
+    ...(found.payable ? [] : [{ code: intercompanyCode(INTERCOMPANY_PAYABLE_CODE, counterparty.vehicleId), name: `Due to ${counterparty.name}`, type: 'liability', subtype: INTERCOMPANY_PAYABLE_SUBTYPE, counterparty_vehicle_id: counterparty.vehicleId }]),
+  ]
 
+  const created: IntercompanyChartRow[] = []
   if (wanted.length > 0) {
-    const { data: created, error } = await admin
+    const { data, error } = await admin
       .from('chart_of_accounts' as any)
-      .insert(wanted.map(a => ({
-        fund_id: fundId, portfolio_group: group, vehicle_id: vehicleId,
-        code: a.code, name: a.name, type: a.type, subtype: a.subtype,
-      })))
-      .select('id, code')
+      .insert(wanted.map(a => ({ fund_id: fundId, portfolio_group: group, vehicle_id: vehicleId, ...a })))
+      .select(IC_CHART_COLUMNS)
     if (error) throw new Error(`Could not create intercompany accounts on ${group}: ${error.message}`)
-    for (const a of ((created as any[]) ?? [])) byCode.set(a.code as string, a.id as string)
+    created.push(...(((data as any[]) ?? []) as IntercompanyChartRow[]))
   }
 
+  const after = pickIntercompanyAccounts([...existing, ...created], counterparty.vehicleId)
   return {
-    receivableAccountId: byCode.get(receivableCode)!,
-    payableAccountId: byCode.get(payableCode)!,
+    receivableAccountId: after.receivable!.id,
+    payableAccountId: after.payable!.id,
   }
+}
+
+/**
+ * Point a vehicle's existing account at a counterparty, so it becomes that counterparty's "Due
+ * from" (an asset) or "Due to" (a liability): the fix for a chart imported with its own names.
+ *
+ * Refuses rather than strands money. If another account already holds this counterparty's side and
+ * has anything booked to it, re-pointing would leave that balance where the invoice and the
+ * settlement no longer look; the person moves it (or voids it) first. An account linked to a
+ * different counterparty is refused for the same reason.
+ */
+export async function linkIntercompanyAccount(
+  admin: SupabaseClient,
+  fundId: string,
+  vehicleId: string,
+  accountId: string,
+  counterpartyVehicleId: string,
+  side?: 'receivable' | 'payable',
+): Promise<{ ok: true; account: { id: string; code: string; name: string } } | { error: string }> {
+  if (vehicleId === counterpartyVehicleId) return { error: 'An entity cannot owe itself.' }
+  const chart = await intercompanyChart(admin, fundId, vehicleId)
+  const account = chart.find(a => a.id === accountId)
+  if (!account) return { error: 'That account is not on this entity’s chart.' }
+  const wantType = side === 'receivable' ? ['asset'] : side === 'payable' ? ['liability'] : ['asset', 'liability']
+  if (!wantType.includes(account.type)) {
+    return { error: `${account.code} ${account.name} is an ${account.type} account. A Due from is an asset and a Due to a liability.` }
+  }
+  if (account.counterparty_vehicle_id === counterpartyVehicleId) {
+    return { ok: true, account: { id: account.id, code: account.code, name: account.name } }
+  }
+  if (account.counterparty_vehicle_id) {
+    return { error: `${account.code} ${account.name} is already linked to another entity. Unlink it there first.` }
+  }
+
+  const current = pickIntercompanyAccounts(chart, counterpartyVehicleId)[account.type === 'asset' ? 'receivable' : 'payable']
+  if (current && current.id !== account.id) {
+    // Either book: a tax-book adjustment on the old account is stranded just the same.
+    const { count } = await admin
+      .from('journal_postings' as any)
+      .select('id', { count: 'exact', head: true })
+      .in('book', LEDGER_BOOKS).eq('fund_id', fundId).eq('account_id', current.id)
+    if ((count ?? 0) > 0) {
+      return { error: `${current.code} ${current.name} already holds this entity’s balance (${count} ${count === 1 ? 'posting' : 'postings'}). Move those to ${account.code} ${account.name} first, then link it.` }
+    }
+    if (current.counterparty_vehicle_id) {
+      const { error } = await admin.from('chart_of_accounts' as any)
+        .update({ counterparty_vehicle_id: null }).eq('fund_id', fundId).eq('id', current.id)
+      if (error) return { error: `The old link could not be removed: ${error.message}` }
+    }
+  }
+
+  const { error } = await admin.from('chart_of_accounts' as any)
+    .update({ counterparty_vehicle_id: counterpartyVehicleId }).eq('fund_id', fundId).eq('id', account.id)
+  if (error) return { error: `The account could not be linked: ${error.message}` }
+  return { ok: true, account: { id: account.id, code: account.code, name: account.name } }
 }
 
 /**
@@ -553,6 +651,11 @@ async function unwindIntercompanyEntries(admin: SupabaseClient, fundId: string, 
 /**
  * Settle an accrued charge: post the cash on both sides and mark the row settled.
  *
+ * The cash is the charge's amount, except for a partnership invoice with adjustments: the charge
+ * booked the expenses, and the fund pays the invoice's amount due (expenses plus credits and
+ * charges typed on it), which is what clears the intercompany balances an earlier over- or
+ * under-payment left. An amount due of zero moves no cash and posts no entries.
+ *
  * Refuses a charge that is already settled or void rather than posting a second pair of cash
  * entries, which would clear a balance that was already clear and leave the counterparty holding a
  * receivable that has now been paid twice on our books and once on theirs.
@@ -631,9 +734,21 @@ export async function settleIntercompanyCharge(
   if ('error' in payeeAccts) return payeeAccts
   if ('error' in payerAccts) return payerAccts
 
+  // Read failures refuse rather than fall back: settling the full charge would ignore its credits.
+  const { data: invoice, error: invoiceErr } = await admin
+    .from('partnership_invoices' as any)
+    .select('adjustment_total')
+    .eq('fund_id', fundId).eq('intercompany_transaction_id', chargeId).eq('status', 'issued').maybeSingle()
+  if (invoiceErr) return { error: `The charge's invoice could not be read: ${invoiceErr.message}` }
+  const cash = invoice ? amountDue(Number(charge.amount), Number((invoice as any).adjustment_total ?? 0)) : Number(charge.amount)
+  if (!(cash > 0)) {
+    const { error: settleErr } = await admin.from('intercompany_transactions' as any).update({ status: 'settled', settled_date: date }).eq('id', chargeId).eq('fund_id', fundId)
+    return settleErr ? { error: `The charge could not be marked settled: ${settleErr.message}` } : { ok: true }
+  }
+
   const input = {
     fundId, kind: charge.kind as IntercompanyKind, chargeDate: charge.charge_date,
-    amount: Number(charge.amount), memo: charge.memo, chargeId, settledDate: date,
+    amount: cash, memo: charge.memo, chargeId, settledDate: date,
   }
 
   let payeeId = linked.payee?.id ?? null
@@ -860,9 +975,10 @@ export interface IntercompanyBalance {
 /**
  * Outstanding intercompany balances for one vehicle, per counterparty, FROM THE LEDGER.
  *
- * Reads the posted balance of each `1900-<cp>` / `2900-<cp>` account rather than summing the
- * register, so a manual correcting entry — the way half of all intercompany disputes are actually
- * resolved — is reflected here without anyone having to remember to also amend a row.
+ * Reads the posted balance of each counterparty's Due from / Due to account (the linked one, or
+ * `1900-<cp>` / `2900-<cp>`) rather than summing the register, so a manual correcting entry — the
+ * way half of all intercompany disputes are actually resolved — is reflected here without anyone
+ * having to remember to also amend a row.
  *
  * `dueFrom` and `dueTo` are reported separately and only then netted. Netting first is how an
  * intercompany balance stops reconciling: the counterparty confirms a payable of X and a receivable
@@ -878,15 +994,16 @@ export async function intercompanyBalances(
 
   const { data: accts, error: acctErr } = await admin
     .from('chart_of_accounts' as any)
-    .select('id, code, subtype')
+    .select('id, code, type, subtype, counterparty_vehicle_id')
     .eq('fund_id', fundId)
     .eq('vehicle_id', vehicleId)
-    .in('subtype', [INTERCOMPANY_RECEIVABLE_SUBTYPE, INTERCOMPANY_PAYABLE_SUBTYPE])
+    .or(`subtype.in.(${INTERCOMPANY_RECEIVABLE_SUBTYPE},${INTERCOMPANY_PAYABLE_SUBTYPE}),counterparty_vehicle_id.not.is.null`)
   if (acctErr) throw new Error(`The intercompany accounts could not be read: ${acctErr.message}`)
   // The bare parents (1900 / 2900, no suffix) carry no counterparty, so they are not part of a
   // per-counterparty breakdown. Anything posted directly to them is a bookkeeping error the
-  // statements will still show; this view is about who owes whom.
-  const subAccounts = ((accts as any[]) ?? []).filter(a => (a.code as string).includes('-'))
+  // statements will still show; this view is about who owes whom. An account LINKED to a
+  // counterparty is always in, whatever its code.
+  const subAccounts = ((accts as any[]) ?? []).filter(a => a.counterparty_vehicle_id || (a.code as string).includes('-'))
   if (subAccounts.length === 0) return []
 
   // Entries and postings are loaded separately and joined here, the way every other reader in
@@ -913,18 +1030,19 @@ export async function intercompanyBalances(
     balance.set(p.account_id, roundCents((balance.get(p.account_id) ?? 0) + Number(p.amount)))
   }
 
-  // The 8-character id prefix in the code is what ties a sub-account back to a counterparty. Match
-  // it against the fund's real vehicles so a stale account (a vehicle since merged away) still
+  // The link names the counterparty; without one, the 8-character id prefix in the code does. Match
+  // either against the fund's real vehicles so a stale account (a vehicle since merged away) still
   // reports its balance rather than vanishing with the money on it.
   const { data: vehicles, error: vehErr } = await admin
     .from('fund_vehicles' as any).select('id, name').eq('fund_id', fundId)
   if (vehErr) throw new Error(`The fund's vehicles could not be read: ${vehErr.message}`)
+  const byId = new Map(((vehicles as any[]) ?? []).map(v => [v.id as string, v]))
   const byPrefix = new Map(((vehicles as any[]) ?? []).map(v => [(v.id as string).slice(0, 8), v]))
 
   const out = new Map<string, IntercompanyBalance>()
   for (const a of subAccounts) {
-    const prefix = (a.code as string).split('-').slice(1).join('-')
-    const vehicle = byPrefix.get(prefix)
+    const prefix = a.counterparty_vehicle_id ?? (a.code as string).split('-').slice(1).join('-')
+    const vehicle = a.counterparty_vehicle_id ? byId.get(a.counterparty_vehicle_id) : byPrefix.get(prefix)
     const key = (vehicle?.id as string) ?? prefix
     const row = out.get(key) ?? {
       counterpartyVehicleId: (vehicle?.id as string) ?? '',
@@ -934,7 +1052,7 @@ export async function intercompanyBalances(
     const bal = balance.get(a.id as string) ?? 0
     // Postings are signed debit-positive. A receivable's natural balance is a debit; a payable's is
     // a credit, so its sign is flipped to report it as a positive amount owed.
-    if (a.subtype === INTERCOMPANY_RECEIVABLE_SUBTYPE) row.dueFrom = roundCents(row.dueFrom + bal)
+    if (a.counterparty_vehicle_id ? a.type === 'asset' : a.subtype === INTERCOMPANY_RECEIVABLE_SUBTYPE) row.dueFrom = roundCents(row.dueFrom + bal)
     else row.dueTo = roundCents(row.dueTo - bal)
     out.set(key, row)
   }

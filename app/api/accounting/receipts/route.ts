@@ -12,6 +12,7 @@ import {
   MAX_RECEIPT_BYTES,
 } from '@/lib/accounting/receipts'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
+import { seesEveryEntity } from '@/lib/accounting/receipt-access'
 
 const ALLOWED = /^(application\/pdf|image\/(png|jpe?g|heic|heif|webp|gif))$/i
 
@@ -21,6 +22,7 @@ const ALLOWED = /^(application\/pdf|image\/(png|jpe?g|heic|heif|webp|gif))$/i
  *                                 sees every entity (those could belong to any entity's books)
  *   &status=unmatched|matched|dismissed|all
  *   ?group=<entity>&entryId=<id>  the receipts supporting one entry
+ *   ?group=<entity>&count=unmatched  { unmatched }: how many are waiting (the nav lists the page then)
  */
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -40,6 +42,12 @@ export async function GET(req: NextRequest) {
     const { data: e } = await admin.from('journal_entries' as any).select('id').eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('book', ACTUAL_BOOK).eq('id', entryId).maybeSingle()
     if (!e) return NextResponse.json({ receipts: [] })
     return NextResponse.json({ receipts: await receiptsForEntry(admin, gate.fundId, entryId) })
+  }
+
+  // The nav's question: is anything waiting here? A count, without the match suggestions.
+  if (req.nextUrl.searchParams.get('count') === 'unmatched') {
+    const waiting = await listReceipts(admin, gate.fundId, { vehicleId, includeUnassigned: await seesEveryEntity(admin, gate), status: 'unmatched' })
+    return NextResponse.json({ unmatched: waiting.length })
   }
 
   const statusParam = req.nextUrl.searchParams.get('status')
