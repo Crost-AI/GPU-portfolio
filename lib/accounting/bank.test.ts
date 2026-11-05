@@ -9,6 +9,8 @@ import {
   bankEntryPostings,
   counterPosting,
   summarizeBankRec,
+  cashTransferEntryIds,
+  openingCashBefore,
 } from './bank'
 import { isBalanced } from './ledger'
 
@@ -254,6 +256,51 @@ describe('summarizeBankRec', () => {
     expect(s.bankEndingBalance).toBe(3000)
     expect(s.difference).toBe(2000) // ledger cash still shows the unbooked outflow
     expect(s.tiesOut).toBe(false)
+  })
+
+  it('opens the feed at ledger cash before its first transaction', () => {
+    // Books from 2021, bank feed from September: the earlier cash is the feed's opening balance.
+    const postings = [
+      { accountId: 'cash', amount: 200_000, currency: 'USD', entryDate: '2021-03-01' },
+      { accountId: 'cash', amount: -38_400.50, currency: 'USD', entryDate: '2026-08-31' },
+      { accountId: 'cash', amount: 120_000, currency: 'USD', entryDate: '2026-09-02' },
+      { accountId: 'other', amount: 5, currency: 'USD', entryDate: '2020-01-01' },
+    ]
+    const opening = openingCashBefore(postings, 'cash', ['2026-09-30', '2026-09-02'])
+    expect(opening).toBe(161_599.50)
+    const s = summarizeBankRec([{ amount: 120_000, matched: true }], 281_599.50, opening)
+    expect(s.bankEndingBalance).toBe(281_599.50)
+    expect(s.tiesOut).toBe(true)
+  })
+
+  it('leaves a transfer in from the old bank out of the bank side', () => {
+    // The old bank held 31,250.40 on 1000 before the feed; the feed opens with that money arriving, posted 1000 to 1000.
+    const transfers = cashTransferEntryIds([
+      { entryId: 'move', accountId: 'cash', amount: 31_250.40 },
+      { entryId: 'move', accountId: 'cash', amount: -31_250.40 },
+      { entryId: 'fee', accountId: 'cash', amount: -500 },
+      { entryId: 'fee', accountId: 'expense', amount: 500 },
+    ], 'cash')
+    expect([...transfers]).toEqual(['move'])
+    const s = summarizeBankRec([
+      { amount: 31_250.40, matched: true, cashTransfer: transfers.has('move') },
+      { amount: -500, matched: true, cashTransfer: transfers.has('fee') },
+    ], 30_750.40, 31_250.40)
+    expect(s.bankEndingBalance).toBe(30_750.40)
+    expect(s.transferCount).toBe(1)
+    expect(s.transferTotal).toBe(31_250.40)
+    expect(s.tiesOut).toBe(true)
+  })
+
+  it('counts an unmatched row in full even if flagged as a transfer', () => {
+    const s = summarizeBankRec([{ amount: 100, matched: false, cashTransfer: true }], 0)
+    expect(s.bankEndingBalance).toBe(100)
+    expect(s.transferCount).toBe(0)
+  })
+
+  it('opens at zero with no feed or no cash account', () => {
+    expect(openingCashBefore([{ accountId: 'cash', amount: 1, currency: 'USD', entryDate: '2020-01-01' }], 'cash', [])).toBe(0)
+    expect(openingCashBefore([], undefined, ['2026-01-01'])).toBe(0)
   })
 })
 
