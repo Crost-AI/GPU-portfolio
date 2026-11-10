@@ -382,11 +382,37 @@ export async function rotateRefreshToken(
   if (row.client_id !== params.clientId) return null
 
   if (row.revoked_at) {
-    await revokeAllForClient(admin, row.client_id, row.user_id)
+    await revokeOnReplay(admin, row)
     return null
   }
 
   if (new Date(row.expires_at).getTime() < Date.now()) return null
+
+  // Claim the token BEFORE minting, conditionally on it still being live. Two requests presenting
+  // the same refresh token at once both pass the revoked_at read above; without this only-if-live
+  // update both would get a fresh pair and the replay below would never be detected.
+  const now = new Date().toISOString()
+  const { data: claimed } = await (admin as any)
+    .from('oauth_tokens')
+    .update({ revoked_at: now, last_used_at: now })
+    .eq('id', row.id)
+    .is('revoked_at', null)
+    .select('id')
+    .maybeSingle()
+  if (!claimed) {
+    await revokeOnReplay(admin, row)
+    return null
+  }
+  // A replay detected while this request was minting must not leave its new pair live. revokeOnReplay
+  // marks every token of the (client, user) pair before it revokes the live ones, this claimed token
+  // included whichever token of the family was replayed, so this read, after the insert, sees it
+  // whichever of the two finished first.
+  const unlessReplayed = async (issued: IssuedTokens): Promise<IssuedTokens | null> => {
+    const { data: after, error: afterError } = await (admin as any).from('oauth_tokens').select('replayed_at').eq('id', row.id).maybeSingle()
+    if (!afterError && after && !(after as any).replayed_at) return issued
+    await revokeAllForClient(admin, row.client_id, row.user_id)
+    return null
+  }
 
   // An investor connector token: the holder is an LP, not a fund member, so the check is theirs —
   // still an active LP investing in this fund, and the fund's connector still on. The scope is the
@@ -398,12 +424,7 @@ export async function rotateRefreshToken(
       await revokeAllForClient(admin, row.client_id, row.user_id)
       return null
     }
-    const issued = await issueTokens(admin, { clientId: row.client_id, userId: row.user_id, fundId: row.fund_id, scope: row.scope, resource: row.resource })
-    await (admin as any)
-      .from('oauth_tokens')
-      .update({ revoked_at: new Date().toISOString(), last_used_at: new Date().toISOString() })
-      .eq('id', row.id)
-    return issued
+    return unlessReplayed(await issueTokens(admin, { clientId: row.client_id, userId: row.user_id, fundId: row.fund_id, scope: row.scope, resource: row.resource }))
   }
 
   // The user may have been demoted or removed from the fund since the token was
@@ -432,12 +453,21 @@ export async function rotateRefreshToken(
     resource: row.resource,
   })
 
-  await (admin as any)
-    .from('oauth_tokens')
-    .update({ revoked_at: new Date().toISOString(), last_used_at: new Date().toISOString() })
-    .eq('id', row.id)
+  return unlessReplayed(issued)
+}
 
-  return issued
+/**
+ * The response to a replayed refresh token: revoke every live token for the (client, user) pair.
+ * First mark every token of the pair, already-revoked ones included, so a rotation that has claimed
+ * one (any one, not only the token replayed here) and is still minting sees the replay when it
+ * re-reads after its insert, and revokes its new pair. Mark first, revoke second: a pair inserted
+ * before the revoke is caught by it, and one inserted after finds the mark.
+ */
+async function revokeOnReplay(admin: SupabaseClient, row: { client_id: string; user_id: string }): Promise<void> {
+  const { error } = await (admin as any).from('oauth_tokens').update({ replayed_at: new Date().toISOString() })
+    .eq('client_id', row.client_id).eq('user_id', row.user_id)
+  if (error) console.error('[oauth] Could not mark a replayed token family:', error.message)
+  await revokeAllForClient(admin, row.client_id, row.user_id)
 }
 
 async function revokeAllForClient(
