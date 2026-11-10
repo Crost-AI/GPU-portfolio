@@ -7,7 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTheme } from 'next-themes'
 import { useSidebar } from '@/components/sidebar-context'
-import { ACCOUNTING_SECTIONS, sectionsForKind } from '@/lib/accounting/nav'
+import { ACCOUNTING_SECTIONS, sectionsForKind, type NavPending } from '@/lib/accounting/nav'
 import { useVehicle, FUND_SUBPAGE_SLUGS } from '@/components/accounting-vehicle'
 import type { FeatureKey, FeatureVisibilityMap } from '@/lib/types/features'
 import { domainForFeature, type Domain } from '@/lib/access/domains'
@@ -264,8 +264,8 @@ export function moreSectionsFor(
  * guess: after a visit to a management company the context WAS the manco, so "Funds → Bank" led
  * to the manco's bank page. The URL is the only thing the user can see, so it is the only input.
  */
-export function fundsChildrenFor(fundSeg: string | null, fofActive: boolean, kind: string | null = null): NavChild[] {
-  const sections = sectionsForKind(ACCOUNTING_SECTIONS, fundSeg ? kind : null).filter(s => !s.requiresFof || fofActive)
+export function fundsChildrenFor(fundSeg: string | null, fofActive: boolean, kind: string | null = null, pending: NavPending = {}): NavChild[] {
+  const sections = sectionsForKind(ACCOUNTING_SECTIONS, fundSeg ? kind : null, pending).filter(s => !s.requiresFof || fofActive)
   const children: NavChild[] = sections.map(s => ({
     href: fundSeg ? `/funds/${fundSeg}/${s.href.slice('/funds/'.length)}` : s.href,
     label: s.label,
@@ -284,10 +284,10 @@ export function visibleChildrenFor(
   item: NavItem,
   isAdmin: boolean,
   access: (domain: Domain, feature?: FeatureKey) => AccessLevel,
-  opts: { fofActive?: boolean; fundSeg?: string | null; kind?: string | null } = {},
+  opts: { fofActive?: boolean; fundSeg?: string | null; kind?: string | null; pending?: NavPending } = {},
 ): NavChild[] {
   const children = item.href === '/funds'
-    ? fundsChildrenFor(opts.fundSeg ?? null, !!opts.fofActive, opts.kind ?? null)
+    ? fundsChildrenFor(opts.fundSeg ?? null, !!opts.fofActive, opts.kind ?? null, opts.pending)
     : item.children
   return (children ?? [])
     .filter(c => canSee(c, isAdmin, access))
@@ -306,6 +306,27 @@ export function fundSegFromPath(pathname: string): string | null {
 
 export function useFundSeg(): string | null {
   return fundSegFromPath(usePathname())
+}
+
+/**
+ * The waiting work that lists a page the entity's kind otherwise leaves out of the nav: receipts to
+ * attach, on an entity that is not the management company (whose Receipts page is always listed).
+ * Asked only inside an entity; a failed or forbidden request leaves the page out, as before.
+ */
+function useNavPending(fundSeg: string | null, group: string | null, kind: string | null): NavPending {
+  // Keyed by the entity it was asked for, so another entity's count is never shown while its own loads.
+  const [count, setCount] = useState<{ group: string; receipts: number } | null>(null)
+  const ask = !!fundSeg && !!group && !!kind && kind !== 'manco'
+  useEffect(() => {
+    if (!ask || !group) return
+    let live = true
+    fetch(`/api/accounting/receipts?group=${encodeURIComponent(group)}&count=unmatched`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (live) setCount({ group, receipts: Number(j?.unmatched) || 0 }) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [ask, group])
+  return { receipts: ask && count?.group === group ? count.receipts : 0 }
 }
 
 export type { NavItem, NavChild }
@@ -352,7 +373,8 @@ export function AppSidebar({ reviewBadge, approvalsBadge, settingsBadge, notesBa
   // (lib/accounting/nav.ts hideFor); the kind comes from the context the fund pages pin to
   // their URL, and fundsChildrenFor ignores it whenever there is no fund in the URL.
   const fundSeg = useFundSeg()
-  const { kind: vehicleKind } = useVehicle()
+  const { kind: vehicleKind, group: vehicleGroup } = useVehicle()
+  const pending = useNavPending(fundSeg, vehicleGroup, vehicleKind)
 
   const currentTheme = (THEME_CYCLE.includes(theme as typeof THEME_CYCLE[number]) ? theme : 'system') as typeof THEME_CYCLE[number]
   const ThemeIcon = mounted ? THEME_ICONS[currentTheme] : Monitor
@@ -387,7 +409,7 @@ export function AppSidebar({ reviewBadge, approvalsBadge, settingsBadge, notesBa
           // (admin gate, per-feature visibility) and the fund-of-funds pages that only
           // exist once the fund holds a fund. Shown only when the parent or any visible
           // child route is active.
-          const visibleChildren = visibleChildrenFor(item, !!isAdmin, access, { fofActive, fundSeg, kind: vehicleKind })
+          const visibleChildren = visibleChildrenFor(item, !!isAdmin, access, { fofActive, fundSeg, kind: vehicleKind, pending })
           const childActive = visibleChildren.some(c => pathname === c.href || pathname.startsWith(c.href + '/'))
           // Also keep the section open on any page UNDER its own path (e.g. /funds/allocation-terms,
           // a Funds page that isn't a listed child) — it's still this section, just not in the nav.
