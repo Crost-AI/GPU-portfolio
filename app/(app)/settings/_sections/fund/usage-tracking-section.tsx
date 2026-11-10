@@ -16,13 +16,14 @@ export function UsageTrackingSection({
   const [disabled, setDisabled] = useState(disableUserTracking)
   const [saving, setSaving] = useState(false)
 
-  const handleToggle = async (checked: boolean) => {
-    setDisabled(checked)
+  // The switch reads as "tracking on", so it is the inverse of the stored flag.
+  const handleToggle = async (tracking: boolean) => {
+    setDisabled(!tracking)
     setSaving(true)
     const res = await fetch('/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ disableUserTracking: checked }),
+      body: JSON.stringify({ disableUserTracking: !tracking }),
     })
     setSaving(false)
     if (res.ok) onSaved()
@@ -35,13 +36,15 @@ export function UsageTrackingSection({
       </p>
       <div className="flex items-center gap-3">
         <Switch
-          checked={disabled}
+          id="track-user-activity"
+          checked={!disabled}
           onCheckedChange={handleToggle}
           disabled={saving}
         />
-        <Label className="text-sm font-normal">
-          Disable user activity tracking
+        <Label htmlFor="track-user-activity" className="text-sm font-normal">
+          Track user activity
         </Label>
+        <span className="text-xs text-muted-foreground">{disabled ? 'Off' : 'On'}</span>
         {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
       </div>
     </Section>

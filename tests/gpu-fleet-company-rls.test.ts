@@ -50,8 +50,8 @@ describe('fleet company RLS (#91)', () => {
   })
 
   it('adds RESTRICTIVE policies only, letting a row about no company through, and restates no permissive policy', () => {
-    expect(sql).toContain("r text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unreadable())))'")
-    expect(sql).toContain("w text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unwritable())))'")
+    expect(sql).toContain("r text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unreadable())::uuid[]))'")
+    expect(sql).toContain("w text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unwritable())::uuid[]))'")
     for (const cmd of ['select to authenticated using', 'insert to authenticated with check', 'update to authenticated using', 'delete to authenticated using']) {
       expect(sql).toContain(`as restrictive for ${cmd}`)
     }
@@ -59,8 +59,17 @@ describe('fleet company RLS (#91)', () => {
     expect(sql).not.toMatch(/drop policy if exists "[a-z_]+ read needs portfolio"/)
   })
 
+  // #121: `x = any((select f()))` parses as the SUBQUERY form of ANY, comparing x with each row's
+  // whole array (`uuid = uuid[]`), so the migration failed on every database. The cast makes it an
+  // array expression and keeps the one-evaluation-per-statement initplan. No Postgres runs in CI, so
+  // the form is pinned for the whole history.
+  it('never compares against an uncast (select array_fn()) in ANY', () => {
+    const uncast = all.match(/=\s*any\(\(select [a-z_.]+\([^)]*\)\)\)/gi) ?? []
+    expect(uncast).toEqual([])
+  })
+
   it('gates the fleet company row itself by its holding_type', () => {
-    expect(sql).toMatch(/create policy "gpu_fleet companies read needs fleet"\s+on public\.companies as restrictive for select to authenticated\s+using \(holding_type is distinct from 'gpu_fleet'\s+or \(fund_id = any\(\(select public\.fund_ids_readable\('fleet'\)\)\) and fund_id = any\(\(select public\.fund_ids_readable\('accounting'\)\)\)\)\);/)
+    expect(sql).toMatch(/create policy "gpu_fleet companies read needs fleet"\s+on public\.companies as restrictive for select to authenticated\s+using \(holding_type is distinct from 'gpu_fleet'\s+or \(fund_id = any\(\(select public\.fund_ids_readable\('fleet'\)\)::uuid\[\]\) and fund_id = any\(\(select public\.fund_ids_readable\('accounting'\)\)::uuid\[\]\)\)\);/)
     for (const verb of ['insert', 'update', 'delete']) {
       expect(sql).toMatch(new RegExp(`create policy "gpu_fleet companies ${verb} needs fleet write"\\s+on public\\.companies as restrictive for ${verb}`))
     }
@@ -146,7 +155,7 @@ describe('fleet predicates require accounting read, as DOMAIN_META.fleet.require
     expect(fleetCalls.length).toBe(7)
     for (const m of fleetCalls) {
       const after = sql.slice(m.index! + m[0].length, m.index! + m[0].length + 120)
-      expect(after, sql.slice(m.index! - 60, m.index! + 160)).toMatch(/^\s*and c?\.?fund_id = any\(\(?(select )?public\.fund_ids_readable\('accounting'\)/)
+      expect(after, sql.slice(m.index! - 60, m.index! + 160)).toMatch(/^(::uuid\[\]\))?\s*and c?\.?fund_id = any\(\(?(select )?public\.fund_ids_readable\('accounting'\)/)
     }
   })
 

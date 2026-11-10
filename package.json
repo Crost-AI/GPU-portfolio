@@ -49,7 +49,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.12.2",
-    "next": "^16.3.8",
+    "next": "^16.4.2",
     "next-themes": "^0.4.6",
     "openai": "^6.25.0",
     "pdf-lib": "^1.17.1",
@@ -79,7 +79,7 @@
     "autoprefixer": "^10",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.8",
+    "eslint-config-next": "^16.4.2",
     "happy-dom": "21.0.3",
     "json-schema-to-typescript": "^15.0.4",
     "postcss": "^8",
@@ -88,6 +88,6 @@
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=22.17"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   }
 }
