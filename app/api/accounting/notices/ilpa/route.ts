@@ -4,11 +4,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 // lp_capital domain (lib/access/route-domains.ts): a read of the register, sent to no one.
 import { assertReadAccess } from '@/lib/api-helpers'
-import { resolveGroupOr400 } from '@/lib/accounting/http-vehicle'
+import { resolveGroupWithAccess } from '@/lib/accounting/http-vehicle'
 import { rateLimit } from '@/lib/rate-limit'
 import { loadCcdNotices } from '@/lib/ilpa/ccd-load'
 import { ccdSheetRows } from '@/lib/ilpa/ccd'
-import { loadAccessContext } from '@/lib/access/effective'
 import { seesIndividualCarry } from '@/lib/access/carry-visibility'
 
 export const runtime = 'nodejs'
@@ -27,8 +26,9 @@ export async function GET(req: NextRequest) {
   const gate = await assertReadAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
   const sp = req.nextUrl.searchParams
-  const group = await resolveGroupOr400(admin, gate, sp.get('group'))
-  if (group instanceof NextResponse) return group
+  const resolved = await resolveGroupWithAccess(admin, gate, sp.get('group'))
+  if (resolved instanceof NextResponse) return resolved
+  const { group, access } = resolved
 
   const limited = await rateLimit({ key: `ilpa-ccd:${user.id}`, limit: 30, windowSeconds: 300 })
   if (limited) return limited
@@ -39,7 +39,6 @@ export async function GET(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
   // The route is gated on lp_capital; a distribution's carry lines are GP economics (Crost #87).
-  const access = await loadAccessContext(admin, gate.fundId, gate.userId, gate.role)
   const out = await loadCcdNotices(admin, gate.fundId, group, kind, id, sp.get('lp'), seesIndividualCarry(access))
   if (!out.ok) return NextResponse.json({ error: out.error }, { status: out.status })
 
