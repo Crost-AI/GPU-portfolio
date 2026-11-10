@@ -1,6 +1,6 @@
 # The app image for deploy/local/docker-compose.yml. Build context is the repo root; what it may
 # copy is limited by app.Dockerfile.dockerignore (no node_modules, .next, or .env* files).
-FROM node:22.23.3-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 
 # Chromium renders the PDF routes (lib/lp-report-pdf.ts reads CHROME_EXECUTABLE_PATH); the fonts
 # give it something to fall back on. curl is for the healthcheck.
