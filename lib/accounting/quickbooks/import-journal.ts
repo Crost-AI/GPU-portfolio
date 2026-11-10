@@ -5,6 +5,7 @@ import { chartForVehicleKind } from '@/lib/accounting/chart'
 import { vehicleKindByName } from '@/lib/accounting/vehicle-domain'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { accountIdByCode, persistEntry } from '@/lib/accounting/persist'
+import { fetchAllRows } from '@/lib/accounting/load'
 import { BULK_BATCH } from '@/lib/accounting/journal-bulk'
 import { buildEntries, qbVendorName } from './build-entries'
 import { proposeMapping, type ChartAccount } from './propose-mapping'
@@ -33,6 +34,13 @@ export class QbImportError extends Error {
   constructor(message: string, readonly status = 500) { super(message) }
 }
 
+/** Every saved mapping for these books, past PostgREST's row cap: one missed is a tax flag lost. */
+function savedMappings(admin: SupabaseClient, fundId: string, vehicleId: string | null, source: JournalSource, columns: string): Promise<any[]> {
+  return fetchAllRows<any>((from, to) => (admin as any).from('qb_account_mappings').select(columns)
+    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('source', source).range(from, to), 1000, { order: 'qb_account' })
+    .catch(e => { throw new QbImportError(e?.message ?? String(e)) })
+}
+
 /** Step 1: propose a mapping for the accounts these transactions touch. Writes nothing. */
 export async function proposeQbAccounts(
   admin: SupabaseClient,
@@ -44,22 +52,20 @@ export async function proposeQbAccounts(
   const vehicleId = await vehicleIdByName(admin, fundId, group)
   const { transactions, accounts, errors } = parsed
 
-  const [{ data: chartRows, error: chartError }, { data: savedRows, error: savedError }] = await Promise.all([
+  const [{ data: chartRows, error: chartError }, savedRows] = await Promise.all([
     admin.from('chart_of_accounts' as any)
       .select('id, code, name, type, subtype, company_id, lp_entity_id, is_active')
       .eq('fund_id', fundId).eq('vehicle_id', vehicleId),
-    (admin as any).from('qb_account_mappings')
-      .select('qb_account, account_code, excluded, tax_book')
-      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('source', source),
+    savedMappings(admin, fundId, vehicleId, source, 'qb_account, account_code, excluded, tax_book'),
   ])
-  if (chartError || savedError) throw new QbImportError(chartError?.message ?? savedError?.message)
+  if (chartError) throw new QbImportError(chartError.message)
 
   const chart = ((chartRows as any[]) ?? []) as ChartAccount[]
   const kind = await vehicleKindByName(admin, fundId, group)
   for (const a of chartForVehicleKind(kind)) {
     if (!chart.some(existing => existing.code === a.code)) chart.push({ ...a, id: `template:${a.code}`, is_active: true } as ChartAccount)
   }
-  const saved = new Map(((savedRows as any[]) ?? []).map(r => [r.qb_account, r]))
+  const saved = new Map(savedRows.map(r => [r.qb_account, r]))
 
   // A previously CONFIRMED mapping always wins over a fresh proposal — see the migration's
   // comment on why re-proposing between passes would move balances for no visible reason.
@@ -124,11 +130,8 @@ export async function saveQbMappings(
   // A row that does not mention taxBook keeps the flag it has. A caller written before the flag
   // existed (a connector re-saving one mapping, say) must not silently send a tax-only account's
   // K-1 entries back into the actual ledger.
-  const { data: priorRows, error: priorError } = await (admin as any).from('qb_account_mappings')
-    .select('qb_account, tax_book')
-    .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('source', source)
-  if (priorError) throw new QbImportError(priorError.message)
-  const priorTax = new Set(((priorRows as any[]) ?? []).filter(r => r.tax_book).map(r => r.qb_account as string))
+  const priorRows = await savedMappings(admin, fundId, vehicleId, source, 'qb_account, tax_book')
+  const priorTax = new Set(priorRows.filter(r => r.tax_book).map(r => r.qb_account as string))
 
   const rows = valid.map((r: any) => ({
     fund_id: fundId,

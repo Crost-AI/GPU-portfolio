@@ -276,6 +276,22 @@ describe('saveQbMappings tax-book flag', () => {
     expect(saved('K-1 attributes').tax_book).toBe(true)
   })
 
+  it('keeps a flag saved past the row cap (Bugbot on #134)', async () => {
+    const mapping = (qb_account: string, tax_book: boolean) => ({ fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account, account_code: '1000', excluded: false, tax_book })
+    s.m = memoryAdmin({
+      qb_account_mappings: [...Array.from({ length: 1200 }, (_, i) => mapping(`A${String(i).padStart(4, '0')}`, false)), mapping('Z K-1 attributes', true)],
+      chart_of_accounts: [{ id: 'cash', fund_id: 'f', vehicle_id: 'v', code: '1000', type: 'asset', is_active: true }],
+    }, { maxRows: 1000 })
+    await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'Z K-1 attributes', accountCode: '1000' }])
+    expect(saved('Z K-1 attributes').tax_book).toBe(true)
+  })
+
+  it('a failed read of the saved flags stops the save', async () => {
+    s.m.failNext('qb_account_mappings', 'select', 'boom')
+    await expect(saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'K-1 attributes', accountCode: '1000' }])).rejects.toThrow('boom')
+    expect(saved('K-1 attributes').tax_book).toBe(true)
+  })
+
   it('sets and clears it when a row says so, and never on an excluded account', async () => {
     await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'K-1 attributes', accountCode: '1000', taxBook: false }])
     expect(saved('K-1 attributes').tax_book).toBe(false)

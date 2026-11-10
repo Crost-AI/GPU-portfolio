@@ -40,7 +40,7 @@ beforeEach(() => {
       return { data: (tables[table] ?? []).filter(row => Object.entries(filters).every(([k, v]) => row[k] === v)), error: null }
     }
     const q: any = {
-      select: () => q, eq: (k: string, v: unknown) => { filters[k] = v; return q },
+      select: () => q, range: () => q, order: () => q, eq: (k: string, v: unknown) => { filters[k] = v; return q },
       insert: (rows: any) => { mutation = rows; return q },
       upsert: (rows: any) => { mutation = rows; return q },
       update: (row: any) => { mutation = row; return q },
