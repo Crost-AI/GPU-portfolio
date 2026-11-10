@@ -490,6 +490,8 @@ describe('the same access rules as the web', () => {
     ['move_investment', 'api/companies/[id]/investments/[txnId]'],
     ['set_fund_terms', 'api/portfolio/fund-holdings/[id]'],
     ['record_fund_notice', 'api/portfolio/fund-holdings/[id]/events'],
+    ['update_fund_notice', 'api/portfolio/fund-holdings/[id]/events/[eventId]'],
+    ['recalculate_fund_distributions', 'api/portfolio/fund-holdings/[id]/distributions/recalculate'],
     ['record_nav_statement', 'api/portfolio/fund-holdings/[id]/nav'],
 
     // Uploads: the signed URL and the register step, each like the page's own pair of calls.
