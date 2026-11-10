@@ -58,7 +58,8 @@ to see what your key can reach.
 
 You need:
 
-- **Node 20 or later.**
+- **Node 22.23.4, 24.22.1 or 26.12.1 or later.** Node 20 is end of life and did not get the
+  October 2026 security fixes.
 - **A Portfolio deployment that includes the journal tools above** (released with the
   "Data connectors" entry in Portfolio's CHANGELOG).
 - **Agent access turned on.** An admin turns it on under **Settings → Agent access**.
