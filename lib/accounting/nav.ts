@@ -4,7 +4,7 @@
 
 import {
   Landmark, Users, ScrollText, Gauge,
-  Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp, LineChart, Receipt,
+  Lock, Layers, FileText, Table2, Upload, ClipboardList, Settings2, TrendingUp, LineChart, Receipt, FileSpreadsheet,
   Server, CircleDollarSign, GitBranch, FlaskConical,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -12,12 +12,26 @@ import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
 import { kindIsOneOf, type VehicleKind } from '@/lib/vehicle-kinds'
 
-/** The sections a vehicle of `kind` shows. Null kind (a legacy vehicle) shows a fund's. */
-export function sectionsForKind(sections: AccountingSection[], kind: string | null | undefined): AccountingSection[] {
-  return sections.filter(s =>
-    (!s.hideFor || !kind || !s.hideFor.includes(kind as VehicleKind))
+/** Counts that bring a section into the nav for a kind it is otherwise not shown for. */
+export interface NavPending {
+  /** Receipts still to attach or dismiss on the entity's books (and unassigned ones it can see). */
+  receipts?: number
+}
+
+/**
+ * The sections a vehicle of `kind` shows. Null kind (a legacy vehicle, or no vehicle: the
+ * firm-wide nav) shows everything a fund's would and every `onlyFor` section, since the firm-wide
+ * landing asks which entity you mean anyway.
+ */
+export function sectionsForKind(sections: AccountingSection[], kind: string | null | undefined, pending: NavPending = {}): AccountingSection[] {
+  return sections.filter(s => {
     // ── GPU fleet (P1) ── a section only some kinds have; a legacy null kind never matches.
-    && (!s.showFor || kindIsOneOf(kind, s.showFor)))
+    if (s.showFor && !kindIsOneOf(kind, s.showFor)) return false
+    if (!kind) return true
+    if (s.hideFor?.includes(kind as VehicleKind)) return false
+    if (s.onlyFor && !s.onlyFor.includes(kind as VehicleKind)) return !!s.alsoWhenPending && (pending[s.alsoWhenPending] ?? 0) > 0
+    return true
+  })
 }
 
 export interface AccountingSection {
@@ -51,6 +65,13 @@ export interface AccountingSection {
    * waterfall: `gpu_fleet`, and lp_capital's `lps`) names the second one here.
    */
   alsoRequires?: { domain: Domain; feature?: FeatureKey }
+  /**
+   * The only vehicle kinds the nav lists this page for: the page is about something only those
+   * kinds do. Like `hideFor`, it hides the nav entry and nothing else.
+   */
+  onlyFor?: VehicleKind[]
+  /** Lists the page for any kind while there is work of this sort waiting on the entity. */
+  alsoWhenPending?: keyof NavPending
   /** Only for a fund of funds — DERIVED from the data (at least one holding is a fund),
    *  never a setting. Consumers filter on it; see lib/portfolio/fof.ts. */
   requiresFof?: boolean
@@ -73,7 +94,19 @@ export const ACCOUNTING_SECTIONS: AccountingSection[] = [
     href: '/funds/receipts',
     label: 'Receipts',
     icon: Receipt,
-    desc: 'Receipts emailed in or uploaded, attached to the entries they support, and the quarterly invoices that bill partnership expenses to the funds.',
+    desc: 'Receipts emailed in or uploaded, attached to the entries they support.',
+    // The management company is where receipts are kept. Anywhere else the page only matters while
+    // a receipt is waiting to be attached.
+    onlyFor: ['manco'],
+    alsoWhenPending: 'receipts',
+  },
+  {
+    href: '/funds/partnership-expenses',
+    label: 'Partnership expenses',
+    icon: FileSpreadsheet,
+    desc: 'The quarterly invoices that bill the funds for the partnership expenses this entity paid for them.',
+    // The entities that pay a fund's expenses and bill it back.
+    onlyFor: ['manco', 'associate'],
   },
   {
     href: '/funds/capital-accounts',
@@ -219,10 +252,15 @@ export const UNLISTED_SECTIONS: AccountingSection[] = [
   { href: '/funds/allocation-terms', label: 'Allocation terms', icon: Settings2, desc: 'How a vehicle\u2019s income and expenses are shared between its partners.', domain: 'lp_capital' },
 ]
 
-/** Does an entity of `kind` have the `/funds/<id>/<slug>` page? Unknown slugs are assumed real. */
+/**
+ * Does an entity of `kind` have the `/funds/<id>/<slug>` page? Unknown slugs are assumed real, and
+ * so is a page that any entity can have work waiting on (`alsoWhenPending`): this is asked without
+ * the counts, and a link to an empty page beats no way to reach a waiting receipt.
+ */
 export function hasSectionForKind(slug: string, kind: string | null | undefined): boolean {
   const s = sectionForSlug(slug)
-  return !s || sectionsForKind([s], kind).length > 0
+  if (!s) return true
+  return sectionsForKind([s], kind, s.alsoWhenPending ? { [s.alsoWhenPending]: 1 } : {}).length > 0
 }
 
 /** The section (listed or not) behind a `/funds/<slug>` URL segment, or null for an unknown slug. */

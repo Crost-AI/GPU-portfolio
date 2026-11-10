@@ -46,6 +46,14 @@ describe('GET receipts resolves access once', () => {
     expect(s.listed).toEqual([expect.objectContaining({ vehicleId: 'v1', includeUnassigned: false })])
   })
 
+  it('the unmatched count resolves access once too, and leaves unassigned receipts to who sees every entity (Bugbot on #133)', async () => {
+    sees({ all: false, ids: ['v1'] })
+    const res = await GET(new NextRequest('http://x/api/accounting/receipts?group=Fund%20I&count=unmatched'))
+    expect(res.status).toBe(200)
+    expect(loadAccessContext).toHaveBeenCalledTimes(1)
+    expect(s.listed).toEqual([expect.objectContaining({ vehicleId: 'v1', includeUnassigned: false, status: 'unmatched' })])
+  })
+
   it('still refuses an entity the caller was not granted', async () => {
     sees({ all: false, ids: ['v2'] })
     expect((await get()).status).toBe(403)
