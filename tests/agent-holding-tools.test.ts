@@ -214,6 +214,16 @@ describe('the fund register', () => {
       .rejects.toThrow('add up to 11000')
   })
 
+  it('a notice saved but not booked names its draft, so a retry does not record a second one (Bugbot on #125)', async () => {
+    store.failNext('investment_transactions', 'insert', 'boom')
+    const err: Error = await run('record_fund_notice', { company: 'fh', kind: 'call', event_date: '2024-09-01', amount: 1_000 })
+      .then(() => { throw new Error('expected a refusal') }, e => e)
+    const draft = store.tables.fund_capital_events.at(-1)!
+    expect(draft.status).toBe('draft')
+    expect(err.message).toContain(draft.id)
+    expect(err.message).toMatch(/rather than recording the notice again/)
+  })
+
   it('saves a NAV statement through the one NAV writer', async () => {
     const out = await run('record_nav_statement', { company: 'fh', as_of_date: '2024-06-30', reported_nav: 90_000 })
     expect(out).toMatchObject({ holding: 'Northwind Fund II', booking: { status: 'no_change' } })

@@ -202,7 +202,9 @@ export async function recordFundNotice(
 
   const confirm = await confirmFundCapitalEvent(admin, who.fundId, who.userId, row.id)
   if (!confirm.ok) {
-    return fail(400, `The notice was saved as a draft but could not be booked: ${confirm.error}`, { eventId: row.id })
+    // The id is in the message because the agent tool passes on only that: told just "failed", a
+    // retry records a second draft of the same notice.
+    return fail(400, `The notice was saved as draft ${row.id} but could not be booked: ${confirm.error} Confirm that draft on the holding page rather than recording the notice again.`, { eventId: row.id })
   }
   return done({ eventId: row.id, status: 'confirmed', mode: 'booked', transactionId: confirm.transactionId, confirm })
 }
