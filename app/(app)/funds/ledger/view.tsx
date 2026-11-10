@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 import { useCurrency, formatCurrencyPrice } from '@/components/currency-context'
-import { useLedgerFetch } from '@/components/accounting-vehicle'
+import { useLedgerFetch, useVehicle } from '@/components/accounting-vehicle'
 import { PeriodPicker } from '@/components/accounting/period-picker'
 import { AccountPicker, type PickerAccount } from '@/components/accounting/account-picker'
+import { DownloadMenu } from '@/components/accounting/download-menu'
 import { PERIOD_PRESETS, type PeriodPreset } from '@/lib/accounting/statement-period'
 import type { AccountRegister } from '@/lib/accounting/register'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -30,6 +31,7 @@ export function LedgerView() {
   const currency = useCurrency()
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
   const lf = useLedgerFetch()
+  const { group } = useVehicle()
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
@@ -88,6 +90,17 @@ export function LedgerView() {
   const openingLabel = period?.start ? `Opening balance at ${period.start}` : 'Opening balance — inception'
   const closingLabel = period?.end ? `Closing balance at ${period.end}` : 'Closing balance'
 
+  // Plain links, so the browser handles the download. The same window and basis as the screen.
+  const exportQs = new URLSearchParams({ preset })
+  if (preset === 'custom') { if (start) exportQs.set('start', start); if (end) exportQs.set('end', end) }
+  if (basis === 'tax') exportQs.set('basis', 'tax')
+  if (group) exportQs.set('group', group)
+  const exports = [
+    { label: 'General ledger (Excel)', note: 'Every account: opening balance, each posting, running balance, closing balance.', href: `/api/accounting/ledger/export?${exportQs}&format=xlsx` },
+    { label: 'General ledger (CSV)', href: `/api/accounting/ledger/export?${exportQs}&format=csv` },
+    ...(reg ? [{ label: `${reg.account.code} ${reg.account.name} only (Excel)`, href: `/api/accounting/ledger/export?${exportQs}&format=xlsx&account=${encodeURIComponent(reg.account.code)}` }] : []),
+  ]
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -101,11 +114,12 @@ export function LedgerView() {
           }}
           className="w-full max-w-md"
         />
-        <div className="ml-auto">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <PeriodPicker
             preset={preset} onPreset={p => { setPreset(p); setHighlight(null) }}
             start={start} end={end} onStart={setStart} onEnd={setEnd}
           />
+          <DownloadMenu items={exports} label="Export" disabled={loading && !data} />
         </div>
       </div>
 

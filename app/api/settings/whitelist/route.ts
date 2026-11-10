@@ -4,7 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 
-// GET — list all whitelisted email patterns (admin only)
+// GET — list this fund's whitelisted email patterns (admin only). Each fund keeps its own list;
+// the signup gate accepts an address on any of them.
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -14,7 +15,7 @@ export async function GET() {
 
   const { data: membership } = await admin
     .from('fund_members')
-    .select('role')
+    .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -25,12 +26,13 @@ export async function GET() {
   const { data: entries } = await admin
     .from('allowed_signups')
     .select('id, email_pattern, created_at')
+    .eq('fund_id', membership.fund_id)
     .order('email_pattern')
 
   return NextResponse.json({ entries: entries ?? [] })
 }
 
-// POST — add a new whitelist entry (admin only)
+// POST — add a whitelist entry to this fund's list (admin only)
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   const { data: membership } = await admin
     .from('fund_members')
-    .select('role')
+    .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -69,7 +71,7 @@ export async function POST(req: NextRequest) {
 
   const { error } = await admin
     .from('allowed_signups')
-    .insert({ email_pattern: pattern })
+    .insert({ email_pattern: pattern, fund_id: membership.fund_id })
 
   if (error) {
     if (error.code === '23505') {

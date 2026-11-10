@@ -8,28 +8,37 @@ Audited 2026-10-14 against `main` at a162894. This compares every action a membe
 
 | Area | Actions | Covered | Partial | Gap | n/a |
 |---|---:|---:|---:|---:|---:|
-| Accounting: ledger, bank, close, statements | 97 | 36 | 20 | 36 | 5 |
-| LP capital, carry, tax, LP relations, management company | 116 | 35 | 17 | 55 | 9 |
-| Portfolio: companies, updates, metrics, emails, compliance | 128 | 29 | 22 | 63 | 14 |
+| Accounting: ledger, bank, close, statements | 97 | 42 | 19 | 31 | 5 |
+| LP capital, carry, tax, LP relations, management company | 116 | 39 | 16 | 52 | 9 |
+| Portfolio: companies, updates, metrics, emails, compliance | 128 | 31 | 22 | 61 | 14 |
 | Deal flow and diligence | 66 | 23 | 10 | 33 | 0 |
 | Settings, team, approvals, AI usage | 90 | 17 | 10 | 38 | 25 |
 | Investor portal (separate portal MCP) | 20 | 8 | 1 | 6 | 5 |
-| **Total** | **517** | **148** | **80** | **231** | **58** |
+| **Total** | **517** | **160** | **78** | **221** | **58** |
 
-Of the 311 gaps and partials, **25 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, the remaining browser-only uploads, deleting all fund data, and cosmetic settings. The other **286 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
+Of the 299 gaps and partials, **25 are deliberate**: secrets, credentials and email-provider setup, outbound email to LPs, the remaining browser-only uploads, deleting all fund data, and cosmetic settings. The other **274 have no recorded reason**. Most are oversights that grew as the app outpaced the registry, and many are small wrappers around `lib` functions that already exist.
 
 ## What would most help running the fund headless
 
 These are ranked by how often they block a chat- or script-driven workflow, not by count.
 
-1. **Cleaning up after automation.** The review queue (`/api/review`, resolve) cannot be read or cleared, yet `submit_company_update` sends uncertain figures there. A misrouted email cannot be rerouted. Bank rows cannot be ignored, unposted or restored. A draft journal entry cannot be edited.
-2. **Bank matching.** There is no tool to link an inflow to an existing entry (`linkInflowToEntry`), book an outflow as a distribution, run auto-match, or resolve duplicates.
-3. **Capital and distributions.** A distribution can only be posted as journal lines: there is no register, carry entry, or waterfall preview. Proposed calls are covered (feat/lp-portal-tools); settlement review has no tool. Issuing a call is now possible (fund-wide pro-rata, this PR).
+1. **Cleaning up after automation.** The review queue is now covered (`review_queue`, `resolve_review`), and so is restoring an ignored bank row. A misrouted email still cannot be rerouted, and a draft journal entry cannot be edited.
+2. **Bank matching.** Linking, booking an outflow as a distribution and auto-match are now covered. Resolving duplicates still has no tool.
+3. **Capital and distributions.** A distribution can only be posted as journal lines: there is no register, carry entry, or waterfall preview. Proposed calls are covered (feat/lp-portal-tools); settlement review is now covered (`capital_settlements`, `review_capital_settlement`). Issuing a call is now possible (fund-wide pro-rata, this PR).
 4. **Intercompany and vendors.** `/api/manco/intercompany` and the vendor list have no tools, and `post_entry` cannot set a vendor. These underpin partnership-expense invoicing, which the receipts work picks up.
-5. **Tax season.** None of these have tools: the tax-year close, book-to-tax adjustments, generating K-1 packages, the received-K-1 chase list, and tax forms.
+5. **Tax season.** None of these have tools: the tax-year close, book-to-tax adjustments, generating K-1 packages, and tax forms. The received-K-1 chase list is now covered (`holding_k_ones`, `mark_holding_k_one`).
 6. **Company and metric upkeep.** There is no tool to edit a company (status, aliases, contact emails), create or delete a metric, or manage default metrics. The `record_investment` schema lacks several types and fields.
 7. **Team and access.** Per-area access grants, approving join requests, feature visibility and removing an authorized sender are all app-only. `setup_fund` only adds; removing a member (`remove_member`) needs `AGENT_DESTRUCTIVE_ACTIONS=true`.
 8. **Diligence finishing.** No tool exports the memo, runs the partner Q&A interview, deletes or reclassifies a data-room document, or replaces the checklist.
+
+## Closed in claude/exception-tools
+
+The exception work automation leaves behind. Each tool calls the page's own function, moved into `lib/` where it lived in a route, so a rule added there reaches chat too.
+
+- **Review queue:** `review_queue` and `resolve_review`. The resolve route's body moved to `lib/review/resolve.ts`; the tool reads the review with the caller's entity scope, as the page's RLS read does.
+- **Bank matching:** `auto_match_bank_capital` (`autoMatchOpenCapital`; drafts only on drafted rows, so it runs directly from a chat), `bank_call_candidates`, `link_bank_transaction` (`linkInflowToEntry`), `book_distribution_from_bank` (`bookDistributionFromOutflow`) and `restore_bank_transaction` (moved into `lib/accounting/bank-actions.ts`). `book_capital_call` now takes the partner (`lpEntityId`), which `bookCapitalCallFromInflow` has required since it stopped splitting a wire across partners; without it the tool always refused.
+- **Settlements:** `capital_settlements` and `review_capital_settlement` (the RPC call moved into `lib/accounting/settlement-reviews.ts`).
+- **K-1s owed by fund holdings:** `holding_k_ones` (`loadK1Dependencies`) and `mark_holding_k_one` (moved into `lib/tax/mark-received-k1.ts`).
 
 ## Closed in this PR
 
@@ -89,10 +98,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 |---|---|---|---|---|---|---|
 | 1099 vendor payments worksheet | `vendor-payments(GET)` | gap | - | no reason found | wrap loadVendorPayments | S easy-win |
 | Audit trail (who changed what, CSV) | `audit-log(GET)` | gap | - | no reason found | wrap loadAuditTrail+visibleTo | S easy-win |
-| Auto-match drafted rows to declared capital calls (1300) / distributions (2300) | `bank/auto-match(POST)` | gap | - | no reason found - likely oversight | auto_match_bank tool wrapping autoMatchOpenCapital(admin,fundId,group,userId,ids?) | S easy-win |
 | Backfill investment entries into the ledger (dry-run / all vehicles) | `investments(POST action=backfill)` | gap | - | no reason found (writes postings; could be staged) | backfill_investments tool wrapping backfillDerivedEntries / backfillAllVehicles with dryRun | S easy-win |
-| Book an inflow as a capital call (pro-rata or to one LP) | `bank/match(POST default)` | partial | book_capital_call | tool has no lpEntityId (single-partner) option | pass lpEntityId through to bookCapitalCallFromInflow | S easy-win |
-| Book an outflow as a distribution (pro-rata, perLp map, or one LP) | `bank/match(POST mode=distribute)` | gap | - | no reason found - likely oversight | book_distribution_from_bank wrapping bookDistributionFromOutflow | S easy-win |
 | Browse journal (filters: period preset, status draft/posted/void, search text, adjusting, tax book, single entry by id) | `journal(GET)` | partial | list_journal; query_ledger | list_journal only takes start/end; no status filter (returns void+draft+posted mixed), no search, no adjusting, no ?book=tax, no get-by-id | add status/search/adjusting/book/id params to list_journal | S easy-win |
 | Create a journal entry (manual, with vendor/payee, reference, adjusting flag, draft or posted) | `journal(POST)` | partial | post_entry; post_ledger_text | post_entry has no vendorId, reference, adjusting or sourceRef; currency taken from input not fund currency | add vendorId/reference/adjusting to post_entry; use fundCurrency | S easy-win |
 | Create suggested draft entries for an open period (accruals etc.) | `periods(POST action=createSuggestedDrafts)` | gap | - | no reason found - likely oversight | tool wrapping createSuggestedDrafts(admin,fundId,group,userId,start,end,ids) | S easy-win |
@@ -107,7 +113,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Fund performance report (LP-only, groupBy, as-of) | `fund-performance(GET)` | partial | fund_performance_pdf | PDF only; no JSON of the ledger report | wrap fundPerformance+performanceParams | S easy-win |
 | Fund-wide economics per vehicle (from ledger, with as-of IRR) | `fund-economics(GET)` | partial | fund_performance; show_portfolio_dashboard | fund_performance reads LP register not ledger, no as-of/IRR; dashboard is visual only | fund_economics tool wrapping fundEconomics(admin,fundId,asOf) | S easy-win |
 | LP positions (tracking vehicles): view | `positions(GET)` | partial | lp_capital_summary; lp_list_snapshots | not the dated lp_positions grid | wrap loadPositions | S easy-win |
-| Link a bank inflow to an existing journal entry | `bank/match(POST mode=link)` | gap | - | no reason found - likely oversight (key for 'match receipt/bank row to existing JE') | link_bank_transaction tool wrapping linkInflowToEntry | S easy-win |
 | Link an investment entry to a bank row | `investment-bank-match(POST)` | gap | - | no reason found | wrap matchInvestmentToBank | S easy-win |
 | List investment entries lacking a bank row, with candidates | `investment-bank-match(GET)` | gap | - | no reason found | wrap unbankedInvestments | S easy-win |
 | Preview a close through a date (month-by-month allocation) | `periods(POST action=preview)` | gap | allocation (post:false single action) | no reason found - an agent closes blind | close_preview tool wrapping previewCloseThrough | S easy-win |
@@ -117,7 +122,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Realized gains by lot (Schedule D / 8949 input) | `realized-gains(GET)` | gap | tax_package_zip (file) | no reason found | wrap loadRealizedGains | S easy-win |
 | Reconcile capital accounts: prefill admin figures from LP snapshot | `reconciliation(GET)` | gap | - | no reason found | add prefill to reconcile tool | S easy-win |
 | Rename an account / hide-show an account | `chart(PATCH)` | gap | - | no reason found - likely oversight | update_account tool: {code, name?, isActive?}; port the inline PATCH logic (refuses per-partner capital accounts) | S easy-win |
-| See capital-call candidates for an inflow | `bank/match(GET)` | gap | - | no reason found | include in a match tool via capitalCallCandidates | S easy-win |
 | Seed/backfill the default chart for an entity | `chart(POST, no account)` | partial | setup_fund (charts on entity creation); list_accounts GET path auto-seeds via chart route only | agent list_accounts does not call ensureVehicleAccounts; setup_fund seeds new entities only | have list_accounts (or add_account with seed:true) call ensureVehicleAccounts | S easy-win |
 | Vendors: create (or find by name) | `vendors(POST)` | gap | - | no reason found | add_vendor wrapping ensureVendor | S easy-win |
 | Vendors: list | `vendors(GET)` | gap | - | no reason found - needed for expense/receipt tagging | list_vendors wrapping listVendors | S easy-win |
@@ -136,7 +140,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | LP positions: edit one LP on a date | `positions(PUT)` | gap | - | no reason found | tool porting inline upsert | S |
 | LP positions: paste/import spreadsheet | `positions/import(POST)` | gap | - | no reason found (AI paste route; agent could pass parsed rows) | tool taking rows; logic inline in route - extract | M |
 | Resolve a suspected duplicate (link to QuickBooks/investment entry or keep separate) | `bank/duplicates(POST)` | gap | - | no reason found; logic inline in route | move to lib (bank-duplicates.ts) + resolve_bank_duplicate tool | M |
-| Restore an ignored bank row | `bank(POST action=restore)` | gap | - | no reason found - likely oversight | same as above | M |
 | State tax worklist | `state-worklist(GET)` | gap | - | no reason found (needs carry access check) | wrap buildStateWorklist | S |
 | Unpost a posted bank row back to draft | `bank(POST action=unpost)` | gap | - | no reason found; voids/unposts an entry (reason+audit) | add to bank-actions.ts + tool, or stage | M |
 | View bank feed with review kinds and match candidates | `bank(GET)` | partial | list_bank_transactions | agent list has no review kind, QuickBooks/investment duplicate candidates, or categorization detail | add candidates/reviewKind to list_bank_transactions | M |
@@ -158,7 +161,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Delete an LP letter | `/api/lp-letters/[id] (DELETE)` | gap | - | No reason found (not admin-only) | lp_delete_letter tool | S easy-win |
 | Edit a letter (draft, narratives, status, prompts) | `/api/lp-letters/[id] (PATCH)` | partial | lp_write_letter | Tool sets full_draft, sections, mark final; cannot revert to draft or edit generation_prompt/company_prompts | Pass through status/generation_prompt/company_prompts to updateLetter | S easy-win |
 | Generate a draft K-1 package | `/api/accounting/k1-packages (POST action=generate)` | gap | - | No reason found - likely oversight (draft is non-destructive) | k1_generate tool calling generateK1Package | S easy-win |
-| Mark a received K-1 (received / amended / not owed) | `/api/accounting/received-k1s (POST)` | gap | - | No reason found; natural fit for inbound-email K-1 flow | mark_received_k1 tool (upsert received_k1s row) | S easy-win |
 | Mark an LP message thread open/resolved | `/api/lps/messages (PATCH)` | gap | - | No reason found | lp_resolve_message tool | S easy-win |
 | Post an intercompany charge (mgmt fee, expense reimbursement, allocated cost, loan) between manco and a fund | `/api/manco/intercompany (POST)` | gap | post_entry (one vehicle's journal only) | No reason found. post_entry cannot post the mirrored two-book entry + register row that postIntercompanyCharge writes. | post_intercompany_charge tool calling postIntercompanyCharge (direction receivable/payable) | S easy-win |
 | Post book-to-tax adjustments | `/api/accounting/tax-adjustments (POST)` | gap | - | No reason found - likely oversight | same tool with post:true | S easy-win |
@@ -168,7 +170,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Propose / revise / discard a capital call proposal | `/api/accounting/proposed-calls (POST action=propose\|revise\|discard)` | covered | lp_proposed_call_propose; lp_proposed_call_revise; lp_proposed_call_discard (admin-only, as the route) | Closed in feat/lp-portal-tools | - | - |
 | Read LP inbox messages and replies | `/api/lps/messages (GET)` | gap | - | No reason found - likely oversight | lp_messages read tool | S easy-win |
 | Record a carry payment to a GP member | `/api/accounting/gp-economics (POST)` | gap | - | Admin-only; no tool | record_carry_payment tool (recordCarryPayment), staged | S easy-win |
-| Review a settlement: link wires to an obligation line, split remainder | `/api/accounting/settlements (POST)` | gap | reconcile; book_capital_call (adjacent) | No reason found - likely oversight | review_settlement tool calling the review_capital_settlement RPC | S easy-win |
 | Set a GP member's ownership or carry weight | `/api/accounting/gp-economics (PUT)` | gap | - | Admin-only; no tool. Likely oversight (could be staged). | set_gp_economics tool (setOwnershipWeight/setCarryWeight), staged | S easy-win |
 | Set a partner's allocation term (participates in fees/expenses/carry, weight or rate override) | `/api/accounting/allocation-terms (POST action=term)` | gap | allocation (per-call overrides only) | No reason found - likely oversight. allocation tool accepts one-off per-LP rateOverride/exempt but nothing persists the term. | Same set_allocation_terms tool calling savePartnerTerm | S easy-win |
 | Set the vehicle's allocation basis (commitment vs capital balance) | `/api/accounting/allocation-terms (POST action=basis)` | gap | - | No reason found - likely oversight (allocation tool consumes the basis but cannot set it) | set_allocation_terms tool calling saveAllocationBasis | S easy-win |
@@ -177,15 +178,13 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Switch a partner's class between GP and LP | `/api/accounting/lps (PATCH)` | gap | - | No reason found - likely oversight | set_partner_class tool: update partner_class + applyPartnerClassTerms | S easy-win |
 | View GP/associate entity economics (ownership %, carry points, accrued/paid/unpaid) | `/api/accounting/gp-economics (GET)` | gap | - | No reason found - likely oversight | gp_economics read tool calling loadGpEconomics | S easy-win |
 | View K-1 packages for a vehicle/year | `/api/accounting/k1-packages (GET)` | partial | schedule_k_pdf (resolves latest package) | No list of packages/versions/status/blockers; schedule_k_pdf only fetches one partner's PDF | k1_packages read tool | S easy-win |
-| View K-1s owed to us by fund holdings (chase list) | `/api/accounting/received-k1s (GET)` | gap | compliance_calendar / whats_due (dates only) | No reason found - likely oversight | received_k1s read tool (loadK1Dependencies) | S easy-win |
 | View LP onboarding checklist / facts / history | `/api/lps/onboarding (GET); /onboarding/facts (GET); /onboarding/history (GET)` | gap | - | No reason found | lp_onboarding_status read tool | S easy-win |
 | View LP portal accounts and invite status | `/api/lps/invites (GET)` | covered | lp_portal_accounts | Closed in feat/lp-portal-tools (admin-only, as the route) | - | - |
 | View LP portal activity log (logins, views, downloads) | `/api/lp-activity (GET)` | gap | - | No reason found; feature-gated admin view | lp_portal_activity read tool | S easy-win |
 | View allocation basis, partner terms and current commitments | `/api/accounting/allocation-terms (GET)` | partial | lp_commitments; capital_accounts | Commitments are readable; allocation basis and per-partner fee/carry terms (participates, weight/rate overrides) are not exposed by any tool. No reason found - likely oversight. | Add allocation_terms read tool wrapping loadResolvedCommitments + terms loader | S easy-win |
-| View capital settlements (payments matched to call/distribution lines) and reviews | `/api/accounting/settlements (GET)` | partial | query_lps(capital_call_lines) (funded/outstanding only) | No payment-link detail or review state | settlements read tool (loadSettlements + loadSettlementReviews) | S easy-win |
 | View carry (waterfall) terms | `/api/accounting/waterfall-terms (GET)` | gap | - | No reason found (run_waterfall makes the caller supply terms) | carry_terms read tool (loadCarryTerms) | S easy-win |
 | View declared distributions | `/api/accounting/distributions (GET)` | gap | - | No reason found; listDistributions not wrapped (capital_accounts shows only aggregate distributions) | lp_distributions read tool calling listDistributions | S easy-win |
-| View intercompany charge register and balances | `/api/manco/intercompany (GET)` | gap | - | No reason found - likely oversight. Central to the owner's quarterly partnership-expense invoicing goal. | intercompany_charges read tool (listIntercompanyCharges + intercompanyBalances) | S easy-win |
+| View intercompany charge register and balances | `/api/manco/intercompany (GET)` | gap | - | No reason found - likely oversight. | intercompany_charges read tool (listIntercompanyCharges + intercompanyBalances) | S easy-win |
 | View management company overview (cash, quarterly cycle, expense breakdown, intercompany balances) | `/api/manco/overview (GET)` | partial | financial_statements; query_ledger | Statements available per manco vehicle, but not the assembled overview (cycle, intercompany balances) | manco_overview read tool calling loadMancoOverview | S easy-win |
 | View partners' tax form (W-9/W-8) standing | `/api/accounting/tax-forms (GET)` | gap | - | No reason found | tax_forms read tool | S easy-win |
 | View proposed capital calls (list / one, re-checked) | `/api/accounting/proposed-calls (GET)` | covered | lp_proposed_calls | Closed in feat/lp-portal-tools | - | - |
@@ -254,7 +253,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Delete a company document | `companies/[id]/documents/[docId] (DELETE)` | gap | - | no reason found | delete_company_document tool | S |
 | Delete a company note | `companies/[id]/notes/[noteId] (DELETE)` | gap | - | no reason found | delete_note tool | S |
 | Delete a fund default metric | `default-metrics/[id] (DELETE)` | gap | - | settings-level; no reason found | delete_default_metric tool | S |
-| Delete a fund holding (and its ledger accounts) | `portfolio/fund-holdings/[id] (DELETE)` | gap | - | dangerous (deletes chart accounts); would belong with delete_company | cover via staged delete_company | M |
+| Delete a fund holding (and its ledger accounts) | `portfolio/fund-holdings/[id] (DELETE)` | covered | delete_fund_holding | Behind `AGENT_DESTRUCTIVE_ACTIONS=true`, always staged for an admin to approve; the route and the tool share `lib/portfolio/fund-holding-delete.ts` | - | - |
 | Delete a governing document | `entities/[id]/documents/[docId] (DELETE)` | gap | - | no reason found | delete_entity_document tool (staged) | S |
 | Delete a metric and its values (force) | `metrics/[id] (DELETE)` | gap | - | destructive, but member-level in app; no reason found | delete_metric tool (staged) | S |
 | Delete a note | `dashboard/notes/[noteId] (DELETE)` | gap | - | no reason found | delete_note tool | S |
@@ -265,7 +264,7 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Download a governing document | `entities/[id]/documents/[docId]/download (GET)` | gap | - | no reason found; text is searchable but no file link | signed link | S |
 | Download an email attachment | `emails/[id]/attachment/[index] (GET)` | partial | inbox_read (text only) | text only; no original file | signed link | S |
 | Edit a NAV statement / rebook later NAVs | `portfolio/fund-holdings/[id]/nav (PATCH)` | gap | - | no reason found | editNavStatement/rebookNavsFrom via same tool | S |
-| Edit a company: name, aliases, tags, stage, industry, country, status (active/exited/written-off), overview, founders, why invested, contact emails, entities, Google Drive folder | `companies/[id] (PATCH)` | gap | - | no reason found - likely oversight (no update_company tool; contact emails/aliases govern inbound-email matching) | update_company tool; extract PATCH body handling into lib/companies/update.ts shared by route and tool (mergeGroupsForWrite, ensureVehiclesByName) | M |
+| Edit a company: name, aliases, tags, stage, industry, country, status (active/exited/written-off), overview, founders, why invested, contact emails, entities, Google Drive folder | `companies/[id] (PATCH)` | partial | update_company (connector, staged from a chat); update_company pending action (in-app chat, /api/v1/chat) | Everything but the Google Drive folder. Entities must already exist (the page creates one by name). The route still has its own write path | Share lib/companies/holding-edit.ts with the PATCH route | S |
 | Edit a fund default metric | `default-metrics/[id] (PATCH)` | gap | - | settings-level; no reason found | update_default_metric tool | S |
 | Edit a fund holding's terms (commitment, fees, etc.) | `portfolio/fund-holdings/[id] (PATCH)` | gap | - | no reason found | update_fund_holding tool | S |
 | Edit a governing document's kind, title, effective date | `entities/[id]/documents/[docId] (PATCH)` | gap | - | no reason found | easy-win: update_entity_document (same update on entity_documents) | S |
@@ -296,7 +295,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | Rename a vehicle, change kind, deactivate, set aliases | `vehicles (PATCH)` | gap | - | no reason found (structure change; would be admin-staged) | update_vehicle tool | M |
 | Reprocess an email through the AI pipeline | `emails/[id]/reprocess (POST)` | gap | - | no reason found (needs server AI key; keyless funds use inbox_* instead) | reprocess_email tool calling lib/pipeline/processEmail.runPipeline | S |
 | Reroute an email (reporting / interactions / deals / audit) | `emails/[id]/reroute (POST)` | gap | - | no reason found - misrouted mail (e.g. a receipt) cannot be fixed headlessly | reroute_email tool; extract route body to lib/pipeline/reroute.ts | M |
-| Resolve a review item (accept, reject, correct; approve FoF capital/NAV review) | `review/[id]/resolve (POST)` | gap | - | no reason found - headless loop is broken: items queued by submit_company_update can only be cleared in the browser | resolve_review tool; move route body into lib (approveFundReview already in lib) | M |
 | Save a data request draft (subject, body, recipients, quarter) | `requests (POST)` | gap | - | no reason found | data_request_save tool | S |
 | See which fund default metrics a company tracks / opted out of | `companies/[id]/default-metrics (GET)` | gap | - | no reason found | include in company_metrics output | S |
 | Seed missing fund default metrics onto a company | `companies/[id]/default-metrics (POST)` | partial | create_company (seeds on create only) | only at creation; no reason found | easy-win: seed_default_metrics tool calling lib/metrics/seed-default-metrics.seedCompanyFromDefaults | S |
@@ -313,7 +311,6 @@ Effort is a guess: S is a tool wrapping an existing `lib` function, M needs logi
 | View pending reviews for one email | `emails/[id]/reviews (GET)` | gap | - | no reason found | part of list_reviews(email) | S |
 | View the data request draft and send history | `requests (GET)` | partial | data_request_status | status only; not the template/recipients | - | S |
 | View the interactions log (emails routed to interactions) | `interactions (GET)` | gap | - | no reason found | list_interactions tool | S |
-| View the review queue (uncertain extracted KPIs, unmatched companies, FoF items) | `review (GET)` | gap | - | no reason found - likely oversight; submit_company_update sends items here but no tool reads them | list_reviews tool | S |
 | View underlying-fund capital calls/distributions | `portfolio/fund-holdings/[id]/events (GET)` | gap | - | no reason found | include in fund_holdings tool | S |
 | View vehicle groups | `vehicle-groups (GET)` | gap | - | read-only, minor | add groups to list_vehicles | S |
 | View vehicles with letterhead and reporting profile | `vehicles (GET)` | partial | list_vehicles, entity_profile | letterhead not readable | - | S |

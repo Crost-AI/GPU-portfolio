@@ -3,6 +3,8 @@ import type { Domain } from '@/lib/access/domains'
 import type { FeatureKey } from '@/lib/types/features'
 import type { ActionType, ActionDeps, PreviewResult } from './types'
 import { previewMetricValue, writeMetricValue } from './metric-value'
+import { previewUpdateCompany, executeUpdateCompany } from './company-edit'
+import { UPDATE_COMPANY_DESCRIPTION, UPDATE_COMPANY_PROPERTIES } from '@/lib/agent/holding-tools-manifest'
 import { previewRecordInvestment, executeRecordInvestment } from './investment'
 import { previewIssueCapitalCall, executeIssueCapitalCall } from './capital-call'
 import { previewPublishCallNotices, executePublishCallNoticesElsewhere } from './call-notices'
@@ -77,6 +79,14 @@ export const WRITE_ACTIONS: Record<ActionType, WriteAction> = {
     },
     preview: previewMetricValue,
     execute: writeMetricValue,
+  },
+  update_company: {
+    entity: 'none',
+    domain: 'portfolio',
+    description: UPDATE_COMPANY_DESCRIPTION,
+    inputSchema: { type: 'object', required: ['company'], properties: UPDATE_COMPANY_PROPERTIES },
+    preview: previewUpdateCompany,
+    execute: executeUpdateCompany,
   },
   record_investment: {
     entity: 'optional',

@@ -143,20 +143,8 @@ export function CompanyUpdates({ companyId }: Props) {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="mt-6">
-        <div className="flex items-center gap-2 mb-2">
-          <Mail className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground">Updates</span>
-        </div>
-        <div className="animate-pulse space-y-2">
-          <div className="h-10 bg-muted rounded w-full" />
-          <div className="h-10 bg-muted rounded w-full" />
-        </div>
-      </div>
-    )
-  }
+  // Nothing captured, nothing to show: the section appears once a company has an update.
+  if (loading || updates.length === 0) return null
 
   return (
     <div className="mt-6">
@@ -175,14 +163,7 @@ export function CompanyUpdates({ companyId }: Props) {
         <div className="mb-2 rounded-lg bg-destructive-subtle px-3 py-2 text-sm text-destructive">{error}</div>
       )}
 
-      {expanded && updates.length === 0 && !error && (
-        <p className="text-sm text-muted-foreground">
-          No reporting updates captured yet. Updates appear here when a portfolio-reporting email is
-          assigned to this company.
-        </p>
-      )}
-
-      {expanded && updates.length > 0 && (
+      {expanded && (
         <div className="rounded-card border bg-card shadow-sm dark:shadow-none divide-y">
           {updates.map(update => {
             const open = openId === update.id

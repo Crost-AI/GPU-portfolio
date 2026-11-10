@@ -14,6 +14,7 @@ import { memoryAdmin } from './helpers/memory-admin'
 
 let scopes = ['read', 'write']
 let keyId = 'oauth:claude'
+let pool: unknown = undefined
 let access: AccessContext
 let store: ReturnType<typeof memoryAdmin>
 const addChartAccount = vi.fn(async (_a: unknown, _f: string, _g: string, input: any) => ({ account: { code: input.code, name: input.name } }))
@@ -26,7 +27,7 @@ vi.mock('@/lib/pending-actions/notify', () => ({ notifyAdminsOfStagedChange: asy
 vi.mock('@/lib/accounting/chart-add', () => ({ addChartAccount: (...args: any[]) => (addChartAccount as any)(...args) }))
 vi.mock('@/lib/accounting/api-keys', async importOriginal => {
   const credential = (req: Request) =>
-    req.headers.get('authorization') ? { fundId: 'fund-1', keyId, userId: 'user-me', role: access.role, scopes } : null
+    req.headers.get('authorization') ? { fundId: 'fund-1', keyId, userId: 'user-me', role: access.role, scopes, ...(pool ? { pool } : {}) } : null
   return {
     ...(await importOriginal<typeof import('@/lib/accounting/api-keys')>()),
     resolveAgentAuth: async (_admin: unknown, req: Request) => credential(req),
@@ -70,6 +71,7 @@ const audit = () => store.tables.accounting_audit_events ?? []
 beforeEach(() => {
   scopes = ['read', 'write']
   keyId = 'oauth:claude'
+  pool = undefined
   access = member({ accounting: 'write' })
   addChartAccount.mockClear()
   rateKeys.length = 0
@@ -80,6 +82,43 @@ beforeEach(() => {
     accounting_audit_events: [],
     api_idempotency_keys: [],
   }, { unique: [{ table: 'api_idempotency_keys', key: r => `${r.fund_id}|${r.client_id}|${r.endpoint}|${r.key}` }] })
+})
+
+// A master admin connection (upstream #126; Bugbot on #131). A host caches its tool list, and search_tools
+// is how a cached conversation finds what it lacks, so it must find the two switch tools too.
+describe('a connection in a master admin pool', () => {
+  const POOL = {
+    userId: 'user-me', clientId: 'claude', activeFundId: 'fund-1',
+    funds: [
+      { fundId: 'fund-1', fundName: 'Example Fund I', email: 'a@fund.example', userId: 'user-me', role: 'admin' },
+      { fundId: 'fund-2', fundName: 'Example Fund II', email: 'b@fund.example', userId: 'user-2', role: 'admin' },
+    ],
+  }
+  beforeEach(() => { pool = POOL; access = member({ accounting: 'write' }, 'admin') })
+
+  it('search_tools lists the switch tools, finds them by query, and describes them by name', async () => {
+    const listed = (await callTool('search_tools', {})).result.content.map((c: any) => c.text).join('\n')
+    expect(listed).toContain('list_funds')
+    expect(listed).toContain('use_fund')
+
+    const found = (await callTool('search_tools', { query: 'switch the active fund' })).result.content.map((c: any) => c.text).join('\n')
+    expect(found).toContain('use_fund')
+
+    const named = (await callTool('search_tools', { names: ['use_fund'] })).result.content.map((c: any) => c.text).join('\n')
+    expect(named).toContain('inputSchema')
+    expect(named).not.toContain('notFound')
+  })
+
+  it('search_tools does not offer them to an ordinary connection', async () => {
+    pool = undefined
+    expect((await callTool('search_tools', {})).text).not.toContain('use_fund')
+  })
+
+  it('call_tool says the fund once, as a direct call does', async () => {
+    const fundLines = (r: any) => r.content.filter((c: any) => /^Fund: /.test(c.text)).length
+    expect(fundLines((await callTool('list_pending_actions', {})).result)).toBe(1)
+    expect(fundLines((await viaGateway('list_pending_actions', {})).result)).toBe(1)
+  })
 })
 
 describe('the tool list', () => {
@@ -103,6 +142,21 @@ describe('the tool list', () => {
     expect(result.instructions).toMatch(/search_tools.*call_tool/)
     expect(result.instructions).toContain(toolListVersion(access))
     expect(result._meta.toolListVersion).toBe(toolListVersion(access))
+  })
+
+  it('tells a chat to ask for approval in the conversation and approve on the yes', async () => {
+    const { result } = await rpc('initialize', { protocolVersion: '2025-06-18' })
+    expect(result.instructions).toMatch(/Approve in the chat by default/)
+    expect(result.instructions).toMatch(/approve_action .*only after they explicitly say yes/)
+    expect(result.instructions).not.toMatch(/cannot approve/)
+  })
+
+  it("tells a script's key to hand over the link, since it cannot approve what it staged", async () => {
+    keyId = 'key-1'
+    const { result } = await rpc('initialize', { protocolVersion: '2025-06-18' })
+    expect(result.instructions).toMatch(/Give the person the approveUrl/)
+    expect(result.instructions).toMatch(/cannot approve a change it staged/)
+    expect(result.instructions).not.toMatch(/Approve in the chat/)
   })
 
   it('annotates call_tool as not read-only, so a host asks before running it', () => {
