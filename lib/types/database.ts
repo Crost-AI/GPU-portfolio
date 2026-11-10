@@ -1404,10 +1404,6 @@ export type Database = {
           google_refresh_token_encrypted: string | null
           id: string
           inbound_email_provider: string | null
-          mailgun_api_key_encrypted: string | null
-          mailgun_inbound_domain: string | null
-          mailgun_sending_domain: string | null
-          mailgun_signing_key_encrypted: string | null
           openai_api_key_encrypted: string | null
           openai_model: string
           outbound_email_provider: string | null
@@ -1416,6 +1412,8 @@ export type Database = {
           postmark_webhook_token: string | null
           postmark_webhook_token_encrypted: string | null
           resend_api_key_encrypted: string | null
+          resend_inbound_domain: string | null
+          resend_webhook_secret_encrypted: string | null
           resolved_reviews_ttl_days: number | null
           retain_resolved_reviews: boolean | null
           routing_confidence_threshold: number | null
@@ -1457,10 +1455,6 @@ export type Database = {
           google_refresh_token_encrypted?: string | null
           id?: string
           inbound_email_provider?: string | null
-          mailgun_api_key_encrypted?: string | null
-          mailgun_inbound_domain?: string | null
-          mailgun_sending_domain?: string | null
-          mailgun_signing_key_encrypted?: string | null
           openai_api_key_encrypted?: string | null
           openai_model?: string
           outbound_email_provider?: string | null
@@ -1469,6 +1463,8 @@ export type Database = {
           postmark_webhook_token?: string | null
           postmark_webhook_token_encrypted?: string | null
           resend_api_key_encrypted?: string | null
+          resend_inbound_domain?: string | null
+          resend_webhook_secret_encrypted?: string | null
           resolved_reviews_ttl_days?: number | null
           retain_resolved_reviews?: boolean | null
           routing_confidence_threshold?: number | null
@@ -1510,10 +1506,6 @@ export type Database = {
           google_refresh_token_encrypted?: string | null
           id?: string
           inbound_email_provider?: string | null
-          mailgun_api_key_encrypted?: string | null
-          mailgun_inbound_domain?: string | null
-          mailgun_sending_domain?: string | null
-          mailgun_signing_key_encrypted?: string | null
           openai_api_key_encrypted?: string | null
           openai_model?: string
           outbound_email_provider?: string | null
@@ -1522,6 +1514,8 @@ export type Database = {
           postmark_webhook_token?: string | null
           postmark_webhook_token_encrypted?: string | null
           resend_api_key_encrypted?: string | null
+          resend_inbound_domain?: string | null
+          resend_webhook_secret_encrypted?: string | null
           resolved_reviews_ttl_days?: number | null
           retain_resolved_reviews?: boolean | null
           routing_confidence_threshold?: number | null
