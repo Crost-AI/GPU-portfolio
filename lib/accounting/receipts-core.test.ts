@@ -64,7 +64,7 @@ describe('isReceiptFile', () => {
 })
 
 describe('matching', () => {
-  const receipt = { amount: 250, receiptDate: '2026-05-10', vendorName: 'Cooley LLP' }
+  const receipt = { amount: 250, receiptDate: '2026-05-10', vendorName: 'Acme Legal LLP' }
   it('requires the amount', () => {
     expect(scoreCandidate(receipt, { kind: 'entry', id: 'a', date: '2026-05-10', amount: 260, description: null, status: 'posted' })).toBeNull()
   })
@@ -78,7 +78,7 @@ describe('matching', () => {
   it('ranks same day and vendor named first', () => {
     const ranked = rankCandidates(receipt, [
       { kind: 'entry', id: 'later', date: '2026-05-16', amount: 250, description: 'legal', status: 'posted' },
-      { kind: 'bank', id: 'best', date: '2026-05-10', amount: 250, description: 'COOLEY LLP WIRE', status: 'x' },
+      { kind: 'bank', id: 'best', date: '2026-05-10', amount: 250, description: 'ACME LEGAL LLP WIRE', status: 'x' },
     ])
     expect(ranked.map(r => r.id)).toEqual(['best', 'later'])
     expect(ranked[0].score).toBe(1)

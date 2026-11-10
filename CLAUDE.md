@@ -2,6 +2,23 @@
 
 Conventions baked in to keep automated edits safe across this repo. Read before generating migrations or refactoring data-access code.
 
+## No real data, anywhere
+
+This repo is public. Never put a real fund, LP, investor, customer, client, user, portfolio company,
+vendor, bank or person's name into it, nor their email addresses or domains, account numbers, or
+real figures (commitments, balances, marks, share counts, fees). That covers code, tests, fixtures,
+comments, docs, migrations, commit messages, branch names and PR titles and descriptions. It holds
+even when the data came from a bug report, a screenshot, a spreadsheet or a production query: rebuild
+the case with invented values that keep the same shape.
+
+- Use invented placeholders: `Acme`, `Northwind`, `Example Fund I`, `Jane Doe`, round figures like
+  `100_000`, and `.example` domains (`gp@fund.example`).
+- The only real names allowed are Hemrock's own (Hemrock, hemrock.com) and Unstructured Ventures.
+- Don't link to claude.ai session or conversation URLs in commits, PRs or code.
+
+`tests/no-real-names.test.ts` fails on known names (stored as hashes, so the test names no one) and on
+Claude session links. Passing it doesn't make a change clean; it only catches names already known.
+
 ## Styling
 
 `DESIGN.md` is the design system; `app/globals.css` holds the tokens. Read it before writing UI.
