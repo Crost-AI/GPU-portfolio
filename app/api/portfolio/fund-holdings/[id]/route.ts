@@ -4,13 +4,12 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveHoldingVehicle } from '@/lib/portfolio/fof-register'
 // portfolio domain, investments feature (lib/access/route-domains.ts).
 import { assertReadAccess, assertWriteAccess } from '@/lib/api-helpers'
-import { dbError } from '@/lib/api-error'
-import { LEDGER_BOOKS } from '@/lib/accounting/books'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, scopeCompanyRows, visibleVehicleIds } from '@/lib/access/scope'
-import { companyDeleteDenial } from '@/lib/access/company-delete'
 import { loadEntityScope } from '@/lib/access/entity-scope'
 import { FUND_REVIEW_TYPES, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
+import { deleteFundHolding } from '@/lib/portfolio/fund-holding-delete'
+import { outcomeResponse } from '@/lib/service-outcome'
 
 // One fund holding and its terms.
 export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
@@ -148,11 +147,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   return NextResponse.json({ ok: true })
 }
 
-// DELETE — the holding, cascading its terms, register and NAV statements.
-//
-// REFUSED once anything has posted. A register row carrying an investment_transaction_id is
-// represented in the ledger; deleting the holding behind the ledger's back leaves postings
-// referencing a holding that no longer exists.
+// DELETE — the holding, cascading its terms, register and NAV statements. The checks and the
+// delete are lib/portfolio/fund-holding-delete.ts, shared with the delete_fund_holding tool.
 export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const supabase = await createClient()
@@ -162,111 +158,6 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
   const gate = await assertWriteAccess(admin, user.id)
   if (gate instanceof NextResponse) return gate
 
-  // A FUND holding only: a company or a digital asset has its own delete route and checks.
-  const { data: holding, error: holdingError } = await (admin as any)
-    .from('companies').select('id').eq('id', params.id).eq('fund_id', gate.fundId).eq('holding_type', 'fund').maybeSingle()
-  if (holdingError) return dbError(holdingError, 'fund-holdings-id-delete')
-  if (!holding) return NextResponse.json({ error: 'Fund holding not found' }, { status: 404 })
-
-  // Deleting removes the holding for every entity that commits to it, so a member may delete only
-  // a holding wholly theirs.
-  const deleteDenied = await companyDeleteDenial(admin, await loadEntityScope(admin, gate), params.id)
-  if (deleteDenied) return NextResponse.json({ error: deleteDenied.replace('this company', 'this fund') }, { status: 403 })
-
-  // Every check below REFUSES on a failed read: a read that failed is not a holding with nothing on it.
-  const { count, error: eventsError } = await (admin as any)
-    .from('fund_capital_events')
-    .select('id', { count: 'exact', head: true })
-    .eq('fund_id', gate.fundId)
-    .eq('company_id', params.id)
-    .not('investment_transaction_id', 'is', null)
-  if (eventsError) return dbError(eventsError, 'fund-holdings-id-delete')
-
-  if ((count ?? 0) > 0) {
-    return NextResponse.json({
-      error: `This holding has ${count} confirmed event(s) posted to the ledger. `
-           + `Reverse those entries before deleting the holding.`,
-    }, { status: 409 })
-  }
-
-  const { count: navCount, error: navError } = await (admin as any)
-    .from('fund_nav_statements')
-    .select('id', { count: 'exact', head: true })
-    .eq('fund_id', gate.fundId)
-    .eq('company_id', params.id)
-    .not('investment_transaction_id', 'is', null)
-  if (navError) return dbError(navError, 'fund-holdings-id-delete')
-  if ((navCount ?? 0) > 0) {
-    return NextResponse.json({
-      error: `This holding has ${navCount} NAV statement(s) with a mark on the ledger. `
-           + `Delete its NAV statements first — deleting one takes its mark off the ledger.`,
-    }, { status: 409 })
-  }
-
-  // Any investment transaction left — one recorded directly, or adopted from a journal entry — is
-  // the ledger's too, and cascading it away would skip the retraction its own delete does (as the
-  // companies route refuses).
-  const { count: txnCount, error: txnError } = await (admin as any)
-    .from('investment_transactions')
-    .select('id', { count: 'exact', head: true })
-    .eq('fund_id', gate.fundId)
-    .eq('company_id', params.id)
-  if (txnError) return dbError(txnError, 'fund-holdings-id-delete')
-  if ((txnCount ?? 0) > 0) {
-    return NextResponse.json({
-      error: `This holding has ${txnCount} investment transaction(s). `
-           + `Delete them first so their accounting entries are retracted.`,
-    }, { status: 409 })
-  }
-
-  // The holding's own accounts (1100-<id>, 1200-<id>, …). chart_of_accounts.company_id is
-  // ON DELETE SET NULL, so deleting the company ORPHANS these rather than removing them —
-  // they linger in the chart with a null company_id, named after a holding that no longer
-  // exists. Remove them here instead, but only once we know they carry nothing.
-  const { data: acctRows, error: acctError } = await admin
-    .from('chart_of_accounts' as any)
-    .select('id, code')
-    .eq('fund_id', gate.fundId)
-    .eq('company_id', params.id)
-  if (acctError) return dbError(acctError, 'fund-holdings-id-delete')
-  const acctIds = ((acctRows as any[]) ?? []).map(a => a.id)
-
-  if (acctIds.length > 0) {
-    // A posting against one of these accounts — in ANY book, tax adjustments included — means this
-    // holding is in the ledger by some path the checks above do not cover. Deleting then would
-    // strand postings pointing at accounts for a deleted holding.
-    const { count: postingCount, error: postingError } = await admin
-      .from('journal_postings' as any)
-      .select('id', { count: 'exact', head: true })
-      .in('book', LEDGER_BOOKS)
-      .eq('fund_id', gate.fundId)
-      .in('account_id', acctIds)
-    if (postingError) return dbError(postingError, 'fund-holdings-id-delete')
-
-    if ((postingCount ?? 0) > 0) {
-      return NextResponse.json({
-        error: `This holding's accounts carry ${postingCount} ledger posting(s). `
-             + `Reverse the entries behind them before deleting the holding.`,
-      }, { status: 409 })
-    }
-  }
-
-  const { error } = await admin
-    .from('companies').delete().eq('id', params.id).eq('fund_id', gate.fundId)
-  if (error) return dbError(error, 'fund-holdings-id-delete')
-
-  // After the company is gone: its accounts now have a null company_id, so delete by id.
-  if (acctIds.length > 0) {
-    const { error: acctErr } = await admin
-      .from('chart_of_accounts' as any).delete().eq('fund_id', gate.fundId).in('id', acctIds)
-    // The holding is already gone; a failure here leaves tidy-up, not corruption.
-    if (acctErr) {
-      return NextResponse.json({
-        ok: true,
-        warning: `The holding was deleted, but ${acctIds.length} of its chart accounts could not be removed: ${acctErr.message}`,
-      })
-    }
-  }
-
-  return NextResponse.json({ ok: true, accountsRemoved: acctIds.length })
+  const out = await deleteFundHolding(admin, gate, params.id, () => loadEntityScope(admin, gate))
+  return outcomeResponse(out, v => ({ ok: true, accountsRemoved: v.accountsRemoved, ...(v.warning ? { warning: v.warning } : {}) }))
 }

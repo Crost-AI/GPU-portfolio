@@ -102,15 +102,19 @@ async function getJson<T>(appFetch: AppFetch, url: string): Promise<T | null> {
   }
 }
 
+const HOLDING_HINTS: Record<string, string> = { fund: 'fund holding', crypto: 'digital asset' }
+
 function useRecords(open: boolean): Records {
   const access = useAccess()
   const appFetch = useAppFetch()
   const [records, setRecords] = useState<Records>(EMPTY_RECORDS)
-  const loaded = useRef(false)
 
+  // Fetched on every open, not once per session: the shell outlives navigation, so a list loaded
+  // once never showed a company added since, and one failed fetch left a group empty for good.
+  // The last lists stay on screen while the new ones load.
   useEffect(() => {
-    if (!open || loaded.current) return
-    loaded.current = true
+    if (!open) return
+    let cancelled = false
 
     const canRead = (d: Parameters<typeof access>[0], f?: Parameters<typeof access>[1]) => {
       const level = access(d, f)
@@ -122,21 +126,23 @@ function useRecords(open: boolean): Records {
     const jobs: Promise<Partial<Records>>[] = []
     if (canRead('accounting')) {
       jobs.push(getJson<PaletteVehicle[]>(appFetch, '/api/accounting/vehicle-index')
-        .then(v => ({ vehicles: Array.isArray(v) ? v : [] })))
+        .then(v => (Array.isArray(v) ? { vehicles: v } : {})))
     }
     if (canRead('portfolio')) {
-      jobs.push(getJson<{ id: string; name: string; aliases: string[] | null }[]>(appFetch, '/api/companies')
-        .then(rows => ({
-          companies: (Array.isArray(rows) ? rows : []).map(c => ({
+      // Every holding, fund holdings and digital assets included: each opens on /companies/[id].
+      jobs.push(getJson<{ id: string; name: string; aliases: string[] | null; holdingType?: string }[]>(appFetch, '/api/companies?holdings=all')
+        .then(rows => (!Array.isArray(rows) ? {} : {
+          companies: rows.map(c => ({
             id: `company:${c.id}`, label: c.name, href: `/companies/${c.id}`, group: 'companies' as PaletteGroup,
+            hint: c.holdingType ? HOLDING_HINTS[c.holdingType] : undefined,
             keywords: c.aliases ?? undefined,
           })),
         })))
     }
     if (canRead('lp_capital', 'lps')) {
       jobs.push(getJson<{ id: string; name: string; lp_entities?: { entity_name: string }[] }[]>(appFetch, '/api/lps/investors')
-        .then(rows => ({
-          lps: (Array.isArray(rows) ? rows : []).map(inv => ({
+        .then(rows => (!Array.isArray(rows) ? {} : {
+          lps: rows.map(inv => ({
             id: `lp:${inv.id}`, label: inv.name, href: `/lps/cards/${inv.id}`, group: 'lps' as PaletteGroup,
             keywords: (inv.lp_entities ?? []).map(e => e.entity_name),
           })),
@@ -144,8 +150,8 @@ function useRecords(open: boolean): Records {
     }
     if (canRead('dealflow', 'deals')) {
       jobs.push(getJson<{ id: string; company_name: string | null; founder_name: string | null; status: string }[]>(appFetch, '/api/deals?limit=200')
-        .then(rows => ({
-          deals: (Array.isArray(rows) ? rows : []).map(d => ({
+        .then(rows => (!Array.isArray(rows) ? {} : {
+          deals: rows.map(d => ({
             id: `deal:${d.id}`, label: d.company_name ?? d.founder_name ?? 'Untitled deal', hint: d.status?.replace(/_/g, ' '),
             href: `/deals/${d.id}`, group: 'deals' as PaletteGroup,
             keywords: d.founder_name ? [d.founder_name] : undefined,
@@ -154,8 +160,10 @@ function useRecords(open: boolean): Records {
     }
 
     Promise.all(jobs).then(parts => {
-      setRecords(parts.reduce<Records>((acc, p) => ({ ...acc, ...p }), EMPTY_RECORDS))
+      // A list whose fetch failed keeps what it had.
+      if (!cancelled) setRecords(prev => parts.reduce<Records>((acc, p) => ({ ...acc, ...p }), prev))
     })
+    return () => { cancelled = true }
   }, [open, access, appFetch])
 
   return records

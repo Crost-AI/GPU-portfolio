@@ -110,6 +110,14 @@ describe('matchEntries', () => {
     expect(matchEntries('societe', accented)).toHaveLength(1)
   })
 
+  it('caps each group on its own, so pages sharing a word never crowd out a company', () => {
+    const pages = Array.from({ length: 60 }, (_, i) => ({ id: `p${i}`, label: `Capital page ${i}`, href: `/p/${i}`, group: 'pages' as const }))
+    const company = { id: 'c', label: 'Capital Example', href: '/companies/c', group: 'companies' as const }
+    const hits = matchEntries('capital', [...pages, company])
+    expect(hits).toContain(company)
+    expect(hits.filter(e => e.group === 'pages')).toHaveLength(40)
+  })
+
   it('returns nothing for a query nothing matches', () => {
     expect(matchEntries('zzzz', entries)).toEqual([])
   })
