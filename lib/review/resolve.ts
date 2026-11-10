@@ -16,6 +16,7 @@ import { hasAccess, type AccessContext } from '@/lib/access/effective'
 import { approveFundReview, type FundApproval } from '@/lib/portfolio/fof-reviews'
 import { isFundReviewType, scopeFundReviews } from '@/lib/portfolio/fof-review-types'
 import { visibleCompanyIds } from '@/lib/access/scope'
+import { IN_CHUNK } from '@/lib/accounting/load'
 import { excludeHiddenCompanies, fleetCompanyDenied, FLEET_HOLDING_TYPE, hiddenFleetIdsFor } from '@/lib/access/fleet-company'
 import { dbFail, done, fail, type Outcome } from '@/lib/service-outcome'
 
@@ -330,6 +331,27 @@ export async function resolveReview(
 }
 
 /**
+ * The newest rows across the caller's companies. A scoped member's list can be longer than a URL can
+ * hold, so it is read in chunks, each to the limit, and merged. `read(null)` is every company.
+ */
+async function newestAcrossCompanies(
+  visible: string[] | null,
+  dateColumn: string,
+  limit: number,
+  what: string,
+  read: (ids: string[] | null) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+): Promise<any[]> {
+  const chunks: (string[] | null)[] = visible === null ? [null] : []
+  if (visible !== null) for (let i = 0; i < visible.length; i += IN_CHUNK) chunks.push(visible.slice(i, i + IN_CHUNK))
+  const pages = await Promise.all(chunks.map(read))
+  const failed = pages.find(p => p.error)
+  if (failed) throw new Error(`${what} read failed: ${failed.error!.message}`)
+  return pages.flatMap(p => (p.data as any[]) ?? [])
+    .sort((a, b) => String(b[dateColumn]).localeCompare(String(a[dateColumn])))
+    .slice(0, limit)
+}
+
+/**
  * The open review queue as this caller may see it, for the agent: the same items the review page
  * lists, read with the service role and narrowed to the caller's companies and entities.
  */
@@ -338,21 +360,22 @@ export async function loadReviewQueue(admin: SupabaseClient, access: AccessConte
   if (visible !== null && visible.length === 0) return { total: 0, counts: {}, items: [], needsReviewEmails: [] }
   // ── GPU fleet (P3) ── Reviews and emails about a fleet company the caller may not read stay out (#91).
   const hiddenFleet = await hiddenFleetIdsFor(admin, access)
-  let q = (admin as any)
-    .from('parsing_reviews')
-    .select(`
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500)
+  const data = await newestAcrossCompanies(visible, 'created_at', limit, 'review queue', ids => {
+    let q = (admin as any)
+      .from('parsing_reviews')
+      .select(`
       id, issue_type, extracted_value, context_snippet, created_at, payload, vehicle_id, company_id,
       companies ( id, name ),
       metrics ( id, name, unit, value_type ),
       inbound_emails ( id, subject, received_at, from_address ),
       fund_vehicles ( id, name )
     `)
-    .eq('fund_id', access.fundId)
-    .is('resolution', null)
-  if (visible !== null) q = q.in('company_id', visible)
-  q = excludeHiddenCompanies(q, hiddenFleet)
-  const { data, error } = await q.order('created_at', { ascending: false }).limit(Math.min(Math.max(opts.limit ?? 100, 1), 500))
-  if (error) throw new Error(`review queue read failed: ${error.message}`)
+      .eq('fund_id', access.fundId)
+      .is('resolution', null)
+    if (ids !== null) q = q.in('company_id', ids)
+    return excludeHiddenCompanies(q, hiddenFleet).order('created_at', { ascending: false }).limit(limit)
+  })
 
   const fundReadable = hasAccess(access, 'portfolio', 'read', 'investments')
   const rows = scopeFundReviews(((data as any[]) ?? []), access)
@@ -373,16 +396,15 @@ export async function loadReviewQueue(admin: SupabaseClient, access: AccessConte
   const counts: Record<string, number> = {}
   for (const item of items) counts[item.issue_type] = (counts[item.issue_type] ?? 0) + 1
 
-  let eq = (admin as any)
-    .from('inbound_emails')
-    .select('id, from_address, subject, received_at, company_id')
-    .eq('fund_id', access.fundId)
-    .eq('processing_status', 'needs_review')
-  if (visible !== null) eq = eq.in('company_id', visible)
-  eq = excludeHiddenCompanies(eq, hiddenFleet)
-  const { data: emails, error: emailError } = await eq.order('received_at', { ascending: false }).limit(100)
-  if (emailError) throw new Error(`inbound_emails read failed: ${emailError.message}`)
-  const emailRows = (emails as any[]) ?? []
+  const emailRows = await newestAcrossCompanies(visible, 'received_at', 100, 'inbound_emails', ids => {
+    let eq = (admin as any)
+      .from('inbound_emails')
+      .select('id, from_address, subject, received_at, company_id')
+      .eq('fund_id', access.fundId)
+      .eq('processing_status', 'needs_review')
+    if (ids !== null) eq = eq.in('company_id', ids)
+    return excludeHiddenCompanies(eq, hiddenFleet).order('received_at', { ascending: false }).limit(100)
+  })
   const companyIds = Array.from(new Set(emailRows.map(e => e.company_id).filter(Boolean)))
   const { data: companies } = companyIds.length
     ? await (admin as any).from('companies').select('id, name').eq('fund_id', access.fundId).in('id', companyIds)

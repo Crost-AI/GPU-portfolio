@@ -11,6 +11,11 @@ const s = vi.hoisted(() => ({ access: null as any }))
 vi.mock('@/lib/access/effective', async (orig) => ({ ...(await orig<any>()), loadAccessContext: async () => s.access }))
 vi.mock('@/lib/activity', () => ({ logActivity: () => {} }))
 vi.mock('@/lib/cache/tags', () => ({ expireTag: () => {} }))
+const scopedTo = vi.hoisted(() => ({ ids: null as string[] | null }))
+vi.mock('@/lib/access/scope', async (orig) => {
+  const real = await orig<any>()
+  return { ...real, visibleCompanyIds: async (a: unknown, b: unknown) => scopedTo.ids ?? real.visibleCompanyIds(a, b) }
+})
 import { loadReviewForAccess, loadReviewQueue, resolveReview } from '@/lib/review/resolve'
 
 const member = (fleet: 'none' | 'read' | 'write') => ({
@@ -26,6 +31,7 @@ const review = (id: string, companyId: string) => ({
 
 let m: ReturnType<typeof memoryAdmin>
 beforeEach(() => {
+  scopedTo.ids = null
   m = memoryAdmin({
     companies: [
       { id: 'fleet-co', fund_id: 'f', name: 'GPU fleet', holding_type: 'gpu_fleet' },
@@ -38,6 +44,38 @@ beforeEach(() => {
       { id: 'e-vc', fund_id: 'f', company_id: 'vc-co', processing_status: 'needs_review', received_at: '2026-10-01', subject: 'b', from_address: 'b@x.example' },
     ],
     fund_settings: [{ fund_id: 'f', retain_resolved_reviews: true }],
+  })
+})
+
+describe('the agent review queue for a member scoped to many companies', () => {
+  it('reads their list in chunks a URL can hold, and still returns the newest first, up to the limit', async () => {
+    const ids = Array.from({ length: 450 }, (_, i) => `c${i}`)
+    scopedTo.ids = ids
+    s.access = member('read')
+    m.tables.parsing_reviews = [
+      { ...review('old', 'c0'), created_at: '2026-01-01T00:00:00Z' },
+      { ...review('new', 'c449'), created_at: '2026-09-01T00:00:00Z' },
+      { ...review('mid', 'c210'), created_at: '2026-05-01T00:00:00Z' },
+    ]
+    m.tables.inbound_emails = [
+      { id: 'e-old', fund_id: 'f', company_id: 'c1', processing_status: 'needs_review', received_at: '2026-01-01', subject: 'a', from_address: 'a@x.example' },
+      { id: 'e-new', fund_id: 'f', company_id: 'c448', processing_status: 'needs_review', received_at: '2026-09-01', subject: 'b', from_address: 'b@x.example' },
+    ]
+    const sizes: number[] = []
+    const from = m.admin.from
+    m.admin.from = (t: string) => {
+      const q = from(t)
+      if (t === 'parsing_reviews' || t === 'inbound_emails') {
+        const inner = q.in
+        q.in = (k: string, v: unknown[]) => { sizes.push(v.length); return inner(k, v) }
+      }
+      return q
+    }
+    const q = await loadReviewQueue(m.admin as any, s.access)
+    expect(q.items.map(i => i.id)).toEqual(['new', 'mid', 'old'])
+    expect(q.needsReviewEmails.map(e => e.id)).toEqual(['e-new', 'e-old'])
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(200)
+    expect((await loadReviewQueue(m.admin as any, s.access, { limit: 2 })).items.map(i => i.id)).toEqual(['new', 'mid'])
   })
 })
 
