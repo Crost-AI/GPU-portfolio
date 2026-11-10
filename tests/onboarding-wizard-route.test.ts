@@ -99,6 +99,8 @@ function chain(table: string): any {
       return c
     },
     contains: () => c,
+    in: () => c,
+    not: () => c,
     limit: () => c,
     order: () => c,
     maybeSingle: async () => {
@@ -379,7 +381,7 @@ describe('consumer mailbox domains never match a fund', () => {
     mocks.getUser.mockResolvedValue({ data: { user: { id: 'user-2', email: 'another@gmail.com' } } })
   })
 
-  it('check-domain offers nothing to a gmail.com user, without even looking', async () => {
+  it('check-domain offers nothing to a gmail.com user no fund listed by address', async () => {
     expect(await (await checkDomain()).json()).toEqual({ fund: null })
     expect(fundsQueried).toBe(false)
   })

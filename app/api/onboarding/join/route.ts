@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimit, getClientIp } from '@/lib/rate-limit'
 import { dbError } from '@/lib/api-error'
-import { claimableEmailDomain } from '@/lib/onboarding/wizard'
+import { joinableFunds } from '@/lib/onboarding/joinable-funds'
 
 export async function POST(req: NextRequest) {
   // Rate limit: 10 requests per 5 minutes per IP
@@ -44,20 +44,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Verify the fund exists and the user's email domain matches
-  const { data: fund } = await admin
-    .from('funds')
-    .select('id, name, email_domain')
-    .eq('id', fundId)
-    .single()
-
-  if (!fund) return NextResponse.json({ error: 'Fund not found' }, { status: 404 })
-
-  // A shared consumer domain (gmail.com …) proves nothing about who the caller works for, so it
-  // never matches — even against a fund created before funds stopped claiming such domains.
-  const userDomain = claimableEmailDomain(user.email)
-  if (!userDomain || fund.email_domain?.toLowerCase() !== userDomain) {
-    return NextResponse.json({ error: 'Email domain does not match this fund' }, { status: 403 })
+  // The fund must have listed this exact address or its domain on its signup allow-list, or claim
+  // the domain itself. A consumer mailbox domain (gmail.com …) proves nothing about who the caller
+  // works for, so it only ever matches through an exact address — see joinableFunds.
+  const fund = (await joinableFunds(admin, user.email)).find(f => f.id === fundId)
+  if (!fund) {
+    return NextResponse.json({ error: 'This fund does not accept requests from your email address' }, { status: 403 })
   }
 
   // Check for existing pending request
