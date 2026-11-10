@@ -4,6 +4,7 @@ import { vehicleNameById } from '@/lib/accounting/vehicle-id'
 import type { AccessContext } from '@/lib/access/effective'
 import { canSeeVehicle } from '@/lib/access/scope'
 import type { NavBooking } from './fof-nav'
+import { costRecoverySplit, isUncharacterised, remainingCostAt } from './distribution-cost-recovery'
 
 /**
  * The register produces ordinary investment_transactions rows. It is the ONLY thing that
@@ -154,6 +155,24 @@ export async function confirmFundCapitalEvent(
     .select('ledger_start_date')
     .eq('fund_id', fundId).eq('vehicle_id', row.vehicle_id)
     .maybeSingle()
+
+  // A distribution recorded without a character is split by cost recovery against the cost the
+  // holding still carries on this entity (./distribution-cost-recovery.ts), and the split is kept on
+  // the notice so it says what was booked.
+  if (row.kind === 'distribution' && row.vehicle_id && isUncharacterised(toRegisterEvent(row))) {
+    const vehicleName = await vehicleNameById(admin, fundId, row.vehicle_id)
+    if (vehicleName) {
+      const remaining = await remainingCostAt(admin, fundId, row.company_id, vehicleName, row.event_date)
+      const split = costRecoverySplit(Number(row.amount), remaining)
+      const character = {
+        char_return_of_capital: split.returnOfCapital,
+        char_realized_gain: split.realizedGain,
+        char_income: split.income,
+      }
+      await (admin as any).from('fund_capital_events').update(character).eq('id', eventId).eq('fund_id', fundId)
+      Object.assign(row, character)
+    }
+  }
 
   let draft: TransactionDraft | null
   try {
