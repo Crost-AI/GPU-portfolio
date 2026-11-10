@@ -386,6 +386,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/portfolio/fund-holdings': { domain: 'portfolio', feature: 'investments' },
   'api/portfolio/fund-holdings/[id]': { domain: 'portfolio', feature: 'investments' },
   'api/portfolio/fund-holdings/[id]/events': { domain: 'portfolio', feature: 'investments' },
+  'api/portfolio/fund-holdings/[id]/distributions/recalculate': { domain: 'portfolio', feature: 'investments' },
+  'api/portfolio/fund-holdings/[id]/events/[eventId]': { domain: 'portfolio', feature: 'investments' },
   'api/portfolio/fund-holdings/[id]/nav': { domain: 'portfolio', feature: 'investments' },
   'api/portfolio/investments': { domain: 'portfolio', feature: 'investments' },
   'api/requests': { domain: 'portfolio', feature: 'asks' },

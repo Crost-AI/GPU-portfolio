@@ -7,7 +7,7 @@ vi.mock('@/lib/api-helpers', () => ({ assertReadAccess: mocks.gate, assertWriteA
 vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: mocks.group }))
 vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: mocks.vehicle }))
 vi.mock('@/lib/accounting/capital-calls', () => ({ loadSettlements: vi.fn() }))
-vi.mock('@/lib/accounting/settlement-reviews', () => ({ loadSettlementReviews: vi.fn() }))
+vi.mock('@/lib/accounting/settlement-reviews', async (actual) => ({ ...(await actual<typeof import('@/lib/accounting/settlement-reviews')>()), loadSettlementReviews: vi.fn() }))
 import { POST } from '@/app/api/accounting/settlements/route'
 const line = '00000000-0000-0000-0000-000000000001'
 const entry = '00000000-0000-0000-0000-000000000002'

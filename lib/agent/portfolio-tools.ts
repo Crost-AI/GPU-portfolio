@@ -29,6 +29,7 @@ import { createCompanyNote } from '@/lib/notes/create'
 import { EDITABLE_TXN_FIELDS, deleteInvestmentTransaction, updateInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { unwrap } from '@/lib/service-outcome'
 import { escrowExceedsGross } from '@/lib/portfolio/proceeds'
+import { loadReviewForAccess, loadReviewQueue, resolveReview } from '@/lib/review/resolve'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -118,6 +119,23 @@ export const PORTFOLIO_HANDLERS: Record<string, AgentToolHandler> = {
       },
       input ?? {},
     ),
+
+  // The review queue the update pipeline fills: read and cleared by the Review page's own rules
+  // (lib/review/resolve.ts), so what submit_company_update sends for review can be finished in chat.
+  review_queue: async ({ admin, access }: AgentToolContext, input: any) =>
+    loadReviewQueue(admin, access, { limit: Number(input?.limit) || undefined }),
+
+  resolve_review: async ({ admin, fundId, userId, access }: AgentToolContext, input: any) => {
+    if (!userId) throw new Error('Resolving a review needs a signed-in member.')
+    const review = await loadReviewForAccess(admin, access, String(input?.review_id ?? ''))
+    if (!review) throw new Error('No open review with that id among your companies — list them with review_queue.')
+    return unwrap(await resolveReview(admin, { fundId, userId, loadAccess: async () => access }, review, {
+      resolution: String(input?.resolution ?? ''),
+      resolved_value: typeof input?.resolved_value === 'string' ? input.resolved_value : undefined,
+      vehicleId: typeof input?.vehicleId === 'string' ? input.vehicleId : undefined,
+      edits: input?.edits && typeof input.edits === 'object' ? input.edits : undefined,
+    }))
+  },
 
   list_vehicles: async ({ admin, fundId, access }: AgentToolContext) => {
     const { data } = await (admin as any)
