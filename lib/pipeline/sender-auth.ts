@@ -21,26 +21,38 @@ export function resendSenderVerified(auth: ResendAuthentication | null): boolean
 type Header = { Name?: string; Value?: string }
 
 /**
- * Postmark: the topmost Authentication-Results (the one Postmark's own server added; lower ones
- * came with the message and prove nothing) shows DMARC pass, or a DKIM or SPF pass for a domain
- * aligned with From. Without that header, a Received-SPF pass whose envelope sender is aligned.
+ * The envelope sender in a Received-SPF value, or null unless there is exactly one and it is a plain
+ * address. Postmark's format lists the sending server's `helo=` first, and the sender chooses both
+ * that and the local part, so `envelope-from=` found anywhere in the value proves nothing: a HELO can
+ * say it, and `"a@member.example"@attacker.example` reads as the member up to the quote (Crost #142).
+ * A genuine address this turns away only loses the member's treatment; its mail still arrives.
+ */
+function envelopeSender(spf: string): string | null {
+  const values = spf.split(';')
+    .map(field => field.trim().match(/^envelope-from=(.*)$/i)?.[1])
+    .filter((v): v is string => v !== undefined)
+  if (values.length !== 1) return null
+  const m = values[0].trim().match(/^(?:"([^\s"<>@]+@[^\s"<>@]+)"|<([^\s"<>@]+@[^\s"<>@]+)>|([^\s"<>@]+@[^\s"<>@]+))$/)
+  return m ? m[1] ?? m[2] ?? m[3] : null
+}
+
+/**
+ * Postmark: the topmost Received-SPF header is a pass for an envelope sender aligned with From.
+ *
+ * Only that header counts, on the ASSUMPTION that the first one in the forwarded headers is
+ * Postmark's own, as a receiver adds its trace headers above the message's. Postmark's documentation
+ * (https://postmarkapp.com/developer/user-guide/inbound/parse-an-email) shows the header but does not
+ * state the order, and no real message has tested it. Authentication-Results is NOT trusted: Postmark
+ * forwards every header the message carried, nothing guarantees the first such header was written by
+ * its receiver, and a sender can supply one claiming `dmarc=pass` (Crost #136). Without a Received-SPF
+ * the answer is no: the mail is still accepted from an authorized sender, but never gets a member's
+ * treatment.
  */
 export function postmarkSenderVerified(from: string, headers: Header[] | null | undefined): boolean {
   const fromDomain = domainOf(from)
   if (!fromDomain || !Array.isArray(headers)) return false
-  const named = (n: string) => headers.find(h => h?.Name?.toLowerCase() === n)?.Value ?? null
-  const results = named('authentication-results')
-  if (results) {
-    const lower = results.toLowerCase()
-    if (/\bdmarc=pass\b/.test(lower)) return true
-    for (const m of lower.matchAll(/\bdkim=pass\b[^;]*?\bheader\.(?:d|i)=([^\s;]+)/g)) if (aligned(fromDomain, m[1])) return true
-    for (const m of lower.matchAll(/\bspf=pass\b[^;]*?\bsmtp\.mailfrom=([^\s;]+)/g)) if (aligned(fromDomain, m[1])) return true
-    return false
-  }
-  const spf = named('received-spf')
-  if (spf && /^\s*pass\b/i.test(spf)) {
-    const m = spf.match(/envelope-from=["<]?([^\s">;]+)/i)
-    return aligned(fromDomain, m?.[1])
-  }
-  return false
+  const spf = headers.find(h => h?.Name?.toLowerCase() === 'received-spf')?.Value ?? null
+  if (!spf || !/^\s*pass\b/i.test(spf)) return false
+  const sender = envelopeSender(spf)
+  return sender !== null && aligned(fromDomain, sender)
 }
