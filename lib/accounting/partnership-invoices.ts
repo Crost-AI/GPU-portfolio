@@ -38,6 +38,7 @@ import { roundCents } from './ledger'
 import { liveEntryByRef } from './persist'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
+import { fetchAllRows } from './load'
 import { INTERCOMPANY_RECEIVABLE_SUBTYPE } from './chart'
 import { intercompanyChargeRef, postIntercompanyCharge, unwindIntercompanyEntry, intercompanyChart, pickIntercompanyAccounts, type IntercompanyChartRow } from './intercompany'
 import { amountDue, billablePostings, invoiceNumber, isoDateOrNull, parseAdjustments, quarterBounds, type InvoiceAdjustmentInput, type Quarter } from './receipts-core'
@@ -120,21 +121,23 @@ interface EntryRow {
 }
 
 /** Entries on the biller's books with a posting to any of these accounts (only those postings). */
-async function entriesTouching(
+export async function entriesTouching(
   admin: SupabaseClient, fundId: string, fromVehicleId: string, accountIds: string[],
   opts: { window?: { start: string | null; end: string } | null; statuses: string[] },
 ): Promise<EntryRow[]> {
   if (accountIds.length === 0) return []
-  let q = admin.from('journal_entries' as any)
-    .select('id, entry_date, memo, reference, status, vendor_id, source_type, journal_postings!inner(id, amount, account_id)')
-    .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
-    .in('status', opts.statuses)
-    .in('journal_postings.account_id', accountIds)
-  if (opts.window?.start) q = q.gte('entry_date', opts.window.start)
-  if (opts.window) q = q.lte('entry_date', opts.window.end)
-  const { data, error } = await q.order('entry_date', { ascending: true }).limit(5000)
-  if (error) throw new Error(`The Due-from entries could not be read: ${error.message}`)
-  return ((data as any[]) ?? []).map(e => ({ ...e, journal_postings: ((e.journal_postings as any[]) ?? []).map(p => ({ ...p, amount: Number(p.amount) })) }))
+  // Paged: with no start date this is every unbilled entry to date, past PostgREST's max_rows.
+  const rows = await fetchAllRows<any>((from, to) => {
+    let q = admin.from('journal_entries' as any)
+      .select('id, entry_date, memo, reference, status, vendor_id, source_type, journal_postings!inner(id, amount, account_id)')
+      .eq('fund_id', fundId).eq('vehicle_id', fromVehicleId).eq('book', ACTUAL_BOOK)
+      .in('status', opts.statuses)
+      .in('journal_postings.account_id', accountIds)
+    if (opts.window?.start) q = q.gte('entry_date', opts.window.start)
+    if (opts.window) q = q.lte('entry_date', opts.window.end)
+    return q.order('entry_date', { ascending: true }).range(from, to) as any
+  }).catch(e => { throw new Error(`The Due-from entries could not be read: ${e?.message ?? e}`) })
+  return rows.map(e => ({ ...e, journal_postings: ((e.journal_postings as any[]) ?? []).map(p => ({ ...p, amount: Number(p.amount) })) }))
 }
 
 /** Of these postings, the ones a live invoice already bills. */
