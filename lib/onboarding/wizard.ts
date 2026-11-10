@@ -148,7 +148,7 @@ export function isWizardAIProvider(v: unknown): v is WizardAIProvider {
  * other Gmail user who signs up is offered "Request to join" a stranger's fund (and the stranger's
  * admin gets their join requests). Organisation domains only.
  */
-const PUBLIC_EMAIL_DOMAINS = new Set([
+export const PUBLIC_EMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com',
   'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'passport.com',
   'yahoo.com', 'ymail.com', 'rocketmail.com',
@@ -163,7 +163,7 @@ const PUBLIC_EMAIL_DOMAINS = new Set([
 ])
 
 /** Country variants: gmx.at, yahoo.co.uk, hotmail.fr, outlook.de, live.co.uk … */
-const PUBLIC_EMAIL_FAMILIES = /^(gmx|yahoo|hotmail|outlook|live|googlemail|aol|yandex)\.[a-z.]{2,6}$/
+export const PUBLIC_EMAIL_FAMILIES = /^(gmx|yahoo|hotmail|outlook|live|googlemail|aol|yandex)\.[a-z.]{2,6}$/
 
 export function isPublicEmailDomain(domain: string | null | undefined): boolean {
   const d = (domain ?? '').trim().toLowerCase()

@@ -16,6 +16,7 @@ import { persistEntry } from './persist'
 import { fundCurrency } from './currency'
 import { ensureVendor } from './vendors'
 import { ensureIntercompanyAccounts } from './intercompany'
+import { saveAllocationRule } from './allocation-basis'
 import { vehicleNameById } from './vehicle-id'
 import { ACTUAL_BOOK } from './books'
 import {
@@ -41,6 +42,7 @@ export interface ReceiptRow {
   amount: number | null
   currency: string | null
   description: string | null
+  allocation_basis: string | null
   extraction_status: 'pending' | 'complete' | 'failed' | 'not_applicable'
   extraction_notes: string | null
   status: 'unmatched' | 'matched' | 'dismissed'
@@ -51,7 +53,7 @@ export interface ReceiptRow {
 }
 
 const COLUMNS = 'id, fund_id, vehicle_id, source, source_email_id, file_name, content_type, size_bytes, storage_path, ' +
-  'vendor_name, receipt_date, amount, currency, description, extraction_status, extraction_notes, status, ' +
+  'vendor_name, receipt_date, amount, currency, description, allocation_basis, extraction_status, extraction_notes, status, ' +
   'journal_entry_id, bank_transaction_id, matched_at, created_at'
 
 const safeName = (n: string) => (n || 'receipt').replace(/[\/\\:*?"<>|]/g, '_').replace(/\.\./g, '_').slice(0, 160)
@@ -195,6 +197,7 @@ export async function updateReceiptFields(
   if ('amount' in patch) row.amount = amountOrNull(patch.amount)
   if ('currency' in patch) row.currency = patch.currency ? String(patch.currency).toUpperCase().slice(0, 3) : null
   if ('description' in patch) row.description = patch.description?.trim() || null
+  if ('allocationBasis' in patch) row.allocation_basis = patch.allocationBasis?.trim() || null
   if ('vehicleId' in patch) {
     if (patch.vehicleId) {
       const name = await vehicleNameById(admin, fundId, patch.vehicleId)
@@ -422,6 +425,10 @@ export interface DraftFromReceiptInput {
    * the ledger is single-currency (currency.ts), so the receipt's own figure cannot be booked as is.
    */
   reportingAmount?: number | null
+  /** With billTo: why the fund bears it, kept on the receipt and printed on the invoice. */
+  allocationBasis?: string | null
+  /** With billTo: also use this basis for the vendor's future expenses billed to that fund. */
+  rememberAllocation?: boolean
 }
 
 /**
@@ -438,7 +445,7 @@ export async function draftEntryFromReceipt(
   userId: string | null,
   receiptId: string,
   input: DraftFromReceiptInput,
-): Promise<{ entryId: string; receipt: ReceiptRow } | { error: string; status?: number }> {
+): Promise<{ entryId: string; receipt: ReceiptRow; warning?: string } | { error: string; status?: number }> {
   const r = await getReceipt(admin, fundId, receiptId)
   if (!r) return { error: 'Receipt not found', status: 404 }
   if (r.vehicle_id && r.vehicle_id !== vehicleId) return { error: 'This receipt is filed under another entity.', status: 400 }
@@ -504,5 +511,16 @@ export async function draftEntryFromReceipt(
 
   const attached = await attachReceipt(admin, fundId, receiptId, { journalEntryId: res.entryId }, userId)
   if ('error' in attached) return { error: attached.error, status: attached.status }
-  return { entryId: res.entryId, receipt: attached }
+
+  const basis = input.billTo ? input.allocationBasis?.trim() : null
+  if (!basis || !input.billTo) return { entryId: res.entryId, receipt: attached }
+  const withBasis = await updateReceiptFields(admin, fundId, receiptId, { allocationBasis: basis })
+  // The entry is drafted and the receipt attached either way; a basis that did not save is said, not fatal.
+  const notes: string[] = []
+  if ('error' in withBasis) notes.push(`The allocation basis was not saved on the receipt: ${withBasis.error}`)
+  if (input.rememberAllocation) {
+    const saved = await saveAllocationRule(admin, fundId, userId, { fromVehicleId: vehicleId, toVehicleId: input.billTo.vehicleId, vendorName: r.vendor_name, allocationBasis: basis })
+    if ('error' in saved) notes.push(saved.error)
+  }
+  return { entryId: res.entryId, receipt: 'error' in withBasis ? attached : withBasis, ...(notes.length ? { warning: notes.join(' ') } : {}) }
 }

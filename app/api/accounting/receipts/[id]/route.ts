@@ -73,7 +73,7 @@ export async function PATCH(req: NextRequest, props: Params) {
 
   if (action === 'update') {
     const patch: Record<string, unknown> = {}
-    for (const k of ['vendorName', 'receiptDate', 'amount', 'currency', 'description']) if (k in body) patch[k] = body[k]
+    for (const k of ['vendorName', 'receiptDate', 'amount', 'currency', 'description', 'allocationBasis']) if (k in body) patch[k] = body[k]
     if (typeof body?.group === 'string' && body.group) {
       const target = await resolveGroupOr400(admin, gate, body.group)
       if (target instanceof NextResponse) return target
@@ -136,6 +136,8 @@ export async function PATCH(req: NextRequest, props: Params) {
       billTo: billToVehicleId && billToName ? { vehicleId: billToVehicleId, name: billToName } : null,
       memo: typeof body?.memo === 'string' ? body.memo : null,
       reportingAmount,
+      allocationBasis: typeof body?.allocationBasis === 'string' ? body.allocationBasis : null,
+      rememberAllocation: body?.rememberAllocation === true,
     })
     if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status ?? 400 })
     return NextResponse.json(res)

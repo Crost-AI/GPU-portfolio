@@ -4,12 +4,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // letterhead_address — 20261012120000_vehicle_letterhead.sql — and letterhead_email, with the fund's
 // default in funds.contact_email — 20261013160000_letterhead_email.sql).
 //
-// A firm can administer a vehicle that has its own brand: 3SE Holdings is run from this fund's
-// books, but its LPs know it as 3SE, not as the firm. So an LP-facing PDF about ONE vehicle (a
+// A firm can administer a vehicle that has its own brand: a co-branded vehicle run from the firm's
+// books whose LPs know it by its own name, not the firm's. So an LP-facing PDF about ONE vehicle (a
 // capital account statement, a call or distribution notice, a receipt, a letter) carries that
 // vehicle's letterhead where it has one, and the fund's otherwise. A document spanning several
 // vehicles (an investor report) uses a vehicle's value only when every vehicle on it shares it: an
-// LP who is only in 3SE vehicles gets 3SE's letterhead, one also in the flagship gets the fund's.
+// LP who is only in co-branded vehicles gets their letterhead, one also in the flagship gets the fund's.
 //
 // Each of the four parts falls back on its own, so a vehicle with only a logo set still prints
 // the fund's name, address and email.
@@ -31,8 +31,17 @@ export interface VehicleLetterhead {
   email: string | null
 }
 
+// A base64 image data URI and nothing else. Every PDF template interpolates the logo straight into
+// `<img src="…">`, so a prefix check alone let a value like `data:image/png"><iframe src=…>` inject
+// markup into the server's headless Chromium. The upload UI always produces base64 (readAsDataURL).
+const LOGO_DATA_URI = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]*={0,2}$/i
+
+export function isSafeLogoDataUri(v: unknown): v is string {
+  return typeof v === 'string' && LOGO_DATA_URI.test(v)
+}
+
 export function safeLogo(v: unknown): string | null {
-  return typeof v === 'string' && v.startsWith('data:image/') ? v : null
+  return isSafeLogoDataUri(v) ? v : null
 }
 
 const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)

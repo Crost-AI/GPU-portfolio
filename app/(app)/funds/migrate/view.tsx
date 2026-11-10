@@ -22,9 +22,17 @@ interface Proposal {
   suggestsHolding: string | null
   lineCount: number
   excluded?: boolean
+  taxBook?: boolean
 }
 
 interface DedupeNote { entryDate: string; memo: string | null; reason: string }
+
+interface TaxBookSummary {
+  entries: number
+  accounts: string[]
+  routed: { entryDate: string; memo: string | null; account: string }[]
+  lockedYears: { entryDate: string; memo: string | null; taxYear: number }[]
+}
 
 interface ParseResult {
   group: string
@@ -46,6 +54,9 @@ interface TieOutResult {
   includesDrafts: boolean
   unmappedAccounts: string[]
   quickBooksOnly?: { ties: boolean; differenceCount: number }
+  /** Imported tax-book entries, taken out of the QuickBooks side and shown on their own. */
+  taxRouted?: { lines: { code: string; name: string; amount: number }[]; total: number }
+  taxRoutedEntryCount?: number
   openingEntries?: { id: string; date: string; memo: string | null; status: string; cash: number }[]
 }
 
@@ -59,10 +70,13 @@ export function MigrateView({ group }: { group: string }) {
   const fmt = (v: number) => formatCurrencyPrice(v, currency)
 
   const [capitalWarnings, setCapitalWarnings] = useState<string[]>([])
-  const [matches, setMatches] = useState<{ duplicates: DedupeNote[]; recovered: DedupeNote[] }>({ duplicates: [], recovered: [] })
+  const [matches, setMatches] = useState<{ duplicates: DedupeNote[]; recovered: DedupeNote[]; bookConflicts: DedupeNote[] }>({ duplicates: [], recovered: [], bookConflicts: [] })
+  const [taxResult, setTaxResult] = useState<TaxBookSummary | null>(null)
   const [journalText, setJournalText] = useState('')
   const [parsed, setParsed] = useState<ParseResult | null>(null)
   const [mapping, setMapping] = useState<Record<string, string>>({})
+  // Source accounts kept on a tax basis only: their transactions import into the tax book.
+  const [taxBook, setTaxBook] = useState<Record<string, boolean>>({})
   const [chart, setChart] = useState<{ code: string; name: string }[]>([])
   const [newAccount, setNewAccount] = useState<(AccountSuggestion & { qbAccount: string }) | null>(null)
   const [holdingTypes, setHoldingTypes] = useState<Record<string, string>>({})
@@ -122,6 +136,7 @@ export function MigrateView({ group }: { group: string }) {
       setParsed(json)
       setMappingSaved(false); setDryRun(null); setTieOut(null); setNewAccount(null)
       setMapping(Object.fromEntries(json.accounts.map((a: Proposal) => [a.qbAccount, a.excluded ? '__exclude__' : (a.code ?? '')])))
+      setTaxBook(Object.fromEntries(json.accounts.map((a: Proposal) => [a.qbAccount, !!a.taxBook])))
     } catch (e) { setStatus(e instanceof Error ? e.message : 'Request failed.') } finally { setBusy(false) }
   }
 
@@ -130,6 +145,7 @@ export function MigrateView({ group }: { group: string }) {
     try {
       const rows = Object.entries(mapping).map(([qbAccount, accountCode]) => ({
         qbAccount, accountCode: accountCode === '__exclude__' ? null : accountCode, excluded: accountCode === '__exclude__',
+        taxBook: accountCode !== '__exclude__' && !!taxBook[qbAccount],
       }))
       const res = await fetch('/api/accounting/quickbooks/mapping', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -190,6 +206,11 @@ export function MigrateView({ group }: { group: string }) {
     setMappingSaved(false); setDryRun(null); setTieOut(null)
   }
 
+  function changeTaxBook(account: string, on: boolean) {
+    setTaxBook(t => ({ ...t, [account]: on }))
+    setMappingSaved(false); setDryRun(null); setTieOut(null)
+  }
+
   async function runImport(isDry: boolean) {
     setBusy(true); setStatus(null)
     try {
@@ -199,10 +220,12 @@ export function MigrateView({ group }: { group: string }) {
       setImportReview(json.importReview ?? null)
       if (!ok) { setStatus(json?.error ?? 'Import failed.'); return }
       setCapitalWarnings(json.capitalWarnings ?? [])
-      setMatches({ duplicates: json.duplicates ?? [], recovered: json.recovered ?? [] })
+      setMatches({ duplicates: json.duplicates ?? [], recovered: json.recovered ?? [], bookConflicts: json.bookConflicts ?? [] })
+      setTaxResult(json.taxBook ?? null)
       if (isDry) { setDryRun(json); return }
       setDryRun(null)
-      setStatus(`Created ${json.created} draft entr${json.created === 1 ? 'y' : 'ies'}; ${json.alreadyPresent} already present; ${json.skipped} skipped.`)
+      const tax = json.taxBook?.entries ? ` (${json.taxBook.entries} in the tax book)` : ''
+      setStatus(`Created ${json.created} draft entr${json.created === 1 ? 'y' : 'ies'}${tax}; ${json.alreadyPresent} already present; ${json.skipped} skipped.`)
       await loadRuns()
     } catch (e) { setStatus(e instanceof Error ? e.message : 'Request failed.') } finally { setBusy(false) }
   }
@@ -223,6 +246,7 @@ export function MigrateView({ group }: { group: string }) {
   const pendingHoldings = parsed?.discoveredHoldings.filter(name => parsed.accounts.some(a =>
     a.suggestsHolding === name && (!mapping[a.qbAccount] || mapping[a.qbAccount] === '1100'))) ?? []
   const unresolved = parsed?.accounts.filter(a => !mapping[a.qbAccount]).length ?? 0
+  const taxBookCount = Object.entries(taxBook).filter(([account, on]) => on && mapping[account] && mapping[account] !== '__exclude__').length
 
   return (
     <div className="space-y-6">
@@ -287,13 +311,20 @@ export function MigrateView({ group }: { group: string }) {
               <p role="status" className="flex items-center gap-2 text-sm text-success">
                 <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
                 Mapping saved · {Object.values(mapping).filter(c => c && c !== '__exclude__').length} mapped
-                {' · '}{Object.values(mapping).filter(c => c === '__exclude__').length} excluded. Ready to import.
+                {' · '}{Object.values(mapping).filter(c => c === '__exclude__').length} excluded
+                {taxBookCount > 0 && <>{' · '}{taxBookCount} to the tax book</>}. Ready to import.
               </p>
             )}
             <div id="quickbooks-account-mapping" hidden={mappingSaved && !mappingExpanded}>
             <div className="flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">
               Busiest accounts first. Choose an existing account or create one here. Exclusion is an explicit choice and drops every transaction touching that account. {coverage}; {unresolved} need a decision.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              <strong>Tax book</strong> is for accounts your preparer keeps on a tax basis only, such as year-end K-1
+              income or tax-basis write-offs. Every transaction touching a ticked account imports whole into the tax
+              book, which tax-basis statements and K-1s read on top of the ledger, so it does not change book capital
+              and is never allocated to partners as book income.
             </p>
 
             {pendingHoldings.length > 0 && (
@@ -360,6 +391,7 @@ export function MigrateView({ group }: { group: string }) {
                   <TableHead>QuickBooks account</TableHead>
                   <TableHead className="text-right">Lines</TableHead>
                   <TableHead>Maps to</TableHead>
+                  <TableHead>Tax book</TableHead>
                   <TableHead>Why</TableHead>
                 </TableRow>
               </TableHeader>
@@ -386,6 +418,13 @@ export function MigrateView({ group }: { group: string }) {
                         onClick={() => setNewAccount({ ...suggestAccount(a.qbAccount, chart), qbAccount: a.qbAccount })}>
                         Create account…
                       </Button>}
+                    </TableCell>
+                    <TableCell>
+                      <input type="checkbox" className="h-4 w-4"
+                        checked={!!taxBook[a.qbAccount] && mapping[a.qbAccount] !== '__exclude__'}
+                        disabled={busy || mapping[a.qbAccount] === '__exclude__'}
+                        aria-label={`Import transactions touching ${a.qbAccount} into the tax book`}
+                        onChange={e => changeTaxBook(a.qbAccount, e.target.checked)} />
                     </TableCell>
                     <TableCell className={`text-sm ${a.confidence === 'none' ? 'text-warning' : 'text-muted-foreground'}`}>
                       {mapping[a.qbAccount] && mapping[a.qbAccount] !== '__exclude__' && mapping[a.qbAccount] !== a.code
@@ -420,9 +459,41 @@ export function MigrateView({ group }: { group: string }) {
 
             {dryRun && (
               <p className="text-sm">
-                Would create {dryRun.wouldCreate}; {dryRun.alreadyPresent} already present;
+                Would create {dryRun.wouldCreate}
+                {dryRun.taxBook?.entries > 0 && <> ({dryRun.taxBook.entries} in the tax book)</>};
+                {' '}{dryRun.alreadyPresent} already present;
                 {' '}{dryRun.skipped} skipped.
               </p>
+            )}
+
+            {taxResult && taxResult.routed.length > 0 && (
+              <details className="rounded-lg border p-3 text-sm">
+                <summary>{taxResult.routed.length} transaction{taxResult.routed.length === 1 ? '' : 's'} to the tax book</summary>
+                <p className="my-2 text-muted-foreground">Each touches an account marked Tax book, so it imports whole into the tax book as a draft. Post or discard them from the journal&rsquo;s Tax book view.</p>
+                <ul className="max-h-64 overflow-y-auto space-y-1">
+                  {taxResult.routed.map((r, index) => <li key={index}>{r.entryDate} {r.memo ?? ''} — {r.account}</li>)}
+                </ul>
+              </details>
+            )}
+
+            {taxResult && taxResult.lockedYears.length > 0 && (
+              <details className="rounded-lg border border-warning p-3 text-sm" open>
+                <summary>{taxResult.lockedYears.length} tax-book transaction{taxResult.lockedYears.length === 1 ? '' : 's'} in a closed tax year — not imported</summary>
+                <p className="my-2 text-muted-foreground">The tax year is closed, which locks the tax book for it. Reopen the year on the Tax page and import again to bring these in.</p>
+                <ul className="max-h-64 overflow-y-auto space-y-1">
+                  {taxResult.lockedYears.map((l, index) => <li key={index}>{l.entryDate} {l.memo ?? ''} — tax year {l.taxYear}</li>)}
+                </ul>
+              </details>
+            )}
+
+            {matches.bookConflicts.length > 0 && (
+              <details className="rounded-lg border border-warning p-3 text-sm" open>
+                <summary>{matches.bookConflicts.length} already imported into the other book</summary>
+                <p className="my-2 text-muted-foreground">A Tax book mark changed since these were imported. They were left where they are; nothing was moved or duplicated.</p>
+                <ul className="max-h-64 overflow-y-auto space-y-1">
+                  {matches.bookConflicts.map((m, index) => <li key={index}>{m.entryDate} {m.memo ?? ''} — {m.reason}</li>)}
+                </ul>
+              </details>
             )}
 
             {matches.recovered.length > 0 && (
@@ -554,6 +625,34 @@ export function MigrateView({ group }: { group: string }) {
                     </TableBody>
                   </Table>
                 </>
+              )}
+              {!!tieOut.taxRouted?.lines.length && (
+                <div className="flex flex-col gap-2 pt-2">
+                  <h3 className="text-base font-medium">Imported to the tax book</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {tieOut.taxRoutedEntryCount} tax-book entr{tieOut.taxRoutedEntryCount === 1 ? 'y' : 'ies'} imported from
+                    QuickBooks through {tieOut.asOf}. They are in the QuickBooks trial balance but not in the ledger, so
+                    the QuickBooks column above has them taken out.
+                  </p>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Code</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead className="text-right">Tax book</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {tieOut.taxRouted.lines.map(l => (
+                        <TableRow key={l.code}>
+                          <TableCell className="tabular-nums">{l.code}</TableCell>
+                          <TableCell>{l.name}</TableCell>
+                          <TableCell className="text-right tabular-nums">{fmt(l.amount)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               )}
               <p className="text-xs text-muted-foreground">
                 Both columns use debit minus credit, so credit balances appear negative.{' '}

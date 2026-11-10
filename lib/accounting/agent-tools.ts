@@ -15,7 +15,7 @@ import { vehicleIdByName } from './vehicle-id'
 import { loadChart } from './chart-load'
 import { computeCapitalAccounts, totalNav } from './capital-account'
 import { trialBalance, balanceSheet, incomeStatement } from './statements'
-import { vehicleKindByName } from './vehicle-domain'
+import { refuseGpuSpvTax, vehicleKindByName } from './vehicle-domain'
 import { closesToOwnerEquity, equityLabel } from './vocab'
 import { changesInMembersCapital } from './members-capital'
 import { isManagementCompany } from '@/lib/vehicle-kinds'
@@ -28,19 +28,29 @@ import { importQbJournal, proposeQbAccounts, saveQbMappings } from './quickbooks
 import { journalSource } from './quickbooks/sources'
 import { addChartAccount } from './chart-add'
 import { addPartner, parseAddPartnerInput } from './add-partner'
-import { postBankTransaction, setBankTransactionAccount } from './bank-actions'
+import { ignoreBankTransaction, postBankTransaction, restoreBankTransaction, setBankTransactionAccount } from './bank-actions'
 import { mayTouchInvestments } from './investment-access'
 import { runCategorization } from './categorize-run'
-import { bookCapitalCallFromInflow } from './bank-match'
+import { bookCapitalCallFromInflow, bookDistributionFromOutflow, capitalCallCandidates, linkInflowToEntry } from './bank-match'
+import { autoMatchOpenCapital } from './bank-auto-match-run'
+import { loadSettlements } from './capital-calls'
+import { loadSettlementReviews, reviewCapitalSettlement } from './settlement-reviews'
+import { loadK1Dependencies } from '@/lib/tax/year-close'
+import { markReceivedK1 } from '@/lib/tax/mark-received-k1'
+import { postTaxAdjustments } from './book-tax-run'
+import { auditTaxRun, missingAccountsMessage } from './tax-run-audit'
+import { unwrap } from '@/lib/service-outcome'
 import { exportLedgerTextPage, postLedgerText } from './text-ledger-run'
 import { listPeriods } from './periods'
 import { closeThrough, previewCloseThrough } from './close'
-import { summarizeBankRec, type BankTxnState } from './bank'
+import { cashTransferEntryIds, openingCashBefore, summarizeBankRec, type BankTxnState } from './bank'
 import { accountBalances } from './ledger'
 import type { SupabaseClient as _Sb } from '@supabase/supabase-js'
 import type { JournalEntry, Posting } from './types'
 import { PORTFOLIO_TOOL_MANIFEST } from '@/lib/agent/portfolio-tools-manifest'
 import { PORTFOLIO_HANDLERS } from '@/lib/agent/portfolio-tools'
+import { HOLDING_TOOL_MANIFEST } from '@/lib/agent/holding-tools-manifest'
+import { HOLDING_HANDLERS } from '@/lib/agent/holding-tools'
 import { DILIGENCE_TOOL_MANIFEST } from '@/lib/agent/diligence-tools-manifest'
 import { DILIGENCE_HANDLERS } from '@/lib/agent/diligence-tools'
 import { DEALS_TOOL_MANIFEST } from '@/lib/agent/deals-tools-manifest'
@@ -81,6 +91,8 @@ import { readBulkScope, runBulkDraftAction } from './journal-bulk'
 import { addEntityDocument, entityDocumentUploadUrl, listEntityDocuments } from '@/lib/entity-documents/agent'
 import { RECEIPT_TOOL_MANIFEST } from '@/lib/agent/receipt-tools-manifest'
 import { RECEIPT_HANDLERS } from '@/lib/agent/receipt-tools'
+import { ILPA_TOOL_MANIFEST } from '@/lib/agent/ilpa-tools-manifest'
+import { ILPA_HANDLERS } from '@/lib/agent/ilpa-tools'
 
 export { resolveVehicle } from './vehicle-resolver'
 
@@ -349,13 +361,113 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   book_capital_call: async ({ admin, fundId, portfolioGroup, userId }, input) => {
-    const result = await bookCapitalCallFromInflow(admin, fundId, portfolioGroup, userId, String(input.bankTransactionId))
+    const result = await bookCapitalCallFromInflow(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), input?.lpEntityId ? String(input.lpEntityId) : null)
     if ('error' in result) throw new Error(result.error)
     return result
   },
 
+  // The exception work automation leaves behind: matching wires to what was declared, linking a
+  // row to an entry already on the books, restoring a row set aside by mistake, settling a line
+  // paid in pieces, and chasing the K-1s the holdings owe. Each is the bank, settlements or tax
+  // page's own function, so a rule added there reaches chat too.
+  book_distribution_from_bank: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const perLp = input?.perLp && typeof input.perLp === 'object'
+      ? new Map<string, number>(Object.entries(input.perLp).map(([k, v]) => [k, Number(v)]))
+      : null
+    const result = await bookDistributionFromOutflow(admin, fundId, portfolioGroup, userId, String(input?.bankTransactionId ?? ''), perLp, input?.lpEntityId ? String(input.lpEntityId) : null)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  auto_match_bank_capital: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const ids = Array.isArray(input?.bankTransactionIds) ? input.bankTransactionIds.map(String) : undefined
+    const result = await autoMatchOpenCapital(admin, fundId, portfolioGroup, userId, ids)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  bank_call_candidates: async ({ admin, fundId, portfolioGroup }) =>
+    capitalCallCandidates(admin, fundId, portfolioGroup),
+
+  link_bank_transaction: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const result = await linkInflowToEntry(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), String(input?.entryId ?? ''), userId)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  restore_bank_transaction: async ({ admin, fundId, portfolioGroup }, input) => {
+    const result = await restoreBankTransaction(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''))
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  capital_settlements: async ({ admin, fundId, portfolioGroup }, input) => {
+    const kind = input?.kind
+    if (kind !== 'call' && kind !== 'distribution') throw new Error('kind must be call or distribution')
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    const [payments, reviews] = await Promise.all([
+      loadSettlements(admin, fundId, portfolioGroup, kind === 'call' ? 'receivable' : 'payable'),
+      loadSettlementReviews(admin, fundId, vehicleId, kind),
+    ])
+    return { payments, reviews }
+  },
+
+  review_capital_settlement: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`"${portfolioGroup}" is not in this fund's vehicle registry`)
+    const result = await reviewCapitalSettlement(admin, fundId, vehicleId, userId, input)
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  holding_k_ones: async ({ admin, fundId, portfolioGroup }, input) => {
+    await assertTaxSupported(admin, fundId, portfolioGroup)
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
+    return loadK1Dependencies(admin, fundId, vehicleId, taxYear)
+  },
+
+  mark_holding_k_one: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    if (!userId) throw new Error('Recording a K-1 needs a signed-in member.')
+    await assertTaxSupported(admin, fundId, portfolioGroup)
+    const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
+    if (!vehicleId) throw new Error(`Unknown vehicle "${portfolioGroup}"`)
+    return unwrap(await markReceivedK1(admin, fundId, userId, vehicleId, input))
+  },
+
+  tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    await assertTaxSupported(admin, fundId, portfolioGroup)
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId ?? null, taxYear, { preview: true })
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  post_tax_adjustments: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    if (!userId) throw new Error('Posting tax adjustments needs a signed-in member.')
+    await assertTaxSupported(admin, fundId, portfolioGroup)
+    const taxYear = Number(input?.taxYear)
+    if (!Number.isInteger(taxYear)) throw new Error('A four-digit taxYear is required')
+    const result = await postTaxAdjustments(admin, fundId, portfolioGroup, userId, taxYear, {
+      inceptionDate: typeof input?.inceptionDate === 'string' ? input.inceptionDate : undefined,
+    })
+    if ('error' in result) throw new Error(result.error)
+    await auditTaxRun(admin, { fundId, userId }, portfolioGroup, taxYear, result)
+    if (result.missingAccounts.length > 0) throw new Error(missingAccountsMessage(result.missingAccounts))
+    return result
+  },
+
   set_bank_transaction_account: async ({ admin, fundId, portfolioGroup }, input) => {
-    const result = await setBankTransactionAccount(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), input?.accountCode, 'ai')
+    const result = await setBankTransactionAccount(admin, fundId, portfolioGroup, String(input?.bankTransactionId ?? ''), input?.accountCode, 'ai', { replaceSplit: input?.replaceSplit === true })
+    if ('error' in result) throw new Error(result.error)
+    return result
+  },
+
+  ignore_bank_transaction: async ({ admin, fundId, portfolioGroup, userId }, input) => {
+    const result = await ignoreBankTransaction(admin, fundId, portfolioGroup, userId ?? null, String(input?.bankTransactionId ?? ''))
     if ('error' in result) throw new Error(result.error)
     return result
   },
@@ -408,14 +520,15 @@ const HANDLERS: Record<string, AgentToolHandler> = {
   },
 
   bank_reconciliation: async ({ admin, fundId, portfolioGroup }) => {
-    const { accounts, postings } = await loadPostedLedger(admin, fundId, portfolioGroup)
+    const { accounts, postings, sourcedPostings } = await loadPostedLedger(admin, fundId, portfolioGroup)
     const cash = accounts.find(a => a.code === '1000')
     const ledgerCashBalance = cash ? (accountBalances(postings).get(cash.id) ?? 0) : 0
     const vehicleId = await vehicleIdByName(admin, fundId, portfolioGroup)
     // Every row, paged: past 1000 the unmatched count and difference were silently understated.
-    const data = await fetchAllRows<any>((f, t) => admin.from('bank_transactions' as any).select('id, amount, status').eq('fund_id', fundId).eq('vehicle_id', vehicleId).neq('status', 'ignored').order('id').range(f, t))
-    const txns: BankTxnState[] = data.map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled' }))
-    return summarizeBankRec(txns, ledgerCashBalance)
+    const data = await fetchAllRows<any>((f, t) => admin.from('bank_transactions' as any).select('id, txn_date, amount, status, journal_entry_id').eq('fund_id', fundId).eq('vehicle_id', vehicleId).neq('status', 'ignored').order('id').range(f, t))
+    const transfers = cashTransferEntryIds(sourcedPostings, cash?.id)
+    const txns: BankTxnState[] = data.map(t => ({ amount: Number(t.amount), matched: t.status === 'reconciled', cashTransfer: transfers.has(t.journal_entry_id) }))
+    return summarizeBankRec(txns, ledgerCashBalance, openingCashBefore(postings, cash?.id, data.map(t => t.txn_date)))
   },
 
   list_entity_documents: async ({ admin, fundId, portfolioGroup, userId }) =>
@@ -472,7 +585,9 @@ export const AGENT_TOOLS: AgentTool[] = [
   ...bindLedger(AGENT_TOOL_MANIFEST, HANDLERS),
   ...bindLedger(ENTITY_OPERATIONS_TOOL_MANIFEST, OPERATIONS_HANDLERS),
   ...bindLedger(RECEIPT_TOOL_MANIFEST, RECEIPT_HANDLERS),
+  ...bindLedger(ILPA_TOOL_MANIFEST, ILPA_HANDLERS),
   ...bind(PORTFOLIO_TOOL_MANIFEST, PORTFOLIO_HANDLERS),
+  ...bind(HOLDING_TOOL_MANIFEST, HOLDING_HANDLERS),
   ...bind(DILIGENCE_TOOL_MANIFEST, DILIGENCE_HANDLERS),
   ...bind(DEALS_TOOL_MANIFEST, DEALS_HANDLERS),
   ...bind(LP_TOOL_MANIFEST, { ...LP_HANDLERS, ...LP_RECORD_HANDLERS }),
@@ -583,6 +698,16 @@ export async function resolveVehicleForTool(
   // returning. The unnamed default still never picks a manco.
   if (requested?.trim()) return (await resolveVehicleWithAccess(admin, access, requested, tool.scope)).name
   return resolveVehicle(admin, fundId, requested, { access })
+}
+
+/**
+ * ── GPU fleet (P1) ── Tax fails closed on a GPU SPV until K-1 character understands its chart
+ * (refuseGpuSpvTax, #68). The tax tools call the tax page's functions without its routes in front,
+ * so they say the same refusal here, before reading or writing anything.
+ */
+async function assertTaxSupported(admin: _Sb, fundId: string, portfolioGroup: string): Promise<void> {
+  const refused = await refuseGpuSpvTax(admin as any, fundId, { group: portfolioGroup })
+  if (refused) throw new Error(((await refused.json()) as { error: string }).error)
 }
 
 /** Journal-import tool input: structured `transactions` from a connector, or a pasted QuickBooks Journal `text`. */

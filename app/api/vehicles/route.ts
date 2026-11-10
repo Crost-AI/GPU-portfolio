@@ -11,6 +11,7 @@ import { dbError } from '@/lib/api-error'
 import { ensureVehicleAccounts } from '@/lib/accounting/provision-accounts'
 import { ensureFleetCompany } from '@/lib/gpu/fleet-company'
 import { VEHICLE_KINDS } from '@/lib/vehicle-kinds'
+import { isSafeLogoDataUri } from '@/lib/vehicle-letterhead'
 import { loadAccessContext } from '@/lib/access/effective'
 import { canSeeVehicle, entityIdentityChangeDenial } from '@/lib/access/scope'
 import { gpuKindDenial } from '@/lib/accounting/vehicle-domain'
@@ -207,8 +208,8 @@ export async function PATCH(req: NextRequest) {
   // fund logo in api/settings.
   if (body.logo !== undefined) {
     if (body.logo !== null) {
-      if (typeof body.logo !== 'string' || !body.logo.startsWith('data:image/')) {
-        return NextResponse.json({ error: 'Logo must be a data:image/ URL' }, { status: 400 })
+      if (!isSafeLogoDataUri(body.logo)) {
+        return NextResponse.json({ error: 'Logo must be a base64 data:image/ URL' }, { status: 400 })
       }
       if (body.logo.length > 200 * 1024) {
         return NextResponse.json({ error: 'Logo must be under 200KB' }, { status: 400 })

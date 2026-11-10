@@ -52,6 +52,39 @@ const SCRIPT_HOSTS = [
   'https://www.google-analytics.com',
 ]
 
+/**
+ * Why Next would render this request's scripts WITHOUT the nonce, or null when it will not.
+ *
+ * Next takes its render nonce from the request's `content-security-policy` header, falling back to
+ * `-report-only` (route-modules/app-page/parse-request-headers.js), while the layouts read
+ * `x-nonce`. proxy.ts sets all three. A local `next start` renders every `<script>` nonce'd, yet
+ * production's report-only policy flags every `/_next/static` chunk on /auth and /start, which is
+ * what an un-nonced render looks like. So the root layout calls this on every render and logs the
+ * answer: one deploy of `grep '\\[csp-nonce\\]'` says which header the platform did not forward.
+ * The report endpoint can't say; it is rate-limited to ten a minute per IP, so a page load's later
+ * (inline) violations never reach the log.
+ */
+export function nonceRenderGap(headers: Headers): string | null {
+  const nonce = headers.get(NONCE_HEADER)
+  if (!nonce) return 'x-nonce missing'
+  const csp = headers.get('content-security-policy') ?? headers.get(REPORT_ONLY_HEADER.toLowerCase())
+  if (!csp) return 'no content-security-policy request header'
+  const rendered = /'nonce-([^']+)'/.exec(csp)?.[1]
+  if (rendered === nonce) return null
+  // The first deploy said only "different nonce", which can't tell a header the platform replaced
+  // from a proxy that ran twice. Describe what arrived instead; nothing here is the nonce itself.
+  const source = headers.has('content-security-policy') ? 'content-security-policy' : 'report-only'
+  const kind = !rendered
+    ? csp.includes("'unsafe-inline'") ? 'the enforcing policy (no nonce)' : 'a policy with no nonce'
+    : 'a policy with another nonce'
+  const extra = [
+    nonce.includes(',') && 'x-nonce holds several values',
+    rendered?.includes(',') && 'its nonce holds several values',
+    headers.has(REPORT_ONLY_HEADER.toLowerCase()) ? null : 'report-only did not arrive',
+  ].filter(Boolean)
+  return `${source} carries ${kind}${extra.length ? `; ${extra.join('; ')}` : ''}`
+}
+
 export function buildReportOnlyCsp(nonce: string, options: { development?: boolean } = {}): string {
   const scriptSrc = [
     "'self'",

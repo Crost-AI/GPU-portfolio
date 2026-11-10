@@ -75,12 +75,12 @@ export async function approveFundReview(
     notice_number: proposal.noticeNumber,
     description: proposal.purpose,
     amount: proposal.amount,
-    // The whole call capitalizes and a distribution defaults to return of capital, as on a typed
-    // notice (events/route.ts); the split is corrected on the notice before it is confirmed.
+    // The whole call capitalizes, as on a typed notice (events/route.ts). A distribution is left
+    // uncharacterised, so confirming it splits it by cost recovery (lib/portfolio/fof-register.ts).
     purpose_investments: proposal.kind === 'call' ? proposal.amount : 0,
     purpose_fees: 0,
     purpose_expenses: 0,
-    char_return_of_capital: proposal.kind === 'distribution' ? proposal.amount : 0,
+    char_return_of_capital: 0,
     char_realized_gain: 0,
     char_income: 0,
     recallable_amount: 0,

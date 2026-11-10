@@ -351,6 +351,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
               qbAccount: { type: 'string', description: 'The source account name, exactly as in the transactions (e.g. "Investments:Acme Ventures III")' },
               accountCode: { type: 'string', description: 'Chart code on this vehicle' },
               excluded: { type: 'boolean', description: 'Deliberately not imported; transactions touching it are skipped whole' },
+              taxBook: { type: 'boolean', description: "The source account is kept on a tax basis only (a preparer's year-end K-1 entries, tax-basis write-offs). Every transaction touching it imports, whole, into the TAX book instead of the actual ledger, so it does not move book capital. Omit to keep the saved flag; ignored when excluded." },
               note: { type: 'string' },
             },
           },
@@ -360,7 +361,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'import_journal',
-    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend; the `duplicates` in the result says which entry each matched transaction matched and why, and `recovered` lists transactions an earlier import wrongly skipped as duplicates (same date and amount, different payee). Transactions touching an unmapped account are skipped and named. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
+    description: 'Step 3: import outside journal transactions (QuickBooks or Carta) as DRAFT journal entries for review (nothing posts). Idempotent: a transaction already imported is matched, not duplicated, so overlapping date windows are safe to resend; the `duplicates` in the result says which entry each matched transaction matched and why, and `recovered` lists transactions an earlier import wrongly skipped as duplicates (same date and amount, different payee). Transactions touching an unmapped account are skipped and named. A transaction touching an account mapped `taxBook` imports whole into the tax book (`taxBook` in the result says how many and why; one in a closed tax year is refused and named); one already imported into the other book is listed in `bookConflicts` and left where it is. Pass `transactions` (structured) or `text` (a QuickBooks Journal report export).',
     scope: 'write',
     inputSchema: {
       type: 'object',
@@ -385,10 +386,67 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
   },
   {
     name: 'book_capital_call',
-    description: 'Turn a bank inflow into a per-LP allocated capital call (pro-rata by commitment), replacing its two-line draft.',
+    description: "Book a bank inflow as one partner's capital-call payment, replacing its two-line draft (the bank page's Match to capital call). Name the partner (lpEntityId from list_lps): with a called-but-unfunded balance it funds that call (Dr cash / Cr the receivable); with none it recognizes and funds one in a single step. A wire is one partner's money, so an inflow is never split across partners. For declared calls, try auto_match_bank_capital first; to settle against a capital-call entry already on the books, use link_bank_transaction.",
     scope: 'write',
-    // Allocates per LP by commitment — LP capital, not just a bank entry.
+    // Books to one partner's capital — LP capital, not just a bank entry.
     accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId', 'lpEntityId'],
+      properties: {
+        bankTransactionId: { type: 'string' },
+        lpEntityId: { type: 'string', description: 'The partner who sent the wire (an LP entity id from list_lps).' },
+      },
+    },
+  },
+  {
+    name: 'book_distribution_from_bank',
+    description: "Book a bank outflow as a distribution, replacing its draft (the bank page's Book as distribution). Name the partner who received the wire (lpEntityId): if they have a declared distribution outstanding the wire settles it (Dr the payable / Cr cash); otherwise it reduces their capital (Dr their capital / Cr cash). Or give perLp, explicit amounts by LP entity id that total the outflow (what a waterfall split supplies). There is no pro-rata fallback: declare a fund-wide distribution first, then the wires settle it. Writes a draft; post it with post_bank_transaction.",
+    scope: 'write',
+    accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId'],
+      properties: {
+        bankTransactionId: { type: 'string' },
+        lpEntityId: { type: 'string', description: 'The one partner the payment went to.' },
+        perLp: { type: 'object', additionalProperties: { type: 'number' }, description: '{ lpEntityId: amount } — must total the outflow.' },
+      },
+    },
+  },
+  {
+    name: 'auto_match_bank_capital',
+    description: "Settle drafted bank rows against DECLARED capital calls (receivable 1300) and distributions (payable 2300), inferring the partner from the amount and the wire reference they gave when acknowledging the notice (the bank page's Auto-match). Books each match as a DRAFT settlement and links the row; never posts. Returns matched, ambiguous (several partners owe that amount: the candidates are listed, so ask the person or use book_capital_call / book_distribution_from_bank with the partner) and an unmatched count. Pass bankTransactionIds to limit it; omit for every drafted row.",
+    scope: 'write',
+    accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        bankTransactionIds: { type: 'array', items: { type: 'string' }, maxItems: 500 },
+      },
+    },
+  },
+  {
+    name: 'bank_call_candidates',
+    description: 'Capital-call entries already on the books that no bank row is linked to yet, with the cash each brought in: the entries a bank inflow can be linked to with link_bank_transaction.',
+    scope: 'read',
+    accessDomain: 'lp_capital',
+    inputSchema: EMPTY_SCHEMA,
+  },
+  {
+    name: 'link_bank_transaction',
+    description: "Link a bank row to a journal entry already recorded for it (the bank page's Link), instead of booking a second one: the row's auto-draft is retired, the entry is posted if it is a draft, and the row is marked reconciled. Refuses a voided entry, an entry another bank row already claims, and an entry in a closed period. Find entries with bank_call_candidates or list_journal.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId', 'entryId'],
+      properties: { bankTransactionId: { type: 'string' }, entryId: { type: 'string' } },
+    },
+  },
+  {
+    name: 'restore_bank_transaction',
+    description: "Bring an ignored bank row back to draft, restoring its draft entry, so it can be re-pointed and posted (the bank page's Restore). Refused for an entry in a closed period and for an investment's entry.",
+    scope: 'write',
     inputSchema: {
       type: 'object',
       required: ['bankTransactionId'],
@@ -396,13 +454,117 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
     },
   },
   {
+    name: 'capital_settlements',
+    description: "The money that has moved against a vehicle's capital calls (kind call) or distributions (kind distribution), by partner and date, and the settlement decisions already recorded: who has paid, and which wires settle which line.",
+    scope: 'read',
+    accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['kind'],
+      properties: { kind: { type: 'string', enum: ['call', 'distribution'] } },
+    },
+  },
+  {
+    name: 'review_capital_settlement',
+    description: "Record which wires settle one capital-call or distribution line (the settlements page's review): links are the journal entries that paid it and how much of each; separateRemainder leaves what is left of a wire as its own payment instead of folding it into this line. Use when a partner paid in several wires, or one wire covered several obligations.",
+    scope: 'write',
+    accessDomain: 'lp_capital',
+    inputSchema: {
+      type: 'object',
+      required: ['kind', 'lineId', 'links', 'separateRemainder'],
+      properties: {
+        kind: { type: 'string', enum: ['call', 'distribution'] },
+        lineId: { type: 'string', description: 'The capital-call or distribution line id.' },
+        links: {
+          type: 'array', maxItems: 50,
+          items: { type: 'object', required: ['entryId', 'amount'], properties: { entryId: { type: 'string' }, amount: { type: 'number' } } },
+        },
+        separateRemainder: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'holding_k_ones',
+    description: "The K-1s this vehicle's fund holdings owe it for a tax year: outstanding (the chase list), amended upstream, how many arrived, and whether the outstanding ones hold up closing the tax year. The expectation comes from the holdings, so a new fund holding is on the list without anyone adding it.",
+    scope: 'read',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['taxYear'],
+      properties: { taxYear: { type: 'integer' } },
+    },
+  },
+  {
+    name: 'mark_holding_k_one',
+    description: "Record what became of a K-1 a fund holding owes this vehicle: received (with the date and, if you have them, the reported ordinary income, capital gain and ending capital), amended, not_expected, or back to expected. companyId is the fund holding's company id (holding_k_ones lists them).",
+    scope: 'write',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['companyId', 'taxYear', 'status'],
+      properties: {
+        companyId: { type: 'string' },
+        taxYear: { type: 'integer' },
+        status: { type: 'string', enum: ['expected', 'received', 'amended', 'not_expected'] },
+        receivedDate: { type: 'string', description: 'YYYY-MM-DD' },
+        reportedOrdinaryIncome: { type: 'number' },
+        reportedCapitalGain: { type: 'number' },
+        reportedEndingCapital: { type: 'number' },
+        notes: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'tax_adjustments',
+    description: "Preview a tax year's book-to-tax adjustments for this vehicle, as the Tax page shows them before posting: each proposed adjustment (unrealized appreciation, carry accrued on unrealized gains, organizational and syndication costs, the book realized gain on a fund holding's distributions), the lower-tier K-1 pass-through by holding, anything that could not be built and why, and any accounts the chart is missing. Nothing is written; post_tax_adjustments posts the same set.",
+    scope: 'read',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['taxYear'],
+      properties: { taxYear: { type: 'integer' } },
+    },
+  },
+  {
+    name: 'post_tax_adjustments',
+    description: "Post a tax year's book-to-tax adjustments to this vehicle's tax book (the Tax page's Post): the same set tax_adjustments previews, including each fund holding's K-1 pass-through. A previous run for the year is voided and replaced, so posting again after a K-1 or the books change is safe. Refused in a closed tax year, and when the chart is missing an account the run needs.",
+    scope: 'write',
+    accessDomain: 'tax',
+    accessFeature: 'tax_reporting',
+    inputSchema: {
+      type: 'object',
+      required: ['taxYear'],
+      properties: {
+        taxYear: { type: 'integer' },
+        inceptionDate: { type: 'string', description: 'YYYY-MM-DD; the vehicle\'s inception, when organizational costs are amortized from a date the books do not show' },
+      },
+    },
+  },
+  {
     name: 'set_bank_transaction_account',
-    description: "Re-point one drafted bank transaction's draft entry to a chart account by code (the bank page's account picker). A per-partner capital account (3100-<partner>) carries that partner onto the posting.",
+    description: "Re-point one drafted bank transaction's draft entry to a chart account by code (the bank page's account picker). A per-partner capital account (3100-<partner>) carries that partner onto the posting. A draft split across several accounts (e.g. a distribution spread over every partner) is refused unless replaceSplit is true, which replaces the split with one posting to this account.",
     scope: 'write',
     inputSchema: {
       type: 'object',
       required: ['bankTransactionId', 'accountCode'],
-      properties: { bankTransactionId: { type: 'string' }, accountCode: { type: 'string' } },
+      properties: {
+        bankTransactionId: { type: 'string' },
+        accountCode: { type: 'string' },
+        replaceSplit: { type: 'boolean', description: 'replace a multi-account split on the draft with one posting to accountCode (drafts only)' },
+      },
+    },
+  },
+  {
+    name: 'ignore_bank_transaction',
+    description: "Set aside a bank row that is not a cash movement of the vehicle, such as a money-market sweep or reinvestment, or a duplicate (the bank page's Ignore). Its draft entry is voided. Refuses a posted row: voiding a posted entry needs a reason and is done on the bank page.",
+    scope: 'write',
+    inputSchema: {
+      type: 'object',
+      required: ['bankTransactionId'],
+      properties: { bankTransactionId: { type: 'string' } },
     },
   },
   {
@@ -428,6 +590,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
         allocate: { type: 'boolean', description: 'default true; false skips the partner allocation' },
+        book: { type: 'string', enum: ['actual', 'tax'], description: "default 'actual'. 'tax' posts tax-book drafts (an outside journal's tax-routed entries): no partner allocation, refused in a closed tax year" },
       },
     },
   },
@@ -443,6 +606,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
         end: { type: 'string', description: 'ISO date; only drafts on or before it' },
         sourceType: { type: 'string', description: "only drafts with this source_type, e.g. 'quickbooks'" },
         afterId: { type: 'string', description: 'cursor from the previous call' },
+        book: { type: 'string', enum: ['actual', 'tax'], description: "default 'actual'. 'tax' discards tax-book drafts (an outside journal's tax-routed entries)" },
       },
     },
   },
@@ -511,7 +675,7 @@ export const AGENT_TOOL_MANIFEST: AgentToolMeta[] = [
       type: 'object',
       required: ['fileName'],
       properties: {
-        fileName: { type: 'string', description: 'e.g. "3SE Holdings LP - LPA.pdf"' },
+        fileName: { type: 'string', description: 'e.g. "Northwind Holdings LP - LPA.pdf"' },
         sizeBytes: { type: 'number', description: 'file size, checked against the 25 MB limit' },
       },
     },

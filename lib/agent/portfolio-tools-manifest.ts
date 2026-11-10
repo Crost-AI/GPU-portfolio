@@ -286,6 +286,41 @@ export const PORTFOLIO_TOOL_MANIFEST: AgentToolMeta[] = [
     inputSchema: { type: 'object', properties: { job_id: { type: 'string', description: 'The job id a tool returned (its job.id).' } }, required: ['job_id'] },
   },
   {
+    name: 'review_queue',
+    description:
+      'The open review queue: figures the update pipeline was unsure of (low confidence, a duplicate or ambiguous period, a new ' +
+      'metric, a fund-holding proposal from a manager\'s email) and emails that need a person, as the Review page lists them. ' +
+      'Each item has its id, issue type, the extracted value and the snippet it came from. Clear them with resolve_review.',
+    scope: 'read',
+    domain: 'portfolio',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 500, description: 'Default 100.' } },
+    },
+  },
+  {
+    name: 'resolve_review',
+    description:
+      'Resolve one review-queue item, as the Review page does: accepted (the extracted value stands, and a duplicate or ambiguous ' +
+      'period value is recorded), rejected (dismissed, nothing written), or manually_corrected with resolved_value (the corrected ' +
+      'figure is recorded). A fund-holding proposal is approved with accepted, optionally with edits (field corrections) and ' +
+      'vehicleId when it names no entity; approving it writes the NAV statement or notice it proposes. Ask the person before ' +
+      'accepting a figure you have not checked against its source.',
+    scope: 'write',
+    domain: 'portfolio',
+    inputSchema: {
+      type: 'object',
+      required: ['review_id', 'resolution'],
+      properties: {
+        review_id: { type: 'string', description: 'The item id from review_queue.' },
+        resolution: { type: 'string', enum: ['accepted', 'rejected', 'manually_corrected'] },
+        resolved_value: { type: 'string', description: 'The corrected value, for manually_corrected.' },
+        vehicleId: { type: 'string', description: 'Fund-holding proposals: the entity, when the review names none.' },
+        edits: { type: 'object', description: 'Fund-holding proposals: corrections to the proposed fields.' },
+      },
+    },
+  },
+  {
     name: 'record_metric_value',
     description:
       "Set one KPI value for a portfolio company for a period, e.g. MRR for Q3 2026. Use company_metrics to see the company's metrics. " +

@@ -86,17 +86,17 @@ drop policy if exists "gpu_fleet companies delete needs fleet write" on public.c
 
 create policy "gpu_fleet companies read needs fleet"
   on public.companies as restrictive for select to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_readable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_readable('fleet'))::uuid[]) and fund_id = any((select public.fund_ids_readable('accounting'))::uuid[])));
 create policy "gpu_fleet companies insert needs fleet write"
   on public.companies as restrictive for insert to authenticated
-  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
+  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))::uuid[]) and fund_id = any((select public.fund_ids_readable('accounting'))::uuid[])));
 create policy "gpu_fleet companies update needs fleet write"
   on public.companies as restrictive for update to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))))
-  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))::uuid[]) and fund_id = any((select public.fund_ids_readable('accounting'))::uuid[])))
+  with check (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))::uuid[]) and fund_id = any((select public.fund_ids_readable('accounting'))::uuid[])));
 create policy "gpu_fleet companies delete needs fleet write"
   on public.companies as restrictive for delete to authenticated
-  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))) and fund_id = any((select public.fund_ids_readable('accounting')))));
+  using (holding_type is distinct from 'gpu_fleet' or (fund_id = any((select public.fund_ids_writable('fleet'))::uuid[]) and fund_id = any((select public.fund_ids_readable('accounting'))::uuid[])));
 
 -- Every browser-reachable table keyed by company_id. A row about no company (company_id null)
 -- passes. tests/gpu-fleet-company-rls.test.ts fails when a table with a company_id column and a
@@ -104,8 +104,8 @@ create policy "gpu_fleet companies delete needs fleet write"
 do $$
 declare
   t text;
-  r text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unreadable())))';
-  w text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unwritable())))';
+  r text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unreadable())::uuid[]))';
+  w text := 'company_id is null or not (company_id = any((select public.gpu_fleet_company_ids_unwritable())::uuid[]))';
   tables text[] := array[
     'analyst_conversations', 'ask_response_overrides', 'chart_of_accounts', 'company_documents', 'company_notes',
     'company_summaries', 'company_update_artifacts', 'company_update_chunks', 'company_updates', 'crypto_wallets',

@@ -30,6 +30,8 @@ export function CompanySummary({ companyId, hasClaudeKey, hasOpenAIKey, defaultA
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** What the server said when it had nothing to summarise yet (nothing is saved then). */
+  const [note, setNote] = useState<string | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<string>(defaultAIProvider ?? 'anthropic')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null)
@@ -55,6 +57,7 @@ export function CompanySummary({ companyId, hasClaudeKey, hasOpenAIKey, defaultA
   async function generate() {
     setGenerating(true)
     setError(null)
+    setNote(null)
     setViewingHistoryId(null)
     try {
       const res = await fetch(`/api/companies/${companyId}/summary`, {
@@ -64,6 +67,9 @@ export function CompanySummary({ companyId, hasClaudeKey, hasOpenAIKey, defaultA
       })
       const result = await res.json()
       if (res.ok) {
+        // No inputs yet (a new holding, or a fund holding with no reports or documents): the server
+        // says so and saves nothing, so show its words rather than silently reloading to nothing.
+        if (!result?.generated_at && typeof result?.summary === 'string') setNote(result.summary)
         // Reload to get updated history
         await load()
       } else {
@@ -146,6 +152,9 @@ export function CompanySummary({ companyId, hasClaudeKey, hasOpenAIKey, defaultA
             <div className="h-3 bg-muted rounded w-5/6" />
             <div className="h-3 bg-muted rounded w-4/6" />
           </div>
+        )}
+        {note && !generating && (
+          <p role="status" className="text-sm text-muted-foreground mt-3">{note}</p>
         )}
         {error && (
           <p className="text-sm text-destructive mt-3">{error}</p>

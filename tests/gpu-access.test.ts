@@ -175,9 +175,12 @@ describe('3. a GPU SPV hides only what has no meaning on it', () => {
   })
 
   it('keeps every shared section of the books', () => {
-    for (const slug of ['status', 'bank', 'receipts', 'capital-accounts', 'journal', 'ledger', 'periods', 'performance', 'forecast', 'statements']) {
+    for (const slug of ['status', 'bank', 'capital-accounts', 'journal', 'ledger', 'periods', 'performance', 'forecast', 'statements']) {
       expect(kids, slug).toContain(at(slug))
     }
+    // Upstream #165: Receipts is a management company's section, listed elsewhere only while a
+    // receipt waits on the entity, as for every non-manco kind.
+    expect(kids).not.toContain(at('receipts'))
   })
 
   it('drops the schedule of investments, and Tax until #68', () => {
@@ -249,8 +252,9 @@ describe('5. the four slugs are section landings, not entities', () => {
 })
 
 describe('6. the Forecast page on a GPU SPV', () => {
-  it('swaps Investments for Fleet', () => {
-    expect(forecastTabsFor('gpu_spv')).toEqual(['charts', 'fleet', 'capital', 'financials'])
+  it('swaps Investments for Fleet and has no Capital planning tab', () => {
+    // P5-5: no Capital planning tab either; its content is the construction view's, never mounted here.
+    expect(forecastTabsFor('gpu_spv')).toEqual(['charts', 'fleet', 'financials'])
   })
 
   it('leaves every other kind\u2019s tabs as they were', () => {

@@ -43,8 +43,10 @@ export async function loadCompanyPage({ supabase, admin, user, page }: PageConte
 
   const isAdmin = page.isAdmin
 
-  // Fetch AI provider settings for the summary component
-  const { data: fundSettings } = await supabase
+  // AI provider settings for the summary component. The service-role client: members cannot read the
+  // credential columns (supabase/pending-deploy/fund_settings_member_column_grants.sql); only whether
+  // a key exists leaves this function, as hasClaudeKey / hasOpenAIKey.
+  const { data: fundSettings } = await (admin as any)
     .from('fund_settings')
     .select('claude_api_key_encrypted, openai_api_key_encrypted, default_ai_provider, currency, file_storage_provider, google_drive_folder_id, feature_visibility')
     .eq('fund_id', company.fund_id)

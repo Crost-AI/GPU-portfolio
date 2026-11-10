@@ -8,6 +8,9 @@ vi.mock('@/lib/accounting/periods', async (importOriginal) => ({
   closedPeriodRanges: async () => closed,
 }))
 
+const closedYears = new Set<number>()
+vi.mock('@/lib/tax/year-close', () => ({ closedTaxYears: async () => closedYears }))
+
 const postedIds: string[] = []
 vi.mock('./continuous-allocation', () => ({
   postExistingEntryWithAllocation: vi.fn(async (_a: any, _f: string, _g: string, _u: string | null, id: string) => { postedIds.push(id); return { allocationEntryIds: [] } }),
@@ -19,25 +22,29 @@ interface DraftRow { id: string; entry_date: string; journal_postings: { amount:
 
 /** Captures what the run wrote, and replays a fixed set of candidate drafts. */
 function fakeAdmin(rows: DraftRow[]) {
-  const updates: { table: string; patch: Record<string, unknown>; ids: string[] }[] = []
+  const updates: { table: string; patch: Record<string, unknown>; ids: string[]; book?: string }[] = []
+  const reads: { table: string; book?: string }[] = []
   const from = (table: string) => {
     let mode: 'select' | 'update' = 'select'
     let patch: Record<string, unknown> = {}
     let ids: string[] = []
+    let book: string | undefined
     const b: any = {
       select: () => b,
       update: (p: Record<string, unknown>) => { mode = 'update'; patch = p; return b },
       in: (_col: string, vals: string[]) => { ids = vals; return b },
-      eq: () => b, gt: () => b, gte: () => b, lte: () => b, order: () => b, limit: () => b,
+      eq: (col: string, val: string) => { if (col === 'id') ids = [val]; if (col === 'book') book = val; return b },
+      gt: () => b, gte: () => b, lte: () => b, order: () => b, limit: () => b,
       then: (resolve: (v: any) => void) => {
-        if (mode === 'update') { updates.push({ table, patch, ids }); return resolve({ error: null }) }
+        if (mode === 'update') { updates.push({ table, patch, ids, book }); return resolve({ data: ids.map(id => ({ id })), error: null }) }
+        reads.push({ table, book })
         // Only the candidate-draft read returns rows; the ownership reads find no owners.
         return resolve({ data: table === 'journal_entries' ? rows : [], error: null })
       },
     }
     return b
   }
-  return { admin: { from } as any, updates }
+  return { admin: { from } as any, updates, reads }
 }
 
 const balanced = (id: string, date = '2026-06-01'): DraftRow =>
@@ -48,12 +55,12 @@ const lopsided = (id: string, date = '2026-06-01'): DraftRow =>
 const run = (admin: any, action: 'post' | 'void', scope = readBulkScope({})) =>
   runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action, scope, userId: null })
 
-beforeEach(() => { closed.length = 0; postedIds.length = 0 })
+beforeEach(() => { closed.length = 0; closedYears.clear(); postedIds.length = 0 })
 
 describe('readBulkScope', () => {
   it('reads ids, window and cursor', () => {
     expect(readBulkScope({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x' }))
-      .toEqual({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x', sourceType: null })
+      .toEqual({ ids: ['a'], start: '2026-01-01', end: '2026-12-31', afterId: 'x', sourceType: null, book: 'actual' })
   })
 
   it('treats an empty id list as "no id filter", not "act on nothing"', () => {
@@ -63,7 +70,9 @@ describe('readBulkScope', () => {
   })
 
   it('ignores a malformed body', () => {
-    expect(readBulkScope(undefined)).toEqual({ ids: null, start: null, end: null, afterId: null, sourceType: null })
+    expect(readBulkScope(undefined)).toEqual({ ids: null, start: null, end: null, afterId: null, sourceType: null, book: 'actual' })
+    expect(readBulkScope({ book: 'nonsense' }).book).toBe('actual')
+    expect(readBulkScope({ book: 'tax' }).book).toBe('tax')
     expect(readBulkScope({ afterId: 42 }).afterId).toBeNull()
   })
 })
@@ -239,5 +248,34 @@ describe('bulk post options for a migration', () => {
     admin.from = (t: string) => { const b = from(t); const eq = b.eq; b.eq = (c: string, v: unknown) => { eqs.push([c, v]); return eq(c, v) }; return b }
     await runBulkDraftAction(admin, { fundId: 'f1', vehicleId: 'v1', group: 'Main', action: 'post', scope: readBulkScope({ sourceType: 'quickbooks' }), userId: null })
     expect(eqs).toContainEqual(['source_type', 'quickbooks'])
+  })
+})
+
+describe('tax-book drafts (an outside journal\'s tax-routed entries)', () => {
+  const taxScope = (body: Record<string, unknown> = {}) => readBulkScope({ ...body, book: 'tax' })
+
+  it('posts by a status flip in the tax book: no adoption, no partner allocation, no bank rows', async () => {
+    const { admin, updates, reads } = fakeAdmin([balanced('a'), lopsided('b')])
+    const res = await run(admin, 'post', taxScope())
+    if (!res.ok) throw new Error('expected success')
+    expect(reads.find(r => r.table === 'journal_entries')?.book).toBe('tax')
+    expect(res.outcome.changed).toBe(1)
+    expect(res.outcome.skipped).toEqual([{ id: 'b', reason: 'Out of balance by 60.00 — fix it before posting.' }])
+    // Never through the allocating choke point.
+    expect(postedIds).toEqual([])
+    expect(updates).toEqual([expect.objectContaining({ table: 'journal_entries', ids: ['a'], book: 'tax', patch: expect.objectContaining({ status: 'posted' }) })])
+  })
+
+  it('answers to closed tax years, not closed fiscal periods', async () => {
+    closed.push({ period_start: '2025-01-01', period_end: '2025-12-31' })
+    closedYears.add(2024)
+    for (const action of ['post', 'void'] as const) {
+      const { admin, updates } = fakeAdmin([balanced('old', '2024-12-31'), balanced('ok', '2025-12-31')])
+      const res = await run(admin, action, taxScope())
+      if (!res.ok) throw new Error('expected success')
+      expect(res.outcome.skipped).toEqual([{ id: 'old', reason: 'In closed tax year 2024 — reopen it on the Tax page first.' }])
+      expect(updates.map(u => u.ids)).toEqual([['ok']])
+      expect(updates[0].book).toBe('tax')
+    }
   })
 })

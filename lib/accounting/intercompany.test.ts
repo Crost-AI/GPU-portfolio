@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildPayeeEntry, buildPayerEntry,
   buildPayeeSettlementEntry, buildPayerSettlementEntry,
-  isAccruingKind, INTERCOMPANY_KINDS, INTERCOMPANY_KIND_LABELS,
+  isAccruingKind, INTERCOMPANY_KINDS, INTERCOMPANY_KIND_LABELS, pickIntercompanyAccounts,
   type ChargeInput, type SideAccounts,
 } from './intercompany'
 import { isBalanced, accountBalances } from './ledger'
@@ -133,5 +133,33 @@ describe('the kind vocabulary', () => {
     expect(isAccruingKind('expense_reimbursement')).toBe(true)
     expect(isAccruingKind('loan_advance')).toBe(false)
     expect(isAccruingKind('loan_repayment')).toBe(false)
+  })
+})
+
+describe('pickIntercompanyAccounts', () => {
+  const fund3 = 'aaaa1111-0000-0000-0000-000000000003'
+  const fund2 = 'bbbb2222-0000-0000-0000-000000000002'
+  const acct = (id: string, code: string, type: string, cp: string | null = null) => ({ id, code, type, counterparty_vehicle_id: cp })
+
+  it('finds the code-convention accounts when nothing is linked', () => {
+    const chart = [acct('r', '1900-aaaa1111', 'asset'), acct('p', '2900-aaaa1111', 'liability'), acct('x', '1900-bbbb2222', 'asset')]
+    expect(pickIntercompanyAccounts(chart, fund3)).toEqual({ receivable: chart[0], payable: chart[1] })
+  })
+
+  it('prefers a linked account whatever its code or name', () => {
+    const imported = acct('imp', '1907', 'asset', fund3)
+    const chart = [acct('r', '1900-aaaa1111', 'asset'), imported]
+    expect(pickIntercompanyAccounts(chart, fund3).receivable).toBe(imported)
+    expect(pickIntercompanyAccounts(chart, fund3).payable).toBeNull()
+  })
+
+  it('finds nothing for an unlinked imported account', () => {
+    expect(pickIntercompanyAccounts([acct('imp', '1907', 'asset')], fund3)).toEqual({ receivable: null, payable: null })
+  })
+
+  it('does not take a convention account that is linked to someone else', () => {
+    const chart = [acct('r', '1900-aaaa1111', 'asset', fund2)]
+    expect(pickIntercompanyAccounts(chart, fund3).receivable).toBeNull()
+    expect(pickIntercompanyAccounts(chart, fund2).receivable).toBe(chart[0])
   })
 })

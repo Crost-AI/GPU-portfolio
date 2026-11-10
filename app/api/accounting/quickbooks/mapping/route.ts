@@ -21,13 +21,14 @@ export async function GET(req: NextRequest) {
   const vehicleId = await vehicleIdByName(admin, gate.fundId, group)
 
   const { data } = await (admin as any).from('qb_account_mappings')
-    .select('qb_account, account_code, excluded, note')
+    .select('qb_account, account_code, excluded, tax_book, note')
     .eq('fund_id', gate.fundId).eq('vehicle_id', vehicleId).eq('source', 'quickbooks')
     .order('qb_account')
   return NextResponse.json({ mappings: data ?? [] })
 }
 
-// PUT — { group?, rows: [{ qbAccount, accountCode, excluded?, note? }] }
+// PUT — { group?, rows: [{ qbAccount, accountCode, excluded?, taxBook?, note? }] }
+//   taxBook: transactions touching this account import into the tax book (book-routing.ts).
 export async function PUT(req: NextRequest) {
   const supabase = await createClient()
   const admin = createAdminClient()

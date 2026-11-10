@@ -17,6 +17,7 @@ import type { ResolvedKey } from '@/lib/accounting/api-keys'
 import { getTool } from '@/lib/accounting/agent-tools'
 import { hasDraftMode, isAssistantCredential } from '@/lib/agent/dispatch'
 import { CALL_TOOL, SEARCH_TOOLS } from './gateway-names'
+import { MASTER_ADMIN_TOOLS } from '@/lib/agent/master-admin'
 import { describeTool, listableTools, type McpTool } from './server'
 
 export { CALL_TOOL, SEARCH_TOOLS, isGatewayTool } from './gateway-names'
@@ -189,7 +190,14 @@ export interface SearchToolsInput { query?: unknown; names?: unknown; limit?: un
 
 /** `search_tools`: the current tool list, as this caller may use it. */
 export function searchTools(input: SearchToolsInput, auth: ResolvedKey, access: AccessContext) {
-  const tools = listableTools(access)
+  // A pooled connection also has list_funds and use_fund, as tools/list says: a conversation whose
+  // cached list predates them finds them here, and call_tool runs them.
+  const poolTools = auth.pool ? MASTER_ADMIN_TOOLS.map(t => ({ ...t, scope: t.annotations?.readOnlyHint ? 'read' : 'write' })) as unknown as McpTool[] : []
+  const isPoolTool = (t: McpTool) => poolTools.includes(t)
+  const tools = [...poolTools, ...listableTools(access)]
+  const describe = (t: McpTool) => isPoolTool(t)
+    ? { name: t.name, description: t.description, inputSchema: t.inputSchema, scope: t.scope, annotations: (t as any).annotations }
+    : detailed(t, auth)
   const version = toolListVersion(access)
   const next = 'Run any of these with call_tool { name, arguments }.'
 
@@ -199,7 +207,7 @@ export function searchTools(input: SearchToolsInput, auth: ResolvedKey, access: 
     const notFound = names
       .filter(n => !tools.some(t => t.name === n))
       .map(n => ({ name: n, didYouMean: closeMatches(n, access) }))
-    return { toolListVersion: version, tools: found.map(t => detailed(t, auth)), ...(notFound.length ? { notFound } : {}), next }
+    return { toolListVersion: version, tools: found.map(describe), ...(notFound.length ? { notFound } : {}), next }
   }
 
   const query = typeof input?.query === 'string' ? input.query.trim() : ''
@@ -219,5 +227,5 @@ export function searchTools(input: SearchToolsInput, auth: ResolvedKey, access: 
     .filter(r => r.s > 0)
     .sort((a, b) => b.s - a.s || a.t.name.localeCompare(b.t.name))
     .slice(0, limit)
-  return { toolListVersion: version, query, tools: ranked.map(r => detailed(r.t, auth)), next }
+  return { toolListVersion: version, query, tools: ranked.map(r => describe(r.t)), next }
 }

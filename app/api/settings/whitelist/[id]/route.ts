@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
 
-// DELETE — remove a whitelist entry (admin only)
+// DELETE — remove one of this fund's whitelist entries (admin only)
 export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const supabase = await createClient()
@@ -18,7 +18,7 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
 
   const { data: membership } = await admin
     .from('fund_members')
-    .select('role')
+    .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -30,6 +30,7 @@ export async function DELETE(_req: NextRequest, props: { params: Promise<{ id: s
     .from('allowed_signups')
     .delete()
     .eq('id', params.id)
+    .eq('fund_id', membership.fund_id)
 
   if (error) return dbError(error, 'settings-whitelist-id')
 
