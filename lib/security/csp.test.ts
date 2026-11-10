@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildReportOnlyCsp, generateNonce } from './csp'
+import { buildReportOnlyCsp, generateNonce, nonceRenderGap } from './csp'
 
 /**
  * The strict policy, shipped report-only. These pin what makes it strict and what is deliberately
@@ -76,5 +76,34 @@ describe('the rest of the policy', () => {
   it('does not quote the nonce into any directive other than script-src', () => {
     const others = csp.split(';').filter(d => !d.trim().startsWith('script-src'))
     expect(others.join(';')).not.toContain('nonce-')
+  })
+})
+
+describe('nonceRenderGap', () => {
+  const policy = buildReportOnlyCsp('abc123')
+
+  it('is null when Next will find the same nonce the layouts read', () => {
+    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123', 'content-security-policy': policy }))).toBeNull()
+    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123', 'content-security-policy-report-only': policy }))).toBeNull()
+  })
+
+  it('names the header that did not arrive', () => {
+    expect(nonceRenderGap(new Headers())).toBe('x-nonce missing')
+    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123' }))).toBe('no content-security-policy request header')
+  })
+
+  it('catches a request policy whose nonce is not the one the layouts use', () => {
+    const other = buildReportOnlyCsp('zzz999')
+    expect(nonceRenderGap(new Headers({ 'x-nonce': 'abc123', 'content-security-policy': other })))
+      .toBe('content-security-policy carries a policy with another nonce; report-only did not arrive')
+  })
+
+  it('says when the enforcing policy took the request header’s place', () => {
+    const enforcing = "default-src 'self'; script-src 'self' 'unsafe-inline'"
+    expect(nonceRenderGap(new Headers({
+      'x-nonce': 'abc123',
+      'content-security-policy': enforcing,
+      'content-security-policy-report-only': policy,
+    }))).toBe('content-security-policy carries the enforcing policy (no nonce)')
   })
 })

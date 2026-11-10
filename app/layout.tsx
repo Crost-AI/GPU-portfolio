@@ -2,7 +2,7 @@ import { PRODUCT_NAME, siteOrigin } from '@/lib/site-links'
 import type { Metadata, Viewport } from 'next'
 import Script from 'next/script'
 import { headers } from 'next/headers'
-import { NONCE_HEADER } from '@/lib/security/csp'
+import { NONCE_HEADER, nonceRenderGap } from '@/lib/security/csp'
 import { Hanken_Grotesk, Plus_Jakarta_Sans, Inter, Geist, DM_Sans, Inter_Tight, Instrument_Sans, Newsreader, Source_Serif_4, Libre_Caslon_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -116,7 +116,11 @@ export default async function RootLayout({
   // Set by proxy.ts per response. Absent on paths the proxy does not run on (none that render
   // this layout), in which case the script goes out un-nonced and the report-only policy records
   // it — which is the right outcome for a path that was supposed to be covered.
-  const nonce = (await headers()).get(NONCE_HEADER) ?? undefined
+  const requestHeaders = await headers()
+  const nonce = requestHeaders.get(NONCE_HEADER) ?? undefined
+  // Production reports every chunk un-nonced while a local build nonces them all; this says why.
+  const gap = nonceRenderGap(requestHeaders)
+  if (gap) console.warn('[csp-nonce]', gap)
 
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${geist.variable} ${dmSans.variable} ${interTight.variable} ${instrumentSans.variable} ${newsreader.variable} ${sourceSerif.variable} ${libreCaslon.variable} ${hankenGrotesk.variable} ${plusJakarta.variable}`}>

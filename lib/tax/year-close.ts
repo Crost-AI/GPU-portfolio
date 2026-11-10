@@ -74,6 +74,22 @@ export async function taxYearState(
 }
 
 /**
+ * The vehicle's closed tax years — the set the database's tax-book lock consults
+ * (assert_tax_year_open_for). For a writer that wants to name a locked entry before the trigger
+ * refuses it. THROWS on a failed read: "could not tell" must not read as "nothing is locked".
+ */
+export async function closedTaxYears(admin: SupabaseClient, fundId: string, vehicleId: string): Promise<Set<number>> {
+  const { data, error } = await admin
+    .from('tax_year_closes' as any)
+    .select('tax_year')
+    .eq('fund_id', fundId)
+    .eq('vehicle_id', vehicleId)
+    .eq('status', 'closed')
+  if (error) throw new Error(`Could not read closed tax years: ${error.message}`)
+  return new Set(((data as any[]) ?? []).map(r => Number(r.tax_year)))
+}
+
+/**
  * Which underlying funds owe this vehicle a K-1, and which have delivered.
  *
  * The expectation is DERIVED from the holdings rather than entered: every `fund` holding files a

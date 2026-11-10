@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // An in-memory Supabase with just enough PostgREST to run the real issuance, settlement and
@@ -20,7 +21,7 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({
   vehicleNameById: async (_a: unknown, _f: string, id: string) => NAMES[id] ?? null,
 }))
 vi.mock('@/lib/accounting/persist', () => ({ persistEntry: mocks.persist, liveEntryByRef: mocks.liveEntryByRef }))
-import { issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
+import { deletePartnershipInvoice, editPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice } from '@/lib/accounting/partnership-invoices'
 import { intercompanyBalances, settleIntercompanyCharge } from '@/lib/accounting/intercompany'
 
 function fakeDb(tables: Record<string, Row[]>) {
@@ -31,6 +32,7 @@ function fakeDb(tables: Record<string, Row[]>) {
   const failDeletes: { table: string }[] = []
   const failSelects: { table: string }[] = []
   let insertGate: ((table: string) => Promise<void>) | null = null
+  let rpcGate: (() => Promise<void>) | null = null
   const uniqueViolation = (table: string, row: Row) => {
     const live = (r: Row) => r.status !== 'void'
     if (table === 'intercompany_transactions' && row.partnership_invoice_id) {
@@ -88,6 +90,21 @@ function fakeDb(tables: Record<string, Row[]>) {
       in: (c: string, vs: unknown[]) => { filters.push(r => vs.includes(r[c])); return q },
       like: (c: string, pattern: string) => { const re = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`); filters.push(r => re.test(String(r[c] ?? ''))); return q },
       is: (c: string, v: unknown) => { filters.push(r => (r[c] ?? null) === v); return q },
+      // A PostgREST or(): top-level `col.[not.]op.value` terms, for the in/is/eq the code sends.
+      or: (expr: string) => {
+        const terms = expr.split(/,(?![^(]*\))/).map(t => {
+          const [c, ...rest] = t.split('.')
+          const negate = rest[0] === 'not'
+          const [op, ...v] = negate ? rest.slice(1) : rest
+          const value = v.join('.')
+          const test = (r: Row) => op === 'in' ? value.replace(/^\(|\)$/g, '').split(',').includes(String(r[c]))
+            : op === 'is' ? (r[c] ?? null) === (value === 'null' ? null : value)
+            : String(r[c]) === value
+          return (r: Row) => test(r) !== negate
+        })
+        filters.push(r => terms.some(t => t(r)))
+        return q
+      },
       order: (c: string) => { order = c; return q },
       range: (lo: number, hi: number) => { range = [lo, hi]; return q },
       limit: (n: number) => { limit = n; return q },
@@ -97,14 +114,33 @@ function fakeDb(tables: Record<string, Row[]>) {
     }
     return q
   }
+  // apply_partnership_invoice_edit (20261104140300), atomically as the database runs it. The SQL itself
+  // is pinned below and was run against Postgres; this is what the code around it sees.
+  const rpc = async (name: string, a: any) => {
+    if (name !== 'apply_partnership_invoice_edit') return { data: null, error: { message: `no rpc ${name}` } }
+    if (rpcGate) await rpcGate()
+    const inv = tables.partnership_invoices.find(r => r.id === a.p_invoice_id && r.fund_id === a.p_fund_id)
+    if (!inv) return { data: { refused: 'gone' }, error: null }
+    if (inv.status !== 'draft') return { data: { refused: 'status', status: inv.status }, error: null }
+    if (tables.intercompany_transactions.some(c => c.partnership_invoice_id === a.p_invoice_id && c.status !== 'void')) {
+      return { data: { refused: 'charge' }, error: null }
+    }
+    tables.partnership_invoice_lines = tables.partnership_invoice_lines.filter(l =>
+      !(l.invoice_id === a.p_invoice_id && a.p_remove_posting_ids.includes(l.journal_posting_id)))
+    const amount = tables.partnership_invoice_lines.filter(l => l.invoice_id === a.p_invoice_id).reduce((sum, l) => sum + Number(l.amount), 0)
+    inv.amount = amount
+    return { data: { amount, adjustment_total: 0 }, error: null }
+  }
   return {
-    admin: { from } as any,
+    admin: { from, rpc } as any,
     tables, log,
     failNextUpdate: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when }),
     loseNextUpdateResponse: (table: string, when: (patch: Row) => boolean) => failNext.push({ table, when, commit: true }),
     failNextDelete: (table: string) => failDeletes.push({ table }),
     failNextSelect: (table: string) => failSelects.push({ table }),
     gateInserts: (g: typeof insertGate) => { insertGate = g },
+    /** Hold the edit transaction before it starts: the edit has read the invoice, nothing is locked. */
+    gateRpc: (g: typeof rpcGate) => { rpcGate = g },
   }
 }
 
@@ -208,6 +244,23 @@ describe('re-issuing an invoice whose charge already exists', () => {
     expect(db.tables.partnership_invoices[0].status).toBe('draft')
     expect(db.tables.intercompany_transactions[0].status).toBe('void')
     expect(mocks.persist).toHaveBeenCalledTimes(1)
+  })
+
+  it('a booked charge whose invoice is still a draft is not settled: its credits can still change (Bugbot on #133)', async () => {
+    const db = world()
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    const chargeId = db.tables.intercompany_transactions[0].id
+    const posted = mocks.persist.mock.calls.length
+
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', chargeId, '2026-05-01'))
+      .toMatchObject({ error: expect.stringContaining('still a draft') })
+    expect(mocks.persist).toHaveBeenCalledTimes(posted)
+    expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
+
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', chargeId, '2026-05-01')).toEqual({ ok: true })
   })
 
   it('refuses while the linked fund entry is only a draft', async () => {
@@ -685,5 +738,110 @@ describe('intercompany balances', () => {
       expect(reads.map(r => r.range)).toEqual([[0, 999], [1000, 1999]])
       expect(reads.every(r => r.order === 'id')).toBe(true)
     }
+  })
+})
+
+// Upstream #176 adds Delete for a draft invoice. The charge's link is on delete set null, so deleting a
+// draft that carries one would orphan the charge (the case 20261014190000_intercompany_once closed):
+// such a draft is voided, which unwinds it, never deleted.
+describe('deleting a draft invoice', () => {
+  it('is refused while the draft carries a live charge, which stays linked', async () => {
+    const db = world()
+    db.tables.intercompany_transactions.push({
+      id: 'ic-orphan', fund_id: FUND, from_vehicle_id: FUNDV, to_vehicle_id: MANCO, kind: 'expense_reimbursement',
+      charge_date: '2026-04-05', amount: 100, status: 'accrued', partnership_invoice_id: 'inv-1', from_entry_id: null,
+    })
+    const res = await deletePartnershipInvoice(db.admin, FUND, 'inv-1')
+    expect(res).toMatchObject({ status: 409, error: expect.stringContaining('Void it instead') })
+    expect(db.tables.partnership_invoices).toHaveLength(1)
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', partnership_invoice_id: 'inv-1' })
+  })
+
+  it('goes through for a draft with no charge', async () => {
+    const db = world()
+    expect(await deletePartnershipInvoice(db.admin, FUND, 'inv-1')).toEqual({ ok: true })
+    expect(db.tables.partnership_invoices).toHaveLength(0)
+  })
+})
+
+// In this fork a draft can already carry a booked charge (an issue that failed before marking the
+// invoice issued, or one still running), and a retried issue keeps the charge as booked. So its
+// expenses cannot change under it, and an edit that slips in mid-issue stops the issue (Codex on #133).
+describe('editing a draft invoice whose charge is booked', () => {
+  const twoLines = (db: ReturnType<typeof world>) => {
+    db.tables.partnership_invoices[0].amount = 120
+    db.tables.partnership_invoice_lines.push({ fund_id: FUND, invoice_id: 'inv-1', journal_entry_id: 'exp-2', journal_posting_id: 'exp-2-p', amount: 20, active: true })
+    db.tables.journal_entries.push({ id: 'exp-2', fund_id: FUND, vehicle_id: MANCO, book: 'actual', status: 'posted', entry_date: '2026-02-15', vendor_id: null })
+    db.tables.journal_postings.push({ id: 'exp-2-p', book: 'actual', amount: 20 })
+  }
+
+  it('refuses an expense removal after an issue failed to mark the invoice, and the retry keeps the booked amount', async () => {
+    const db = world()
+    twoLines(db)
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ error: expect.any(String) })
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    expect(db.tables.intercompany_transactions[0]).toMatchObject({ status: 'accrued', amount: 120 })
+
+    const edit = await editPartnershipInvoice(db.admin, FUND, 'u', 'inv-1', { removePostingIds: ['exp-2-p'] })
+    expect(edit).toMatchObject({ status: 409, error: expect.stringContaining('intercompany charge') })
+    expect(db.tables.partnership_invoices[0].amount).toBe(120)
+    expect(db.tables.partnership_invoice_lines).toHaveLength(2)
+
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', amount: 120 })
+  })
+
+  it('an edit that was about to run when the issue finished is refused, leaving lines and amount alone', async () => {
+    // The reverse order: the edit reads a draft with no charge and pauses; the issue books 120 and marks
+    // the invoice issued; the edit resumes. Its transaction finds the invoice issued (Codex on #133).
+    const db = world()
+    twoLines(db)
+    let reached!: () => void
+    const atRpc = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    db.gateRpc(async () => { reached(); await held })
+
+    const editing = editPartnershipInvoice(db.admin, FUND, 'u', 'inv-1', { removePostingIds: ['exp-2-p'] })
+    await atRpc
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    go()
+
+    expect(await editing).toMatchObject({ status: 409, error: expect.stringContaining('now issued') })
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'issued', amount: 120 })
+    expect(db.tables.partnership_invoice_lines).toHaveLength(2)
+  })
+
+  it('the edit function locks the invoice, refuses a non-draft or a live charge, and is service-role only', () => {
+    const sql = readFileSync('supabase/migrations/20261104140300_partnership_invoice_edit.sql', 'utf8')
+    expect(sql).toMatch(/from public\.partnership_invoices\s+where id = p_invoice_id and fund_id = p_fund_id\s+for update/)
+    expect(sql).toMatch(/if v_status <> 'draft' then return/)
+    expect(sql).toMatch(/partnership_invoice_id = p_invoice_id and status <> 'void'/)
+    expect(sql).toMatch(/revoke all on function public\.apply_partnership_invoice_edit[^;]*from public, anon, authenticated/)
+    expect(sql).toMatch(/grant execute on function public\.apply_partnership_invoice_edit[^;]*to service_role/)
+  })
+
+  it('an expense removed while the charge is being booked stops the issue, which unwinds', async () => {
+    const db = world()
+    twoLines(db)
+    let reached!: () => void
+    const atInsert = new Promise<void>(r => { reached = r })
+    let go!: () => void
+    const held = new Promise<void>(r => { go = r })
+    db.gateInserts(async table => { if (table === 'intercompany_transactions') { reached(); await held } })
+
+    const issuing = issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    await atInsert
+    db.gateInserts(null)
+    // No charge exists yet, so the edit is allowed; the issue already read 120.
+    expect(await editPartnershipInvoice(db.admin, FUND, 'u', 'inv-1', { removePostingIds: ['exp-2-p'] })).toMatchObject({ ok: true })
+    go()
+
+    expect(await issuing).toMatchObject({ status: 409, error: expect.stringContaining('not the 120.00 booked') })
+    expect(db.tables.partnership_invoices[0]).toMatchObject({ status: 'draft', amount: 100 })
+    expect(db.tables.intercompany_transactions.every(c => c.status === 'void')).toBe(true)
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(db.tables.intercompany_transactions.find(c => c.status !== 'void')).toMatchObject({ amount: 100 })
   })
 })

@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { timingSafeEqual } from 'crypto'
+import { randomBytes, timingSafeEqual } from 'crypto'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { decrypt } from '@/lib/crypto'
+import { decrypt, encrypt } from '@/lib/crypto'
 import {
   runPipeline,
   type PostmarkPayload,
 } from '@/lib/pipeline/processEmail'
 import { checkFundMember } from '@/lib/pipeline/checkFundMember'
+import { postmarkSenderVerified } from '@/lib/pipeline/sender-auth'
 import { isAuthorizedSender } from '@/lib/pipeline/isAuthorizedSender'
 import { rateLimit, getClientIp } from '@/lib/rate-limit'
 import { scanFileAsync } from '@/lib/security/scan-file'
 import { emailFingerprint } from '@/lib/pipeline/emailFingerprint'
+import { matchPostmarkInbound } from '@/lib/postmark/inbound'
 
 function safeTokenCompare(a: string, b: string): boolean {
   try {
@@ -84,8 +86,12 @@ async function handleInbound(req: NextRequest, payload: PostmarkPayload): Promis
   const limited = await rateLimit({ key: `inbound:fund:${fundId}`, limit: 60, windowSeconds: 60 })
   if (limited) return limited
 
-  // Step 1b: Check if sender is a fund member (determines interaction extraction, bypasses authorized_senders)
-  const fundMember = await checkFundMember(supabase, fundId, fromAddress)
+  // Step 1b: Check if sender is a fund member (determines interaction extraction, bypasses authorized_senders).
+  // Only when the receiving server shows the mail really is from that address: a From header alone
+  // is the sender's own claim.
+  const fundMember = postmarkSenderVerified(fromAddress, payload.Headers)
+    ? await checkFundMember(supabase, fundId, fromAddress)
+    : null
 
   // Step 2: Check authorized senders (fund members bypass this check)
   if (!fundMember && !isGlobal) {
@@ -248,43 +254,28 @@ async function resolveFund(
   fromAddress: string,
   token: string
 ): Promise<{ fundId: string; isGlobal: boolean } | null> {
-  if (!toAddress) return null
-
-  // The recipient exactly as written first: literal, so an address with `*`, `%` or `_` in it
-  // resolves as it always did, whatever else is configured.
-  const columns = 'fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted'
-  const { data: exact } = await supabase
+  // By the saved address, else by its domain, so any name at a fund's inbound domain reaches it
+  const { data: candidates } = await supabase
     .from('fund_settings')
-    .select(columns)
-    .eq('postmark_inbound_address', toAddress)
+    .select('fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
+    .not('postmark_inbound_address', 'is', null)
+  const { data: appSettings } = await supabase
+    .from('app_settings')
+    .select('global_inbound_address, global_inbound_token, global_inbound_token_encrypted')
     .maybeSingle()
-  let fundSettings = exact
-
-  // Then case-insensitively — mail addresses are, and a sender's client may have changed the case
-  // of the inbox. An ilike pattern's escapes are not trusted (PostgREST may drop them, and reads `*`
-  // as `%`), so every character that could be a wildcard becomes `_`, which matches exactly one:
-  // the candidates are addresses of the recipient's length that agree with it elsewhere, and the
-  // fund is the one equal to it ignoring case. The bound (fund_settings is one row per fund) is a
-  // backstop only: the delivery as written was already matched literally above.
-  if (!fundSettings) {
-    const recipient = toAddress.toLowerCase()
-    const { data: candidates } = await supabase
-      .from('fund_settings')
-      .select(columns)
-      .ilike('postmark_inbound_address', toAddress.replace(/[\\%_*]/g, '_'))
-      .limit(50)
-    fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient) ?? null
-  }
+  const fundSettings = matchPostmarkInbound(toAddress, candidates ?? [], [appSettings?.global_inbound_address])
 
   if (fundSettings) {
     // Prefer encrypted token; fall back to plaintext for legacy
     let expectedToken = fundSettings.postmark_webhook_token ?? ''
+    let fromEncrypted = false
     if (fundSettings.postmark_webhook_token_encrypted && fundSettings.encryption_key_encrypted) {
       try {
         const kek = process.env.ENCRYPTION_KEY
         if (kek) {
           const dek = decrypt(fundSettings.encryption_key_encrypted, kek)
           expectedToken = decrypt(fundSettings.postmark_webhook_token_encrypted, dek)
+          fromEncrypted = true
         }
       } catch {
         // Fall back to plaintext
@@ -294,13 +285,11 @@ async function resolveFund(
       console.warn('[inbound-email] Invalid token for per-fund address')
       return null
     }
+    if (fundSettings.postmark_webhook_token) {
+      await retireLegacyWebhookToken(supabase, fundSettings, token, fromEncrypted)
+    }
     return { fundId: fundSettings.fund_id, isGlobal: false }
   }
-
-  const { data: appSettings } = await supabase
-    .from('app_settings')
-    .select('global_inbound_address, global_inbound_token, global_inbound_token_encrypted')
-    .maybeSingle()
 
   if (!appSettings?.global_inbound_address || toAddress !== appSettings.global_inbound_address) {
     return null
@@ -339,4 +328,44 @@ async function resolveFund(
   }
 
   return { fundId: senders[0].fund_id, isGlobal: true }
+}
+
+/**
+ * Clears the plaintext `postmark_webhook_token` once a webhook has proved which token is current.
+ * Anyone holding that value can forge inbound mail for the fund, and it used to sit in a column
+ * every member could read.
+ *
+ * The plaintext copy is only dropped once an encrypted copy is known to decrypt: either it just
+ * did (`fromEncrypted`), or the token that matched is encrypted here first. A fund whose encrypted
+ * copy is unreadable (its data key was replaced by an older bug in the settings route) is healed
+ * the same way, so no fund loses inbound mail. Best effort: a failure leaves the row as it was and
+ * never refuses the webhook.
+ */
+async function retireLegacyWebhookToken(
+  supabase: ReturnType<typeof createAdminClient>,
+  row: { fund_id: string; encryption_key_encrypted?: string | null },
+  token: string,
+  fromEncrypted: boolean,
+): Promise<void> {
+  try {
+    const update: Record<string, string | null> = { postmark_webhook_token: null }
+    if (!fromEncrypted) {
+      const kek = process.env.ENCRYPTION_KEY
+      if (!kek) return
+      let dek: string
+      if (row.encryption_key_encrypted) {
+        dek = decrypt(row.encryption_key_encrypted, kek)
+      } else {
+        dek = randomBytes(32).toString('hex')
+        update.encryption_key_encrypted = encrypt(dek, kek)
+      }
+      update.postmark_webhook_token_encrypted = encrypt(token, dek)
+    }
+    let q = (supabase as any).from('fund_settings').update(update).eq('fund_id', row.fund_id)
+    // Only the row as it was read: a concurrent save that set a data key wins over a fresh one.
+    q = row.encryption_key_encrypted ? q.eq('encryption_key_encrypted', row.encryption_key_encrypted) : q.is('encryption_key_encrypted', null)
+    await q
+  } catch (err) {
+    console.warn('[inbound-email] Could not retire the plaintext webhook token:', err instanceof Error ? err.message : err)
+  }
 }

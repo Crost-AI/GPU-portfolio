@@ -167,6 +167,11 @@ export const TABLE_RULES: Record<string, TableRule> = {
   close_allocation_rounding: { scope: 'fund', domain: 'accounting' },
   journal_entry_allocations: { scope: 'service', note: 'Links a source entry to the allocation entries the close posted for it; written by the close, read through accounting routes.' },
   journal_entry_allocation_skips: { scope: 'service', note: 'Posted entries whose P&L was deliberately not allocated on posting (allocation off, or self-allocated); written by posting, read by the close.' },
+  // Cross-fund by design (lib/fund-connections): served only by admin-only settings routes and the
+  // report-card generators, with the service role. Never on the Data API.
+  fund_connections: { scope: 'service', note: 'A connection between two funds, asked by one fund\'s admin and accepted by the other\'s; admin-only settings routes.' },
+  lp_investor_links: { scope: 'service', note: 'An LP paired across two connected funds, approved by both funds\' admins; read by the report cards, managed by admin-only settings routes.' },
+  fund_connection_events: { scope: 'service', note: 'Audit trail of fund connections and LP pairs; written by lib/fund-connections.', appendOnly: true },
   close_reviews: { scope: 'service', note: 'Close review runs; written by the close and served by the accounting close routes.' },
   close_review_checks: { scope: 'service', note: 'Per-check results of a close review; worker-written, served with their review.' },
   accounting_schedules: { scope: 'service', note: 'Recurring accruals and amortization schedules the close posts; managed through accounting routes.' },
@@ -197,6 +202,8 @@ export const TABLE_RULES: Record<string, TableRule> = {
   receipts: { scope: 'service', note: 'Receipts behind journal entries; served by the receipts routes, which resolve the receipt\'s entity (management-company grant for a manco\'s) or require every-entity visibility for an unassigned one.' },
   partnership_invoices: { scope: 'service', note: 'Quarterly partnership-expense invoices between two entities; served by the invoices route, which checks the caller may see both.' },
   partnership_invoice_lines: { scope: 'service', note: 'Which Due-from postings each partnership invoice bills; read and written only with its invoice.' },
+  partnership_invoice_adjustments: { scope: 'service', note: 'Credits and charges typed onto a partnership invoice that change its amount due; read and written only with its invoice.' },
+  partnership_allocation_rules: { scope: 'service', note: 'The saved allocation basis for a vendor\'s expenses billed by one entity to one fund; read and written only by the invoices and receipts routes.' },
 
   // ---- LP capital --------------------------------------------------------------------------
   lp_entities: { scope: 'fund', domain: 'lp_capital' },
@@ -297,6 +304,7 @@ export const TABLE_RULES: Record<string, TableRule> = {
   oauth_clients: { scope: 'service', note: 'Client secrets and the redirect-URI allowlist.' },
   oauth_tokens: { scope: 'service', note: 'Access/refresh token hashes.' },
   oauth_authorization_codes: { scope: 'service', note: 'Single-use authorization codes and PKCE challenges.' },
+  agent_active_funds: { scope: 'service', note: 'Which master admin pool fund a connector is working in (lib/agent/master-admin.ts).' },
   app_settings: { scope: 'service', note: 'Global inbound address and its webhook token.' },
   allowed_signups: { scope: 'service', note: 'The signup allowlist decides who may exist at all.' },
   rate_limit_entries: { scope: 'service', note: 'Counters; readable rows would make the limiter forgeable.' },

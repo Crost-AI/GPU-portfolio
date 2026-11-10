@@ -380,7 +380,7 @@ async function addTeamMember(
   const { fundId, actorId } = ctx
 
   // The signup gate (hook_before_user_created) refuses anyone not on the allow-list.
-  const { error: allowError } = await db.from('allowed_signups').insert({ email_pattern: t.email })
+  const { error: allowError } = await db.from('allowed_signups').insert({ email_pattern: t.email, fund_id: fundId })
   if (allowError && allowError.code !== '23505') return { email: t.email, status: 'error', error: 'Could not add them to the signup allow-list.' }
 
   let userId = await findAuthUserId(admin, t.email)
