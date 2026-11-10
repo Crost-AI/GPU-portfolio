@@ -12,7 +12,6 @@ import {
   MAX_RECEIPT_BYTES,
 } from '@/lib/accounting/receipts'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
-import { seesEveryEntity } from '@/lib/accounting/receipt-access'
 
 const ALLOWED = /^(application\/pdf|image\/(png|jpe?g|heic|heif|webp|gif))$/i
 
@@ -46,7 +45,7 @@ export async function GET(req: NextRequest) {
 
   // The nav's question: is anything waiting here? A count, without the match suggestions.
   if (req.nextUrl.searchParams.get('count') === 'unmatched') {
-    const waiting = await listReceipts(admin, gate.fundId, { vehicleId, includeUnassigned: await seesEveryEntity(admin, gate), status: 'unmatched' })
+    const waiting = await listReceipts(admin, gate.fundId, { vehicleId, includeUnassigned: access.vehicles.all, status: 'unmatched' })
     return NextResponse.json({ unmatched: waiting.length })
   }
 
