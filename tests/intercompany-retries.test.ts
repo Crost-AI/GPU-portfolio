@@ -246,6 +246,23 @@ describe('re-issuing an invoice whose charge already exists', () => {
     expect(mocks.persist).toHaveBeenCalledTimes(1)
   })
 
+  it('a booked charge whose invoice is still a draft is not settled: its credits can still change (Bugbot on #133)', async () => {
+    const db = world()
+    db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')
+    await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')
+    expect(db.tables.partnership_invoices[0].status).toBe('draft')
+    const chargeId = db.tables.intercompany_transactions[0].id
+    const posted = mocks.persist.mock.calls.length
+
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', chargeId, '2026-05-01'))
+      .toMatchObject({ error: expect.stringContaining('still a draft') })
+    expect(mocks.persist).toHaveBeenCalledTimes(posted)
+    expect(db.tables.intercompany_transactions[0].status).toBe('accrued')
+
+    expect(await issuePartnershipInvoice(db.admin, FUND, 'u', 'inv-1')).toMatchObject({ ok: true })
+    expect(await settleIntercompanyCharge(db.admin, FUND, 'u', chargeId, '2026-05-01')).toEqual({ ok: true })
+  })
+
   it('refuses while the linked fund entry is only a draft', async () => {
     const db = world()
     db.failNextUpdate('partnership_invoices', patch => patch.status === 'issued')

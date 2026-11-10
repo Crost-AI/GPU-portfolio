@@ -353,10 +353,12 @@ export async function linkIntercompanyAccount(
   const current = pickIntercompanyAccounts(chart, counterpartyVehicleId)[account.type === 'asset' ? 'receivable' : 'payable']
   if (current && current.id !== account.id) {
     // Either book: a tax-book adjustment on the old account is stranded just the same.
-    const { count } = await admin
+    const { count, error: countErr } = await admin
       .from('journal_postings' as any)
       .select('id', { count: 'exact', head: true })
       .in('book', LEDGER_BOOKS).eq('fund_id', fundId).eq('account_id', current.id)
+    // A read that fails is not "no postings": unlinking on it would strand the balance.
+    if (countErr) return { error: `Could not check ${current.code} ${current.name} for postings, so nothing was changed: ${countErr.message}` }
     if ((count ?? 0) > 0) {
       return { error: `${current.code} ${current.name} already holds this entity’s balance (${count} ${count === 1 ? 'posting' : 'postings'}). Move those to ${account.code} ${account.name} first, then link it.` }
     }
@@ -726,6 +728,17 @@ export async function settleIntercompanyCharge(
   }
   // One side already booked fixes the date: the cash moved once, on the date that side records.
   const date = linked.payee?.entryDate ?? linked.payer?.entryDate ?? settledDate
+
+  // An invoice's charge is booked before the invoice is marked issued, and marking it can fail. Until
+  // it is issued its credits can still change, so there is no amount due to settle yet.
+  if (charge.partnership_invoice_id) {
+    const { data: draft, error: draftErr } = await admin.from('partnership_invoices' as any)
+      .select('status').eq('fund_id', fundId).eq('id', charge.partnership_invoice_id).maybeSingle()
+    if (draftErr) return { error: `The charge's invoice could not be read: ${draftErr.message}` }
+    if ((draft as any)?.status === 'draft') {
+      return { error: 'This charge is booked but its invoice is still a draft, so its credits can still change. Issue the invoice to finish, then settle.' }
+    }
+  }
 
   const payeeIc = await ensureIntercompanyAccounts(admin, fundId, payee, { vehicleId: charge.from_vehicle_id, name: payer })
   const payerIc = await ensureIntercompanyAccounts(admin, fundId, payer, { vehicleId: charge.to_vehicle_id, name: payee })
