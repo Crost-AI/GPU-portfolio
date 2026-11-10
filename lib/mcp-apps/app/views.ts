@@ -35,7 +35,7 @@ export interface ViewContext {
   ask(text: string): Promise<boolean>
 }
 
-export type StatementTab = 'balance' | 'income' | 'cash' | 'capital'
+export type StatementTab = 'balance' | 'income' | 'cash' | 'fleet' | 'capital'
 
 export function renderView(payload: DashboardPayload, ctx: ViewContext): Node[] {
   switch (payload.view) {
@@ -543,6 +543,7 @@ function statements(payload: StatementsPayload, ctx: ViewContext): Node[] {
     { value: 'balance', label: 'Balance sheet' },
     { value: 'income', label: 'Income statement' },
     ...(d.cashFlows ? [{ value: 'cash' as const, label: 'Cash flows' }] : []),
+    ...(d.fleetSchedule ? [{ value: 'fleet' as const, label: 'Fleet schedule' }] : []),
     ...(d.partnersCapital ? [{ value: 'capital' as const, label: "Partners' capital" }] : []),
   ]
   const tab = tabs.some(t => t.value === ctx.statementTab) ? ctx.statementTab : 'balance'
@@ -570,10 +571,26 @@ function statements(payload: StatementsPayload, ctx: ViewContext): Node[] {
     out.push(statementTable(`Statement of cash flows for ${d.period.label}`, [
       { label: 'Cash at start of period', amount: fmt.money(d.cashFlows.openingCash), kind: 'total' },
       ...sectionLines(fmt, d.cashFlows.operating),
+      ...(d.cashFlows.investing ? sectionLines(fmt, d.cashFlows.investing) : []),
       ...sectionLines(fmt, d.cashFlows.financing),
       { label: 'Net change in cash', amount: fmt.money(d.cashFlows.netChange), kind: 'total' },
       { label: 'Cash at end of period', amount: fmt.money(d.cashFlows.endingCash), kind: 'grand' },
     ]))
+  } else if (tab === 'fleet' && d.fleetSchedule) {
+    const rows = d.fleetSchedule
+    const sum = (k: 'cost' | 'accumulated' | 'nbv') => rows.reduce((s, r) => s + r[k], 0)
+    out.push(rows.length === 0 ? empty('No equipment on the books.') : dataTable(rows, [
+      { header: 'Server', cell: r => r.name, sort: r => r.name },
+      { header: 'Type', cell: r => r.type ?? DASH, minWidth: 'md' },
+      { header: 'GPUs', numeric: true, cell: r => (r.gpus == null ? DASH : String(r.gpus)), minWidth: 'md' },
+      { header: 'In service', cell: r => shortDate(r.inServiceDate), minWidth: 'lg' },
+      { header: 'Cost', numeric: true, cell: r => fmt.money(r.cost), sort: r => r.cost },
+      { header: 'Accumulated depreciation', numeric: true, cell: r => fmt.money(-r.accumulated), sort: r => r.accumulated, minWidth: 'md' },
+      { header: 'Net book value', numeric: true, cell: r => fmt.money(r.nbv), sort: r => r.nbv },
+    ], {
+      caption: `Fleet schedule as of ${shortDate(d.period.end)}: each server at cost less accumulated depreciation`,
+      footer: ['Total equipment, net', '', '', '', fmt.money(sum('cost')), fmt.money(-sum('accumulated')), fmt.money(sum('nbv'))],
+    }))
   } else if (d.partnersCapital) {
     if (d.partnersCapital.partners.length === 0) {
       out.push(empty('No partner capital activity in this period.'))

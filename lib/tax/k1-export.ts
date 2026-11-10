@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type * as XLSX from 'xlsx'
-import { emptyLines, type K1Category } from '@/lib/accounting/k1-allocation'
+import { emptyLines, type K1Category, type K1Lines } from '@/lib/accounting/k1-allocation'
 import { buildK1Workbook, type K1WorkbookPartner } from './k1-workbook'
 import { currentForm, type TaxFormRecord } from './forms'
 
@@ -72,7 +72,7 @@ export async function buildK1WorkbookForPackage(
     formsByEntity.set(f.lp_entity_id, list)
   }
 
-  const linesByEntity = new Map<string, Record<K1Category, number>>()
+  const linesByEntity = new Map<string, K1Lines>()
   for (const l of ((lineRows as any[]) ?? [])) {
     const cur = linesByEntity.get(l.lp_entity_id) ?? emptyLines()
     cur[l.category as K1Category] = Number(l.amount)

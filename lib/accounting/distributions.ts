@@ -237,6 +237,30 @@ function cashDistributable(opts: CashPreviewOptions): { total: number } | CashRe
   return { total }
 }
 
+/** One declared distribution's reserve and the date it was declared for. */
+export interface DeclaredReserve { date: string; reserve: number }
+
+/**
+ * Every declared distribution's reserve, oldest first — so a dated figure (the accrued profit-share
+ * memo's book NAV) can take the reserve that applied on its own date (`reserveOn`), not today's.
+ */
+export async function loadDeclaredReserves(admin: SupabaseClient, fundId: string, group: string): Promise<DeclaredReserve[]> {
+  const vehicleId = await vehicleIdByName(admin, fundId, group)
+  if (!vehicleId) return []
+  const rows = await fetchAllRows<{ distribution_date: string; reserve_amount: number | string | null; created_at: string | null }>((f, t) =>
+    (admin as any).from('distributions').select('distribution_date, reserve_amount, created_at')
+      .eq('fund_id', fundId).eq('vehicle_id', vehicleId).eq('status', 'declared')
+      .order('distribution_date', { ascending: true }).order('created_at', { ascending: true }).range(f, t))
+  return rows.map(r => ({ date: r.distribution_date, reserve: r.reserve_amount == null ? 0 : Number(r.reserve_amount) }))
+}
+
+/** The reserve of the newest declaration dated on or before `asOf`; zero when there is none. */
+export function reserveOn(reserves: DeclaredReserve[], asOf: string): number {
+  let reserve = 0
+  for (const r of reserves) if (r.date <= asOf) reserve = r.reserve
+  return reserve
+}
+
 /** The newest declared distribution's reserve, or null — the declaration form's default. */
 async function lastReserve(admin: SupabaseClient, fundId: string, group: string): Promise<number | null> {
   const vehicleId = await vehicleIdByName(admin, fundId, group)
