@@ -109,6 +109,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/allocation': { domain: 'accounting' },
   // The account register: the same posted ledger the statements read, one account at a time.
   'api/accounting/ledger': { domain: 'accounting' },
+  // The general ledger as a file (CSV or Excel) — every account's register, or one account's.
+  'api/accounting/ledger/export': { domain: 'accounting' },
   'api/accounting/ledger-text': { domain: 'accounting' },
   'api/accounting/opening-balances': { domain: 'accounting' },
   'api/accounting/periods': { domain: 'accounting' },
@@ -284,6 +286,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/notices/preview': { domain: 'lp_relations', feature: 'lp_portal' },
   // A receipt for a funded call line goes out the same way a notice does.
   'api/accounting/notices/receipt': { domain: 'lp_relations', feature: 'lp_portal' },
+  // A notice in the ILPA Capital Call & Distribution Template layout, as a download. A read of the
+  // register that sends nothing, so it sits with the capital data rather than with sharing.
+  'api/accounting/notices/ilpa': { domain: 'lp_capital' },
   'api/lps/live-report/share': { domain: 'lp_relations', feature: 'lp_portal' },
   'api/lps/snapshots/[id]/share': { domain: 'lp_relations', feature: 'lp_portal' },
   'api/lps/authorized-users': { domain: 'lp_relations', feature: 'lp_portal' },

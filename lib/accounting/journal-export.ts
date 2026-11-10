@@ -131,15 +131,20 @@ export const GENERAL_LEDGER_HEADER = ['Account', 'Account name', 'Date', 'Entry'
  * Every account's register in one table. An account with neither an opening balance nor
  * activity in the window is left out; one with a balance and no activity still appears, because
  * a balance-sheet account that did nothing all year is still on the general ledger.
+ *
+ * `only` narrows it to one account's register. The whole chart is still passed in, so the
+ * Against column can name the accounts on the other side.
  */
 export function generalLedgerRows(
   accounts: Account[],
   postings: RegisterPosting[],
   period: { start?: string | null; end?: string | null },
+  opts: { only?: string } = {},
 ): Cell[][] {
   const byId = new Map(accounts.map(a => [a.id, a]))
   const rows: Cell[][] = [GENERAL_LEDGER_HEADER]
-  for (const acct of [...accounts].sort((x, y) => x.code.localeCompare(y.code))) {
+  const listed = opts.only ? accounts.filter(a => a.id === opts.only) : accounts
+  for (const acct of [...listed].sort((x, y) => x.code.localeCompare(y.code))) {
     const reg = accountRegister(acct, postings, byId, period)
     if (reg.opening === 0 && reg.lines.length === 0) continue
     rows.push([acct.code, acct.name, period.start ?? '', '', '', 'Opening balance', '', null, null, reg.opening])

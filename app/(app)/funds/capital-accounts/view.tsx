@@ -16,6 +16,7 @@ import { useLedgerFetch, useFundSeg, useVehicle } from '@/components/accounting-
 import { type PeriodPreset } from '@/lib/accounting/statement-period'
 import { PeriodPicker } from '@/components/accounting/period-picker'
 import { NoticeAction } from '@/components/accounting/notice-action'
+import { IlpaDownload } from '@/components/accounting/ilpa-download'
 import { ReceiptAction } from '@/components/accounting/receipt-action'
 import { CallActivity } from '@/components/accounting/call-activity'
 import { ReconciliationPanel } from './reconciliation-panel'
@@ -774,6 +775,7 @@ export function CapitalAccountsView() {
                 <div className="flex flex-wrap items-center gap-2">
                   {c.lines.map(line => <SettlementReviewAction key={line.id} kind="call" line={line} onChanged={load} />)}
                   <NoticeAction kind="capital_call" id={c.id} lines={c.lines} fmt={fmt} />
+                  <IlpaDownload kind="capital_call" id={c.id} />
                   {c.settled > 0 && <div className="mt-2"><ReceiptAction callId={c.id} fmt={fmt} /></div>}
                   <Button size="sm" variant="outline" className="mt-2" onClick={() => setReviewing(r => (r === c.id ? null : c.id))}>
                     {reviewing === c.id ? 'Hide review' : 'Review'}
@@ -828,6 +830,7 @@ export function CapitalAccountsView() {
                 </div>
                 {d.lines.map(line => <SettlementReviewAction key={line.id} kind="distribution" line={line} onChanged={load} />)}
                 <NoticeAction kind="distribution" id={d.distributionId} lines={d.lines} fmt={fmt} />
+                <IlpaDownload kind="distribution" id={d.distributionId} />
               </div>
             ))}
           </div>

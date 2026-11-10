@@ -35,9 +35,14 @@ interface Props {
   companyId: string
   companyName: string
   metrics: Metric[]
+  /**
+   * With no metrics, a one-line "Add metric" instead of the large empty card — for a fund holding,
+   * whose main chart is its register's position chart and whose own KPIs are optional.
+   */
+  compactEmpty?: boolean
 }
 
-export function CompanyCharts({ companyId, companyName, metrics }: Props) {
+export function CompanyCharts({ companyId, companyName, metrics, compactEmpty }: Props) {
   const router = useRouter()
   const [valuesByMetric, setValuesByMetric] = useState<Record<string, MetricValueRow[]>>({})
   const [loading, setLoading] = useState(true)
@@ -142,6 +147,27 @@ export function CompanyCharts({ companyId, companyName, metrics }: Props) {
       </DialogContent>
     </Dialog>
   )
+
+  if (metrics.length === 0 && compactEmpty) {
+    return (
+      <>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" data-metrics-ready="company">
+          <span>No custom metrics tracked.</span>
+          <Button size="sm" variant="ghost" onClick={() => setAddMetricOpen(true)} className="h-7 px-2 text-muted-foreground hover:text-foreground">
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            Add metric
+          </Button>
+          {fundHasDefaults && (
+            <Button size="sm" variant="ghost" onClick={() => setDefaultsOpen(true)} className="h-7 px-2 text-muted-foreground hover:text-foreground">
+              Use fund defaults{availableDefaults > 0 ? ` (${availableDefaults})` : ''}
+            </Button>
+          )}
+        </div>
+        {addMetricDialog}
+        {defaultsDialog}
+      </>
+    )
+  }
 
   if (metrics.length === 0) {
     return (
