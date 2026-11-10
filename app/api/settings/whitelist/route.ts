@@ -3,8 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { assertWriteAccess } from '@/lib/api-helpers'
 import { dbError } from '@/lib/api-error'
+import { claimableEmailDomain } from '@/lib/onboarding/wizard'
 
-// GET — list all whitelisted email patterns (admin only)
+// GET — list this fund's whitelisted email patterns (admin only). Each fund keeps its own list;
+// the signup gate accepts an address on any of them.
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -14,7 +16,7 @@ export async function GET() {
 
   const { data: membership } = await admin
     .from('fund_members')
-    .select('role')
+    .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -25,12 +27,13 @@ export async function GET() {
   const { data: entries } = await admin
     .from('allowed_signups')
     .select('id, email_pattern, created_at')
+    .eq('fund_id', membership.fund_id)
     .order('email_pattern')
 
   return NextResponse.json({ entries: entries ?? [] })
 }
 
-// POST — add a new whitelist entry (admin only)
+// POST — add a whitelist entry to this fund's list (admin only)
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -43,7 +46,7 @@ export async function POST(req: NextRequest) {
 
   const { data: membership } = await admin
     .from('fund_members')
-    .select('role')
+    .select('fund_id, role')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -67,9 +70,17 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
+  // The signup gate honours every fund's list for the whole deployment, so a wildcard on a consumer
+  // mailbox (*@<webmail>) would open signup, and fund creation, to everyone. Name people instead.
+  if (isWildcard && !claimableEmailDomain(pattern.replace(/^\*/, ''))) {
+    return NextResponse.json({
+      error: 'That is a personal email provider. Add people on it one address at a time instead of the whole domain.',
+    }, { status: 400 })
+  }
+
   const { error } = await admin
     .from('allowed_signups')
-    .insert({ email_pattern: pattern })
+    .insert({ email_pattern: pattern, fund_id: membership.fund_id })
 
   if (error) {
     if (error.code === '23505') {

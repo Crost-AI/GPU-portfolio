@@ -91,7 +91,7 @@ function setup(opts: { users?: { id: string; email: string }[]; settings?: Recor
     fund_settings: [{ fund_id: FUND, feature_visibility: buildFeatureVisibility(['portfolio_reporting']), onboarding: null, ...opts.settings }],
     fund_members: [{ fund_id: FUND, user_id: ACTOR, role: 'admin' }],
     ...opts.seed,
-  }, { unique: [{ table: 'allowed_signups', key: r => r.email_pattern }] })
+  }, { unique: [{ table: 'allowed_signups', key: r => `${r.fund_id}|${r.email_pattern}` }] })
   const invites: string[] = []
   ;(mem.admin as any).auth = {
     admin: {
@@ -132,7 +132,7 @@ describe('applySetupPlan', () => {
     // The member: allowed to sign up, invited, added, their preset and end date applied.
     expect(r.team).toEqual([{ email: 'cfo@firm.com', status: 'invited' }])
     expect(invites).toEqual(['cfo@firm.com'])
-    expect(tables.allowed_signups.map(a => a.email_pattern)).toEqual(['cfo@firm.com'])
+    expect(tables.allowed_signups.map(a => [a.email_pattern, a.fund_id])).toEqual([['cfo@firm.com', FUND]])
     const member = tables.fund_members.find(m => m.user_id === 'u-cfo@firm.com')!
     expect(member).toMatchObject({ role: 'member', invited_by: ACTOR, all_entities: true, access_expires_at: expect.stringMatching(/^2027-06-30/) })
     const grants = tables.fund_member_access.filter(g => g.user_id === member.user_id)

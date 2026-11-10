@@ -94,8 +94,9 @@ describe('agent tool registry', () => {
   it('destructive tools are exactly the deletes, merges and book reversals, each admin-only and always staged', () => {
     const destructive = AGENT_TOOLS.filter(t => t.destructive)
     expect(destructive.map(t => t.name).sort()).toEqual([
-      'delete_company', 'delete_lp_positions', 'diligence_delete_deal', 'lp_delete_commitment', 'lp_delete_entity', 'lp_delete_investor',
-      'lp_merge_investors', 'merge_vehicles', 'remove_member', 'reverse_entry', 'unpost_entry', 'void_entry',
+      'clear_fund_register', 'delete_company', 'delete_fund_holding', 'delete_inactive_company_accounts', 'delete_lp_positions',
+      'diligence_delete_deal', 'lp_delete_commitment', 'lp_delete_entity', 'lp_delete_investor',
+      'lp_merge_investors', 'merge_companies', 'merge_vehicles', 'remove_member', 'reverse_entry', 'unpost_entry', 'void_entry',
     ])
     for (const t of destructive) {
       expect(t.scope, t.name).toBe('write')
@@ -110,7 +111,7 @@ describe('agent tool registry', () => {
       expect(t.description, t.name).toMatch(/cannot be undone/i)
     }
     // "Delete all fund data" is deliberately not a tool.
-    expect(AGENT_TOOLS.some(t => /delete_(all|fund)/.test(t.name))).toBe(false)
+    expect(AGENT_TOOLS.some(t => /delete_(all|fund)(_data)?$/.test(t.name))).toBe(false)
   })
 
   it('reopen_period is always offered, admin-only, and staged from a chat', () => {
@@ -133,6 +134,13 @@ describe('agent tool registry', () => {
     expect(getTool('document_template_get')!.scope).toBe('read')
     expect(isDraftOnlyCall(getTool('document_template_save')!, {})).toBe(false)
     expect(isDraftOnlyCall(getTool('document_generate')!, {})).toBe(true)
+  })
+
+  it('a distribution recalculation runs directly only as a dry run', () => {
+    const tool = getTool('recalculate_fund_distributions')!
+    expect(shouldStage(tool, { company: 'Acme Fund', dry_run: true }, { keyId: 'oauth:abc' })).toBe(false)
+    expect(shouldStage(tool, { company: 'Acme Fund' }, { keyId: 'oauth:abc' })).toBe(true)
+    expect(shouldStage(tool, { company: 'Acme Fund', dry_run: 'true' }, { keyId: 'oauth:abc' })).toBe(true)
   })
 
   it('deal and diligence writes are named for their stage, and gated like their web routes', () => {

@@ -27,6 +27,8 @@ export interface TaxPackageInputs {
   adjustingEntriesCsv: string | null
   /** The trial balance on a tax basis — the ledger plus the book-to-tax overlay. Null omits it. */
   taxBasisTrialBalanceCsv?: string | null
+  /** Book capital beside tax capital, fund and partner, with the tax-book entries between them. Null omits it. */
+  bookTaxBridgeCsv?: string | null
   /** The book-to-tax adjusting entries themselves (the tax book). Null omits it. */
   taxBookEntriesCsv?: string | null
   /** Realized gains by lot for the year — Schedule D / 8949. Null omits it. */
@@ -61,8 +63,11 @@ export function taxPackageFiles(i: TaxPackageInputs): TaxPackageFile[] {
   if (i.adjustingEntriesCsv !== null) {
     files.push({ name: `adjusting-entries-${y}.csv`, note: 'Entries flagged as adjusting in the books, listed on their own.', content: i.adjustingEntriesCsv })
   }
+  if (i.bookTaxBridgeCsv) {
+    files.push({ name: `book-to-tax-bridge-${y}.csv`, note: 'Partners’ capital on the books beside tax-basis capital, for the fund and each partner: beginning, contributions, distributions, income and ending, with the tax-book entries that make up the opening difference and the year’s change, and whatever they leave unexplained.', content: i.bookTaxBridgeCsv })
+  }
   if (i.taxBookEntriesCsv) {
-    files.push({ name: `book-to-tax-adjustments-${y}.csv`, note: 'The book-to-tax adjusting entries in the tax book: unrealized appreciation, carry accrued on unrealized gains, organizational and syndication costs.', content: i.taxBookEntriesCsv })
+    files.push({ name: `book-to-tax-adjustments-${y}.csv`, note: 'The year’s entries in the tax book: unrealized appreciation, carry accrued on unrealized gains, organizational and syndication costs, lower-tier K-1 pass-through, and imported or hand-entered tax-basis entries.', content: i.taxBookEntriesCsv })
   }
   if (i.taxBasisTrialBalanceCsv) {
     files.push({ name: `trial-balance-tax-basis-${y}.csv`, note: 'The trial balance on a tax basis — the ledger plus the book-to-tax adjustments — for Schedule L and M-1.', content: i.taxBasisTrialBalanceCsv })

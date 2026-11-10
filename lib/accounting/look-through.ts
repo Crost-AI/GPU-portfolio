@@ -97,6 +97,19 @@ export function lookThroughAccount(
 }
 
 /**
+ * The associate's account with its carry line taken out, accrued and paid alike: what is left to
+ * split is capital and its returns, which follow ownership. Exploding this, rather than taking
+ * `carriedInterest` off a member's exploded account, leaves nothing in the result that depends on
+ * the carry or its points, not even a rounding cent.
+ */
+export function withoutCarry(account: CapitalAccount): CapitalAccount {
+  return { ...account, carriedInterest: 0, ending: roundCents(account.ending - account.carriedInterest) }
+}
+
+/** The note on a report whose positions through this associate leave out the carry. */
+export const carryExcludedLabel = (via: string) => `Carried interest on positions held via ${via}`
+
+/**
  * Build the member list for an associate vehicle.
  *
  * `basis` is each member's ownership weight — their commitment to (or capital in) the associate

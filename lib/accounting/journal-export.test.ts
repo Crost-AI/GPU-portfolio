@@ -111,4 +111,10 @@ describe('generalLedgerRows', () => {
     expect(tb.rows.find(r => r.code === '1000')!.balance).toBe(70)
     expect(rows.some(r => r[0] === '9999')).toBe(false)
   })
+
+  it('narrows to one account and still names the accounts on the other side', () => {
+    const rows = generalLedgerRows(accounts, postings, { start: '2025-01-01', end: '2025-12-31' }, { only: 'cash' })
+    expect(rows.slice(1).every(r => r[0] === '1000')).toBe(true)
+    expect(rows[2][6]).toBe('3100-aaaa')
+  })
 })

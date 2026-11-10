@@ -14,6 +14,7 @@ import { buildStatementWorkbook } from '@/lib/accounting/statement-workbook'
 import { fundCurrency } from '@/lib/accounting/currency'
 import { loadJournalForExport, loadChartForExport } from '@/lib/accounting/journal-export-load'
 import { journalRows, quickbooksJournalRows, chartRows, generalLedgerRows, trialBalanceRows } from '@/lib/accounting/journal-export'
+import { bookTaxBridgeRows } from '@/lib/accounting/book-tax-bridge'
 import { toCsv } from '@/lib/accounting/csv'
 import { buildTaxPackageZip, taxPackageFileName, type TaxPackageInputs } from '@/lib/accounting/tax-package'
 import { closedPeriodRanges } from '@/lib/accounting/periods'
@@ -170,7 +171,7 @@ export async function taxPackageDocument(
   const end = `${year}-12-31`
   const generatedAt = new Date().toISOString()
 
-  const [data, taxData, name, currency, entries, taxEntries, chart, closed, vehicleId, gains, payments] = await Promise.all([
+  const [data, taxData, name, currency, entries, taxEntries, priorTaxEntries, chart, closed, vehicleId, gains, payments] = await Promise.all([
     loadLedgerData(admin, fundId, group),
     // The same ledger read on a tax basis — the overlay spliced in — for the tax-basis trial balance.
     loadLedgerData(admin, fundId, group, { basis: 'tax' }),
@@ -178,6 +179,8 @@ export async function taxPackageDocument(
     currencyOrThrow(admin, fundId, 'tax-package'),
     loadJournalForExport(admin, fundId, group, { start, end, statuses: ['posted'] }),
     loadJournalForExport(admin, fundId, group, { start, end, statuses: ['posted'], book: 'tax' }),
+    // Every earlier tax-book entry: what the opening book-to-tax difference is made of.
+    loadJournalForExport(admin, fundId, group, { end: `${year - 1}-12-31`, statuses: ['posted'], book: 'tax' }),
     loadChartForExport(admin, fundId, group),
     closedPeriodRanges(admin, fundId, group),
     vehicleIdByName(admin, fundId, group),
@@ -221,6 +224,21 @@ export async function taxPackageDocument(
   }
   const closedThrough = closed.reduce<string | null>((max, p) => (max && max > p.period_end ? max : p.period_end), null)
 
+  // Book capital beside tax capital, with the tax-book entries that make the difference: the
+  // reconciliation a preparer and the books' owner both start from (lib/accounting/book-tax-bridge.ts).
+  const hasTaxBook = taxEntries.length > 0 || priorTaxEntries.length > 0
+  const taxPkg = hasTaxBook ? buildStatementPackageFromData(taxData, new URLSearchParams({ start, end, basis: 'tax' })) : null
+  const bookTaxBridgeCsv = taxPkg
+    ? toCsv(bookTaxBridgeRows({
+        year,
+        book: pkg.payload.changesInPartnersCapital,
+        tax: taxPkg.payload.changesInPartnersCapital,
+        priorTaxEntries,
+        yearTaxEntries: taxEntries,
+        typeOfCode: new Map(taxData.accounts.map(a => [a.code, a.type])),
+      }))
+    : null
+
   const body = await buildTaxPackageZip({
     fundName: name, vehicle: group, year, generatedAt, closedThrough, warnings,
     workbook, statementsPdf,
@@ -234,9 +252,8 @@ export async function taxPackageDocument(
     taxBookEntriesCsv: taxEntries.length > 0 ? toCsv(journalRows(taxEntries)) : null,
     realizedGainsCsv: gains.disposals.length > 0 ? toCsv(realizedGainsRows(gains)) : null,
     vendorPaymentsCsv: payments.rows.length > 0 ? toCsv(vendorPaymentsRows(payments)) : null,
-    taxBasisTrialBalanceCsv: taxEntries.length > 0
-      ? toCsv(trialBalanceRows(buildStatementPackageFromData(taxData, new URLSearchParams({ start, end, basis: 'tax' })).payload.trialBalance))
-      : null,
+    taxBasisTrialBalanceCsv: taxPkg ? toCsv(trialBalanceRows(taxPkg.payload.trialBalance)) : null,
+    bookTaxBridgeCsv,
     k1, k1Omitted,
   })
   return { body, fileName: taxPackageFileName(group, year), contentType: 'application/zip' }

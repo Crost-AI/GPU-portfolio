@@ -55,6 +55,11 @@ function chain(table: string) {
       rows = rows.filter(r => r[column] === value)
       return q
     },
+    not: (column: string, op: string, value: unknown) => {
+      filters.push({ table, op: `not.${op}`, column, value })
+      if (op === 'is' && value === null) rows = rows.filter(r => r[column] != null)
+      return q
+    },
     ilike: (column: string, value: string) => {
       filters.push({ table, op: 'ilike', column, value })
       rows = rows.filter(r => likeToRegExp(value).test(String(r[column] ?? '')))
@@ -115,7 +120,8 @@ describe('the inbound-email rate limit', () => {
   it("never counts a fund's bucket for a caller without its token", async () => {
     await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }), 'wrong')
     await post(email({ OriginalRecipient: 'fund-abc@inbound.test' }), '')
-    await post(email({ OriginalRecipient: 'nobody@inbound.test' }))
+    // A name at a domain no fund receives on (any name at a fund's own domain reaches it: #153).
+    await post(email({ OriginalRecipient: 'nobody@elsewhere.test' }))
     await post(email({}))
     expect(keys()).toEqual([CEILING, CEILING, CEILING, CEILING])
     expect(runPipeline).not.toHaveBeenCalled()
@@ -191,24 +197,25 @@ describe('the inbound-email rate limit', () => {
 
 describe('resolving the fund from the inbound address', () => {
   it("matches the fund's stored address whatever its case", async () => {
+    // A second fund on the same domain, so only the exact (case-insensitive) match can route it.
+    otherFunds = [{ fund_id: 'fund-2', address: 'other@inbound.test' }]
     await post(email({ OriginalRecipient: 'fund-abc@INBOUND.test' }))
-    expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund-abc@INBOUND.test' })
     expect(runPipeline).toHaveBeenCalledTimes(1)
     expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-1')
   })
 
   it("doesn't let an address act as a pattern on another fund's", async () => {
+    // Addresses are compared in code (lib/postmark/inbound.ts), never sent as a LIKE pattern. With a
+    // second fund on the domain, domain routing is ambiguous, so only an exact address routes.
     storedAddress = 'fund_a@inbound.test'
+    otherFunds = [{ fund_id: 'fund-2', address: 'other@inbound.test' }]
     await post(email({ OriginalRecipient: 'fund%@inbound.test' }))
-    // The fallback never sends a multi-character wildcard: `%` became `_`.
-    expect(filters).toContainEqual({ table: 'fund_settings', op: 'ilike', column: 'postmark_inbound_address', value: 'fund_@inbound.test' })
+    expect(filters.some(f => f.op === 'ilike')).toBe(false)
     expect(runPipeline).not.toHaveBeenCalled()
 
-    filters = []
     await post(email({ OriginalRecipient: 'fund_a@inbound.test' }))
-    expect(filters).toContainEqual({ table: 'fund_settings', op: 'eq', column: 'postmark_inbound_address', value: 'fund_a@inbound.test' })
-    expect(filters.some(f => f.op === 'ilike')).toBe(false)
     expect(runPipeline).toHaveBeenCalledTimes(1)
+    expect((runPipeline.mock.calls[0] as unknown[])[2]).toBe('fund-1')
   })
 
   it('resolves an address with a wildcard in it literally, however many others its pattern matches', async () => {
@@ -242,7 +249,10 @@ describe('resolving the fund from the inbound address', () => {
   it("does not route on PostgREST's `*` wildcard", async () => {
     // PostgREST reads `*` in a like pattern as `%`; the fallback sends `_` instead, and the exact
     // comparison after it refuses what that matches.
+    // With one fund on the domain any name there reaches it (#153), so a second fund makes `*` a
+    // name like any other, matching neither exactly.
     storedAddress = 'fund-abc@inbound.test'
+    otherFunds = [{ fund_id: 'fund-2', address: 'other@inbound.test' }]
     await post(email({ OriginalRecipient: '*@inbound.test' }))
     expect(runPipeline).not.toHaveBeenCalled()
   })
