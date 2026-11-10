@@ -686,6 +686,7 @@ export interface DeclaredDistributionLine {
 
 export interface DeclaredDistribution extends RegisterStatus {
   distributionId: string
+  distributionNumber: number | null
   entryId: string | null
   carryEntryId: string | null
   date: string
@@ -730,7 +731,7 @@ export async function listDistributions(
   const [{ data: rows }, names, settlements, reviews] = await Promise.all([
     (admin as any)
       .from('distributions')
-      .select('id, distribution_date, description, status, journal_entry_id, carry_journal_entry_id, split_method, wf_return_of_capital, wf_preferred, wf_catch_up, wf_carry, wf_contingency_return, wf_profit_lp, wf_pref_carried_forward, wf_unreturned_after, reserve_amount, kind, char_return_of_capital, char_realized_gain, char_income, distribution_lines(id, lp_entity_id, amount, role, notice_document_id, settled_amount, settled_on)')
+      .select('id, distribution_date, distribution_number, description, status, journal_entry_id, carry_journal_entry_id, split_method, wf_return_of_capital, wf_preferred, wf_catch_up, wf_carry, wf_contingency_return, wf_profit_lp, wf_pref_carried_forward, wf_unreturned_after, reserve_amount, kind, char_return_of_capital, char_realized_gain, char_income, distribution_lines(id, lp_entity_id, amount, role, notice_document_id, settled_amount, settled_on)')
       .eq('fund_id', fundId)
       .eq('vehicle_id', vehicleId)
       .order('distribution_date', { ascending: false })
@@ -791,6 +792,7 @@ export async function listDistributions(
       : null
     return {
       distributionId: d.id,
+      distributionNumber: d.distribution_number ?? null,
       entryId: d.journal_entry_id,
       carryEntryId: d.carry_journal_entry_id ?? null,
       date: d.distribution_date,

@@ -76,7 +76,7 @@ export async function loadCcdNotices(
   const distributionsPrior = new Map<string, number>()
   for (const d of distributions) {
     if (kind === 'distribution' && d.distributionId === id) continue
-    if (kind === 'distribution' ? !(d.date < reg.noticeDate) : d.date > reg.noticeDate) continue
+    if (kind === 'distribution' ? !isEarlier({ date: d.date, number: d.distributionNumber }, self) : d.date > reg.noticeDate) continue
     for (const l of d.lines) if (seesCarry || l.role !== 'carry') distributionsPrior.set(l.lpEntityId, roundCents((distributionsPrior.get(l.lpEntityId) ?? 0) + l.amount))
   }
 

@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server'
 // economics: without gp_economics read the file leaves them out, and nothing in it (the notice total,
 // a recipient's earlier distributions) lets them be worked out (Codex on #126; Crost #87).
 
-const s = vi.hoisted(() => ({ access: null as any }))
+const s = vi.hoisted(() => ({ access: null as any, loads: 0 }))
 const DIST = {
   noticeDate: '2026-06-30', description: 'Exit proceeds', numberLabel: 2, dueDate: null, tiers: null,
   lines: [
@@ -24,11 +24,15 @@ vi.mock('@/lib/accounting/capital-calls', () => ({
 }))
 vi.mock('@/lib/accounting/distributions', () => ({
   listDistributions: async () => [
-    { distributionId: 'd1', date: '2026-01-31', kind: 'cash', lines: [
+    { distributionId: 'd1', distributionNumber: 1, date: '2026-01-31', kind: 'cash', lines: [
       { id: 'p1', lpEntityId: 'gp-1', amount: 5_000, role: 'lp' },
       { id: 'p2', lpEntityId: 'gp-1', amount: 7_000, role: 'carry' },
     ] },
-    { distributionId: 'd2', date: '2026-06-30', kind: 'cash', lines: DIST.lines.map(l => ({ ...l })) },
+    { distributionId: 'd2', distributionNumber: 2, date: '2026-06-30', kind: 'cash', lines: DIST.lines.map(l => ({ ...l })) },
+    // The same day as d2 (No. 2): only the one numbered before it is prior.
+    { distributionId: 'same-before', distributionNumber: 1, date: '2026-06-30', kind: 'cash', lines: [{ id: 's1', lpEntityId: 'lp-a', amount: 3_333, role: 'lp' }] },
+    { distributionId: 'same-after', distributionNumber: 3, date: '2026-06-30', kind: 'cash', lines: [{ id: 's2', lpEntityId: 'lp-a', amount: 4_444, role: 'lp' }] },
+    { distributionId: 'same-unnumbered', distributionNumber: null, date: '2026-06-30', kind: 'cash', lines: [{ id: 's3', lpEntityId: 'lp-a', amount: 5_555, role: 'lp' }] },
   ],
 }))
 vi.mock('@/lib/accounting/call-extras', () => ({ callExtras: async () => new Map(), distributionDeductions: async () => new Map() }))
@@ -37,9 +41,9 @@ vi.mock('@/lib/vehicle-letterhead', () => ({ documentLetterhead: async () => ({ 
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: 'u' } } }) } }) }))
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => admin }))
 vi.mock('@/lib/api-helpers', async (orig) => ({ ...(await orig<any>()), assertReadAccess: async () => ({ fundId: 'f', userId: 'u', role: 'member' }) }))
-vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupOr400: async () => 'Fund I' }))
+vi.mock('@/lib/accounting/http-vehicle', () => ({ resolveGroupWithAccess: async () => ({ group: 'Fund I', access: s.access }) }))
 vi.mock('@/lib/rate-limit', () => ({ rateLimit: async () => null }))
-vi.mock('@/lib/access/effective', async (orig) => ({ ...(await orig<any>()), loadAccessContext: async () => s.access }))
+vi.mock('@/lib/access/effective', async (orig) => ({ ...(await orig<any>()), loadAccessContext: async () => { s.loads++; return s.access } }))
 
 const admin = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }) } as any
 
@@ -79,10 +83,18 @@ describe('ILPA CCD carry lines need GP economics', () => {
     expect(amounts(out.notices)).toMatch(/18000/)
   })
 
+  it('an earlier distribution on the same day counts as prior, as a same-day capital call does (Bugbot on #126)', async () => {
+    const out = await loadCcdNotices(admin, 'f', 'Fund I', 'distribution', 'd2', 'lp-a', true)
+    if (!out.ok) throw new Error(out.error)
+    expect(out.notices[0].lp.insideFund.cumulativePrior.distributions).toBe(-3_333)
+  })
+
   it('the route and the agent tool pass the caller\'s GP-economics access', async () => {
+    s.loads = 0
     const res = await GET(new NextRequest('http://localhost/api/accounting/notices/ilpa?group=Fund%20I&kind=distribution&id=d2&format=json'))
     expect(res.status).toBe(200)
     expect(amounts(await res.json())).not.toMatch(/18000/)
+    expect(s.loads).toBe(0) // the one context resolving the vehicle loaded, not a second
     const tool = await ILPA_HANDLERS.ilpa_notice_data({ admin, fundId: 'f', portfolioGroup: 'Fund I', access: s.access } as any, { kind: 'distribution', id: 'd2' })
     expect(amounts(tool)).not.toMatch(/18000/)
 
