@@ -187,9 +187,12 @@ export function selfApprovalRefused(
 }
 
 /**
- * Is the approver the very credential (and person) that staged the action? A chat approving its
- * own proposal is no approval at all: before this, only tool-description wording stood between an
- * assistant and calling approve_action on what it had just staged.
+ * Is the approver the very credential (and person) that staged the action? On its own this only
+ * names the case; `selfApprovalRefused` above decides it. A script's key approving what it staged
+ * is refused, because no person stands behind that approval. A chat (an `oauth:` credential) may
+ * approve its own proposal, by design: it acts for a person who confirmed the change in the
+ * conversation. (Migration 20261013143000's header says otherwise; it predates that decision and,
+ * being applied, is not edited.)
  *
  * A cookie session carries no credential id, so the app always decides. Another credential — an
  * admin's own chat, a different connection — may, since that is a separate person or a separate,

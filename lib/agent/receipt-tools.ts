@@ -13,11 +13,12 @@ import {
   type ReceiptRow,
 } from '@/lib/accounting/receipts'
 import {
-  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice,
+  previewPartnershipInvoice, createPartnershipInvoice, issuePartnershipInvoice, voidPartnershipInvoice, deletePartnershipInvoice, editPartnershipInvoice, addableInvoiceLines,
   listPartnershipInvoices, unbilledByCounterparty, getPartnershipInvoice,
 } from '@/lib/accounting/partnership-invoices'
 import { ACTUAL_BOOK } from '@/lib/accounting/books'
 import { roundCents } from '@/lib/accounting/ledger'
+import { linkIntercompanyAccount } from '@/lib/accounting/intercompany'
 
 const INLINE_MAX = 3 * 1024 * 1024
 const SUGGEST_CAP = 40
@@ -160,7 +161,7 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
       if ('error' in res) fail(res)
     }
     const patch: Record<string, unknown> = {}
-    for (const k of ['vendorName', 'receiptDate', 'amount', 'currency', 'description']) if (input && k in input) patch[k] = input[k]
+    for (const k of ['vendorName', 'receiptDate', 'amount', 'currency', 'description', 'allocationBasis']) if (input && k in input) patch[k] = input[k]
     if (input?.assignToThisEntity && !r.vehicle_id) patch.vehicleId = vehicleId
     if (Object.keys(patch).length === 0) return { receipt: await getReceipt(ctx.admin, ctx.fundId, r.id) }
     const res = await updateReceiptFields(ctx.admin, ctx.fundId, r.id, patch as any)
@@ -205,9 +206,10 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     ])
     const res = await draftEntryFromReceipt(ctx.admin, ctx.fundId, ctx.portfolioGroup, vehicleId, ctx.userId, r.id, {
       debitAccountId, creditAccountId, billTo, memo: input?.memo ?? null, reportingAmount,
+      allocationBasis: input?.allocationBasis ?? null, rememberAllocation: input?.rememberAllocation === true,
     })
     if ('error' in res) fail(res)
-    return { draftEntryId: res.entryId, receipt: res.receipt, note: 'Draft only. Post it with post_drafts (ids: [draftEntryId]) once it looks right.' }
+    return { draftEntryId: res.entryId, receipt: res.receipt, ...(res.warning ? { warning: res.warning } : {}), note: 'Draft only. Post it with post_drafts (ids: [draftEntryId]) once it looks right.' }
   },
 
   partnership_invoices: async (ctx, input) => {
@@ -220,7 +222,7 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     }
     if (input?.billTo) {
       const to = await otherEntity(ctx, input.billTo, 'read')
-      const preview = await previewPartnershipInvoice(ctx.admin, ctx.fundId, { fromVehicleId: vehicleId, toVehicleId: to.vehicleId, year: Number(input.year), quarter: Number(input.quarter) })
+      const preview = await previewPartnershipInvoice(ctx.admin, ctx.fundId, { fromVehicleId: vehicleId, toVehicleId: to.vehicleId, year: Number(input.year), quarter: Number(input.quarter), from: input.from ?? null, through: input.through ?? null })
       if ('error' in preview) fail(preview)
       return { preview }
     }
@@ -234,9 +236,18 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
   create_partnership_invoice: async (ctx, input) => {
     const vehicleId = await here(ctx)
     const to = await otherEntity(ctx, input?.billTo, 'write')
+    if (input?.dueFromAccount) {
+      const linked = await linkIntercompanyAccount(ctx.admin, ctx.fundId, vehicleId, await accountByCode(ctx.admin, ctx.fundId, ctx.portfolioGroup, input.dueFromAccount), to.vehicleId, 'receivable')
+      if ('error' in linked) fail(linked)
+    }
     const res = await createPartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, {
       fromVehicleId: vehicleId, toVehicleId: to.vehicleId, year: Number(input?.year), quarter: Number(input?.quarter),
       invoiceDate: input?.invoiceDate ?? null, memo: input?.memo ?? null,
+      from: input?.from ?? null, through: input?.through ?? null,
+      allocations: input?.allocations && typeof input.allocations === 'object' ? input.allocations : null,
+      rememberPostingIds: Array.isArray(input?.rememberPostingIds) ? input.rememberPostingIds.map(String) : null,
+      excludePostingIds: Array.isArray(input?.excludePostingIds) ? input.excludePostingIds.map(String) : null,
+      adjustments: Array.isArray(input?.adjustments) ? input.adjustments : null,
     })
     if ('error' in res) fail(res)
     if (!input?.issue) return { ...res, status: 'draft', pdf: `/api/accounting/partnership-invoices/${res.id}/pdf` }
@@ -251,10 +262,38 @@ export const RECEIPT_HANDLERS: Record<string, AgentToolHandler> = {
     const inv = await getPartnershipInvoice(ctx.admin, ctx.fundId, id)
     if (!inv || inv.from.vehicleId !== vehicleId) throw new Error(`No invoice ${id} billed by ${ctx.portfolioGroup}`)
     await otherEntity(ctx, inv.to.name, 'write')
-    const res = input?.void
+    const res = input?.delete
+      ? await deletePartnershipInvoice(ctx.admin, ctx.fundId, id)
+      : input?.void
       ? await voidPartnershipInvoice(ctx.admin, ctx.fundId, id)
       : await issuePartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, id)
     if ('error' in res) fail(res)
     return res
   },
+
+  edit_partnership_invoice: async (ctx, input) => {
+    const vehicleId = await here(ctx)
+    const id = String(input?.invoiceId ?? '')
+    const inv = await getPartnershipInvoice(ctx.admin, ctx.fundId, id)
+    if (!inv || inv.from.vehicleId !== vehicleId) throw new Error(`No invoice ${id} billed by ${ctx.portfolioGroup}`)
+    await otherEntity(ctx, inv.to.name, 'write')
+    const record = (v: unknown) => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {}
+    const ids = (v: unknown) => Array.isArray(v) ? v.filter((x: unknown): x is string => typeof x === 'string') : null
+    if (input?.listAddable) return { invoiceId: id, status: inv.status, addable: await addableInvoiceLines(ctx.admin, ctx.fundId, inv) }
+    const res = await editPartnershipInvoice(ctx.admin, ctx.fundId, ctx.userId, id, {
+      allocations: Object.fromEntries(Object.entries(record(input?.allocations)).filter(([, v]) => typeof v === 'string')) as Record<string, string>,
+      rememberPostingIds: ids(input?.rememberPostingIds),
+      addPostingIds: ids(input?.addPostingIds),
+      removePostingIds: ids(input?.removePostingIds ?? input?.releasePostingIds),
+      addAdjustments: Array.isArray(input?.addAdjustments) ? input.addAdjustments : null,
+      removeAdjustmentIds: ids(input?.removeAdjustmentIds),
+      descriptions: Object.fromEntries(Object.entries(record(input?.descriptions)).map(([k, v]) => {
+        const d = record(v)
+        return [k, { vendor: typeof d.vendor === 'string' ? d.vendor : undefined, description: typeof d.description === 'string' ? d.description : undefined }]
+      })),
+    })
+    if ('error' in res) fail(res)
+    return { ...res, pdf: `/api/accounting/partnership-invoices/${id}/pdf` }
+  },
+
 }

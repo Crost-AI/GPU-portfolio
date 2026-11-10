@@ -548,6 +548,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   // Personal preferences, not fund data.
   'api/settings/theme': { domain: 'portfolio', level: 'any' },
   'api/settings/notifications': { domain: 'portfolio', level: 'any' },
+  // The member's own OAuth connections (MCP connector, v1 API): listing and revoking their own
+  // tokens, scoped to their user and fund in the handler.
+  'api/settings/connected-apps': { domain: 'portfolio', level: 'any' },
   'api/settings/reminders': { domain: 'admin' },
   'api/settings/dashboard-entities': { domain: 'admin' },
   // Entity groups: managing them is administration (and admins only in the handler).
@@ -654,7 +657,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/webhooks/transcription/[token]': 'Inbound webhook: per-job single-use callback token in the path (SEC-010).',
   'api/csp-report': 'Browser-sent CSP violation reports; no credential exists to require. Rate-limited per platform IP, body capped, fields allowlisted before logging.',
   'api/inbound-email': 'Inbound email webhook.',
-  'api/inbound-email/mailgun': 'Inbound email webhook (Mailgun).',
+  'api/inbound-email/resend': 'Inbound email webhook (Resend).',
   'api/public/submit/[token]': 'Public deal-submission form; path token.',
 
   // A separate identity model: LP portal accounts, scoped per investor entity by resolveLpAccess.

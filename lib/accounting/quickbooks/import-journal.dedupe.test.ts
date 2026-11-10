@@ -3,10 +3,10 @@ import { memoryAdmin } from '@/tests/helpers/memory-admin'
 
 const s = vi.hoisted(() => ({ m: null as any, n: 0 }))
 vi.mock('@/lib/accounting/persist', () => ({
-  accountIdByCode: async () => new Map([['1000', 'cash'], ['3100', 'pooled']]),
-  persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: any, entry: any, status: string) => {
+  accountIdByCode: async () => new Map([['1000', 'cash'], ['1100', 'inv'], ['3100', 'pooled'], ['4900', 'k1'], ['5100', 'fees']]),
+  persistEntry: vi.fn(async (_a: any, fundId: string, _g: string, _u: any, entry: any, status: string, book = 'actual') => {
     const id = `new-${++s.n}`
-    s.m.tables.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v', book: 'actual', status, source_type: entry.sourceType, source_ref: entry.sourceRef, vendor_id: entry.vendorId ?? null, entry_date: entry.entryDate })
+    s.m.tables.journal_entries.push({ id, fund_id: fundId, vehicle_id: 'v', book, status, source_type: entry.sourceType, source_ref: entry.sourceRef, vendor_id: entry.vendorId ?? null, entry_date: entry.entryDate })
     for (const p of entry.postings) s.m.tables.journal_postings.push({ journal_entry_id: id, account_id: p.accountId, amount: p.amount, lp_entity_id: p.lpEntityId ?? null })
     return { entryId: id }
   }),
@@ -15,9 +15,12 @@ vi.mock('@/lib/accounting/vehicle-id', () => ({ vehicleIdByName: async () => 'v'
 vi.mock('@/lib/accounting/vehicle-domain', () => ({ vehicleKindByName: async () => 'fund' }))
 vi.mock('@/lib/accounting/provision-accounts', () => ({ ensureVehicleAccounts: async () => {} }))
 vi.mock('@/lib/accounting/vendors', async (orig) => ({ ...(await orig<any>()), vendorResolver: () => async () => null }))
-vi.mock('@/lib/accounting/import-review', () => ({ reviewImport: async () => ({ differences: [], token: 't' }) }))
+const reviewed = vi.hoisted(() => ({ entries: [] as any[][] }))
+vi.mock('@/lib/accounting/import-review', () => ({
+  reviewImport: async (_a: any, _f: string, _g: string, input: any) => { reviewed.entries.push(input.entries); return { differences: [], token: 't' } },
+}))
 
-import { importQbJournal } from './import-journal'
+import { importQbJournal, saveQbMappings } from './import-journal'
 import { qbLegacySourceRef, qbSourceRef } from './build-entries'
 import type { QbTransaction } from './parse-journal'
 import type { JournalSource } from './sources'
@@ -43,8 +46,9 @@ function legacy(t: QbTransaction, id: string, over: { lp?: string | null; vendor
   }
 }
 
-function seed(old: ReturnType<typeof legacy>[] = [], vendors: { id: string; name: string }[] = []) {
+function seed(old: ReturnType<typeof legacy>[] = [], vendors: { id: string; name: string }[] = [], extra: Record<string, any[]> = {}) {
   s.n = 0
+  reviewed.entries = []
   s.m = memoryAdmin({
     qb_account_mappings: ['quickbooks', 'carta'].flatMap(source => [
       { fund_id: 'f', vehicle_id: 'v', source, qb_account: 'Bank', account_code: '1000', excluded: false },
@@ -59,6 +63,8 @@ function seed(old: ReturnType<typeof legacy>[] = [], vendors: { id: string; name
     journal_postings: old.flatMap(o => o.postings),
     vendors: vendors.map(v => ({ ...v, fund_id: 'f' })),
     qb_import_runs: [],
+    tax_year_closes: [],
+    ...extra,
   })
 }
 
@@ -158,3 +164,140 @@ describe('importQbJournal duplicate check', () => {
     expect(created().map((e: any) => e.source_ref)).toEqual([qbSourceRef(ALEX, 'carta')])
   })
 })
+
+describe('importQbJournal tax-book routing', () => {
+  // A preparer's year-end K-1 entry in a tax-basis file: a lower-tier fund's pass-through loss
+  // booked against the investment account and a K-1 income account.
+  const k1 = (date = '2024-12-31', amount = 5_000): QbTransaction => ({
+    date, type: 'Journal Entry', num: 'K1', memo: 'Example Fund I K-1',
+    lines: [
+      { account: 'K-1 attributes', name: null, memo: null, debit: amount, credit: 0 },
+      { account: 'Investments', name: null, memo: null, debit: 0, credit: amount },
+    ],
+  })
+  const fee: QbTransaction = {
+    date: '2024-12-31', type: 'Bill', num: '9', memo: 'Audit fee',
+    lines: [
+      { account: 'Professional fees', name: 'Acme Audit', memo: null, debit: 1_000, credit: 0 },
+      { account: 'Bank', name: 'Acme Audit', memo: null, debit: 0, credit: 1_000 },
+    ],
+  }
+  const mappings = (taxBook: boolean) => [
+    { fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account: 'Bank', account_code: '1000', excluded: false },
+    { fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account: 'Investments', account_code: '1100', excluded: false },
+    { fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account: 'Professional fees', account_code: '5100', excluded: false },
+    { fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account: 'K-1 attributes', account_code: '4900', excluded: false, tax_book: taxBook },
+  ]
+  const seedTax = (opts: { taxBook?: boolean; entries?: any[]; closed?: number[] } = {}) => {
+    seed([], [], {
+      qb_account_mappings: mappings(opts.taxBook ?? true),
+      journal_entries: opts.entries ?? [],
+      tax_year_closes: (opts.closed ?? []).map(y => ({ fund_id: 'f', vehicle_id: 'v', tax_year: y, status: 'closed' })),
+    })
+  }
+  const existing = (t: QbTransaction, id: string, book: 'actual' | 'tax', status = 'draft') =>
+    ({ id, fund_id: 'f', vehicle_id: 'v', book, status, source_type: 'quickbooks', source_ref: qbSourceRef(t), vendor_id: null })
+
+  it('sends a transaction touching a tax-book account to the tax book, whole, and leaves the rest in the ledger', async () => {
+    seedTax()
+    const result = await run([k1(), fee])
+    expect(result).toMatchObject({ created: 2, taxBook: { entries: 1, accounts: ['K-1 attributes'] }, bookConflicts: [] })
+    expect(result.taxBook.routed).toEqual([expect.objectContaining({ account: 'K-1 attributes', entryDate: '2024-12-31' })])
+    const byRef = new Map<string, any>(created().map((e: any) => [e.source_ref, e]))
+    expect(byRef.get(qbSourceRef(k1()))).toMatchObject({ book: 'tax', status: 'draft' })
+    expect(byRef.get(qbSourceRef(fee))).toMatchObject({ book: 'actual', status: 'draft' })
+    // Both legs of the K-1 entry went with it: one book, balanced.
+    const k1Id = byRef.get(qbSourceRef(k1())).id
+    expect(s.m.tables.journal_postings.filter((p: any) => p.journal_entry_id === k1Id).map((p: any) => p.amount)).toEqual([5_000, -5_000])
+    // The comparison with investment and LP records sees only the actual-book entry.
+    expect(reviewed.entries.at(-1)!.map((e: any) => e.sourceRef)).toEqual([qbSourceRef(fee)])
+  })
+
+  it('a re-run imports nothing, whichever book the entries are in', async () => {
+    seedTax()
+    await run([k1(), fee])
+    expect(await run([k1(), fee])).toMatchObject({ created: 0, alreadyPresent: 2, bookConflicts: [] })
+  })
+
+  it('reports, and does not move, an entry imported to the actual book before the account was marked', async () => {
+    seedTax({ entries: [existing(k1(), 'old-k1', 'actual', 'posted')] })
+    const result = await run([k1()], { dryRun: true })
+    expect(result).toMatchObject({ wouldCreate: 0, alreadyPresent: 1, taxBook: { entries: 0 } })
+    expect(result.duplicates[0]).toMatchObject({ existingEntryId: 'old-k1', existingBook: 'actual' })
+    expect(result.bookConflicts).toEqual([expect.objectContaining({
+      existingEntryId: 'old-k1', existingBook: 'actual', mappedBook: 'tax', existingStatus: 'posted',
+      reason: expect.stringMatching(/left where it is.*void that entry/),
+    })])
+    await run([k1()])
+    expect(created()).toEqual([])
+  })
+
+  it('also reports the reverse move: in the tax book, now mapped to the ledger', async () => {
+    seedTax({ taxBook: false, entries: [existing(k1(), 'tax-k1', 'tax')] })
+    const result = await run([k1()])
+    expect(result).toMatchObject({ created: 0, bookConflicts: [expect.objectContaining({ existingBook: 'tax', mappedBook: 'actual', reason: expect.stringMatching(/discard that draft/) })] })
+  })
+
+  it('a voided entry in the other book is how a transaction moves: it imports into the new one', async () => {
+    seedTax({ entries: [existing(k1(), 'old-k1', 'actual', 'void')] })
+    const result = await run([k1()])
+    expect(result).toMatchObject({ created: 1, alreadyPresent: 0, bookConflicts: [], taxBook: { entries: 1 } })
+    expect(created()[0]).toMatchObject({ book: 'tax', source_ref: qbSourceRef(k1()) })
+  })
+
+  it('a voided entry in the SAME book still blocks re-import', async () => {
+    seedTax({ entries: [existing(k1(), 'old-k1', 'tax', 'void')] })
+    expect(await run([k1()])).toMatchObject({ created: 0, alreadyPresent: 1, bookConflicts: [] })
+  })
+
+  it('refuses and names a tax-book entry dated in a closed tax year, on a dry run too', async () => {
+    seedTax({ closed: [2024] })
+    const preview = await run([k1('2024-12-31'), k1('2025-12-31', 7_000), fee], { dryRun: true })
+    expect(preview).toMatchObject({ wouldCreate: 2, alreadyPresent: 0, skipped: 1, taxBook: { entries: 1 } })
+    expect(preview.taxBook.lockedYears).toEqual([{ entryDate: '2024-12-31', memo: expect.any(String), taxYear: 2024 }])
+    expect(preview.errors.join(' ')).toMatch(/tax year 2024 is closed/)
+
+    const result = await run([k1('2024-12-31'), k1('2025-12-31', 7_000), fee])
+    expect(result).toMatchObject({ created: 2, skipped: 1 })
+    // The actual-book entry dated in 2024 is not the tax lock's business.
+    expect(created().map((e: any) => [e.book, e.entry_date]).sort()).toEqual([['actual', '2024-12-31'], ['tax', '2025-12-31']])
+  })
+})
+
+describe('saveQbMappings tax-book flag', () => {
+  beforeEach(() => seed([], [], {
+    qb_account_mappings: [{ fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account: 'K-1 attributes', account_code: '1000', excluded: false, tax_book: true }],
+    chart_of_accounts: [{ id: 'cash', fund_id: 'f', vehicle_id: 'v', code: '1000', type: 'asset', is_active: true }],
+  }))
+  const saved = (account: string) => s.m.tables.qb_account_mappings.filter((r: any) => r.qb_account === account).at(-1)
+
+  it('keeps the saved flag when a row does not mention it', async () => {
+    await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'K-1 attributes', accountCode: '1000' }])
+    expect(saved('K-1 attributes').tax_book).toBe(true)
+  })
+
+  it('keeps a flag saved past the row cap (Bugbot on #134)', async () => {
+    const mapping = (qb_account: string, tax_book: boolean) => ({ fund_id: 'f', vehicle_id: 'v', source: 'quickbooks', qb_account, account_code: '1000', excluded: false, tax_book })
+    s.m = memoryAdmin({
+      qb_account_mappings: [...Array.from({ length: 1200 }, (_, i) => mapping(`A${String(i).padStart(4, '0')}`, false)), mapping('Z K-1 attributes', true)],
+      chart_of_accounts: [{ id: 'cash', fund_id: 'f', vehicle_id: 'v', code: '1000', type: 'asset', is_active: true }],
+    }, { maxRows: 1000 })
+    await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'Z K-1 attributes', accountCode: '1000' }])
+    expect(saved('Z K-1 attributes').tax_book).toBe(true)
+  })
+
+  it('a failed read of the saved flags stops the save', async () => {
+    s.m.failNext('qb_account_mappings', 'select', 'boom')
+    await expect(saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'K-1 attributes', accountCode: '1000' }])).rejects.toThrow('boom')
+    expect(saved('K-1 attributes').tax_book).toBe(true)
+  })
+
+  it('sets and clears it when a row says so, and never on an excluded account', async () => {
+    await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'K-1 attributes', accountCode: '1000', taxBook: false }])
+    expect(saved('K-1 attributes').tax_book).toBe(false)
+    await saveQbMappings(s.m.admin, 'f', 'Fund I', [{ qbAccount: 'Bank', accountCode: '1000', taxBook: true }, { qbAccount: 'Old', excluded: true, taxBook: true }])
+    expect(saved('Bank').tax_book).toBe(true)
+    expect(saved('Old').tax_book).toBe(false)
+  })
+})
+

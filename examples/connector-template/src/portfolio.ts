@@ -38,6 +38,8 @@ export interface AccountProposal {
   confidence: 'exact' | 'likely' | 'none'
   reason: string
   excluded?: boolean
+  /** Transactions touching this account import into the tax book (a tax-basis file's K-1 entries). */
+  taxBook?: boolean
   lineCount: number
 }
 
@@ -82,7 +84,7 @@ export class PortfolioClient {
   }
 
   /** Step 2: save mappings a person has confirmed. */
-  saveMapping(source: JournalSource, rows: Array<{ qbAccount: string; accountCode?: string | null; excluded?: boolean; note?: string }>) {
+  saveMapping(source: JournalSource, rows: Array<{ qbAccount: string; accountCode?: string | null; excluded?: boolean; taxBook?: boolean; note?: string }>) {
     return this.call<{ saved: number }>('save_journal_mapping', { source, rows })
   }
 

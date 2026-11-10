@@ -10,6 +10,7 @@ import { AppearanceEditor } from './appearance/editor'
 import { ProfileSection } from './_sections/account/profile-section'
 import { MfaSection } from './_sections/account/mfa-section'
 import { NotificationPreferencesSection } from './_sections/account/notification-preferences-section'
+import { ConnectedAppsSection } from './_sections/account/connected-apps-section'
 import { VersionSection } from './_sections/fund/version-section'
 import { CurrencySection } from './_sections/fund/currency-section'
 import { FundNameSection } from './_sections/fund/fund-name-section'
@@ -139,6 +140,7 @@ export default function SettingsPage() {
       <Section title="API and MCP">
         <LedgerAgentAccess isAdmin={settings.isAdmin} section="keys" />
       </Section>
+      <ConnectedAppsSection />
 
       {/* Per-USER, not per-fund: the Affinity key is the caller's own personal access
           token and every user needs their own. Admins get the same card inside Investment
@@ -192,8 +194,9 @@ export default function SettingsPage() {
               provider={settings.inboundEmailProvider}
               postmarkAddress={settings.postmarkInboundAddress}
               postmarkToken={settings.postmarkWebhookToken}
-              mailgunInboundDomain={settings.mailgunInboundDomain}
-              hasMailgunSigningKey={settings.hasMailgunSigningKey}
+              resendInboundDomain={settings.resendInboundDomain}
+              hasResendWebhookSecret={settings.hasResendWebhookSecret}
+              hasResendKey={settings.hasResendKey}
               onSaved={load}
             />
             <SendersSection senders={settings.senders} onChanged={load} />
@@ -206,8 +209,6 @@ export default function SettingsPage() {
               systemEmailFromAddress={settings.systemEmailFromAddress}
               hasResendKey={settings.hasResendKey}
               hasPostmarkServerToken={settings.hasPostmarkServerToken}
-              hasMailgunApiKey={settings.hasMailgunApiKey}
-              mailgunSendingDomain={settings.mailgunSendingDomain}
               googleConnected={settings.googleDriveConnected}
               hasGoogleCredentials={settings.hasGoogleCredentials}
               googleClientId={settings.googleClientId}

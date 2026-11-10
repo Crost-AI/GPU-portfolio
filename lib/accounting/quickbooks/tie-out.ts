@@ -65,12 +65,28 @@ export interface TieOutLine {
   difference: number
 }
 
+export interface TaxRoutedLine {
+  code: string
+  name: string
+  /** Debit minus credit, as the other columns. */
+  amount: number
+}
+
+/**
+ * `taxRouted` is the trial balance of the entries the import sent to the TAX book
+ * (book-routing.ts) — the preparer's K-1 entries in a tax-basis file. The source trial balance
+ * includes them; our actual book, deliberately, does not. So they are taken out of the source side
+ * before comparing, and reported on their own: the actual book ties to the source excluding the
+ * tax-routed transactions, and the tax-routed totals show what the tax book holds. Without this, a
+ * tax-basis file could never tie, and the differences would be exactly the entries routed correctly.
+ */
 export function compareTrialBalance(
   ours: TrialBalance,
   theirs: QbTrialBalanceRow[],
   mapping: Map<string, string>,
   capitalRollups: Map<string, string> = new Map(),
-): { lines: TieOutLine[]; ties: boolean; ourTotal: number; theirTotal: number } {
+  taxRouted?: TrialBalance,
+): { lines: TieOutLine[]; ties: boolean; ourTotal: number; theirTotal: number; taxRouted: { lines: TaxRoutedLine[]; total: number } } {
   // Several QuickBooks accounts can map to one of ours — sum them before comparing.
   //
   // Unmapped QuickBooks accounts are SKIPPED, not reported as differences. An unmapped
@@ -81,6 +97,18 @@ export function compareTrialBalance(
     const code = mapping.get(r.account)
     if (!code) continue
     theirsByCode.set(code, round2((theirsByCode.get(code) ?? 0) + r.debit - r.credit))
+  }
+
+  // Rolled up the way our own rows are below, so a tax-routed capital line lands where ours would.
+  const taxByCode = new Map<string, { name: string; amount: number }>()
+  for (const r of taxRouted?.rows ?? []) {
+    const code = theirsByCode.has(r.code) ? r.code : capitalRollups.get(r.code) ?? r.code
+    const previous = taxByCode.get(code)
+    taxByCode.set(code, { name: previous?.name ?? r.name, amount: round2((previous?.amount ?? 0) + r.debit - r.credit) })
+  }
+  for (const [code, t] of Array.from(taxByCode)) {
+    if (Math.abs(t.amount) < CENT) { taxByCode.delete(code); continue }
+    theirsByCode.set(code, round2((theirsByCode.get(code) ?? 0) - t.amount))
   }
 
   const oursByCode = new Map<string, { name: string; balance: number }>()
@@ -111,6 +139,10 @@ export function compareTrialBalance(
     ties: lines.length === 0,
     ourTotal: round2(sum(Array.from(oursByCode.values()).map(v => v.balance))),
     theirTotal: round2(sum(Array.from(theirsByCode.values()))),
+    taxRouted: {
+      lines: Array.from(taxByCode).sort(([a], [b]) => a.localeCompare(b)).map(([code, t]) => ({ code, name: t.name, amount: t.amount })),
+      total: round2(sum(Array.from(taxByCode.values()).map(t => t.amount))),
+    },
   }
 }
 
