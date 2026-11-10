@@ -92,7 +92,6 @@ export function buildPartnershipInvoiceHtml(d: PartnershipInvoicePdfData): strin
 
     <p style="font-size:12px;color:#333;margin-top:18px;">
       Reimbursement of expenses of ${esc(d.toName)} paid on its behalf by ${esc(d.fromName)} during the period.
-      Receipts follow this page in the order listed.
     </p>
 
     <h3 style="font-size:12px;font-weight:600;margin:20px 0 6px;">Expenses</h3>

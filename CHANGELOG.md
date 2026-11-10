@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Bank reconciliation no longer double-counts a move from an old bank
+- **A transfer in from another bank account ties.** When a feed starts at a new bank, the cash carried from the old one is already in the ledger before the feed begins, so it is the feed's opening balance. The feed's first rows are that same money arriving, posted 1000 to 1000. The reconciliation counted it twice, and Ledgerline SPV LP showed a 45,000.00 difference with every row matched. A matched row whose entry only moves cash on 1000 and nets to zero is now left out of the bank side, and the summary reports how many (`transferCount`, `transferTotal`). The bank page, `bank_reconciliation` and the close preview all use it (`cashTransferEntryIds` in `lib/accounting/bank.ts`).
+
 ### Reopen and preview period closes from chat
 - **`reopen_period`.** An assistant can reopen a closed period, as the Periods page's Reopen does, by `period_id` or `from_date` with a required `reason`. It is always offered, not behind `AGENT_DESTRUCTIVE_ACTIONS`: closing again re-allocates. It is admin-only, so from chat it is staged for an admin to approve, with the periods it would reopen in the preview. It shares `lib/accounting/reopen.ts` with the Periods page so both write the same `period.reopen` audit event.
 - **`preview_close`.** A read-only preview of closing through a date (`previewCloseThrough`): the months covered, what each would allocate, and what blocks it.
