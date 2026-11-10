@@ -4,8 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
  * Requesting membership of a fund.
  *
  * This route is deliberately ungated — the caller has no fund yet, so there is no grant to check
- * (`lib/access/route-domains.ts`). Its only authorisation is that the caller's email domain
- * matches the target fund's `email_domain`, and it takes `fundId` straight from the body.
+ * (`lib/access/route-domains.ts`). Its only authorisation is that the target fund listed the
+ * caller's exact address or domain on its signup allow-list, or claims the domain as its
+ * `email_domain` (lib/onboarding/joinable-funds.ts), and it takes `fundId` straight from the body.
  *
  * That combination has a hole the demo makes reachable: an anonymous visitor holds a session as
  * the shared demo account, and if that account's email domain matches a real fund, they can file
@@ -36,19 +37,31 @@ let membership: { fund_id: string } | null = null
 /** Join requests created during the call — the thing that must not happen. */
 let created: Record<string, unknown>[] = []
 
+/** Rows of allowed_signups: each fund's signup allow-list. */
+let allowList: { fund_id: string; email_pattern: string }[] = []
+const FUNDS = [
+  { id: 'target-fund', name: 'Real Fund', email_domain: 'example.com' },
+  { id: 'other-fund', name: 'Other Fund', email_domain: 'other.com' },
+]
+
+/** A list query: records .eq/.in filters and resolves to the matching rows when awaited. */
+function listQuery(rows: Record<string, unknown>[]) {
+  const preds: ((r: Record<string, unknown>) => boolean)[] = []
+  const chain: any = {
+    select: () => chain,
+    eq: (col: string, val: unknown) => { preds.push(r => r[col] === val); return chain },
+    in: (col: string, vals: unknown[]) => { preds.push(r => vals.includes(r[col])); return chain },
+    not: (col: string) => { preds.push(r => r[col] != null); return chain },
+    then: (resolve: (v: unknown) => unknown) =>
+      Promise.resolve({ data: rows.filter(r => preds.every(p => p(r))), error: null }).then(resolve),
+  }
+  return chain
+}
+
 function stub() {
   from.mockImplementation((table: string) => {
-    if (table === 'funds') {
-      const chain: any = {
-        select: () => chain,
-        eq: () => chain,
-        single: async () => ({
-          data: { id: 'target-fund', name: 'Real Fund', email_domain: 'example.com' },
-          error: null,
-        }),
-      }
-      return chain
-    }
+    if (table === 'funds') return listQuery(FUNDS)
+    if (table === 'allowed_signups') return listQuery(allowList)
     if (table === 'fund_members') {
       // The filters matter here: the bug being fixed is precisely that the route scoped this
       // lookup to the TARGET fund, so a membership of some other fund was invisible to it. A
@@ -94,6 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   membership = null
   created = []
+  allowList = []
   getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'someone@example.com' } } })
   rateLimit.mockResolvedValue(null)
   stub()
@@ -126,6 +140,34 @@ describe('POST /api/onboarding/join', () => {
     getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'someone@elsewhere.com' } } })
     const res = await POST(req('target-fund'))
     expect(res.status).toBe(403)
+    expect(created).toHaveLength(0)
+  })
+
+  it('lets a specific address the fund listed request it, whatever its domain', async () => {
+    getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'Partner@Gmail.com' } } })
+    allowList = [{ fund_id: 'target-fund', email_pattern: 'partner@gmail.com' }]
+    const res = await POST(req('target-fund'))
+    expect(res.status).toBe(200)
+    expect(created).toHaveLength(1)
+  })
+
+  it('lets a domain the fund listed request it', async () => {
+    getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'someone@elsewhere.com' } } })
+    allowList = [{ fund_id: 'target-fund', email_pattern: '*@elsewhere.com' }]
+    expect((await POST(req('target-fund'))).status).toBe(200)
+  })
+
+  it('refuses an address that a different fund listed', async () => {
+    getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'partner@gmail.com' } } })
+    allowList = [{ fund_id: 'other-fund', email_pattern: 'partner@gmail.com' }]
+    expect((await POST(req('target-fund'))).status).toBe(403)
+    expect(created).toHaveLength(0)
+  })
+
+  it('never matches a consumer domain through a wildcard', async () => {
+    getUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'stranger@gmail.com' } } })
+    allowList = [{ fund_id: 'target-fund', email_pattern: '*@gmail.com' }]
+    expect((await POST(req('target-fund'))).status).toBe(403)
     expect(created).toHaveLength(0)
   })
 })

@@ -90,6 +90,8 @@ async function main() {
     fundId = created.fundId
     console.log(`Created "${fundName}" with you as its admin.`)
   }
+  // The allow-list entry from step 1 predates the fund; it is this fund's to manage.
+  await db.from('allowed_signups').update({ fund_id: fundId }).eq('email_pattern', email).is('fund_id', null)
 
   // 4. Products, through the same plan the setup_fund tool applies.
   const products = arg('products')

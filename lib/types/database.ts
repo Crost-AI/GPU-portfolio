@@ -62,19 +62,30 @@ export type Database = {
         Row: {
           created_at: string | null
           email_pattern: string
+          fund_id: string | null
           id: string
         }
         Insert: {
           created_at?: string | null
           email_pattern: string
+          fund_id?: string | null
           id?: string
         }
         Update: {
           created_at?: string | null
           email_pattern?: string
+          fund_id?: string | null
           id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "allowed_signups_fund_id_fkey"
+            columns: ["fund_id"]
+            isOneToOne: false
+            referencedRelation: "funds"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       analyst_conversations: {
         Row: {

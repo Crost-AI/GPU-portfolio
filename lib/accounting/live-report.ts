@@ -27,7 +27,7 @@ import { reportingIrr } from './reporting-irr'
 import type { CapitalEvidence } from './capital-evidence'
 import { loadReportingCapital } from './reporting-capital'
 import { listVehicles, loadOwnership } from './load'
-import { lookThroughAccount, associateMembers } from './look-through'
+import { lookThroughAccount, associateMembers, withoutCarry } from './look-through'
 import { latestPositionIrr } from './lp-positions'
 import { loadFundPreload, vehicleCapitalPreload, commitmentEventsForGroup, type FundPreload } from './fund-preload'
 import { roundCents } from './ledger'
@@ -78,6 +78,8 @@ export interface LiveInvestmentRow extends LiveMetrics {
    * so a reader can tell the two apart — and so nobody mistakes one for double-counting.
    */
   lookThroughVia?: string
+  /** A look-through row built without the associate's carry, for a caller without gp_economics. */
+  carryExcluded?: true
 }
 
 // Round the shared ratio to 1e-4 to keep float noise out of the reconciliation compare.
@@ -299,13 +301,19 @@ async function loadAssociateLinks(admin: SupabaseClient, fundId: string): Promis
  * The associate's own row is REPLACED by the member rows, never shown alongside them — showing
  * both would double-count the same money, which is exactly the bug the old model had everywhere
  * except one page.
+ *
+ * `hideIndividualCarry`: what a member's share of the carry comes to is GP economics
+ * (lib/access/carry-visibility.ts), so for a caller without it every member's row is built from the
+ * associate's account WITHOUT the carry, and a member holding only carry points has no row: an empty
+ * one would name them as a carry participant.
  */
 async function applyLookThrough(
   admin: SupabaseClient,
   fundId: string,
   rows: LiveInvestmentRow[],
   asOf?: string,
-  preload?: FundPreload
+  preload?: FundPreload,
+  hideIndividualCarry?: boolean
 ): Promise<LiveInvestmentRow[]> {
   const idMap = preload?.idMap
   const links = await loadAssociateLinks(admin, fundId)
@@ -350,12 +358,15 @@ async function applyLookThrough(
     const assocAccount = assocAccounts.get(link.entityId)
     if (!assocAccount) return { link, associateRow, memberRows: null }
 
-    const exploded = lookThroughAccount(assocAccount, members)
+    const exploded = hideIndividualCarry
+      ? lookThroughAccount(withoutCarry(assocAccount), members.filter(m => m.ownershipWeight > 0))
+      : lookThroughAccount(assocAccount, members)
     const memberRows: LiveInvestmentRow[] = Array.from(exploded.entries()).map(([entityId, account]) => ({
       entity_id: entityId,
       portfolio_group: link.servesGroup,
       source: associateRow.source,
       lookThroughVia: link.associateGroup,
+      ...(hideIndividualCarry ? { carryExcluded: true as const } : {}),
       ...deriveMetrics(
         account,
         // A member's "commitment" to the fund is their share of the associate's commitment to it.
@@ -412,11 +423,15 @@ function ownershipShare(members: { lpEntityId: string; ownershipWeight: number }
  * This is the aggregate report. An LP holding across three vehicles gets three rows, exactly
  * as they would in a stored snapshot — the cross-vehicle roll-up is then done by the same
  * consumer code that already does it for snapshots.
+ *
+ * `hideIndividualCarry`: see applyLookThrough. A carry recipient's own row is not touched; the
+ * caller's filter decides that one.
  */
 export async function generateLiveReport(
   admin: SupabaseClient,
   fundId: string,
-  asOf?: string
+  asOf?: string,
+  opts?: { hideIndividualCarry?: boolean }
 ): Promise<LiveReport> {
   // One fund-wide read of the per-vehicle lookups (id map, entity names/classes, ownership,
   // capital source, vintage), then thread it through — the per-vehicle loaders no longer each
@@ -437,7 +452,7 @@ export async function generateLiveReport(
   // Look through any associate/GP vehicle: its position in the fund becomes its members'
   // positions. This is what puts a member who invests via the GP entity into the LP report at
   // all — before, they simply weren't in it.
-  const rows = await applyLookThrough(admin, fundId, perVehicle.flatMap(v => v.rows), asOf, preload)
+  const rows = await applyLookThrough(admin, fundId, perVehicle.flatMap(v => v.rows), asOf, preload, opts?.hideIndividualCarry)
 
   // Members surfaced by the look-through may not be named in any vehicle's roster.
   const missing = rows.map(r => r.entity_id).filter(id => !entityNames.has(id))
