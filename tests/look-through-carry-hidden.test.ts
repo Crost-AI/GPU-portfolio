@@ -78,6 +78,9 @@ import { GET as report } from '@/app/api/agent/reports/[token]/route'
 import { signReportLink } from '@/lib/agent/report-links'
 
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-key-for-report-links'
+// puppeteer is mocked above, so no browser is launched; getChromeConfig still looks for one on disk
+// and throws on a host without Chrome. Any existing file satisfies it.
+process.env.CHROME_EXECUTABLE_PATH = process.execPath
 
 const access = (gp: 'none' | 'read') => ({
   fundId: 'home', userId: 'u', role: 'member', vehicles: { all: true, ids: [] }, defaults: {},
