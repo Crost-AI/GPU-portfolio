@@ -4,9 +4,9 @@
 // run (stage_run, lib/agent/run-action.ts). These tools run through the same service the app's
 // queue and /api/v1 use (lib/pending-actions/service.ts), so who may see and decide an action is
 // answered in one place: the approver's live write access to that action's domain and entity, never
-// the stager's. The service refuses an approval from the credential that staged the change, so a
-// chat hands its own changes to a person (the approveUrl) and approves only what someone else
-// staged — an admin approving a member's proposal from their own chat.
+// the stager's. A chat approves what it staged by default, once its person says yes in the
+// conversation; a script's key cannot (the service refuses it), so it hands over the approveUrl.
+// Either may approve what someone else staged — an admin approving a member's proposal from their chat.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccessContext } from '@/lib/access/effective'
@@ -92,10 +92,12 @@ export const PENDING_TOOLS: PendingTool[] = [
       'Stage several changes as ONE run for a person to approve once, instead of one approval per change. ' +
       'Give a title, a short rationale, the ordered steps ({ tool, input }, each a write tool you could call directly) ' +
       'and, where you can, expected checks on the books after it (an account balance, a type total, or the trial balance ' +
-      'balancing, for a vehicle as of a date). Every step is validated now; nothing changes until a person approves the run ' +
-      'in the app. On approval the steps run in order, stop at the first failure, and the checks are reported; what the run ' +
+      'balancing, for a vehicle as of a date). Every step is validated now; nothing changes until a person approves the run. ' +
+      'On approval the steps run in order, stop at the first failure, and the checks are reported; what the run ' +
       'created can be undone from the app where that is safe. A post_drafts step with no ids posts every matching draft. ' +
-      'Returns approveUrl: give it to the user. You cannot approve your own run.',
+      'Follow the result\'s `next`: from a chat, show the person the run and ask them to approve it here, then call ' +
+      'approve_action on their explicit yes (approveUrl is the fallback, for when that is refused); from a script\'s key, ' +
+      'give them the approveUrl, since a key cannot approve its own run.',
     scope: 'write',
     pendingDecision: true,
     inputSchema: RUN_SCHEMA,

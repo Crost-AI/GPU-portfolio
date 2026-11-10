@@ -23,7 +23,11 @@ import { planRelease } from '@/lib/accounting/ownership'
 import { deleteLpPositions } from '@/lib/accounting/positions-delete'
 import { resolveVehicle } from '@/lib/accounting/vehicle-resolver'
 import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
+import { deleteInactiveCompanyAccounts, readInactiveCompanyAccounts } from '@/lib/accounting/inactive-accounts-delete'
 import { deleteCompany } from '@/lib/companies/delete'
+import { mergeCompanies } from '@/lib/companies/merge'
+import { deleteFundHolding } from '@/lib/portfolio/fund-holding-delete'
+import { clearFundRegister, readRegisterRows } from '@/lib/portfolio/fund-register-clear'
 import { DILIGENCE_CASCADE_TABLES, deleteDiligenceDeal } from '@/lib/diligence/service'
 import { deleteCommitmentEvent, deleteEntity, deleteInvestor, entityLedgerActivity, mergeInvestors } from '@/lib/lps/records'
 import { unwrap } from '@/lib/service-outcome'
@@ -147,6 +151,33 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
     return { deleted: { id: out.id, name: out.name } }
   },
 
+  delete_fund_holding: async (ctx: AgentToolContext, input: any) => {
+    const userId = requireUser(ctx.userId)
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
+    const out = unwrap(await deleteFundHolding(ctx.admin, { fundId: ctx.fundId, userId }, holding.id, () => entityScopeFor(ctx.admin, ctx.access)))
+    return { deleted: { id: out.id, name: out.name }, accountsRemoved: out.accountsRemoved, ...(out.warning ? { warning: out.warning } : {}) }
+  },
+
+  clear_fund_register: async (ctx: AgentToolContext, input: any) => {
+    const userId = requireUser(ctx.userId)
+    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
+    const vehicle = await resolveVehicleRow(ctx.admin, ctx.access, await vehicleOf(input, ctx.access, ctx.admin, ctx.fundId))
+    const out = unwrap(await clearFundRegister(ctx.admin, { fundId: ctx.fundId, userId }, company.id, vehicle.id))
+    return {
+      cleared: { id: out.id, name: out.name }, vehicle: vehicle.name,
+      deleted: { capitalEvents: out.capitalEvents, navStatements: out.navStatements, terms: out.terms },
+      transactionsReleased: out.transactionsReleased,
+    }
+  },
+
+  delete_inactive_company_accounts: async (ctx: AgentToolContext, input: any) => {
+    const company = await resolveCompany(ctx.admin, ctx.fundId, text(input?.company, 'company'), ctx.access, 'write')
+    const vehicleId = await vehicleIdByName(ctx.admin, ctx.fundId, ctx.portfolioGroup)
+    if (!vehicleId) throw new Error(`No entity named ${ctx.portfolioGroup}.`)
+    const out = unwrap(await deleteInactiveCompanyAccounts(ctx.admin, ctx.fundId, vehicleId, company.id))
+    return { vehicle: ctx.portfolioGroup, company: { id: company.id, name: company.name }, deleted: out.deleted, activeKept: out.activeKept }
+  },
+
   lp_delete_investor: async (ctx: AgentToolContext, input: any) => {
     const investor = await resolveInvestor(ctx.admin, ctx.fundId, text(input?.investor, 'investor'))
     unwrap(await deleteInvestor(ctx.admin, ctx.fundId, investor.id))
@@ -193,6 +224,15 @@ export const DESTRUCTIVE_HANDLERS: Record<string, AgentToolHandler> = {
     const into = await resolveVehicleRow(ctx.admin, ctx.access, text(input?.into, 'into'))
     const merged = unwrap(await mergeVehicles(ctx.admin, { fundId: ctx.fundId, userId, access: ctx.access }, from.id, into.id))
     return { merged: { from, into }, vehicle: merged }
+  },
+
+  merge_companies: async (ctx: AgentToolContext, input: any) => {
+    const userId = requireUser(ctx.userId)
+    const from = await resolveCompany(ctx.admin, ctx.fundId, text(input?.from, 'from'), ctx.access, 'write')
+    const into = await resolveCompany(ctx.admin, ctx.fundId, text(input?.into, 'into'), ctx.access, 'write')
+    const scope = () => entityScopeFor(ctx.admin, ctx.access)
+    const { vehicleNames } = await scope()
+    return unwrap(await mergeCompanies(ctx.admin, { fundId: ctx.fundId, userId, vehicleNames }, from.id, into.id, scope))
   },
 }
 
@@ -300,6 +340,56 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
     }
   },
 
+  delete_fund_holding: async (deps, input) => {
+    const holding = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
+    const where = { fund_id: deps.fundId, company_id: holding.id }
+    const [events, navs, terms, transactions, accounts] = await Promise.all([
+      count(deps.admin, 'fund_capital_events', where), count(deps.admin, 'fund_nav_statements', where),
+      count(deps.admin, 'fund_holding_terms', where), count(deps.admin, 'investment_transactions', where),
+      count(deps.admin, 'chart_of_accounts', where),
+    ])
+    const notFund = holding.holding_type !== 'fund'
+    return {
+      pin: { company: holding.id },
+      summary: `Delete fund holding ${holding.name} for every entity, with ${terms ?? '?'} terms row(s), ${events ?? '?'} capital ` +
+        `notice(s), ${navs ?? '?'} NAV statement(s) and ${accounts ?? '?'} chart account(s).` +
+        (notFund ? ` It is not a fund holding, so the delete will be refused: use delete_company.` : '') +
+        (transactions ? ` It has ${transactions} investment transaction(s), so the delete will be refused until they are deleted.` : ''),
+      impact: { holding: { id: holding.id, name: holding.name }, terms, capitalEvents: events, navStatements: navs, investmentTransactions: transactions, chartAccounts: accounts },
+    }
+  },
+
+  clear_fund_register: async (deps, input) => {
+    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
+    const vehicle = await resolveVehicleRow(deps.admin, deps.access, await vehicleOf(input, deps.access, deps.admin, deps.fundId))
+    const rows = unwrap(await readRegisterRows(deps.admin, deps.fundId, company.id, vehicle.id))
+    const released = rows.transactionsReleased.length
+    return {
+      pin: { company: company.id, vehicle: vehicle.name },
+      summary: `Delete ${company.name}'s fund-register rows on ${vehicle.name}: ${rows.terms} terms row(s), ${rows.capitalEvents} capital ` +
+        `notice(s) and ${rows.navStatements} NAV statement(s). ` +
+        (released ? `The ${released} investment transaction(s) they booked stay, with their journal entries.` : 'No investment transactions are linked to them.') +
+        (company.holding_type === 'fund' ? ' It is a fund holding, so this will be refused.' : ''),
+      impact: { company: { id: company.id, name: company.name, holdingType: company.holding_type ?? null }, vehicle, ...rows },
+    }
+  },
+
+  delete_inactive_company_accounts: async (deps, input) => {
+    const vehicle = String(input.vehicle ?? '')
+    const vehicleId = await vehicleIdByName(deps.admin, deps.fundId, vehicle)
+    if (!vehicleId) throw new Error(`No entity named ${vehicle}.`)
+    const company = await resolveCompany(deps.admin, deps.fundId, text(input.company, 'company'), deps.access, 'write')
+    const read = unwrap(await readInactiveCompanyAccounts(deps.admin, deps.fundId, vehicleId, company.id))
+    const blocked = read.postings > 0 || read.scheduleLines > 0
+    return {
+      pin: { company: company.id },
+      summary: `Delete ${read.accounts.length} inactive chart account(s) of ${company.name} on ${vehicle}` +
+        `${read.accounts.length ? ` (${read.accounts.map(a => a.code).join(', ')})` : ''}; ${read.activeKept} active account(s) stay.` +
+        (blocked ? ` They carry ${read.postings} posting(s) and ${read.scheduleLines} schedule line(s), so the delete will be refused.` : ''),
+      impact: { company: { id: company.id, name: company.name }, ...read },
+    }
+  },
+
   lp_delete_investor: async (deps, input) => {
     const investor = await resolveInvestor(deps.admin, deps.fundId, text(input.investor, 'investor'))
     const { data: ents } = await (deps.admin as any).from('lp_entities').select('id, entity_name').eq('fund_id', deps.fundId).eq('investor_id', investor.id)
@@ -399,6 +489,33 @@ export const DESTRUCTIVE_PREVIEWS: Record<string, Previewer> = {
       summary: `Merge entity ${from.name} into ${into.name}; ${from.name} is deleted and becomes an alias of ${into.name}.` +
         (books > 0 ? ` WARNING: ${from.name}'s own books are deleted with it: ${entries ?? 0} journal entr${entries === 1 ? 'y' : 'ies'} and ${bank ?? 0} bank row(s).` : ''),
       impact: { from, into, deletedWithSource: { journalEntries: entries, chartAccounts: accounts, bankTransactions: bank } },
+    }
+  },
+
+  merge_companies: async (deps, input) => {
+    const from = await resolveCompany(deps.admin, deps.fundId, text(input.from, 'from'), deps.access, 'write')
+    const into = await resolveCompany(deps.admin, deps.fundId, text(input.into, 'into'), deps.access, 'write')
+    if (from.id === into.id) throw new Error('Choose two different records to merge.')
+    const where = { fund_id: deps.fundId, company_id: from.id }
+    const [transactions, events, navs, terms, notes, documents, metrics] = await Promise.all([
+      count(deps.admin, 'investment_transactions', where), count(deps.admin, 'fund_capital_events', where),
+      count(deps.admin, 'fund_nav_statements', where), count(deps.admin, 'fund_holding_terms', where),
+      count(deps.admin, 'company_notes', where), count(deps.admin, 'company_documents', where), count(deps.admin, 'metrics', where),
+    ])
+    const register = (events ?? 0) + (navs ?? 0) + (terms ?? 0)
+    const kind = (c: any) => (c.holding_type === 'fund' ? 'fund holding' : c.holding_type === 'crypto' ? 'digital asset' : 'company')
+    return {
+      pin: { from: from.id, into: into.id },
+      summary: `Merge ${kind(from)} ${from.name} into ${kind(into)} ${into.name}: move ${transactions ?? '?'} investment transaction(s) ` +
+        `(re-derived on ${into.name}'s accounts), ${register} fund-register row(s), ${notes ?? '?'} note(s) and ${documents ?? '?'} ` +
+        `document(s); ${from.name} becomes an alias of ${into.name} and is deleted, or kept empty if its accounts carry voided entries.` +
+        (metrics ? ` Its ${metrics} metric(s) move too, except any ${into.name} already tracks under the same name.` : '') +
+        (register && into.holding_type !== 'fund' ? ` ${into.name} is not a fund holding, so the merge will be refused.` : ''),
+      impact: {
+        from: { id: from.id, name: from.name, holdingType: from.holding_type ?? 'company' },
+        into: { id: into.id, name: into.name, holdingType: into.holding_type ?? 'company' },
+        investmentTransactions: transactions, capitalEvents: events, navStatements: navs, terms, notes, documents, metrics,
+      },
     }
   },
 }

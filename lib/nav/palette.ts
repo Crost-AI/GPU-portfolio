@@ -145,6 +145,10 @@ function tokenScore(token: string, field: string): number {
  * order, which is nav order — sections before children, the way the sidebar lists them.
  *
  * An empty query is the palette at rest: the sections, in nav order, nothing more.
+ *
+ * The cap is per group. Pages come first in nav order, and every entity repeats them, so with one
+ * overall cap a word shared by many pages ("capital", "fund") filled it with pages and the company
+ * that also matched was never listed.
  */
 export function matchEntries(query: string, entries: PaletteEntry[], limit = 40): PaletteEntry[] {
   const tokens = norm(query).split(/\s+/).filter(Boolean)
@@ -170,7 +174,15 @@ export function matchEntries(query: string, entries: PaletteEntry[], limit = 40)
   })
 
   scored.sort((a, b) => b.score - a.score || a.index - b.index)
-  return scored.slice(0, limit).map(s => s.entry)
+  const perGroup = new Map<PaletteGroup, number>()
+  const out: PaletteEntry[] = []
+  for (const { entry } of scored) {
+    const n = perGroup.get(entry.group) ?? 0
+    if (n >= limit) continue
+    perGroup.set(entry.group, n + 1)
+    out.push(entry)
+  }
+  return out
 }
 
 /** The matches, bucketed for rendering, in `GROUP_ORDER` with empty groups dropped. */
