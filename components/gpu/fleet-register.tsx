@@ -14,7 +14,7 @@ import {
   type ValuedAsset,
 } from './fleet-math'
 import { AsOfControl, ErrorAlert, FLEET_WRITE_HINT, GatedButton, StatusBadge } from './fleet-ui'
-import { LtmTiles, PublishPlaceholder, lastCompleteMonth, ltmCaption } from './fleet-kpis'
+import { LtmTiles, PublishMonth, lastCompleteMonth, ltmCaption } from './fleet-kpis'
 import { getKpis } from './revenue-api'
 import type { Kpi } from '@/lib/gpu/kpis'
 import type { GpuAssetStatus } from '@/lib/gpu/types'
@@ -224,10 +224,10 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
   const [actionError, setActionError] = useState<string | null>(null)
   const [dialog, setDialog] = useState<Dialog>(null)
   // Revenue and utilization over the trailing twelve months, from the entered operations.
-  const [ltm, setLtm] = useState<{ kpi: Kpi } | { error: string } | null>(null)
+  const [ltm, setLtm] = useState<{ kpi: Kpi; month: Kpi } | { error: string } | null>(null)
   useEffect(() => {
     let cancelled = false
-    void getKpis(lf, lastCompleteMonth()).then(r => { if (!cancelled) setLtm(r.ok ? { kpi: r.data.ltm } : { error: r.error }) })
+    void getKpis(lf, lastCompleteMonth()).then(r => { if (!cancelled) setLtm(r.ok ? { kpi: r.data.ltm, month: r.data.fleet } : { error: r.error }) })
     return () => { cancelled = true }
   }, [lf])
 
@@ -277,7 +277,7 @@ export function FleetRegister({ vehicleId }: { vehicle: string; vehicleId: strin
     <div className="space-y-4">
       {loadError && <ErrorAlert>{loadError}</ErrorAlert>}
 
-      <ShellSection title="Operations" description="Rental revenue and utilization entered on the Revenue & payouts page." action={<PublishPlaceholder />}>
+      <ShellSection title="Operations" description="Rental revenue and utilization entered on the Revenue & payouts page." action={<PublishMonth fetcher={lf} month={lastCompleteMonth()} fleet={ltm && 'month' in ltm ? ltm.month : null} canWrite={canWriteFleet} />}>
         <div className="grid grid-cols-2 gap-3" data-region="register-kpis">
           <LtmTiles ltm={ltm && 'kpi' in ltm ? ltm.kpi : null} error={ltm && 'error' in ltm ? ltm.error : null} base={ltmCaption(lastCompleteMonth())} />
         </div>

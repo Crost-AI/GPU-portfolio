@@ -361,3 +361,57 @@ export function combineLtm(kpis: Kpi[]): { grossRevenue: number; utilizationPct:
   const available = kpis.reduce((t, k) => t + k.availableHours, 0)
   return { grossRevenue: gross, utilizationPct: available > 0 ? round4((rented / available) * 100) : null, includesStaged: kpis.some(k => k.includesStaged) }
 }
+
+// ── Publish, settings and suggested matches (P3 PR B) ──────────────────────────────────────────
+
+/** POST /api/fleet/kpis { action: 'publish' }: the month's POSTED figures onto the fleet company. */
+export interface PublishReply {
+  companyId: string
+  month: string
+  /** slug → value written. */
+  written: Record<string, number>
+  /** Slugs whose earlier computed value for the month was removed. */
+  removed: string[]
+}
+export const publishKpis = (f: Fetcher, month: string) => send<PublishReply>(f, opsPaths.kpis, 'POST', { action: 'publish', month })
+
+export const settingsPath = '/api/fleet/ops/settings'
+export interface OpsSettings { autoPostPayoutMatches: boolean }
+export const getOpsSettings = (f: Fetcher) => call<OpsSettings>(f, settingsPath)
+/** PATCH needs fleet write and Accounting write (letting the run post to the books). */
+export const setAutoPost = (f: Fetcher, on: boolean) => send<OpsSettings>(f, settingsPath, 'PATCH', { autoPostPayoutMatches: on })
+
+/** Where a fleet company's metrics live. */
+export const fleetCompanyHref = (companyId: string) => `/companies/${encodeURIComponent(companyId)}`
+
+/**
+ * Single-fit matches, from what this page already reads: an expected payout whose one fitting deposit
+ * fits no other expected payout. The bank auto-match run decides per deposit (a deposit fitting
+ * several payouts is ambiguous, bank-auto-match-run), so a deposit shared between payouts is left to
+ * the Match picker, never offered twice. The run also sets aside a deposit that fits a partner's open
+ * call, which only it can see. Confirming one posts the payouts route's match action.
+ */
+export function suggestedMatches(payouts: PayoutView[]): { payout: PayoutView; txn: PayoutView['candidates'][number] }[] {
+  const expected = payouts.filter(p => p.status === 'expected')
+  const fits = new Map<string, number>()
+  for (const p of expected) for (const t of p.candidates) fits.set(t.id, (fits.get(t.id) ?? 0) + 1)
+  return expected
+    .filter(p => p.candidates.length === 1 && fits.get(p.candidates[0].id) === 1)
+    .map(p => ({ payout: p, txn: p.candidates[0] }))
+}
+
+/** A month's entered rows by what publishing does with them: it publishes POSTED rows only. */
+export function monthRowCounts(rows: Pick<EarningView, 'status' | 'periodEnd'>[], month: string): { posted: number; pending: number } {
+  const inMonth = rows.filter(r => r.periodEnd.slice(0, 7) === month)
+  return {
+    posted: inMonth.filter(r => r.status === 'posted').length,
+    pending: inMonth.filter(r => r.status === 'staged' || r.status === 'unmatched').length,
+  }
+}
+
+/** Why a month cannot be published yet: it has rows, none of them posted, so publishing would write zeros. */
+export function stagedOnlyHint(counts: { posted: number; pending: number }, month: string): string | null {
+  return counts.posted === 0 && counts.pending > 0
+    ? `Only unposted rows for ${month}: post them on the Revenue & payouts page first. Publishing now would write zeros.`
+    : null
+}

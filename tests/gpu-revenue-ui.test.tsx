@@ -13,10 +13,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { CurrencyProvider, formatCurrencyFull, formatCurrencyPrice } from '@/components/currency-context'
 import { EntryTable, ImportSummary } from '@/components/gpu/revenue-entry'
 import { EarningStatusBadge, EarningsTable, ReversalList, POST_HINT_NO_BOOKS, POST_HINT_NO_FLEET, postHint } from '@/components/gpu/revenue-earnings'
-import { PayoutsTable, TieOutCard, AutoPostPlaceholder } from '@/components/gpu/revenue-payouts'
-import { AssetKpis, KpiRow, LtmTiles, PublishPlaceholder, lastCompleteMonth, ltmCaption } from '@/components/gpu/fleet-kpis'
+import { AUTO_POST_HINT, AutoPostSwitch, PayoutsTable, SuggestedMatches, TieOutCard } from '@/components/gpu/revenue-payouts'
+import { AssetKpis, KpiRow, LtmTiles, PUBLISH_HINT, PublishMonth, PublishOutcome, lastCompleteMonth, ltmCaption, monthHasFigures } from '@/components/gpu/fleet-kpis'
 import {
-  combineLtm, derived, entryRowFor, groupByPeriod, importCsv, importRows, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
+  combineLtm, derived, entryRowFor, fleetCompanyHref, monthRowCounts, setAutoPost, stagedOnlyHint, suggestedMatches, groupByPeriod, importCsv, importRows, publishKpis, lastTwelveMonths, manualRowsBody, matchPayout, payoutBody, postEarnings,
   previousMonth, recordPayout, stageRows, STAGED_CAPTION,
   type EarningView, type EntryRow, type FleetKpis, type PayoutView, type ReceivableTieOut,
 } from '@/components/gpu/revenue-api'
@@ -294,10 +294,62 @@ describe('payouts', () => {
     expect(ok).toContain('Ties out')
   })
 
-  it('the auto-post toggle is a disabled placeholder until the settings route is on main', () => {
-    const html = renderToStaticMarkup(<AutoPostPlaceholder />)
-    expect(html).toContain('data-placeholder="auto-post"')
-    expect(html).toMatch(/<button[^>]*disabled=""/)
+  it('the auto-post switch shows the setting, defaults to propose, and needs fleet and Accounting write', () => {
+    const sw = (value: boolean | null, canWrite = true) => renderToStaticMarkup(<AutoPostSwitch value={value} error={null} canWrite={canWrite} saving={false} onChange={() => {}} />)
+    const switchTag = (html: string) => html.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+    expect(switchTag(sw(false))).toContain('aria-checked="false"')
+    expect(sw(false)).toContain('Off (the default)')
+    expect(isDisabled(switchTag(sw(false)))).toBe(false)
+    expect(switchTag(sw(true))).toContain('aria-checked="true"')
+    expect(sw(true)).toContain('books a payout')
+    expect(isDisabled(switchTag(sw(false, false)))).toBe(true)
+    expect(sw(false, false)).toContain(AUTO_POST_HINT)
+    expect(isDisabled(switchTag(sw(null)))).toBe(true)
+    expect(renderToStaticMarkup(<AutoPostSwitch value={false} error="Changing how payouts are booked needs write access to Fund accounting." canWrite saving={false} onChange={() => {}} />))
+      .toContain('Changing how payouts are booked needs write access to Fund accounting.')
+  })
+
+  it('the switch PATCHes { autoPostPayoutMatches }, and a 403 comes back in the route\u2019s words', async () => {
+    const message = 'Changing how payouts are booked needs write access to Fund accounting.'
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { autoPostPayoutMatches: true } }, { status: 403, body: { error: message } })
+    expect(await setAutoPost(vehicleFetcher('GPU SPV I', fetcher), true)).toEqual({ ok: true, data: { autoPostPayoutMatches: true } })
+    expect(calls[0].path).toBe('/api/fleet/ops/settings?group=GPU%20SPV%20I')
+    expect(calls[0].init?.method).toBe('PATCH')
+    expect(calls[0].body).toEqual({ autoPostPayoutMatches: true, group: 'GPU SPV I' })
+    expect(await setAutoPost(fetcher, false)).toEqual({ ok: false, status: 403, error: message })
+  })
+
+  it('never suggests a deposit that fits more than one expected payout, as the bank run calls that ambiguous', () => {
+    const shared = PAYOUT.candidates[0]
+    const pA = { ...PAYOUT, id: 'pA', candidates: [shared] }
+    // A competing payout of the same amount with the shared deposit and another of its own.
+    const pB = { ...PAYOUT, id: 'pB', candidates: [shared, { id: 't2', txnDate: '2026-10-07', amount: 23_328, description: 'OTHER', status: 'drafted' }] }
+    expect(suggestedMatches([pA, pB])).toEqual([])
+    // Two payouts that each see only the same one deposit: neither is offered.
+    expect(suggestedMatches([pA, { ...pA, id: 'pC' }])).toEqual([])
+    // A matched payout no longer competes for the deposit.
+    expect(suggestedMatches([pA, { ...pB, status: 'matched' as const }]).map(m => m.payout.id)).toEqual(['pA'])
+    const html = renderToStaticMarkup(<SuggestedMatches payouts={[pA, pB]} money={money} canMatch matching={null} onConfirm={() => {}} />)
+    expect(html).not.toContain('data-suggestion=')
+    expect(html).toContain('fits several payouts is left to the Match picker')
+  })
+
+  it('suggests a match only for an expected payout with exactly one fitting deposit', () => {
+    // Its own two deposits, shared with no other payout: two fits, so a person picks.
+    const two = { ...PAYOUT, id: 'p2', candidates: [
+      { id: 't3', txnDate: '2026-10-06', amount: 23_328, description: 'A', status: 'unmatched' },
+      { id: 't4', txnDate: '2026-10-07', amount: 23_328, description: 'B', status: 'drafted' },
+    ] }
+    const matched = { ...PAYOUT, id: 'p3', status: 'matched' as const }
+    const none = { ...PAYOUT, id: 'p4', candidates: [] }
+    expect(suggestedMatches([PAYOUT, two, matched, none]).map(m => [m.payout.id, m.txn.id])).toEqual([['p1', 't1']])
+    const html = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT, two]} money={money} canMatch matching={null} onConfirm={() => {}} />)
+    expect(html).toContain('data-suggestion="p1"')
+    expect(html).not.toContain('data-suggestion="p2"')
+    expect(html).toContain('leaves to a person a deposit that fits a partner')
+    expect(isDisabled(button(html, 'confirm-match'))).toBe(false)
+    const locked = renderToStaticMarkup(<SuggestedMatches payouts={[PAYOUT]} money={money} canMatch={false} matching={null} onConfirm={() => {}} />)
+    expect(isDisabled(button(locked, 'confirm-match'))).toBe(true)
   })
 })
 
@@ -366,7 +418,39 @@ describe('fleet KPIs', () => {
     expect(combineLtm([a, b])).toEqual({ grossRevenue: 150, utilizationPct: 30, includesStaged: true })
   })
 
-  it('Publish is a disabled placeholder until P3 PR B is on main', () => {
-    expect(renderToStaticMarkup(<PublishPlaceholder />)).toMatch(/<button[^>]*disabled=""[^>]*>Publish month to metrics/)
+  it('Publish needs fleet write and the month\u2019s rows read; zeros publish, a month with only unposted rows does not', async () => {
+    // Statically the month's rows are still being read: disabled, and saying so; without the grant, the grant's hint.
+    const publish = (canWrite: boolean, fleet: ReturnType<typeof month>['fleet'] | null = month().fleet) =>
+      inUsd(<PublishMonth fetcher={fakeFetcher().fetcher} month="2026-09" fleet={fleet} canWrite={canWrite} />)
+    expect(isDisabled(button(publish(true), 'publish'))).toBe(true)
+    expect(publish(true)).toContain('Loading 2026-09')
+    expect(publish(false)).toContain(PUBLISH_HINT)
+    expect(publish(true, null)).toContain('Loading 2026-09')
+
+    // What decides once read: posted rows publish (zeros included); only unposted rows do not.
+    const row = (status: EarningView['status'], periodEnd = '2026-09-30') => ({ status, periodEnd })
+    expect(monthRowCounts([row('posted'), row('staged'), row('unmatched'), row('ignored'), row('posted', '2026-08-31')], '2026-09')).toEqual({ posted: 1, pending: 2 })
+    expect(stagedOnlyHint({ posted: 0, pending: 2 }, '2026-09')).toContain('Publishing now would write zeros')
+    expect(stagedOnlyHint({ posted: 1, pending: 2 }, '2026-09')).toBeNull()
+    // Nothing entered at all is not blocked: publishing then removes values the month no longer has.
+    expect(stagedOnlyHint({ posted: 0, pending: 0 }, '2026-09')).toBeNull()
+    const zero = { ...month().fleet, rentedHours: 0, grossRevenue: 0, fee: 0, downtimeHours: 0, realizedRate: null }
+    expect(monthHasFigures(zero)).toBe(false)
+
+    const { fetcher, calls } = fakeFetcher({ status: 200, body: { companyId: 'c1', month: '2026-09', written: { 'gpu-utilization': 75 }, removed: [] } })
+    const r = await publishKpis(vehicleFetcher('GPU SPV I', fetcher), '2026-09')
+    expect(calls[0].path).toBe('/api/fleet/kpis?group=GPU%20SPV%20I')
+    expect(calls[0].body).toEqual({ action: 'publish', month: '2026-09', group: 'GPU SPV I' })
+    expect(r.ok).toBe(true)
+  })
+
+  it('a publish links to the fleet company named in its reply; a refusal is shown in its own words', async () => {
+    const html = renderToStaticMarkup(<PublishOutcome reply={{ companyId: 'c 1', month: '2026-09', written: { a: 1, b: 2 }, removed: ['c'] }} />)
+    expect(html).toContain(`href="${fleetCompanyHref('c 1')}"`)
+    expect(fleetCompanyHref('c 1')).toBe('/companies/c%201')
+    expect(html).toContain('2 metrics written, 1 removed')
+    const message = 'Changing the fleet register needs write access to the GPU fleet.'
+    const { fetcher } = fakeFetcher({ status: 403, body: { error: message } })
+    expect(await publishKpis(fetcher, '2026-09')).toEqual({ ok: false, status: 403, error: message })
   })
 })

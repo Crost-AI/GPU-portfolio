@@ -315,7 +315,7 @@ export function AssetDetail({ vehicleId, assetId }: { vehicle: string; vehicleId
         <EmptyState compact>No listings yet.</EmptyState>
       </ShellSection>
       <ShellSection title="Monthly revenue & utilization" description="Entered per period on the Revenue & payouts page; staged rows count until they are posted or ignored.">
-        <AssetKpiCard fetcher={lf} assetId={asset.id} />
+        <AssetKpiCard fetcher={lf} assetId={asset.id} canWrite={canWriteFleet} />
       </ShellSection>
       <ShellSection title="Documents" description="Invoices, shipping, warranty and datacenter paperwork.">
         <EmptyState compact>No documents attached yet.</EmptyState>
