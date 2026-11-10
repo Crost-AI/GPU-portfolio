@@ -42,6 +42,7 @@ const ALLOWLIST = new Map<string, string>([
   ['app/api/interactions/route.ts', 'resolves names for an id set already gathered from interactions'],
   ['app/api/notes/route.ts', 'resolves names for an id set already gathered from notes'],
   ['app/api/review/route.ts', 'resolves names for an id set already gathered from emails'],
+  ['lib/review/resolve.ts', "the agent's review queue: resolves names for an id set already gathered from emails"],
   ['app/api/emails/save-to-drive/route.ts', 'resolves drive folders for an explicit id set'],
   ['app/api/settings/notifications/route.ts', 'validates an explicit subscribed-company id set'],
   ['lib/portfolio/fof-register.ts', 'resolves one fund holding\'s name by id for the entry memo'],

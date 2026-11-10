@@ -116,9 +116,10 @@ describe('accrual and cash basis', () => {
     actualEntries: entries, planEntries: [],
   })
 
-  it('cash basis: income when received, an accrual when it is paid', () => {
+  it('cash basis: income when received, an accrued expense when it is paid, against its own account', () => {
     expect(r.cashBasis!.revenue).toEqual([50_000, 0])
-    expect(r.cashBasis!.accruals).toEqual([0, -8_000])
+    expect(r.cashBasis!.lines.find(l => l.accountId === 'rent')!.values).toEqual([0, 8_000])
+    expect(r.cashBasis!.accruals).toEqual([0, 0])
     expect(r.cashBasis!.netIncome).toEqual([50_000, -8_000])
   })
 
@@ -148,5 +149,134 @@ describe('distributions, broken down', () => {
     expect(v('distributed:gp')).toBe(-10)
     expect(v('distributed:carry')).toBe(-90)
     expect(r.cashDetail!.find(l => l.key === 'distributed:carry')?.parent).toBe('distributed')
+  })
+})
+
+describe('cash that settles an earlier accrual', () => {
+  const B: Account[] = [
+    ...A,
+    { id: 'due', fundId: 'f', code: '1300', name: 'Due from LPs', type: 'asset', subtype: 'receivable' },
+    { id: 'accrued', fundId: 'f', code: '2100', name: 'Accrued expenses', type: 'liability', subtype: 'accrued_liability' },
+    { id: 'cap', fundId: 'f', code: '3000', name: "Partners' capital", type: 'equity' },
+    { id: 'mgmt', fundId: 'f', code: '5000', name: 'Management fee', type: 'expense', subtype: 'management_fee' },
+  ]
+  const lp = (date: string, legs: [string, number, string?][]) => ({
+    date, postings: legs.map(([accountId, amount, lpEntityId]) => ({ accountId, amount, currency: 'USD', entryDate: date, lpEntityId: lpEntityId ?? null })) as Posting[],
+  })
+  const run = (entries: { date: string; postings: Posting[] }[], start = '2025-12', end = '2026-03') => buildReport({
+    view: 'actual', accounts: B, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+    actualsAvailableThrough: end, closedThrough: null, start, end, interval: 'month',
+    actualEntries: entries, planEntries: [],
+  })
+
+  it('a GPU disposal is not depreciation cash: equipment and accumulated depreciation are not clearing', () => {
+    const G: Account[] = [
+      ...B,
+      { id: 'cost', fundId: 'f', code: '1600-a1', name: 'GPU equipment — a1', type: 'asset', subtype: 'fixed_asset' },
+      { id: 'accum', fundId: 'f', code: '1650-a1', name: 'Accumulated depreciation — a1', type: 'asset', subtype: 'accumulated_depreciation' },
+      { id: 'dep', fundId: 'f', code: '5300', name: 'Depreciation', type: 'expense' },
+      { id: 'loss', fundId: 'f', code: '4500', name: 'Gain (loss) on disposal', type: 'income' },
+    ]
+    const entries = [
+      lp('2026-01-02', [['cost', 50_000], ['op', -50_000]]),
+      lp('2026-01-31', [['dep', 10_000], ['accum', -10_000]]),
+      lp('2026-02-28', [['dep', 10_000], ['accum', -10_000]]),
+      // Sold for 25,000: cost and accumulated depreciation come off, the rest is the loss.
+      lp('2026-03-15', [['op', 25_000], ['accum', 20_000], ['cost', -50_000], ['loss', 5_000]]),
+    ]
+    const r = buildReport({
+      view: 'actual', accounts: G, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+      actualsAvailableThrough: '2026-03', closedThrough: null, start: '2025-12', end: '2026-03', interval: 'month',
+      actualEntries: entries, planEntries: [],
+    })
+    // Depreciation never moved cash, so no month shows it as a cash expense.
+    expect(r.cashDetail!.find(l => l.key === 'dep')?.values ?? [0, 0, 0, 0]).toEqual([0, 0, 0, 0])
+    expect(r.cash[3]!.ending).toBe(-25_000)
+  })
+
+  it('a call booked to a receivable and collected later is capital called when the wire lands', () => {
+    const r = run([
+      lp('2026-01-02', [['due', 100_000], ['cap', -60_000, 'lp-a'], ['cap', -40_000, 'lp-b']]),
+      lp('2026-01-20', [['op', 60_000], ['due', -60_000]]),
+      lp('2026-02-05', [['op', 40_000], ['due', -40_000]]),
+    ])
+    expect(r.cashFlows!.called).toEqual([0, 60_000, 40_000, 0])
+    expect(r.cashFlows!.operating).toEqual([0, 0, 0, 0])
+    expect(r.cashDetail!.find(l => l.key === 'due')).toBeUndefined()
+  })
+
+  it('a fee accrued to a payable and paid later is management fee cash', () => {
+    const r = run([
+      lp('2026-01-31', [['mgmt', 25_000], ['accrued', -25_000]]),
+      lp('2026-02-28', [['mgmt', 25_000], ['accrued', -25_000]]),
+      lp('2026-03-10', [['accrued', 50_000], ['op', -50_000]]),
+    ])
+    expect(r.cashDetail!.find(l => l.key === 'mgmt')!.values).toEqual([0, 0, 0, -50_000])
+    expect(r.cashDetail!.find(l => l.key === 'accrued')).toBeUndefined()
+    expect(r.cashBasis!.accruals).toEqual([0, 0, 0, 0])
+  })
+
+  it('matches oldest first, even when the accrual falls before the range', () => {
+    const r = run([
+      lp('2025-11-30', [['mgmt', 10_000], ['accrued', -10_000]]),
+      lp('2026-01-15', [['accrued', 4_000], ['op', -4_000]]),
+    ], '2026-01', '2026-01')
+    expect(r.cashDetail!.find(l => l.key === 'mgmt')!.values).toEqual([-4_000])
+  })
+
+  it('leaves what no accrual covers on the balance it cleared, and every total unchanged', () => {
+    const entries = [
+      lp('2026-01-02', [['due', 30_000], ['cap', -30_000]]),
+      lp('2026-01-20', [['op', 50_000], ['due', -50_000]]),
+    ]
+    const r = run(entries)
+    expect(r.cashFlows!.called[1]).toBe(30_000)
+    expect(r.cashDetail!.find(l => l.key === 'due')!.values[1]).toBe(20_000)
+    expect(r.cash[1]!.ending).toBe(50_000)
+  })
+
+  it('a distribution declared to a payable and paid later is split by whose capital it reduced', () => {
+    const C: Account[] = [...B, { id: 'dp', fundId: 'f', code: '2200', name: 'Distributions payable', type: 'liability', subtype: 'distributions_payable' }]
+    const entries = [
+      lp('2026-01-31', [['cap', 90_000, 'lp-a'], ['cap', 10_000, 'gp-1'], ['dp', -100_000]]),
+      lp('2026-02-10', [['dp', 100_000], ['op', -100_000]]),
+    ]
+    const r = buildReport({
+      view: 'actual', accounts: C, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+      actualsAvailableThrough: '2026-02', closedThrough: null, start: '2026-02', end: '2026-02', interval: 'month',
+      actualEntries: entries, planEntries: [], gpEntityIds: new Set(['gp-1']),
+    })
+    expect(r.cashFlows!.distributed).toEqual([-100_000])
+    expect(r.cashDetail!.find(l => l.key === 'distributed:gp')!.values).toEqual([-10_000])
+  })
+
+  it('paying one partner settles only that partner\'s payable: an LP and the GP paid in different months', () => {
+    // The native declaration names each partner on its own payable leg, and each payment names the
+    // partner it pays (buildDistributionDeclarationEntry / buildDistributionSettlementEntry).
+    const C: Account[] = [...B, { id: 'dp', fundId: 'f', code: '2200', name: 'Distributions payable', type: 'liability', subtype: 'distributions_payable' }]
+    const entries = [
+      lp('2026-01-31', [['cap', 90_000, 'lp-a'], ['cap', 10_000, 'gp-1'], ['dp', -90_000, 'lp-a'], ['dp', -10_000, 'gp-1']]),
+      lp('2026-02-10', [['dp', 90_000, 'lp-a'], ['op', -90_000]]),
+      lp('2026-03-10', [['dp', 10_000, 'gp-1'], ['op', -10_000]]),
+    ]
+    const r = buildReport({
+      view: 'actual', accounts: C, actuals: entries.flatMap(x => x.postings), plan: [], planFirst: null, cutoff: null,
+      actualsAvailableThrough: '2026-03', closedThrough: null, start: '2026-02', end: '2026-03', interval: 'month',
+      actualEntries: entries, planEntries: [], gpEntityIds: new Set(['gp-1']),
+    })
+    expect(r.cashFlows!.distributed).toEqual([-90_000, -10_000])
+    expect(r.cashDetail!.find(l => l.key === 'distributed:gp')!.values).toEqual([0, -10_000])
+  })
+
+  it('a reversed accrual is cancelled, so the payment is the replacement\'s', () => {
+    const r = run([
+      lp('2026-01-10', [['mgmt', 100], ['accrued', -100]]),
+      lp('2026-01-15', [['accrued', 100], ['mgmt', -100]]), // the fee accrual reversed (non-cash)
+      lp('2026-01-20', [['rent', 100], ['accrued', -100]]),
+      lp('2026-02-05', [['accrued', 100], ['op', -100]]),
+    ])
+    expect(r.cashDetail!.find(l => l.key === 'mgmt')?.values ?? [0, 0, 0, 0]).toEqual([0, 0, 0, 0])
+    expect(r.cashDetail!.find(l => l.key === 'rent')!.values).toEqual([0, 0, -100, 0])
+    expect(r.cashDetail!.find(l => l.key === 'accrued')).toBeUndefined()
   })
 })

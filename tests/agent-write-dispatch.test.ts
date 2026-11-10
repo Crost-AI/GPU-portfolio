@@ -437,6 +437,7 @@ describe('the same access rules as the web', () => {
     ['close_period', 'api/accounting/periods'],
     ['allocation', 'api/accounting/allocation'],
     ['post_bank_transaction', 'api/accounting/bank'],
+    ['ignore_bank_transaction', 'api/accounting/bank'],
     ['import_bank_transactions', 'api/accounting/bank'],
     ['import_journal', 'api/accounting/quickbooks/import'],
     ['save_journal_mapping', 'api/accounting/quickbooks/mapping'],
@@ -471,6 +472,9 @@ describe('the same access rules as the web', () => {
     ['reopen_period', 'api/accounting/periods'],
     ['delete_lp_positions', 'api/accounting/positions'],
     ['delete_company', 'api/companies/[id]'],
+    ['delete_fund_holding', 'api/portfolio/fund-holdings/[id]'],
+    ['clear_fund_register', 'api/portfolio/fund-holdings/[id]'],
+    ['delete_inactive_company_accounts', 'api/accounting/chart'],
     ['lp_delete_investor', 'api/lps/investors'],
     ['lp_merge_investors', 'api/lps/investors'],
     ['lp_delete_entity', 'api/lps/entities'],
@@ -478,6 +482,15 @@ describe('the same access rules as the web', () => {
     ['diligence_delete_deal', 'api/diligence/[id]'],
     ['remove_member', 'api/settings/members/[id]'],
     ['merge_vehicles', 'api/vehicles'],
+    ['merge_companies', 'api/companies/[id]/investments/[txnId]'],
+
+    // A holding's name and kind, and a fund holding's register (lib/agent/holding-tools.ts).
+    ['update_company', 'api/companies/[id]'],
+    ['set_holding_type', 'api/companies/[id]'],
+    ['move_investment', 'api/companies/[id]/investments/[txnId]'],
+    ['set_fund_terms', 'api/portfolio/fund-holdings/[id]'],
+    ['record_fund_notice', 'api/portfolio/fund-holdings/[id]/events'],
+    ['record_nav_statement', 'api/portfolio/fund-holdings/[id]/nav'],
 
     // Uploads: the signed URL and the register step, each like the page's own pair of calls.
     ['diligence_document_upload_url', 'api/diligence/[id]/documents/upload-url'],

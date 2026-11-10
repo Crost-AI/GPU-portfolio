@@ -238,6 +238,86 @@ export function escrowRebookNote(txn: any): string | null {
     + 'If Proceeds was entered as the cash received, change it to the gross.'
 }
 
+/**
+ * Move a recorded transaction to another company: a call booked against the wrong holding, or one
+ * half of a duplicate being merged into the other. The journal entry is retracted and re-derived
+ * on the new company's accounts, so cash and every other account stay where they were and only the
+ * per-company investment accounts change.
+ *
+ * Refused for a transaction the fund register owns (move the notice or statement instead) and for
+ * either end of a SAFE/note conversion (the link is within one company).
+ */
+export async function moveInvestmentTransaction(
+  admin: SupabaseClient,
+  who: TxnEditor,
+  companyId: string,
+  txnId: string,
+  toCompanyId: string,
+  /** Set by a merge, which moves the register rows and both ends of a conversion along with it. */
+  opts: { merging?: boolean } = {},
+): Promise<Outcome<{ transaction: any; ledger: any; from: { id: string; name: string }; to: { id: string; name: string } }>> {
+  if (toCompanyId === companyId) return fail(400, 'The transaction is already on that company.')
+  const existing = await loadTransaction(admin, who.fundId, companyId, txnId)
+  if (!existing) return fail(404, 'Transaction not found')
+
+  const denied = groupWriteDenial(who.vehicleNames, existing.portfolio_group)
+  if (denied) return fail(403, denied)
+
+  const owned = opts.merging ? null : await fundRegisterOwner(admin, who.fundId, txnId)
+  if (owned) return fail(409, owned)
+
+  if (!opts.merging && (existing.converts_from_txn_id || (await dependentConversions(admin, txnId)) > 0)) {
+    return fail(400, "Can't move this: it is one end of a conversion, and a conversion stays within one company. "
+      + 'Move or remove the conversion first.')
+  }
+
+  const { data: companies, error: companiesError } = await (admin as any)
+    .from('companies').select('id, name, fund_id').eq('fund_id', who.fundId).in('id', [companyId, toCompanyId])
+  if (companiesError) return dbFail(companiesError, 'investment-transaction-move')
+  const from = ((companies as any[]) ?? []).find(c => c.id === companyId)
+  const to = ((companies as any[]) ?? []).find(c => c.id === toCompanyId)
+  if (!from || !to) return fail(404, 'Company not found')
+
+  const retracted = await retractEntriesForTransaction(admin, who.fundId, txnId, { userId: who.userId, original: existing })
+  if (retracted.reason) return fail(409, `Can't move this transaction. ${retracted.reason}`)
+
+  const { data: txn, error } = await (admin as any)
+    .from('investment_transactions')
+    .update({ company_id: toCompanyId, updated_at: new Date().toISOString() })
+    .eq('id', txnId).eq('fund_id', who.fundId)
+    .select('*')
+    .single()
+
+  if (error) {
+    // Put the unmoved transaction back on the ledger, as an edit that fails does.
+    if (retracted.retracted > 0) {
+      const restored = await draftEntryForTransaction(admin, who.fundId, who.userId, existing, from.name)
+      if (!restored.drafted) {
+        return fail(500, `The transaction's journal entry was removed and could not be re-derived: ${(restored.reason ?? 'unknown reason').replace(/\.\s*$/, '')}. `
+          + 'Re-save the transaction to post it again.')
+      }
+    }
+    return dbFail(error, 'investment-transaction-move')
+  }
+
+  // The new company must name the entity, as a transaction recorded on it would.
+  if (existing.portfolio_group) {
+    const { data: target } = await (admin as any).from('companies').select('portfolio_group').eq('id', toCompanyId).maybeSingle()
+    const groups: string[] = Array.isArray(target?.portfolio_group) ? target.portfolio_group : []
+    if (!groups.includes(existing.portfolio_group)) {
+      await (admin as any).from('companies').update({ portfolio_group: [...groups, existing.portfolio_group] }).eq('id', toCompanyId)
+    }
+  }
+
+  if (who.userId) {
+    logActivity(admin, who.fundId, who.userId, 'investment.move', { companyId, toCompanyId, transactionId: txnId })
+  }
+
+  const derived = await draftEntryForTransaction(admin, who.fundId, who.userId, txn, to.name)
+  const ledger = retracted.warning ? { ...derived, warning: retracted.warning } : derived
+  return done({ transaction: txn, ledger, from: { id: from.id, name: from.name }, to: { id: to.id, name: to.name } })
+}
+
 /** Delete a recorded transaction, retracting its journal entry first. */
 export async function deleteInvestmentTransaction(
   admin: SupabaseClient,

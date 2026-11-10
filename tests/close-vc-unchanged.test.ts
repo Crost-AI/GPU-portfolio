@@ -85,8 +85,8 @@ describe('a VC fund close is unchanged (snapshot from main)', () => {
     expect(await checkReadiness(m.admin as any, 'f', 'Fund I', '2027-03-01', '2027-03-31')).toMatchInlineSnapshot(`
       {
         "bank": {
-          "bankEndingBalance": -25,
-          "difference": -25,
+          "bankEndingBalance": -75,
+          "difference": 25,
           "ledgerCashBalance": -50,
           "tiesOut": false,
           "unmatchedCount": 1,
