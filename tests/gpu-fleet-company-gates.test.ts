@@ -104,6 +104,8 @@ describe('per-row fleet gates outside the company routes', () => {
     ['app/api/notes/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, membership\.fund_id, user\.id\)[\s\S]*excludeHiddenCompanies\(build\(\), fleetHidden\)\.limit\(/],
     ['app/api/interactions/route.ts', 'GET', /hiddenFleetIdsInFund\(admin, membership\.fund_id, user\.id\)[\s\S]*excludeHiddenCompanies\(build\(\), fleetHidden\)\.limit\(/],
     ['app/api/emails/[id]/route.ts', 'PATCH', /refuseFleetCompany\(admin, user\.id, \{ companyId \}, 'write'\)/],
+    // Upstream #181's `?holdings=all` (the Jump to palette) drops the holding-type filter (#129).
+    ['app/api/companies/route.ts', 'GET', /excludeHiddenCompanies\(query, await hiddenFleetIdsInFund\(admin, membership\.fund_id, user\.id\), 'id'\)/],
   ]
   it.each(GATED)('%s %s applies the fleet gate', (file, method, gate) => {
     const h = handlers(readFileSync(path.join(process.cwd(), file), 'utf8')).find(x => x.method === method)
