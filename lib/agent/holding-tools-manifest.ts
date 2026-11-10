@@ -150,8 +150,9 @@ export const HOLDING_TOOL_MANIFEST: AgentToolMeta[] = [
       'the transaction must be this holding\'s, on this entity, for the same amount. Without transaction_id the notice is BOOKED: its ' +
       'transaction and journal entry are made, as Confirm on the holding page does. A call\'s purposes (investments, fees, expenses) ' +
       'and a distribution\'s character (return of capital, realized gain, income) must add up to the amount; a call defaults to all ' +
-      'investments, a linked distribution to the transaction\'s own cost basis exited and gain. Once recorded, the transaction is ' +
-      'changed from the notice, not the company page.',
+      'investments. A distribution with no return of capital or gain stated is split by cost recovery against the cost the holding ' +
+      'still carries (a linked transaction booked otherwise is re-booked to match, its next mark keeping the holding\'s value). ' +
+      'Once recorded, the transaction is changed from the notice (update_fund_notice), not the company page.',
     scope: 'write',
     domain: 'portfolio',
     accessFeature: 'investments',
@@ -175,6 +176,68 @@ export const HOLDING_TOOL_MANIFEST: AgentToolMeta[] = [
         char_realized_gain: { type: 'number' },
         char_income: { type: 'number' },
         recallable_amount: { type: 'number', description: 'The part of a distribution the fund may call again.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'update_fund_notice',
+    description:
+      'Correct a capital call or distribution notice already in a fund holding\'s register (the notice ids are in the register; ' +
+      'list_investments shows the transaction a notice owns). Change its date, amount, a call\'s purposes or a distribution\'s ' +
+      'character (return of capital, realized gain, income), and its number, description, due date or recallable amount. Only ' +
+      'the fields passed change, and a call\'s purposes or a distribution\'s character must still add up to the amount. A ' +
+      'confirmed notice re-books the transaction it owns, retracting and re-drafting its journal entry, and re-books the ' +
+      'holding\'s NAV statements from that date so its value stays at the manager\'s NAV. This is how a register-owned ' +
+      'transaction is corrected; update_investment refuses one. Refused when the entry is in a closed period.',
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    inputSchema: {
+      type: 'object',
+      required: ['company'],
+      properties: {
+        company: HOLDING,
+        event_id: { type: 'string', description: 'The notice\'s id. Give this or transaction_id.' },
+        transaction_id: { type: 'string', description: 'The transaction the notice owns (list_investments), to find the notice by.' },
+        event_date: DATE,
+        amount: { type: 'number', description: 'The notice amount, positive for both kinds.' },
+        due_date: DATE,
+        notice_number: { type: 'string' },
+        description: { type: 'string' },
+        purpose_investments: { type: 'number' },
+        purpose_fees: { type: 'number' },
+        purpose_expenses: { type: 'number' },
+        char_return_of_capital: { type: 'number' },
+        char_realized_gain: { type: 'number' },
+        char_income: { type: 'number' },
+        recallable_amount: { type: 'number', description: 'The part of a distribution the fund may call again.' },
+        recalculate_character: {
+          type: 'boolean',
+          description: 'Work a distribution\'s return of capital and gain out again by cost recovery. They are anyway when its amount or date changes and no character is passed.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'recalculate_fund_distributions',
+    description:
+      'Work out again the return of capital on every distribution a fund holding paid one entity, by cost recovery: a ' +
+      'distribution returns capital until the cost the holding still carries is gone, and the rest is realized gain; income a ' +
+      'notice states stays income. Oldest first, each against the corrected ones before it. Every distribution that differs is ' +
+      're-booked (a register notice re-books its transaction; any other proceeds transaction is edited), and the next mark is ' +
+      'adjusted by the same amount so the holding keeps its value. dry_run lists what would change without changing it.',
+    scope: 'write',
+    domain: 'portfolio',
+    accessFeature: 'investments',
+    inputSchema: {
+      type: 'object',
+      required: ['company'],
+      properties: {
+        company: HOLDING,
+        vehicle: VEHICLE,
+        dry_run: { type: 'boolean', description: 'List what would change; change nothing.' },
       },
       additionalProperties: false,
     },

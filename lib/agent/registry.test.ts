@@ -136,6 +136,13 @@ describe('agent tool registry', () => {
     expect(isDraftOnlyCall(getTool('document_generate')!, {})).toBe(true)
   })
 
+  it('a distribution recalculation runs directly only as a dry run', () => {
+    const tool = getTool('recalculate_fund_distributions')!
+    expect(shouldStage(tool, { company: 'Acme Fund', dry_run: true }, { keyId: 'oauth:abc' })).toBe(false)
+    expect(shouldStage(tool, { company: 'Acme Fund' }, { keyId: 'oauth:abc' })).toBe(true)
+    expect(shouldStage(tool, { company: 'Acme Fund', dry_run: 'true' }, { keyId: 'oauth:abc' })).toBe(true)
+  })
+
   it('deal and diligence writes are named for their stage, and gated like their web routes', () => {
     const writes = AGENT_TOOLS.filter(t => ['diligence', 'deals'].includes(t.domain ?? '') && t.scope === 'write')
     expect(writes.length).toBeGreaterThan(0)

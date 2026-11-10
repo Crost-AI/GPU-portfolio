@@ -8,7 +8,7 @@ import { vehicleIdByName } from '@/lib/accounting/vehicle-id'
 import { companyChangeFromInput, setHoldingType, updateCompanyDetails } from '@/lib/companies/holding-edit'
 import { saveNavStatement } from '@/lib/portfolio/fof-nav'
 import { resolveHoldingVehicle } from '@/lib/portfolio/fof-register'
-import { recordFundNotice, setFundTerms, TERM_FIELDS } from '@/lib/portfolio/fund-register-write'
+import { noticeChangesFrom, recalculateFundDistributions, recordFundNotice, setFundTerms, TERM_FIELDS, updateFundNotice } from '@/lib/portfolio/fund-register-write'
 import { moveInvestmentTransaction } from '@/lib/portfolio/transaction-edit'
 import { unwrap } from '@/lib/service-outcome'
 import { resolveCompany } from './portfolio-tools'
@@ -89,6 +89,31 @@ export const HOLDING_HANDLERS: Record<string, AgentToolHandler> = {
       transactionId: typeof input?.transaction_id === 'string' && input.transaction_id ? input.transaction_id : null,
     }))
     return { holding: holding.name, ...out }
+  },
+
+  update_fund_notice: async (ctx: AgentToolContext, input: any) => {
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
+    let eventId = typeof input?.event_id === 'string' && input.event_id ? input.event_id : null
+    if (!eventId && typeof input?.transaction_id === 'string' && input.transaction_id) {
+      const { data, error } = await (ctx.admin as any).from('fund_capital_events').select('id')
+        .eq('fund_id', ctx.fundId).eq('company_id', holding.id).eq('investment_transaction_id', input.transaction_id).limit(1)
+      if (error) throw new Error(error.message)
+      eventId = (data as any[])?.[0]?.id ?? null
+      if (!eventId) throw new Error(`No notice on ${holding.name} owns transaction ${input.transaction_id}.`)
+    }
+    if (!eventId) throw new Error('event_id or transaction_id is required.')
+    const vehicleNames = (await entityScopeFor(ctx.admin, ctx.access)).vehicleNames
+    const out = unwrap(await updateFundNotice(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null, vehicleNames },
+      holding.id, eventId, noticeChangesFrom(input), { recalculateCharacter: input?.recalculate_character === true }))
+    return { holding: holding.name, ...out }
+  },
+
+  recalculate_fund_distributions: async (ctx: AgentToolContext, input: any) => {
+    const holding = await resolveCompany(ctx.admin, ctx.fundId, String(input?.company ?? ''), ctx.access, 'write')
+    const vehicleId = await holdingVehicle(ctx, holding.id, input?.vehicle)
+    const vehicleNames = (await entityScopeFor(ctx.admin, ctx.access)).vehicleNames
+    return unwrap(await recalculateFundDistributions(ctx.admin, { fundId: ctx.fundId, userId: ctx.userId ?? null, vehicleNames },
+      holding.id, vehicleId, { dryRun: input?.dry_run === true }))
   },
 
   record_nav_statement: async (ctx: AgentToolContext, input: any) => {

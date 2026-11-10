@@ -47,14 +47,14 @@ describe('approveFundReview', () => {
     expect(h.save).not.toHaveBeenCalled()
   })
 
-  it('approving a distribution drafts it as a return of capital', async () => {
+  it('approving a distribution drafts it uncharacterised, for confirming to split by cost recovery', async () => {
     const r = await approveFundReview(m.admin, ctx(), callReview({
       issue_type: 'fund_distribution',
       payload: { ...(callReview().payload as object), kind: 'distribution', amount: 400_000 },
     }))
     expect(r).toMatchObject({ ok: true, message: expect.stringMatching(/draft distribution/) })
     expect(m.tables.fund_capital_events).toEqual([expect.objectContaining({
-      kind: 'distribution', amount: 400_000, char_return_of_capital: 400_000, purpose_investments: 0, status: 'draft',
+      kind: 'distribution', amount: 400_000, char_return_of_capital: 0, char_realized_gain: 0, purpose_investments: 0, status: 'draft',
     })])
   })
 
