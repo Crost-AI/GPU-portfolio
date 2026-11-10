@@ -579,7 +579,7 @@ The headless path covers the other direction too. Beyond the built-in integratio
 **How it behaves**
 
 - **Writes apply directly, as drafts.** A connector's writes come from a key, so they are not staged for approval the way an assistant's are. They are recorded in the audit trail with source `mcp`. Outside ledger entries still land as **drafts**, and a person reviews and posts them on the journal page.
-- **Outside general ledgers** (QuickBooks, Carta fund admin) go through three steps: `journal_import_accounts`, then `save_journal_mapping`, then `import_journal`. This is the same mapping, review and draft import as **Accounting → QuickBooks**. Each source (`quickbooks`, `carta`) keeps its own account mapping and tags its entries with its own `source_type`.
+- **Outside general ledgers** (QuickBooks, Carta fund admin) go through three steps: `journal_import_accounts`, then `save_journal_mapping`, then `import_journal`. This is the same mapping, review and draft import as **Accounting → QuickBooks**. Each source (`quickbooks`, `carta`) keeps its own account mapping and tags its entries with its own `source_type`. A source account mapped with `taxBook: true` (one a preparer keeps on a tax basis only, such as year-end K-1 entries) sends every transaction touching it to the tax book instead of the ledger.
 - **Safe to repeat.** Each entry is keyed by a hash of its content, so re-sending an overlapping window matches what was already imported instead of duplicating it.
 - **Review holds stop the run.** If the import's comparison with investment and LP records finds a difference, nothing is written until a person re-runs the import with the review token.
 

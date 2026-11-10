@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### QuickBooks and Carta imports can send a tax-basis file's K-1 entries to the tax book
+- **Tax book per source account.** The import mapping has a **Tax book** mark for source accounts a preparer keeps on a tax basis only, such as the year-end K-1 entries booked against an investment and a K-1 income account, or tax-basis write-offs. Every transaction touching a marked account imports whole into the tax book (`book = 'tax'`), as a draft, instead of the actual ledger. A transaction is never split across books. Tax-basis statements and K-1s read the tax book on top of the ledger; book capital is unchanged, so these no longer have to be reversed by hand after each import. `save_journal_mapping` takes `taxBook` per row, and a row that leaves it out keeps the saved flag.
+- **Posting tax-book drafts.** They are posted or discarded from the journal's Tax book view with the usual bulk actions (`post_drafts` and `discard_drafts` take `book: 'tax'`). Posting one is a status change only: no investment adoption and no partner allocation, since allocation is an actual-book operation.
+- **Closed tax years are respected.** A tax-routed transaction dated in a closed tax year is not imported. The import, dry run included, names it (`taxBook.lockedYears`) and says to reopen the year. Bulk posting a tax-book draft in a closed tax year is skipped with the same reason.
+- **Moving the mark does not double-import.** Duplicate detection looks in both books, since the reference does not include the book. A transaction already imported into the other book is left where it is and listed in `bookConflicts` with what to do: void or discard that entry, then import again. A voided entry in the other book does not block the import; a voided entry in the same book still does. `20261104141000_journal_import_tax_book.sql` adds `qb_account_mappings.tax_book` and makes the database's QuickBooks duplicate guard look across both books.
+- **The tie-out compares the actual book.** Imported tax-book entries are taken out of the QuickBooks trial balance before comparing, and their totals are shown on their own, so a tax-basis file can tie.
+
 ### Postmark inbound routes by domain, like Resend
 - Mail to any name on a fund's Postmark inbound domain now reaches the fund, not only the exact saved address, so `reports@` and `updates@inbound.yourfund.com` both work. An exact address still wins; a domain two funds share routes only exact addresses; Postmark's shared `inbound.postmarkapp.com` domain and the deployment's global inbound address stay exact-only. Each fund needs its own Postmark server and inbound domain. `lib/postmark/inbound.ts`.
 

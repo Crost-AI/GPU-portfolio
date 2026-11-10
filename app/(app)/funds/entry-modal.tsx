@@ -430,7 +430,7 @@ export function EntryModal({
             <div className="border-t p-4">
               {taxBook ? (
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-muted-foreground">A book-to-tax adjusting entry. The tax run writes and rewrites these; post the year again from the Tax page to change them.</span>
+                  <span className="text-xs text-muted-foreground">A tax-book entry. The tax run writes and rewrites its adjustments; post the year again from the Tax page to change them. An entry imported to the tax book from QuickBooks or Carta is posted or discarded with the journal&rsquo;s bulk actions.</span>
                   <Button size="sm" variant="outline" onClick={onClose}>Close</Button>
                 </div>
               ) : editable ? (
