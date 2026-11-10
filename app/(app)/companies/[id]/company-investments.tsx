@@ -24,6 +24,14 @@ interface Props {
   adminOnly?: boolean
   /** Show the unit count beside cost and value (a digital asset). */
   showUnits?: boolean
+  /**
+   * The page offers Add elsewhere (a fund holding's register menu), so this section shows no Add
+   * button of its own. `addRequest` opens the Add Transaction dialog each time it increases.
+   */
+  hideAddButton?: boolean
+  addRequest?: number
+  /** Reload whenever this changes — another panel booked a transaction. */
+  reloadKey?: number
 }
 
 // 'conversion' is a UI-only mode: it is stored as an `investment` row carrying
@@ -45,7 +53,9 @@ function fmtMoic(val: number | null | undefined): string {
   return `${val.toFixed(2)}x`
 }
 
-export function CompanyInvestments({ companyId, companyStatus, portfolioGroups, adminOnly, showUnits }: Props) {
+export function CompanyInvestments({
+  companyId, companyStatus, portfolioGroups, adminOnly, showUnits, hideAddButton, addRequest = 0, reloadKey = 0,
+}: Props) {
   const currency = useCurrency()
   const fmt = (val: number | null | undefined) => val == null ? '-' : formatCurrencyFull(val, currency)
   const fmtPrice = (val: number | null | undefined) => val == null ? '-' : formatSharePrice(val, currency)
@@ -82,7 +92,15 @@ export function CompanyInvestments({ companyId, companyStatus, portfolioGroups, 
     }
   }, [companyId, asOfDate])
 
-  useEffect(() => { load() }, [load])
+  // reloadKey: another panel booked a transaction, so refetch.
+  useEffect(() => { load() }, [load, reloadKey])
+
+  // A parent's Add menu asks for the dialog by bumping addRequest (adjusted during render, not in an effect).
+  const [seenAddRequest, setSeenAddRequest] = useState(addRequest)
+  if (addRequest !== seenAddRequest) {
+    setSeenAddRequest(addRequest)
+    if (addRequest > seenAddRequest) { setEditing(null); setDialogOpen(true) }
+  }
 
   function openAdd() {
     setEditing(null)
@@ -140,10 +158,12 @@ export function CompanyInvestments({ companyId, companyStatus, portfolioGroups, 
             <span className="text-xs bg-muted rounded-full px-1.5 py-0.5">{transactions.length}</span>
           )}
         </button>
-        <Button size="sm" variant="outline" onClick={openAdd} className="h-7 px-2 text-xs">
-          <Plus className="h-3.5 w-3.5 mr-1" />
-          Add
-        </Button>
+        {!hideAddButton && (
+          <Button size="sm" variant="outline" onClick={openAdd} className="h-7 px-2 text-xs">
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            Add
+          </Button>
+        )}
       </div>
 
       {expanded && summary && summary.totalInvested > 0 && !groupSummaries && (

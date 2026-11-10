@@ -109,6 +109,8 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/allocation': { domain: 'accounting' },
   // The account register: the same posted ledger the statements read, one account at a time.
   'api/accounting/ledger': { domain: 'accounting' },
+  // The general ledger as a file (CSV or Excel) — every account's register, or one account's.
+  'api/accounting/ledger/export': { domain: 'accounting' },
   'api/accounting/ledger-text': { domain: 'accounting' },
   'api/accounting/opening-balances': { domain: 'accounting' },
   'api/accounting/periods': { domain: 'accounting' },
@@ -284,6 +286,9 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/accounting/notices/preview': { domain: 'lp_relations', feature: 'lp_portal' },
   // A receipt for a funded call line goes out the same way a notice does.
   'api/accounting/notices/receipt': { domain: 'lp_relations', feature: 'lp_portal' },
+  // A notice in the ILPA Capital Call & Distribution Template layout, as a download. A read of the
+  // register that sends nothing, so it sits with the capital data rather than with sharing.
+  'api/accounting/notices/ilpa': { domain: 'lp_capital' },
   'api/lps/live-report/share': { domain: 'lp_relations', feature: 'lp_portal' },
   'api/lps/snapshots/[id]/share': { domain: 'lp_relations', feature: 'lp_portal' },
   'api/lps/authorized-users': { domain: 'lp_relations', feature: 'lp_portal' },
@@ -547,6 +552,11 @@ export const ROUTE_DOMAINS: Record<string, RouteAccess> = {
   'api/settings/dashboard-entities': { domain: 'admin' },
   // Entity groups: managing them is administration (and admins only in the handler).
   'api/settings/vehicle-groups': { domain: 'admin' },
+  // Connected funds: asking another fund to connect, answering, and pairing LPs across them. Admin
+  // on both sides, by design (lib/fund-connections) — and admins only in the handler.
+  'api/settings/fund-connections': { domain: 'admin' },
+  'api/settings/fund-connections/[id]': { domain: 'admin' },
+  'api/settings/fund-connections/[id]/pairs': { domain: 'admin' },
   'api/settings/reminders/test': { domain: 'admin' },
   'api/auth/activity': { domain: 'portfolio', level: 'any' },
   // Affinity issues ONE KEY PER USER, scoped to that user's own permissions, so each member
@@ -644,7 +654,7 @@ export const UNGATED_ROUTES: Record<string, string> = {
   'api/webhooks/transcription/[token]': 'Inbound webhook: per-job single-use callback token in the path (SEC-010).',
   'api/csp-report': 'Browser-sent CSP violation reports; no credential exists to require. Rate-limited per platform IP, body capped, fields allowlisted before logging.',
   'api/inbound-email': 'Inbound email webhook.',
-  'api/inbound-email/mailgun': 'Inbound email webhook (Mailgun).',
+  'api/inbound-email/resend': 'Inbound email webhook (Resend).',
   'api/public/submit/[token]': 'Public deal-submission form; path token.',
 
   // A separate identity model: LP portal accounts, scoped per investor entity by resolveLpAccess.

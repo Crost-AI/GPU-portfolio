@@ -11,6 +11,7 @@ import { isAuthorizedSender } from '@/lib/pipeline/isAuthorizedSender'
 import { rateLimit, getClientIp } from '@/lib/rate-limit'
 import { scanFileAsync } from '@/lib/security/scan-file'
 import { emailFingerprint } from '@/lib/pipeline/emailFingerprint'
+import { matchPostmarkInbound } from '@/lib/postmark/inbound'
 
 function safeTokenCompare(a: string, b: string): boolean {
   try {
@@ -248,33 +249,16 @@ async function resolveFund(
   fromAddress: string,
   token: string
 ): Promise<{ fundId: string; isGlobal: boolean } | null> {
-  if (!toAddress) return null
-
-  // The recipient exactly as written first: literal, so an address with `*`, `%` or `_` in it
-  // resolves as it always did, whatever else is configured.
-  const columns = 'fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted'
-  const { data: exact } = await supabase
+  // By the saved address, else by its domain, so any name at a fund's inbound domain reaches it
+  const { data: candidates } = await supabase
     .from('fund_settings')
-    .select(columns)
-    .eq('postmark_inbound_address', toAddress)
+    .select('fund_id, postmark_inbound_address, postmark_webhook_token, postmark_webhook_token_encrypted, encryption_key_encrypted')
+    .not('postmark_inbound_address', 'is', null)
+  const { data: appSettings } = await supabase
+    .from('app_settings')
+    .select('global_inbound_address, global_inbound_token, global_inbound_token_encrypted')
     .maybeSingle()
-  let fundSettings = exact
-
-  // Then case-insensitively — mail addresses are, and a sender's client may have changed the case
-  // of the inbox. An ilike pattern's escapes are not trusted (PostgREST may drop them, and reads `*`
-  // as `%`), so every character that could be a wildcard becomes `_`, which matches exactly one:
-  // the candidates are addresses of the recipient's length that agree with it elsewhere, and the
-  // fund is the one equal to it ignoring case. The bound (fund_settings is one row per fund) is a
-  // backstop only: the delivery as written was already matched literally above.
-  if (!fundSettings) {
-    const recipient = toAddress.toLowerCase()
-    const { data: candidates } = await supabase
-      .from('fund_settings')
-      .select(columns)
-      .ilike('postmark_inbound_address', toAddress.replace(/[\\%_*]/g, '_'))
-      .limit(50)
-    fundSettings = (candidates ?? []).find(r => r.postmark_inbound_address?.toLowerCase() === recipient) ?? null
-  }
+  const fundSettings = matchPostmarkInbound(toAddress, candidates ?? [], [appSettings?.global_inbound_address])
 
   if (fundSettings) {
     // Prefer encrypted token; fall back to plaintext for legacy
@@ -296,11 +280,6 @@ async function resolveFund(
     }
     return { fundId: fundSettings.fund_id, isGlobal: false }
   }
-
-  const { data: appSettings } = await supabase
-    .from('app_settings')
-    .select('global_inbound_address, global_inbound_token, global_inbound_token_encrypted')
-    .maybeSingle()
 
   if (!appSettings?.global_inbound_address || toAddress !== appSettings.global_inbound_address) {
     return null
